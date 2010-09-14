@@ -607,6 +607,7 @@ static ssize_t store_freq_volt_table(struct cpufreq_policy *policy, const char *
 	u32 new_clk_tab[16][4];
 	u32 new_div_tab[16][12];
 	u32 new_pll_tab[16][6];
+	struct cpufreq_policy new_policy;
 	struct cpufreq_frequency_table new_freq_tab[17];
 	int new_volt_tab[16][2];
 	const char *nb = buf;
@@ -769,12 +770,14 @@ static ssize_t store_freq_volt_table(struct cpufreq_policy *policy, const char *
 	 * just change any indices to point to the new 100MHz mode, then
 	 * set voltages for the new mode unconditionally (in case they've changed).
 	 */
+	if (cpufreq_get_policy(&new_policy, policy->cpu))
+		return -EINVAL;
 	for (i = 0; i < 8; i++)
 	{
 		s5pc11x_cpufreq_index = S5PC11X_MAXFREQLEVEL;
-		if (!(j = cpufreq_driver->target(NULL, 100000, 0)))
+		if (!(j = __cpufreq_driver_target(policy, 100000, 0)))
 			break;
-		mdelay(1);
+		udelay(50);
 	}
 	if (j)
 	{
@@ -791,12 +794,18 @@ static ssize_t store_freq_volt_table(struct cpufreq_policy *policy, const char *
 	memcpy(s5p_sys_clk_div0_tab_1GHZ, new_div_tab, c * sizeof(new_div_tab[0]));
 	memcpy(s5pc110_freq_table_1GHZ, new_freq_tab, c * sizeof(new_freq_tab[0]));
 	memcpy(s5p_sys_clk_mps_tab_1GHZ, new_pll_tab, c * sizeof(new_pll_tab[0]));
-	MAXFREQ_LEVEL_SUPPORTED = S5PC11X_MAXFREQLEVEL = s5pc11x_cpufreq_level = s5pc11x_cpufreq_index = c - 1;
-	cpufreq_driver->target(NULL, 100000, 0);
+	MAXFREQ_LEVEL_SUPPORTED = S5PC11X_MAXFREQLEVEL = s5pc11x_cpufreq_level = c - 1;
+	s5pc11x_cpufreq_index = 0;
+	__cpufreq_driver_target(policy, s5pc110_freq_table_1GHZ[0].frequency, 0);
 	s5pc110_freq_table_1GHZ[c].index = 0;
 	s5pc110_freq_table_1GHZ[c].frequency = CPUFREQ_TABLE_END;
 	cpufreq_frequency_table_cpuinfo(policy, s5pc110_freq_table_1GHZ);
-	policy->cur = 100000;
+	new_policy.min = 100000;
+	new_policy.max = s5pc110_freq_table_1GHZ[0].frequency;
+	new_policy.cur = cpufreq_driver->get(0);
+	__cpufreq_set_policy(policy, &new_policy);
+	policy->user_policy.min = policy->min;
+	policy->user_policy.max = policy->max;
 	cpufreq_stats_realloc_table (policy, s5pc110_freq_table_1GHZ);
 #ifdef DEBUG_FREQ_WRITE
 	if (do_debug) {
