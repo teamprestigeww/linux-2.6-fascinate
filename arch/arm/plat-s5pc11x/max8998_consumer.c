@@ -78,7 +78,7 @@ enum PMIC_VOLTAGE {
 int frequency_match_1GHZ[17][2] = {
 /* frequency, Mathced VDD ARM voltage , Matched VDD INT*/
 #if 1
-        {1200, 1100}, /* 1.0GHz */
+        {1275, 1100}, /* 1.0GHz */
         {1200, 1100}, /* 0.8GHz */
         {1050, 1100}, /* 0.4GHz */
         { 950, 1100}, /* 0.2GHz */
