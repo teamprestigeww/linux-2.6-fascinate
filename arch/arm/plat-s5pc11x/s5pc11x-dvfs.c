@@ -80,7 +80,7 @@ extern unsigned int gbTransitionLogEnable;
 
 /* frequency */
 static struct cpufreq_frequency_table s5pc110_freq_table_1GHZ[] = {
-	{L0, 1000*1000},
+	{L0, 1200*1000},
 	{L1, 800*1000},
 	{L2, 400*1000},
 	{L3, 200*1000},
@@ -713,7 +713,7 @@ static int __init s5pc110_cpu_init(struct cpufreq_policy *policy)
 
 	if (policy->cpu != 0)
 		return -EINVAL;
-	policy->cur = policy->min = policy->max = s5pc110_getspeed(0);
+	policy->cur = policy->min = policy->max = 800000;
 	//spin_lock_irqsave(&g_cpufreq_lock, irqflags);
 #if 0//boot 800Mhz, kernel 1Ghz
         if(policy->max == MAXIMUM_FREQ) {
