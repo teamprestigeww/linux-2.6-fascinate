@@ -103,7 +103,7 @@ static int vdc_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 	return 0;
 }
 
-static const struct block_device_operations vdc_fops = {
+static struct block_device_operations vdc_fops = {
 	.owner		= THIS_MODULE,
 	.getgeo		= vdc_getgeo,
 };
@@ -212,6 +212,11 @@ static void vdc_end_special(struct vdc_port *port, struct vio_disk_desc *desc)
 	vdc_finish(&port->vio, -err, WAITING_FOR_GEN_CMD);
 }
 
+static void vdc_end_request(struct request *req, int error, int num_sectors)
+{
+	__blk_end_request(req, error, num_sectors << 9);
+}
+
 static void vdc_end_one(struct vdc_port *port, struct vio_dring_state *dr,
 			unsigned int index)
 {
@@ -234,7 +239,7 @@ static void vdc_end_one(struct vdc_port *port, struct vio_dring_state *dr,
 
 	rqe->req = NULL;
 
-	__blk_end_request(req, (desc->status ? -EIO : 0), desc->size);
+	vdc_end_request(req, (desc->status ? -EIO : 0), desc->size >> 9);
 
 	if (blk_queue_stopped(port->disk->queue))
 		blk_start_queue(port->disk->queue);
@@ -416,7 +421,7 @@ static int __send_request(struct request *req)
 		desc->slice = 0;
 	}
 	desc->status = ~0;
-	desc->offset = (blk_rq_pos(req) << 9) / port->vdisk_block_size;
+	desc->offset = (req->sector << 9) / port->vdisk_block_size;
 	desc->size = len;
 	desc->ncookies = err;
 
@@ -441,13 +446,14 @@ out:
 static void do_vdc_request(struct request_queue *q)
 {
 	while (1) {
-		struct request *req = blk_fetch_request(q);
+		struct request *req = elv_next_request(q);
 
 		if (!req)
 			break;
 
+		blkdev_dequeue_request(req);
 		if (__send_request(req) < 0)
-			__blk_end_request_all(req, -EIO);
+			vdc_end_request(req, -EIO, req->hard_nr_sectors);
 	}
 }
 
@@ -691,8 +697,9 @@ static int probe_disk(struct vdc_port *port)
 
 	port->disk = g;
 
-	blk_queue_max_segments(q, port->ring_cookies);
-	blk_queue_max_hw_sectors(q, port->max_xfer_size);
+	blk_queue_max_hw_segments(q, port->ring_cookies);
+	blk_queue_max_phys_segments(q, port->ring_cookies);
+	blk_queue_max_sectors(q, port->max_xfer_size);
 	g->major = vdc_major;
 	g->first_minor = port->vio.vdev->dev_no << PARTITION_SHIFT;
 	strcpy(g->disk_name, port->disk_name);

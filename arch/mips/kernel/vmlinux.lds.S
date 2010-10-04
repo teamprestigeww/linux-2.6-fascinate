@@ -1,5 +1,4 @@
 #include <asm/asm-offsets.h>
-#include <asm/page.h>
 #include <asm-generic/vmlinux.lds.h>
 
 #undef mips
@@ -10,16 +9,7 @@ PHDRS {
 	text PT_LOAD FLAGS(7);	/* RWX */
 	note PT_NOTE FLAGS(4);	/* R__ */
 }
-
-#ifdef CONFIG_32BIT
-	#ifdef CONFIG_CPU_LITTLE_ENDIAN
-		jiffies  = jiffies_64;
-	#else
-		jiffies  = jiffies_64 + 4;
-	#endif
-#else
-	jiffies  = jiffies_64;
-#endif
+jiffies = JIFFIES;
 
 SECTIONS
 {
@@ -38,7 +28,7 @@ SECTIONS
 	/* . = 0xa800000000300000; */
 	. = 0xffffffff80300000;
 #endif
-	. = VMLINUX_LOAD_ADDRESS;
+	. = LOADADDR;
 	/* read-only */
 	_text = .;	/* Text and read-only data */
 	.text : {
@@ -46,14 +36,19 @@ SECTIONS
 		SCHED_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
-		IRQENTRY_TEXT
 		*(.text.*)
 		*(.fixup)
 		*(.gnu.warning)
 	} :text = 0
 	_etext = .;	/* End of text section */
 
-	EXCEPTION_TABLE(16)
+	/* Exception table */
+	. = ALIGN(16);
+	__ex_table : {
+		__start___ex_table = .;
+		*(__ex_table)
+		__stop___ex_table = .;
+	}
 
 	/* Exception table for data bus errors */
 	__dbe_table : {
@@ -70,10 +65,20 @@ SECTIONS
 	/* writeable */
 	.data : {	/* Data */
 		. = . + DATAOFFSET;		/* for CONFIG_MAPPED_KERNEL */
+		/*
+		 * This ALIGN is needed as a workaround for a bug a
+		 * gcc bug upto 4.1 which limits the maximum alignment
+		 * to at most 32kB and results in the following
+		 * warning:
+		 *
+		 *  CC      arch/mips/kernel/init_task.o
+		 * arch/mips/kernel/init_task.c:30: warning: alignment
+		 * of ‘init_thread_union’ is greater than maximum
+		 * object file alignment.  Using 32768
+		 */
+		. = ALIGN(_PAGE_SIZE);
+		*(.data.init_task)
 
-		INIT_TASK_DATA(PAGE_SIZE)
-		NOSAVE_DATA
-		CACHELINE_ALIGNED_DATA(1 << CONFIG_MIPS_L1_CACHE_SHIFT)
 		DATA_DATA
 		CONSTRUCTORS
 	}
@@ -90,13 +95,51 @@ SECTIONS
 	.sdata : {
 		*(.sdata)
 	}
+
+	. = ALIGN(_PAGE_SIZE);
+	.data_nosave : {
+		__nosave_begin = .;
+		*(.data.nosave)
+	}
+	. = ALIGN(_PAGE_SIZE);
+	__nosave_end = .;
+
+	. = ALIGN(1 << CONFIG_MIPS_L1_CACHE_SHIFT);
+	.data.cacheline_aligned : {
+		*(.data.cacheline_aligned)
+	}
 	_edata =  .;			/* End of data section */
 
 	/* will be freed after init */
-	. = ALIGN(PAGE_SIZE);		/* Init code and data */
+	. = ALIGN(_PAGE_SIZE);		/* Init code and data */
 	__init_begin = .;
-	INIT_TEXT_SECTION(PAGE_SIZE)
-	INIT_DATA_SECTION(16)
+	.init.text : {
+		_sinittext = .;
+		INIT_TEXT
+		_einittext = .;
+	}
+	.init.data : {
+		INIT_DATA
+	}
+	. = ALIGN(16);
+	.init.setup : {
+		__setup_start = .;
+		*(.init.setup)
+		__setup_end = .;
+	}
+
+	.initcall.init : {
+		__initcall_start = .;
+		INITCALLS
+		__initcall_end = .;
+	}
+
+	.con_initcall.init : {
+		__con_initcall_start = .;
+		*(.con_initcall.init)
+		__con_initcall_end = .;
+	}
+	SECURITY_INIT
 
 	/* .exit.text is discarded at runtime, not link time, to deal with
 	 * references from .rodata
@@ -107,15 +150,42 @@ SECTIONS
 	.exit.data : {
 		EXIT_DATA
 	}
-
-	PERCPU(PAGE_SIZE)
-	. = ALIGN(PAGE_SIZE);
+#if defined(CONFIG_BLK_DEV_INITRD)
+	. = ALIGN(_PAGE_SIZE);
+	.init.ramfs : {
+		__initramfs_start = .;
+		*(.init.ramfs)
+		__initramfs_end = .;
+	}
+#endif
+	PERCPU(_PAGE_SIZE)
+	. = ALIGN(_PAGE_SIZE);
 	__init_end = .;
 	/* freed after init ends here */
 
-	BSS_SECTION(0, 0, 0)
+	__bss_start = .;	/* BSS */
+	.sbss  : {
+		*(.sbss)
+		*(.scommon)
+	}
+	.bss : {
+		*(.bss)
+		*(COMMON)
+	}
+	__bss_stop = .;
 
 	_end = . ;
+
+	/* Sections to be discarded */
+	/DISCARD/ : {
+		*(.exitcall.exit)
+
+		/* ABI crap starts here */
+		*(.MIPS.options)
+		*(.options)
+		*(.pdr)
+		*(.reginfo)
+	}
 
 	/* These mark the ABI of the kernel for debuggers.  */
 	.mdebug.abi32 : {
@@ -141,15 +211,5 @@ SECTIONS
 	.gptab.sbss : {
 		*(.gptab.bss)
 		*(.gptab.sbss)
-	}
-
-	/* Sections to be discarded */
-	DISCARDS
-	/DISCARD/ : {
-		/* ABI crap starts here */
-		*(.MIPS.options)
-		*(.options)
-		*(.pdr)
-		*(.reginfo)
 	}
 }

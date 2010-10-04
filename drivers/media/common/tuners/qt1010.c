@@ -64,22 +64,24 @@ static int qt1010_writereg(struct qt1010_priv *priv, u8 reg, u8 val)
 /* dump all registers */
 static void qt1010_dump_regs(struct qt1010_priv *priv)
 {
+	char buf[52], buf2[4];
 	u8 reg, val;
 
 	for (reg = 0; ; reg++) {
 		if (reg % 16 == 0) {
 			if (reg)
-				printk(KERN_CONT "\n");
-			printk(KERN_DEBUG "%02x:", reg);
+				printk("%s\n", buf);
+			sprintf(buf, "%02x: ", reg);
 		}
 		if (qt1010_readreg(priv, reg, &val) == 0)
-			printk(KERN_CONT " %02x", val);
+			sprintf(buf2, "%02x ", val);
 		else
-			printk(KERN_CONT " --");
+			strcpy(buf2, "-- ");
+		strcat(buf, buf2);
 		if (reg == 0x2f)
 			break;
 	}
-	printk(KERN_CONT "\n");
+	printk("%s\n", buf);
 }
 
 static int qt1010_set_params(struct dvb_frontend *fe,

@@ -55,10 +55,8 @@ static void delay_tsc(unsigned long loops)
 
 	preempt_disable();
 	cpu = smp_processor_id();
-	rdtsc_barrier();
 	rdtscl(bclock);
 	for (;;) {
-		rdtsc_barrier();
 		rdtscl(now);
 		if ((now - bclock) >= loops)
 			break;
@@ -80,7 +78,6 @@ static void delay_tsc(unsigned long loops)
 		if (unlikely(cpu != smp_processor_id())) {
 			loops -= (now - bclock);
 			cpu = smp_processor_id();
-			rdtsc_barrier();
 			rdtscl(bclock);
 		}
 	}

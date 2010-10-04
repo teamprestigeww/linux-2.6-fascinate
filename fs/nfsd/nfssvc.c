@@ -1,4 +1,6 @@
 /*
+ * linux/fs/nfsd/nfssvc.c
+ *
  * Central processing for nfsd.
  *
  * Authors:	Olaf Kirch (okir@monad.swb.de)
@@ -6,25 +8,41 @@
  * Copyright (C) 1995, 1996, 1997 Olaf Kirch <okir@monad.swb.de>
  */
 
+#include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/time.h>
+#include <linux/errno.h>
+#include <linux/nfs.h>
+#include <linux/in.h>
+#include <linux/uio.h>
+#include <linux/unistd.h>
+#include <linux/slab.h>
+#include <linux/smp.h>
+#include <linux/smp_lock.h>
 #include <linux/freezer.h>
 #include <linux/fs_struct.h>
-#include <linux/swap.h>
+#include <linux/kthread.h>
 
+#include <linux/sunrpc/types.h>
 #include <linux/sunrpc/stats.h>
+#include <linux/sunrpc/svc.h>
 #include <linux/sunrpc/svcsock.h>
+#include <linux/sunrpc/cache.h>
+#include <linux/nfsd/nfsd.h>
+#include <linux/nfsd/stats.h>
+#include <linux/nfsd/cache.h>
+#include <linux/nfsd/syscall.h>
 #include <linux/lockd/bind.h>
 #include <linux/nfsacl.h>
-#include <linux/seq_file.h>
-#include "nfsd.h"
-#include "cache.h"
-#include "vfs.h"
 
 #define NFSDDBG_FACILITY	NFSDDBG_SVC
 
 extern struct svc_program	nfsd_program;
 static int			nfsd(void *vrqstp);
 struct timeval			nfssvc_boot;
+static atomic_t			nfsd_busy;
+static unsigned long		nfsd_last_call;
+static DEFINE_SPINLOCK(nfsd_call_lock);
 
 /*
  * nfsd_mutex protects nfsd_serv -- both the pointer itself and the members
@@ -50,16 +68,6 @@ struct timeval			nfssvc_boot;
  */
 DEFINE_MUTEX(nfsd_mutex);
 struct svc_serv 		*nfsd_serv;
-
-/*
- * nfsd_drc_lock protects nfsd_drc_max_pages and nfsd_drc_pages_used.
- * nfsd_drc_max_pages limits the total amount of memory available for
- * version 4.1 DRC caches.
- * nfsd_drc_pages_used tracks the current version 4.1 DRC memory usage.
- */
-spinlock_t	nfsd_drc_lock;
-unsigned int	nfsd_drc_max_mem;
-unsigned int	nfsd_drc_mem_used;
 
 #if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
 static struct svc_stat	nfsd_acl_svcstats;
@@ -115,12 +123,10 @@ struct svc_program		nfsd_program = {
 
 };
 
-u32 nfsd_supported_minorversion;
-
 int nfsd_vers(int vers, enum vers_op change)
 {
 	if (vers < NFSD_MINVERS || vers >= NFSD_NRVERS)
-		return 0;
+		return -1;
 	switch(change) {
 	case NFSD_SET:
 		nfsd_versions[vers] = nfsd_version[vers];
@@ -143,28 +149,6 @@ int nfsd_vers(int vers, enum vers_op change)
 	}
 	return 0;
 }
-
-int nfsd_minorversion(u32 minorversion, enum vers_op change)
-{
-	if (minorversion > NFSD_SUPPORTED_MINOR_VERSION)
-		return -1;
-	switch(change) {
-	case NFSD_SET:
-		nfsd_supported_minorversion = minorversion;
-		break;
-	case NFSD_CLEAR:
-		if (minorversion == 0)
-			return -1;
-		nfsd_supported_minorversion = minorversion - 1;
-		break;
-	case NFSD_TEST:
-		return minorversion <= nfsd_supported_minorversion;
-	case NFSD_AVAIL:
-		return minorversion <= NFSD_SUPPORTED_MINOR_VERSION;
-	}
-	return 0;
-}
-
 /*
  * Maximum number of nfsd processes
  */
@@ -180,80 +164,15 @@ int nfsd_nrthreads(void)
 	return rv;
 }
 
-static int nfsd_init_socks(int port)
-{
-	int error;
-	if (!list_empty(&nfsd_serv->sv_permsocks))
-		return 0;
-
-	error = svc_create_xprt(nfsd_serv, "udp", PF_INET, port,
-					SVC_SOCK_DEFAULTS);
-	if (error < 0)
-		return error;
-
-	error = svc_create_xprt(nfsd_serv, "tcp", PF_INET, port,
-					SVC_SOCK_DEFAULTS);
-	if (error < 0)
-		return error;
-
-	return 0;
-}
-
-static bool nfsd_up = false;
-
-static int nfsd_startup(unsigned short port, int nrservs)
-{
-	int ret;
-
-	if (nfsd_up)
-		return 0;
-	/*
-	 * Readahead param cache - will no-op if it already exists.
-	 * (Note therefore results will be suboptimal if number of
-	 * threads is modified after nfsd start.)
-	 */
-	ret = nfsd_racache_init(2*nrservs);
-	if (ret)
-		return ret;
-	ret = nfsd_init_socks(port);
-	if (ret)
-		goto out_racache;
-	ret = lockd_up();
-	if (ret)
-		goto out_racache;
-	ret = nfs4_state_start();
-	if (ret)
-		goto out_lockd;
-	nfsd_up = true;
-	return 0;
-out_lockd:
-	lockd_down();
-out_racache:
-	nfsd_racache_shutdown();
-	return ret;
-}
-
-static void nfsd_shutdown(void)
-{
-	/*
-	 * write_ports can create the server without actually starting
-	 * any threads--if we get shut down before any threads are
-	 * started, then nfsd_last_thread will be run before any of this
-	 * other initialization has been done.
-	 */
-	if (!nfsd_up)
-		return;
-	nfs4_state_shutdown();
-	lockd_down();
-	nfsd_racache_shutdown();
-	nfsd_up = false;
-}
-
 static void nfsd_last_thread(struct svc_serv *serv)
 {
 	/* When last nfsd thread exits we need to do some clean-up */
+	struct svc_xprt *xprt;
+	list_for_each_entry(xprt, &serv->sv_permsocks, xpt_list)
+		lockd_down();
 	nfsd_serv = NULL;
-	nfsd_shutdown();
+	nfsd_racache_shutdown();
+	nfs4_state_shutdown();
 
 	printk(KERN_WARNING "nfsd: last server has exited, flushing export "
 			    "cache\n");
@@ -281,27 +200,6 @@ void nfsd_reset_versions(void)
 	}
 }
 
-/*
- * Each session guarantees a negotiated per slot memory cache for replies
- * which in turn consumes memory beyond the v2/v3/v4.0 server. A dedicated
- * NFSv4.1 server might want to use more memory for a DRC than a machine
- * with mutiple services.
- *
- * Impose a hard limit on the number of pages for the DRC which varies
- * according to the machines free pages. This is of course only a default.
- *
- * For now this is a #defined shift which could be under admin control
- * in the future.
- */
-static void set_max_drc(void)
-{
-	#define NFSD_DRC_SIZE_SHIFT	10
-	nfsd_drc_max_mem = (nr_free_buffer_pages()
-					>> NFSD_DRC_SIZE_SHIFT) * PAGE_SIZE;
-	nfsd_drc_mem_used = 0;
-	spin_lock_init(&nfsd_drc_lock);
-	dprintk("%s nfsd_drc_max_mem %u \n", __func__, nfsd_drc_max_mem);
-}
 
 int nfsd_create_serv(void)
 {
@@ -328,16 +226,43 @@ int nfsd_create_serv(void)
 		       nfsd_max_blksize >= 8*1024*2)
 			nfsd_max_blksize /= 2;
 	}
-	nfsd_reset_versions();
 
+	atomic_set(&nfsd_busy, 0);
 	nfsd_serv = svc_create_pooled(&nfsd_program, nfsd_max_blksize,
+				      AF_INET,
 				      nfsd_last_thread, nfsd, THIS_MODULE);
 	if (nfsd_serv == NULL)
-		return -ENOMEM;
+		err = -ENOMEM;
 
-	set_max_drc();
 	do_gettimeofday(&nfssvc_boot);		/* record boot time */
 	return err;
+}
+
+static int nfsd_init_socks(int port)
+{
+	int error;
+	if (!list_empty(&nfsd_serv->sv_permsocks))
+		return 0;
+
+	error = svc_create_xprt(nfsd_serv, "udp", port,
+					SVC_SOCK_DEFAULTS);
+	if (error < 0)
+		return error;
+
+	error = lockd_up();
+	if (error < 0)
+		return error;
+
+	error = svc_create_xprt(nfsd_serv, "tcp", port,
+					SVC_SOCK_DEFAULTS);
+	if (error < 0)
+		return error;
+
+	error = lockd_up();
+	if (error < 0)
+		return error;
+
+	return 0;
 }
 
 int nfsd_nrpools(void)
@@ -414,54 +339,63 @@ int nfsd_set_nrthreads(int n, int *nthreads)
 	return err;
 }
 
-/*
- * Adjust the number of threads and return the new number of threads.
- * This is also the function that starts the server if necessary, if
- * this is the first time nrservs is nonzero.
- */
 int
 nfsd_svc(unsigned short port, int nrservs)
 {
 	int	error;
-	bool	nfsd_up_before;
 
 	mutex_lock(&nfsd_mutex);
 	dprintk("nfsd: creating service\n");
+	error = -EINVAL;
 	if (nrservs <= 0)
 		nrservs = 0;
 	if (nrservs > NFSD_MAXSERVS)
 		nrservs = NFSD_MAXSERVS;
-	error = 0;
-	if (nrservs == 0 && nfsd_serv == NULL)
+	
+	/* Readahead param cache - will no-op if it already exists */
+	error =	nfsd_racache_init(2*nrservs);
+	if (error<0)
 		goto out;
+	nfs4_state_start();
+
+	nfsd_reset_versions();
 
 	error = nfsd_create_serv();
+
 	if (error)
 		goto out;
-
-	nfsd_up_before = nfsd_up;
-
-	error = nfsd_startup(port, nrservs);
+	error = nfsd_init_socks(port);
 	if (error)
-		goto out_destroy;
+		goto failure;
+
 	error = svc_set_num_threads(nfsd_serv, NULL, nrservs);
-	if (error)
-		goto out_shutdown;
-	/* We are holding a reference to nfsd_serv which
-	 * we don't want to count in the return value,
-	 * so subtract 1
-	 */
-	error = nfsd_serv->sv_nrthreads - 1;
-out_shutdown:
-	if (error < 0 && !nfsd_up_before)
-		nfsd_shutdown();
-out_destroy:
+ failure:
 	svc_destroy(nfsd_serv);		/* Release server */
-out:
+ out:
 	mutex_unlock(&nfsd_mutex);
 	return error;
 }
 
+static inline void
+update_thread_usage(int busy_threads)
+{
+	unsigned long prev_call;
+	unsigned long diff;
+	int decile;
+
+	spin_lock(&nfsd_call_lock);
+	prev_call = nfsd_last_call;
+	nfsd_last_call = jiffies;
+	decile = busy_threads*10/nfsdstats.th_cnt;
+	if (decile>0 && decile <= 10) {
+		diff = nfsd_last_call - prev_call;
+		if ( (nfsdstats.th_usage[decile-1] += diff) >= NFSD_USAGE_WRAP)
+			nfsdstats.th_usage[decile-1] -= NFSD_USAGE_WRAP;
+		if (decile == 10)
+			nfsdstats.th_fullcnt++;
+	}
+	spin_unlock(&nfsd_call_lock);
+}
 
 /*
  * This is the NFS server kernel thread
@@ -470,6 +404,7 @@ static int
 nfsd(void *vrqstp)
 {
 	struct svc_rqst *rqstp = (struct svc_rqst *) vrqstp;
+	struct fs_struct *fsp;
 	int err, preverr = 0;
 
 	/* Lock module and set up kernel thread */
@@ -478,11 +413,13 @@ nfsd(void *vrqstp)
 	/* At this point, the thread shares current->fs
 	 * with the init process. We need to create files with a
 	 * umask of 0 instead of init's umask. */
-	if (unshare_fs_struct() < 0) {
+	fsp = copy_fs_struct(current->fs);
+	if (!fsp) {
 		printk("Unable to start nfsd thread: out of memory\n");
 		goto out;
 	}
-
+	exit_fs(current);
+	current->fs = fsp;
 	current->fs->umask = 0;
 
 	/*
@@ -527,16 +464,18 @@ nfsd(void *vrqstp)
 			continue;
 		}
 
+		update_thread_usage(atomic_read(&nfsd_busy));
+		atomic_inc(&nfsd_busy);
 
 		/* Lock the export hash tables for reading. */
 		exp_readlock();
 
-		validate_process_creds();
 		svc_process(rqstp);
-		validate_process_creds();
 
 		/* Unlock export hash tables */
 		exp_readunlock();
+		update_thread_usage(atomic_read(&nfsd_busy));
+		atomic_dec(&nfsd_busy);
 	}
 
 	/* Clear signals before calling svc_exit_thread() */
@@ -634,29 +573,4 @@ nfsd_dispatch(struct svc_rqst *rqstp, __be32 *statp)
 	/* Store reply in cache. */
 	nfsd_cache_update(rqstp, proc->pc_cachetype, statp + 1);
 	return 1;
-}
-
-int nfsd_pool_stats_open(struct inode *inode, struct file *file)
-{
-	int ret;
-	mutex_lock(&nfsd_mutex);
-	if (nfsd_serv == NULL) {
-		mutex_unlock(&nfsd_mutex);
-		return -ENODEV;
-	}
-	/* bump up the psudo refcount while traversing */
-	svc_get(nfsd_serv);
-	ret = svc_pool_stats_open(nfsd_serv, file);
-	mutex_unlock(&nfsd_mutex);
-	return ret;
-}
-
-int nfsd_pool_stats_release(struct inode *inode, struct file *file)
-{
-	int ret = seq_release(inode, file);
-	mutex_lock(&nfsd_mutex);
-	/* this function really, really should have been called svc_put() */
-	svc_destroy(nfsd_serv);
-	mutex_unlock(&nfsd_mutex);
-	return ret;
 }

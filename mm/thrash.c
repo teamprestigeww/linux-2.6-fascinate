@@ -26,45 +26,47 @@ static DEFINE_SPINLOCK(swap_token_lock);
 struct mm_struct *swap_token_mm;
 static unsigned int global_faults;
 
-void grab_swap_token(struct mm_struct *mm)
+void grab_swap_token(void)
 {
 	int current_interval;
 
 	global_faults++;
 
-	current_interval = global_faults - mm->faultstamp;
+	current_interval = global_faults - current->mm->faultstamp;
 
 	if (!spin_trylock(&swap_token_lock))
 		return;
 
 	/* First come first served */
 	if (swap_token_mm == NULL) {
-		mm->token_priority = mm->token_priority + 2;
-		swap_token_mm = mm;
+		current->mm->token_priority = current->mm->token_priority + 2;
+		swap_token_mm = current->mm;
 		goto out;
 	}
 
-	if (mm != swap_token_mm) {
-		if (current_interval < mm->last_interval)
-			mm->token_priority++;
+	if (current->mm != swap_token_mm) {
+		if (current_interval < current->mm->last_interval)
+			current->mm->token_priority++;
 		else {
-			if (likely(mm->token_priority > 0))
-				mm->token_priority--;
+			if (likely(current->mm->token_priority > 0))
+				current->mm->token_priority--;
 		}
 		/* Check if we deserve the token */
-		if (mm->token_priority > swap_token_mm->token_priority) {
-			mm->token_priority += 2;
-			swap_token_mm = mm;
+		if (current->mm->token_priority >
+				swap_token_mm->token_priority) {
+			current->mm->token_priority += 2;
+			swap_token_mm = current->mm;
 		}
 	} else {
 		/* Token holder came in again! */
-		mm->token_priority += 2;
+		current->mm->token_priority += 2;
 	}
 
 out:
-	mm->faultstamp = global_faults;
-	mm->last_interval = current_interval;
+	current->mm->faultstamp = global_faults;
+	current->mm->last_interval = current_interval;
 	spin_unlock(&swap_token_lock);
+return;
 }
 
 /* Called on process exit. */

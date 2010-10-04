@@ -25,8 +25,9 @@
 
 #include <mach/hardware.h>
 #include <mach/irqs.h>
-#include <mach/gpio.h>
-#include <mach/pxa25x.h>
+#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-regs.h>
+#include <mach/mfp-pxa25x.h>
 #include <mach/reset.h>
 #include <mach/pm.h>
 #include <mach/dma.h>
@@ -309,20 +310,22 @@ set_pwer:
 void __init pxa25x_init_irq(void)
 {
 	pxa_init_irq(32, pxa25x_set_wake);
-	pxa_init_gpio(IRQ_GPIO_2_x, 2, 84, pxa25x_set_wake);
+	pxa_init_gpio(85, pxa25x_set_wake);
 }
 
 #ifdef CONFIG_CPU_PXA26x
 void __init pxa26x_init_irq(void)
 {
 	pxa_init_irq(32, pxa25x_set_wake);
-	pxa_init_gpio(IRQ_GPIO_2_x, 2, 89, pxa25x_set_wake);
+	pxa_init_gpio(90, pxa25x_set_wake);
 }
 #endif
 
 static struct platform_device *pxa25x_devices[] __initdata = {
 	&pxa25x_device_udc,
-	&pxa_device_pmu,
+	&pxa_device_ffuart,
+	&pxa_device_btuart,
+	&pxa_device_stuart,
 	&pxa_device_i2s,
 	&sa1100_device_rtc,
 	&pxa25x_device_ssp,
@@ -350,9 +353,9 @@ static int __init pxa25x_init(void)
 
 		reset_status = RCSR;
 
-		clkdev_add_table(pxa25x_clkregs, ARRAY_SIZE(pxa25x_clkregs));
+		clks_register(pxa25x_clkregs, ARRAY_SIZE(pxa25x_clkregs));
 
-		if ((ret = pxa_init_dma(IRQ_DMA, 16)))
+		if ((ret = pxa_init_dma(16)))
 			return ret;
 
 		pxa25x_init_pm();
@@ -370,8 +373,10 @@ static int __init pxa25x_init(void)
 	}
 
 	/* Only add HWUART for PXA255/26x; PXA210/250 do not have it. */
-	if (cpu_is_pxa255())
-		clkdev_add(&pxa25x_hwuart_clkreg);
+	if (cpu_is_pxa255()) {
+		clks_register(&pxa25x_hwuart_clkreg, 1);
+		ret = platform_device_register(&pxa_device_hwuart);
+	}
 
 	return ret;
 }

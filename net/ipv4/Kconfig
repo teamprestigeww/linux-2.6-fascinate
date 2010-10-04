@@ -35,7 +35,7 @@ config IP_ADVANCED_ROUTER
 
 	  at boot time after the /proc file system has been mounted.
 
-	  If you turn on IP forwarding, you should consider the rp_filter, which
+	  If you turn on IP forwarding, you will also get the rp_filter, which
 	  automatically rejects incoming packets if the routing table entry
 	  for their source address doesn't match the network interface they're
 	  arriving on. This has security advantages because it prevents the
@@ -46,16 +46,12 @@ config IP_ADVANCED_ROUTER
 	  rp_filter on use:
 
 	  echo 1 > /proc/sys/net/ipv4/conf/<device>/rp_filter
-	   or
+	  or
 	  echo 1 > /proc/sys/net/ipv4/conf/all/rp_filter
-
-	  Note that some distributions enable it in startup scripts.
-	  For details about rp_filter strict and loose mode read
-	  <file:Documentation/networking/ip-sysctl.txt>.
 
 	  If unsure, say N here.
 
-choice
+choice 
 	prompt "Choose IP: FIB lookup algorithm (choose FIB_HASH if unsure)"
 	depends on IP_ADVANCED_ROUTER
 	default ASK_IP_FIB_HASH
@@ -63,29 +59,27 @@ choice
 config ASK_IP_FIB_HASH
 	bool "FIB_HASH"
 	---help---
-	  Current FIB is very proven and good enough for most users.
+	Current FIB is very proven and good enough for most users.
 
 config IP_FIB_TRIE
 	bool "FIB_TRIE"
 	---help---
-	  Use new experimental LC-trie as FIB lookup algorithm.
-	  This improves lookup performance if you have a large
-	  number of routes.
+	Use new experimental LC-trie as FIB lookup algorithm. 
+        This improves lookup performance if you have a large
+	number of routes.
 
-	  LC-trie is a longest matching prefix lookup algorithm which
-	  performs better than FIB_HASH for large routing tables.
-	  But, it consumes more memory and is more complex.
-
-	  LC-trie is described in:
-
-	  IP-address lookup using LC-tries. Stefan Nilsson and Gunnar Karlsson
-	  IEEE Journal on Selected Areas in Communications, 17(6):1083-1092,
-	  June 1999
-
-	  An experimental study of compression methods for dynamic tries
-	  Stefan Nilsson and Matti Tikkanen. Algorithmica, 33(1):19-33, 2002.
-	  http://www.nada.kth.se/~snilsson/public/papers/dyntrie2/
-
+	LC-trie is a longest matching prefix lookup algorithm which
+	performs better than FIB_HASH for large routing tables.
+	But, it consumes more memory and is more complex.
+	
+	LC-trie is described in:
+	
+ 	IP-address lookup using LC-tries. Stefan Nilsson and Gunnar Karlsson
+ 	IEEE Journal on Selected Areas in Communications, 17(6):1083-1092, June 1999
+	An experimental study of compression methods for dynamic tries
+ 	Stefan Nilsson and Matti Tikkanen. Algorithmica, 33(1):19-33, 2002.
+ 	http://www.nada.kth.se/~snilsson/public/papers/dyntrie2/
+       
 endchoice
 
 config IP_FIB_HASH
@@ -166,7 +160,7 @@ config IP_PNP_DHCP
 
 	  If unsure, say Y. Note that if you want to use DHCP, a DHCP server
 	  must be operating on your network.  Read
-	  <file:Documentation/filesystems/nfs/nfsroot.txt> for details.
+	  <file:Documentation/filesystems/nfsroot.txt> for details.
 
 config IP_PNP_BOOTP
 	bool "IP: BOOTP support"
@@ -181,7 +175,7 @@ config IP_PNP_BOOTP
 	  does BOOTP itself, providing all necessary information on the kernel
 	  command line, you can say N here. If unsure, say Y. Note that if you
 	  want to use BOOTP, a BOOTP server must be operating on your network.
-	  Read <file:Documentation/filesystems/nfs/nfsroot.txt> for details.
+	  Read <file:Documentation/filesystems/nfsroot.txt> for details.
 
 config IP_PNP_RARP
 	bool "IP: RARP support"
@@ -194,10 +188,10 @@ config IP_PNP_RARP
 	  older protocol which is being obsoleted by BOOTP and DHCP), say Y
 	  here. Note that if you want to use RARP, a RARP server must be
 	  operating on your network. Read
-	  <file:Documentation/filesystems/nfs/nfsroot.txt> for details.
+	  <file:Documentation/filesystems/nfsroot.txt> for details.
 
 # not yet ready..
-#   bool '    IP: ARP support' CONFIG_IP_PNP_ARP
+#   bool '    IP: ARP support' CONFIG_IP_PNP_ARP		
 config NET_IPIP
 	tristate "IP: tunneling"
 	select INET_TUNNEL
@@ -250,20 +244,6 @@ config IP_MROUTE
 	  <file:Documentation/networking/multicast.txt>. If you haven't heard
 	  about it, you don't need it.
 
-config IP_MROUTE_MULTIPLE_TABLES
-	bool "IP: multicast policy routing"
-	depends on IP_MROUTE && IP_ADVANCED_ROUTER
-	select FIB_RULES
-	help
-	  Normally, a multicast router runs a userspace daemon and decides
-	  what to do with a multicast packet based on the source and
-	  destination addresses. If you say Y here, the multicast router
-	  will also be able to take interfaces and packet marks into
-	  account and run multiple instances of userspace daemons
-	  simultaneously, each one handling a single table.
-
-	  If unsure, say N.
-
 config IP_PIMSM_V1
 	bool "IP: PIM-SM version 1 support"
 	depends on IP_MROUTE
@@ -287,23 +267,32 @@ config IP_PIMSM_V2
 	  you want to play with it.
 
 config ARPD
-	bool "IP: ARP daemon support"
+	bool "IP: ARP daemon support (EXPERIMENTAL)"
+	depends on EXPERIMENTAL
 	---help---
-	  The kernel maintains an internal cache which maps IP addresses to
-	  hardware addresses on the local network, so that Ethernet/Token Ring/
-	  etc. frames are sent to the proper address on the physical networking
-	  layer. Normally, kernel uses the ARP protocol to resolve these
-	  mappings.
+	  Normally, the kernel maintains an internal cache which maps IP
+	  addresses to hardware addresses on the local network, so that
+	  Ethernet/Token Ring/ etc. frames are sent to the proper address on
+	  the physical networking layer. For small networks having a few
+	  hundred directly connected hosts or less, keeping this address
+	  resolution (ARP) cache inside the kernel works well. However,
+	  maintaining an internal ARP cache does not work well for very large
+	  switched networks, and will use a lot of kernel memory if TCP/IP
+	  connections are made to many machines on the network.
 
-	  Saying Y here adds support to have an user space daemon to do this
-	  resolution instead. This is useful for implementing an alternate
-	  address resolution protocol (e.g. NHRP on mGRE tunnels) and also for
-	  testing purposes.
+	  If you say Y here, the kernel's internal ARP cache will never grow
+	  to more than 256 entries (the oldest entries are expired in a LIFO
+	  manner) and communication will be attempted with the user space ARP
+	  daemon arpd. Arpd then answers the address resolution request either
+	  from its own cache or by asking the net.
 
-	  If unsure, say N.
+	  This code is experimental and also obsolete. If you want to use it,
+	  you need to find a version of the daemon arpd on the net somewhere,
+	  and you should also say Y to "Kernel/User network link driver",
+	  below. If unsure, say N.
 
 config SYN_COOKIES
-	bool "IP: TCP syncookie support"
+	bool "IP: TCP syncookie support (disabled per default)"
 	---help---
 	  Normal TCP/IP networking is open to an attack known as "SYN
 	  flooding". This denial-of-service attack prevents legitimate remote
@@ -328,13 +317,13 @@ config SYN_COOKIES
 	  server is really overloaded. If this happens frequently better turn
 	  them off.
 
-	  If you say Y here, you can disable SYN cookies at run time by
-	  saying Y to "/proc file system support" and
+	  If you say Y here, note that SYN cookies aren't enabled by default;
+	  you can enable them by saying Y to "/proc file system support" and
 	  "Sysctl support" below and executing the command
 
-	  echo 0 > /proc/sys/net/ipv4/tcp_syncookies
+	  echo 1 >/proc/sys/net/ipv4/tcp_syncookies
 
-	  after the /proc file system has been mounted.
+	  at boot time after the /proc file system has been mounted.
 
 	  If unsure, say N.
 
@@ -372,7 +361,7 @@ config INET_IPCOMP
 	---help---
 	  Support for IP Payload Compression Protocol (IPComp) (RFC3173),
 	  typically needed for IPsec.
-
+	  
 	  If unsure, say Y.
 
 config INET_XFRM_TUNNEL
@@ -412,8 +401,8 @@ config INET_XFRM_MODE_BEET
 	  If unsure, say Y.
 
 config INET_LRO
-	bool "Large Receive Offload (ipv4/tcp)"
-	default y
+	tristate "Large Receive Offload (ipv4/tcp)"
+
 	---help---
 	  Support for Large Receive Offload (ipv4/tcp).
 
@@ -426,7 +415,7 @@ config INET_DIAG
 	  Support for INET (TCP, DCCP, etc) socket monitoring interface used by
 	  native Linux tools such as ss. ss is included in iproute2, currently
 	  downloadable at <http://linux-net.osdl.org/index.php/Iproute2>.
-
+	  
 	  If unsure, say Y.
 
 config INET_TCP_DIAG
@@ -601,14 +590,8 @@ choice
 	config DEFAULT_HTCP
 		bool "Htcp" if TCP_CONG_HTCP=y
 
-	config DEFAULT_HYBLA
-		bool "Hybla" if TCP_CONG_HYBLA=y
-
 	config DEFAULT_VEGAS
 		bool "Vegas" if TCP_CONG_VEGAS=y
-
-	config DEFAULT_VENO
-		bool "Veno" if TCP_CONG_VENO=y
 
 	config DEFAULT_WESTWOOD
 		bool "Westwood" if TCP_CONG_WESTWOOD=y
@@ -630,10 +613,8 @@ config DEFAULT_TCP_CONG
 	default "bic" if DEFAULT_BIC
 	default "cubic" if DEFAULT_CUBIC
 	default "htcp" if DEFAULT_HTCP
-	default "hybla" if DEFAULT_HYBLA
 	default "vegas" if DEFAULT_VEGAS
 	default "westwood" if DEFAULT_WESTWOOD
-	default "veno" if DEFAULT_VENO
 	default "reno" if DEFAULT_RENO
 	default "cubic"
 

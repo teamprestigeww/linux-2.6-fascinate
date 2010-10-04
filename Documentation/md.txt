@@ -1,5 +1,5 @@
 Tools that manage md devices can be found at
-   http://www.kernel.org/pub/linux/utils/raid/ 
+   http://www.<country>.kernel.org/pub/linux/utils/raid/....
 
 
 Boot time assembly of RAID arrays
@@ -136,7 +136,7 @@ raid_disks != 0.
 
 Then uninitialized devices can be added with ADD_NEW_DISK.  The
 structure passed to ADD_NEW_DISK must specify the state of the device
-and its role in the array.
+and it's role in the array.
 
 Once started with RUN_ARRAY, uninitialized spares can be added with
 HOT_ADD_DISK.
@@ -164,19 +164,15 @@ All md devices contain:
   raid_disks
      a text file with a simple number indicating the number of devices
      in a fully functional array.  If this is not yet known, the file
-     will be empty.  If an array is being resized this will contain
-     the new number of devices.
-     Some raid levels allow this value to be set while the array is
-     active.  This will reconfigure the array.   Otherwise it can only
-     be set while assembling an array.
-     A change to this attribute will not be permitted if it would
-     reduce the size of the array.  To reduce the number of drives
-     in an e.g. raid5, the array size must first be reduced by
-     setting the 'array_size' attribute.
+     will be empty.  If an array is being resized (not currently
+     possible) this will contain the larger of the old and new sizes.
+     Some raid level (RAID1) allow this value to be set while the
+     array is active.  This will reconfigure the array.   Otherwise
+     it can only be set while assembling an array.
 
   chunk_size
-     This is the size in bytes for 'chunks' and is only relevant to
-     raid levels that involve striping (0,4,5,6,10). The address space
+     This is the size if bytes for 'chunks' and is only relevant to
+     raid levels that involve striping (1,4,5,6,10). The address space
      of the array is conceptually divided into chunks and consecutive
      chunks are striped onto neighbouring devices.
      The size should be at least PAGE_SIZE (4k) and should be a power
@@ -186,20 +182,6 @@ All md devices contain:
      The "layout" for the array for the particular level.  This is
      simply a number that is interpretted differently by different
      levels.  It can be written while assembling an array.
-
-  array_size
-     This can be used to artificially constrain the available space in
-     the array to be less than is actually available on the combined
-     devices.  Writing a number (in Kilobytes) which is less than
-     the available size will set the size.  Any reconfiguration of the
-     array (e.g. adding devices) will not cause the size to change.
-     Writing the word 'default' will cause the effective size of the
-     array to be whatever size is actually available based on
-     'level', 'chunk_size' and 'component_size'.
-
-     This can be used to reduce the size of the array before reducing
-     the number of devices in a raid4/5/6, or to support external
-     metadata formats which mandate such clipping.
 
   reshape_position
      This is either "none" or a sector number within the devices of
@@ -225,17 +207,12 @@ All md devices contain:
      about the array.  It can be 0.90 (traditional format), 1.0, 1.1,
      1.2 (newer format in varying locations) or "none" indicating that
      the kernel isn't managing metadata at all.
-     Alternately it can be "external:" followed by a string which
-     is set by user-space.  This indicates that metadata is managed
-     by a user-space program.  Any device failure or other event that
-     requires a metadata update will cause array activity to be
-     suspended until the event is acknowledged.
 
   resync_start
      The point at which resync should start.  If no resync is needed,
-     this will be a very large number (or 'none' since 2.6.30-rc1).  At
-     array creation it will default to 0, though starting the array as
-     'clean' will set it much larger.
+     this will be a very large number.  At array creation it will
+     default to 0, though starting the array as 'clean' will
+     set it much larger.
 
    new_dev
      This file can be written but not read.  The value written should
@@ -296,51 +273,6 @@ All md devices contain:
      active-idle
          like active, but no writes have been seen for a while (safe_mode_delay).
 
-  bitmap/location
-     This indicates where the write-intent bitmap for the array is
-     stored.
-     It can be one of "none", "file" or "[+-]N".
-     "file" may later be extended to "file:/file/name"
-     "[+-]N" means that many sectors from the start of the metadata.
-       This is replicated on all devices.  For arrays with externally
-       managed metadata, the offset is from the beginning of the
-       device.
-  bitmap/chunksize
-     The size, in bytes, of the chunk which will be represented by a
-     single bit.  For RAID456, it is a portion of an individual
-     device. For RAID10, it is a portion of the array.  For RAID1, it
-     is both (they come to the same thing).
-  bitmap/time_base
-     The time, in seconds, between looking for bits in the bitmap to
-     be cleared. In the current implementation, a bit will be cleared
-     between 2 and 3 times "time_base" after all the covered blocks
-     are known to be in-sync.
-  bitmap/backlog
-     When write-mostly devices are active in a RAID1, write requests
-     to those devices proceed in the background - the filesystem (or
-     other user of the device) does not have to wait for them.
-     'backlog' sets a limit on the number of concurrent background
-     writes.  If there are more than this, new writes will by
-     synchronous.
-  bitmap/metadata
-     This can be either 'internal' or 'external'.
-     'internal' is the default and means the metadata for the bitmap
-     is stored in the first 256 bytes of the allocated space and is
-     managed by the md module.
-     'external' means that bitmap metadata is managed externally to
-     the kernel (i.e. by some userspace program)
-  bitmap/can_clear
-     This is either 'true' or 'false'.  If 'true', then bits in the
-     bitmap will be cleared when the corresponding blocks are thought
-     to be in-sync.  If 'false', bits will never be cleared.
-     This is automatically set to 'false' if a write happens on a
-     degraded array, or if the array becomes degraded during a write.
-     When metadata is managed externally, it should be set to true
-     once the array becomes non-degraded, and this fact has been
-     recorded in the metadata.
-     
-     
-     
 
 As component devices are added to an md array, they appear in the 'md'
 directory as new directories named
@@ -379,9 +311,8 @@ Each directory contains:
 	Writing "writemostly" sets the writemostly flag.
 	Writing "-writemostly" clears the writemostly flag.
 	Writing "blocked" sets the "blocked" flag.
-	Writing "-blocked" clears the "blocked" flag and allows writes
+	Writing "-blocked" clear the "blocked" flag and allows writes
 		to complete.
-	Writing "in_sync" sets the in_sync flag.
 
 	This file responds to select/poll. Any change to 'faulty'
 	or 'blocked' causes an event.
@@ -417,24 +348,6 @@ Each directory contains:
 	component_size.  This can be written while assembling an
         array.  If a value less than the current component_size is
         written, it will be rejected.
-
-      recovery_start
-
-        When the device is not 'in_sync', this records the number of
-	sectors from the start of the device which are known to be
-	correct.  This is normally zero, but during a recovery
-	operation is will steadily increase, and if the recovery is
-	interrupted, restoring this value can cause recovery to
-	avoid repeating the earlier blocks.  With v1.x metadata, this
-	value is saved and restored automatically.
-
-	This can be set whenever the device is not an active member of
-	the array, either before the array is activated, or before
-	the 'slot' is set.
-
-	Setting this to 'none' is equivalent to setting 'in_sync'.
-	Setting to any other value also clears the 'in_sync' flag.
-	
 
 
 An active md device will also contain and entry for each active device

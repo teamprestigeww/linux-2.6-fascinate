@@ -61,24 +61,12 @@ static void qpace_progress(char *s, unsigned short hex)
 	printk("*** %04x : %s\n", hex, s ? s : "");
 }
 
-static const struct of_device_id qpace_bus_ids[] __initdata = {
-	{ .type = "soc", },
-	{ .compatible = "soc", },
-	{ .type = "spider", },
-	{ .type = "axon", },
-	{ .type = "plb5", },
-	{ .type = "plb4", },
-	{ .type = "opb", },
-	{ .type = "ebc", },
-	{},
-};
-
 static int __init qpace_publish_devices(void)
 {
 	int node;
 
 	/* Publish OF platform devices for southbridge IOs */
-	of_platform_bus_probe(NULL, qpace_bus_ids, NULL);
+	of_platform_bus_probe(NULL, NULL, NULL);
 
 	/* There is no device for the MIC memory controller, thus we create
 	 * a platform device for it to attach the EDAC driver to.
@@ -92,6 +80,16 @@ static int __init qpace_publish_devices(void)
 	return 0;
 }
 machine_subsys_initcall(qpace, qpace_publish_devices);
+
+extern int qpace_notify(struct device *dev)
+{
+	/* set dma_ops for of_platform bus */
+	if (dev->bus && dev->bus->name
+			&& !strcmp(dev->bus->name, "of_platform"))
+		set_dma_ops(dev, &dma_direct_ops);
+
+	return 0;
+}
 
 static void __init qpace_setup_arch(void)
 {
@@ -117,6 +115,9 @@ static void __init qpace_setup_arch(void)
 #ifdef CONFIG_DUMMY_CONSOLE
 	conswitchp = &dummy_con;
 #endif
+
+	/* set notifier function */
+	platform_notify = &qpace_notify;
 }
 
 static int __init qpace_probe(void)
@@ -140,8 +141,6 @@ define_machine(qpace) {
 	.power_off		= rtas_power_off,
 	.halt			= rtas_halt,
 	.get_boot_time		= rtas_get_boot_time,
-	.get_rtc_time		= rtas_get_rtc_time,
-	.set_rtc_time		= rtas_set_rtc_time,
 	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= qpace_progress,
 	.init_IRQ		= iic_init_IRQ,

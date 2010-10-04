@@ -2,7 +2,6 @@
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
- *   Copyright 2009 Intel Corporation; author H. Peter Anvin
  *
  *   This file is part of the Linux kernel, and is made available under
  *   the terms of the GNU General Public License version 2.
@@ -62,10 +61,11 @@ static void copy_boot_params(void)
  */
 static void keyboard_set_repeat(void)
 {
-	struct biosregs ireg;
-	initregs(&ireg);
-	ireg.ax = 0x0305;
-	intcall(0x16, &ireg, NULL);
+	u16 ax = 0x0305;
+	u16 bx = 0;
+	asm volatile("int $0x16"
+		     : "+a" (ax), "+b" (bx)
+		     : : "ecx", "edx", "esi", "edi");
 }
 
 /*
@@ -73,22 +73,18 @@ static void keyboard_set_repeat(void)
  */
 static void query_ist(void)
 {
-	struct biosregs ireg, oreg;
-
 	/* Some older BIOSes apparently crash on this call, so filter
 	   it from machines too old to have SpeedStep at all. */
 	if (cpu.level < 6)
 		return;
 
-	initregs(&ireg);
-	ireg.ax  = 0xe980;	 /* IST Support */
-	ireg.edx = 0x47534943;	 /* Request value */
-	intcall(0x15, &ireg, &oreg);
-
-	boot_params.ist_info.signature  = oreg.eax;
-	boot_params.ist_info.command    = oreg.ebx;
-	boot_params.ist_info.event      = oreg.ecx;
-	boot_params.ist_info.perf_level = oreg.edx;
+	asm("int $0x15"
+	    : "=a" (boot_params.ist_info.signature),
+	      "=b" (boot_params.ist_info.command),
+	      "=c" (boot_params.ist_info.event),
+	      "=d" (boot_params.ist_info.perf_level)
+	    : "a" (0x0000e980),	 /* IST Support */
+	      "d" (0x47534943)); /* Request value */
 }
 
 /*
@@ -97,12 +93,13 @@ static void query_ist(void)
 static void set_bios_mode(void)
 {
 #ifdef CONFIG_X86_64
-	struct biosregs ireg;
+	u32 eax, ebx;
 
-	initregs(&ireg);
-	ireg.ax = 0xec00;
-	ireg.bx = 2;
-	intcall(0x15, &ireg, NULL);
+	eax = 0xec00;
+	ebx = 2;
+	asm volatile("int $0x15"
+		     : "+a" (eax), "+b" (ebx)
+		     : : "ecx", "edx", "esi", "edi");
 #endif
 }
 
@@ -130,11 +127,6 @@ void main(void)
 	/* First, copy the boot header into the "zeropage" */
 	copy_boot_params();
 
-	/* Initialize the early-boot console */
-	console_init();
-	if (cmdline_find_option_bool("debug"))
-		puts("early console in setup code\n");
-
 	/* End of heap check */
 	init_heap();
 
@@ -157,6 +149,11 @@ void main(void)
 	/* Query MCA information */
 	query_mca();
 
+	/* Voyager */
+#ifdef CONFIG_X86_VOYAGER
+	query_voyager();
+#endif
+
 	/* Query Intel SpeedStep (IST) information */
 	query_ist();
 
@@ -172,6 +169,10 @@ void main(void)
 
 	/* Set the video mode */
 	set_video();
+
+	/* Parse command line for 'quiet' and pass it to decompressor. */
+	if (cmdline_find_option_bool("quiet"))
+		boot_params.hdr.loadflags |= QUIET_FLAG;
 
 	/* Do the last things and invoke protected mode */
 	go_to_protected_mode();

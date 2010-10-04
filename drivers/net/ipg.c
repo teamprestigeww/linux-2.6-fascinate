@@ -22,7 +22,6 @@
  */
 #include <linux/crc32.h>
 #include <linux/ethtool.h>
-#include <linux/gfp.h>
 #include <linux/mii.h>
 #include <linux/mutex.h>
 
@@ -89,15 +88,17 @@ static const char *ipg_brand_name[] = {
 	"Sundance Technology ST2021 based NIC",
 	"Tamarack Microelectronics TC9020/9021 based NIC",
 	"Tamarack Microelectronics TC9020/9021 based NIC",
+	"D-Link NIC",
 	"D-Link NIC IP1000A"
 };
 
-static DEFINE_PCI_DEVICE_TABLE(ipg_pci_tbl) = {
+static struct pci_device_id ipg_pci_tbl[] __devinitdata = {
 	{ PCI_VDEVICE(SUNDANCE,	0x1023), 0 },
 	{ PCI_VDEVICE(SUNDANCE,	0x2021), 1 },
 	{ PCI_VDEVICE(SUNDANCE,	0x1021), 2 },
 	{ PCI_VDEVICE(DLINK,	0x9021), 3 },
-	{ PCI_VDEVICE(DLINK,	0x4020), 4 },
+	{ PCI_VDEVICE(DLINK,	0x4000), 4 },
+	{ PCI_VDEVICE(DLINK,	0x4020), 5 },
 	{ 0, }
 };
 
@@ -570,7 +571,7 @@ static int ipg_config_autoneg(struct net_device *dev)
 static void ipg_nic_set_multicast_list(struct net_device *dev)
 {
 	void __iomem *ioaddr = ipg_ioaddr(dev);
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *mc_list_ptr;
 	unsigned int hashindex;
 	u32 hashtable[2];
 	u8 receivemode;
@@ -584,11 +585,11 @@ static void ipg_nic_set_multicast_list(struct net_device *dev)
 		receivemode = IPG_RM_RECEIVEALLFRAMES;
 	} else if ((dev->flags & IFF_ALLMULTI) ||
 		   ((dev->flags & IFF_MULTICAST) &&
-		    (netdev_mc_count(dev) > IPG_MULTICAST_HASHTABLE_SIZE))) {
+		    (dev->mc_count > IPG_MULTICAST_HASHTABLE_SIZE))) {
 		/* NIC to be configured to receive all multicast
 		 * frames. */
 		receivemode |= IPG_RM_RECEIVEMULTICAST;
-	} else if ((dev->flags & IFF_MULTICAST) && !netdev_mc_empty(dev)) {
+	} else if ((dev->flags & IFF_MULTICAST) && (dev->mc_count > 0)) {
 		/* NIC to be configured to receive selected
 		 * multicast addresses. */
 		receivemode |= IPG_RM_RECEIVEMULTICASTHASH;
@@ -609,9 +610,10 @@ static void ipg_nic_set_multicast_list(struct net_device *dev)
 	hashtable[1] = 0x00000000;
 
 	/* Cycle through all multicast addresses to filter. */
-	netdev_for_each_mc_addr(ha, dev) {
+	for (mc_list_ptr = dev->mc_list;
+	     mc_list_ptr != NULL; mc_list_ptr = mc_list_ptr->next) {
 		/* Calculate CRC result for each multicast address. */
-		hashindex = crc32_le(0xffffffff, ha->addr,
+		hashindex = crc32_le(0xffffffff, mc_list_ptr->dmi_addr,
 				     ETH_ALEN);
 
 		/* Use only the least significant 6 bits. */
@@ -736,11 +738,16 @@ static int ipg_get_rxbuff(struct net_device *dev, int entry)
 
 	IPG_DEBUG_MSG("_get_rxbuff\n");
 
-	skb = netdev_alloc_skb_ip_align(dev, sp->rxsupport_size);
+	skb = netdev_alloc_skb(dev, sp->rxsupport_size + NET_IP_ALIGN);
 	if (!skb) {
 		sp->rx_buff[entry] = NULL;
 		return -ENOMEM;
 	}
+
+	/* Adjust the data start location within the buffer to
+	 * align IP address field to a 16 byte boundary.
+	 */
+	skb_reserve(skb, NET_IP_ALIGN);
 
 	/* Associate the receive buffer with the IPG NIC. */
 	skb->dev = dev;
@@ -1548,6 +1555,8 @@ static void ipg_reset_after_host_error(struct work_struct *work)
 		container_of(work, struct ipg_nic_private, task.work);
 	struct net_device *dev = sp->dev;
 
+	IPG_DDEBUG_MSG("DMACtrl = %8.8x\n", ioread32(sp->ioaddr + IPG_DMACTRL));
+
 	/*
 	 * Acknowledge HostError interrupt by resetting
 	 * IPG DMA and HOST.
@@ -1747,7 +1756,7 @@ static int ipg_nic_open(struct net_device *dev)
 	/* Register the interrupt line to be used by the IPG within
 	 * the Linux system.
 	 */
-	rc = request_irq(pdev->irq, ipg_interrupt_handler, IRQF_SHARED,
+	rc = request_irq(pdev->irq, &ipg_interrupt_handler, IRQF_SHARED,
 			 dev->name, dev);
 	if (rc < 0) {
 		printk(KERN_INFO "%s: Error when requesting interrupt.\n",
@@ -1824,6 +1833,9 @@ static int ipg_nic_stop(struct net_device *dev)
 
 	netif_stop_queue(dev);
 
+	IPG_DDEBUG_MSG("RFDlistendCount = %i\n", sp->RFDlistendCount);
+	IPG_DDEBUG_MSG("RFDListCheckedCount = %i\n", sp->rxdCheckedCount);
+	IPG_DDEBUG_MSG("EmptyRFDListCount = %i\n", sp->EmptyRFDListCount);
 	IPG_DUMPTFDLIST(dev);
 
 	do {
@@ -1846,8 +1858,7 @@ static int ipg_nic_stop(struct net_device *dev)
 	return 0;
 }
 
-static netdev_tx_t ipg_nic_hard_start_xmit(struct sk_buff *skb,
-					   struct net_device *dev)
+static int ipg_nic_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ipg_nic_private *sp = netdev_priv(dev);
 	void __iomem *ioaddr = sp->ioaddr;
@@ -2174,7 +2185,7 @@ static int ipg_nway_reset(struct net_device *dev)
 	return rc;
 }
 
-static const struct ethtool_ops ipg_ethtool_ops = {
+static struct ethtool_ops ipg_ethtool_ops = {
 	.get_settings = ipg_get_settings,
 	.set_settings = ipg_set_settings,
 	.nway_reset   = ipg_nway_reset,
@@ -2229,9 +2240,9 @@ static int __devinit ipg_probe(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 
-	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(40));
+	rc = pci_set_dma_mask(pdev, DMA_40BIT_MASK);
 	if (rc < 0) {
-		rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+		rc = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 		if (rc < 0) {
 			printk(KERN_ERR "%s: DMA config failed.\n",
 			       pci_name(pdev));

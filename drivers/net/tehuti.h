@@ -29,10 +29,7 @@
 #include <linux/if_vlan.h>
 #include <linux/interrupt.h>
 #include <linux/vmalloc.h>
-#include <linux/firmware.h>
 #include <asm/byteorder.h>
-#include <linux/dma-mapping.h>
-#include <linux/slab.h>
 
 /* Compile Time Switches */
 /* start */
@@ -77,6 +74,8 @@
 #define FIFO_SIZE  4096
 #define FIFO_EXTRA_SPACE            1024
 
+#define MIN(x, y)  ((x) < (y) ? (x) : (y))
+
 #if BITS_PER_LONG == 64
 #    define H32_64(x)  (u32) ((u64)(x) >> 32)
 #    define L32_64(x)  (u32) ((u64)(x) & 0xffffffff)
@@ -97,6 +96,14 @@
 
 #define READ_REG(pp, reg)         readl(pp->pBdxRegs + reg)
 #define WRITE_REG(pp, reg, val)   writel(val, pp->pBdxRegs + reg)
+
+#ifndef DMA_64BIT_MASK
+#   define DMA_64BIT_MASK  0xffffffffffffffffULL
+#endif
+
+#ifndef DMA_32BIT_MASK
+#   define DMA_32BIT_MASK  0x00000000ffffffffULL
+#endif
 
 #ifndef NET_IP_ALIGN
 #   define NET_IP_ALIGN 2
@@ -334,7 +341,7 @@ struct txd_desc {
 	u32 va_lo;
 	u32 va_hi;
 	struct pbl pbl[0];	/* Fragments */
-} __packed;
+} __attribute__ ((packed));
 
 /* Register region size */
 #define BDX_REGS_SIZE	  0x1000
@@ -530,34 +537,28 @@ struct txd_desc {
 
 /* Debugging Macros */
 
-#define DBG2(fmt, args...)					\
-	pr_err("%s:%-5d: " fmt, __func__, __LINE__, ## args)
+#define ERR(fmt, args...) printk(KERN_ERR fmt, ## args)
+#define DBG2(fmt, args...)	\
+	printk(KERN_ERR  "%s:%-5d: " fmt, __func__, __LINE__, ## args)
 
 #define BDX_ASSERT(x) BUG_ON(x)
 
 #ifdef DEBUG
 
-#define ENTER						\
-do {							\
-	pr_err("%s:%-5d: ENTER\n", __func__, __LINE__); \
+#define ENTER          do { \
+	printk(KERN_ERR  "%s:%-5d: ENTER\n", __func__, __LINE__); \
 } while (0)
 
-#define RET(args...)					 \
-do {							 \
-	pr_err("%s:%-5d: RETURN\n", __func__, __LINE__); \
-	return args;					 \
-} while (0)
+#define RET(args...)   do { \
+	printk(KERN_ERR  "%s:%-5d: RETURN\n", __func__, __LINE__); \
+return args; } while (0)
 
-#define DBG(fmt, args...)					\
-	pr_err("%s:%-5d: " fmt, __func__, __LINE__, ## args)
+#define DBG(fmt, args...)	\
+	printk(KERN_ERR  "%s:%-5d: " fmt, __func__, __LINE__, ## args)
 #else
-#define ENTER do {  } while (0)
+#define ENTER         do {  } while (0)
 #define RET(args...)   return args
-#define DBG(fmt, args...)			\
-do {						\
-	if (0)					\
-		pr_err(fmt, ##args);		\
-} while (0)
+#define DBG(fmt, args...)   do {  } while (0)
 #endif
 
 #endif /* _BDX__H */

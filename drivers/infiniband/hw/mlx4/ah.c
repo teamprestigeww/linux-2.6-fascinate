@@ -30,8 +30,6 @@
  * SOFTWARE.
  */
 
-#include <linux/slab.h>
-
 #include "mlx4_ib.h"
 
 struct ib_ah *mlx4_ib_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr)

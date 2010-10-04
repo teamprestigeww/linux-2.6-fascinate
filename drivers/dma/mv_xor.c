@@ -18,7 +18,6 @@
 
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/spinlock.h>
@@ -162,7 +161,7 @@ static int mv_is_err_intr(u32 intr_cause)
 
 static void mv_xor_device_clear_eoc_cause(struct mv_xor_chan *chan)
 {
-	u32 val = ~(1 << (chan->idx * 16));
+	u32 val = (1 << (1 + (chan->idx * 16)));
 	dev_dbg(chan->device->common.dev, "%s, val 0x%08x\n", __func__, val);
 	__raw_writel(val, XOR_INTR_CAUSE(chan));
 }
@@ -518,7 +517,7 @@ retry:
 			}
 			alloc_tail->group_head = alloc_start;
 			alloc_tail->async_tx.cookie = -EBUSY;
-			list_splice(&chain, &alloc_tail->tx_list);
+			list_splice(&chain, &alloc_tail->async_tx.tx_list);
 			mv_chan->last_used = last_used;
 			mv_desc_clear_next_desc(alloc_start);
 			mv_desc_clear_next_desc(alloc_tail);
@@ -566,14 +565,14 @@ mv_xor_tx_submit(struct dma_async_tx_descriptor *tx)
 	cookie = mv_desc_assign_cookie(mv_chan, sw_desc);
 
 	if (list_empty(&mv_chan->chain))
-		list_splice_init(&sw_desc->tx_list, &mv_chan->chain);
+		list_splice_init(&sw_desc->async_tx.tx_list, &mv_chan->chain);
 	else {
 		new_hw_chain = 0;
 
 		old_chain_tail = list_entry(mv_chan->chain.prev,
 					    struct mv_xor_desc_slot,
 					    chain_node);
-		list_splice_init(&grp_start->tx_list,
+		list_splice_init(&grp_start->async_tx.tx_list,
 				 &old_chain_tail->chain_node);
 
 		if (!mv_can_chain(grp_start))
@@ -633,7 +632,7 @@ static int mv_xor_alloc_chan_resources(struct dma_chan *chan)
 		slot->async_tx.tx_submit = mv_xor_tx_submit;
 		INIT_LIST_HEAD(&slot->chain_node);
 		INIT_LIST_HEAD(&slot->slot_node);
-		INIT_LIST_HEAD(&slot->tx_list);
+		INIT_LIST_HEAD(&slot->async_tx.tx_list);
 		hw_desc = (char *) mv_chan->device->dma_desc_pool;
 		slot->async_tx.phys =
 			(dma_addr_t) &hw_desc[idx * MV_XOR_SLOT_SIZE];
@@ -810,14 +809,14 @@ static void mv_xor_free_chan_resources(struct dma_chan *chan)
 }
 
 /**
- * mv_xor_status - poll the status of an XOR transaction
+ * mv_xor_is_complete - poll the status of an XOR transaction
  * @chan: XOR channel handle
  * @cookie: XOR transaction identifier
- * @txstate: XOR transactions state holder (or NULL)
  */
-static enum dma_status mv_xor_status(struct dma_chan *chan,
+static enum dma_status mv_xor_is_complete(struct dma_chan *chan,
 					  dma_cookie_t cookie,
-					  struct dma_tx_state *txstate)
+					  dma_cookie_t *done,
+					  dma_cookie_t *used)
 {
 	struct mv_xor_chan *mv_chan = to_mv_xor_chan(chan);
 	dma_cookie_t last_used;
@@ -827,7 +826,10 @@ static enum dma_status mv_xor_status(struct dma_chan *chan,
 	last_used = chan->cookie;
 	last_complete = mv_chan->completed_cookie;
 	mv_chan->is_complete_cookie = cookie;
-	dma_set_tx_state(txstate, last_complete, last_used, 0);
+	if (done)
+		*done = last_complete;
+	if (used)
+		*used = last_used;
 
 	ret = dma_async_is_complete(cookie, last_complete, last_used);
 	if (ret == DMA_SUCCESS) {
@@ -839,7 +841,11 @@ static enum dma_status mv_xor_status(struct dma_chan *chan,
 	last_used = chan->cookie;
 	last_complete = mv_chan->completed_cookie;
 
-	dma_set_tx_state(txstate, last_complete, last_used, 0);
+	if (done)
+		*done = last_complete;
+	if (used)
+		*used = last_used;
+
 	return dma_async_is_complete(cookie, last_complete, last_used);
 }
 
@@ -968,7 +974,7 @@ static int __devinit mv_xor_memcpy_self_test(struct mv_xor_device *device)
 	async_tx_ack(tx);
 	msleep(1);
 
-	if (mv_xor_status(dma_chan, cookie, NULL) !=
+	if (mv_xor_is_complete(dma_chan, cookie, NULL, NULL) !=
 	    DMA_SUCCESS) {
 		dev_printk(KERN_ERR, dma_chan->device->dev,
 			   "Self-test copy timed out, disabling\n");
@@ -1066,7 +1072,7 @@ mv_xor_xor_self_test(struct mv_xor_device *device)
 	async_tx_ack(tx);
 	msleep(8);
 
-	if (mv_xor_status(dma_chan, cookie, NULL) !=
+	if (mv_xor_is_complete(dma_chan, cookie, NULL, NULL) !=
 	    DMA_SUCCESS) {
 		dev_printk(KERN_ERR, dma_chan->device->dev,
 			   "Self-test xor timed out, disabling\n");
@@ -1161,7 +1167,7 @@ static int __devinit mv_xor_probe(struct platform_device *pdev)
 	/* set base routines */
 	dma_dev->device_alloc_chan_resources = mv_xor_alloc_chan_resources;
 	dma_dev->device_free_chan_resources = mv_xor_free_chan_resources;
-	dma_dev->device_tx_status = mv_xor_status;
+	dma_dev->device_is_tx_complete = mv_xor_is_complete;
 	dma_dev->device_issue_pending = mv_xor_issue_pending;
 	dma_dev->dev = &pdev->dev;
 
@@ -1171,7 +1177,7 @@ static int __devinit mv_xor_probe(struct platform_device *pdev)
 	if (dma_has_cap(DMA_MEMSET, dma_dev->cap_mask))
 		dma_dev->device_prep_dma_memset = mv_xor_prep_dma_memset;
 	if (dma_has_cap(DMA_XOR, dma_dev->cap_mask)) {
-		dma_dev->max_xor = 8;
+		dma_dev->max_xor = 8;                  ;
 		dma_dev->device_prep_dma_xor = mv_xor_prep_dma_xor;
 	}
 

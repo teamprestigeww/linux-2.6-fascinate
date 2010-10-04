@@ -54,7 +54,6 @@
 #include <linux/uio.h>  
 #include <linux/init.h>  
 #include <linux/wait.h>
-#include <linux/slab.h>
 #include <asm/system.h>  
 #include <asm/io.h>  
 #include <asm/atomic.h>  
@@ -558,7 +557,7 @@ static int ia_cbr_setup (IADEV *dev, struct atm_vcc *vcc) {
           memcpy((caddr_t)&cbrVC,(caddr_t)TstSchedTbl,sizeof(cbrVC));
        } /* while */
        // Move this VCI number into this location of the CBR Sched table.
-       memcpy((caddr_t)TstSchedTbl, (caddr_t)&vcIndex, sizeof(*TstSchedTbl));
+       memcpy((caddr_t)TstSchedTbl, (caddr_t)&vcIndex,sizeof(TstSchedTbl));
        dev->CbrRemEntries--;
        toBeAssigned--;
    } /* while */ 
@@ -978,7 +977,9 @@ static void xdump( u_char*  cp, int  length, char*  prefix )
             else
                 pBuf += sprintf( pBuf, "." );
                 }
-        printk("%s\n", prntBuf);
+        sprintf( pBuf, "\n" );
+        // SPrint(prntBuf);
+        printk(prntBuf);
         count += col;
         pBuf = prntBuf;
     }
@@ -1133,7 +1134,7 @@ static int rx_pkt(struct atm_dev *dev)
                     IF_ERR(printk(" cause: packet time out\n");)
                 }
                 else {
-                    IF_ERR(printk(" cause: buffer overflow\n");)
+                    IF_ERR(printk(" cause: buffer over flow\n");)
                 }
 		goto out_free_desc;
 	}  
@@ -2863,7 +2864,7 @@ static int ia_getsockopt(struct atm_vcc *vcc, int level, int optname,
 }  
   
 static int ia_setsockopt(struct atm_vcc *vcc, int level, int optname,   
-	void __user *optval, unsigned int optlen)  
+	void __user *optval, int optlen)  
 {  
 	IF_EVENT(printk(">ia_setsockopt\n");)  
 	return -EINVAL;  

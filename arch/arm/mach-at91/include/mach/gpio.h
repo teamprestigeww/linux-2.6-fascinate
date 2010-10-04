@@ -19,7 +19,6 @@
 #define PIN_BASE		NR_AIC_IRQS
 
 #define MAX_GPIO_BANKS		5
-#define NR_BUILTIN_GPIO		(PIN_BASE + (MAX_GPIO_BANKS * 32))
 
 /* these pin numbers double as IRQ numbers, like AT91xxx_ID_* values */
 
@@ -214,11 +213,31 @@ extern void at91_gpio_resume(void);
  */
 
 #include <asm/errno.h>
-#include <asm-generic/gpio.h>		/* cansleep wrappers */
 
-#define gpio_get_value	__gpio_get_value
-#define gpio_set_value	__gpio_set_value
-#define gpio_cansleep	__gpio_cansleep
+static inline int gpio_request(unsigned gpio, const char *label)
+{
+	return 0;
+}
+
+static inline void gpio_free(unsigned gpio)
+{
+	might_sleep();
+}
+
+extern int gpio_direction_input(unsigned gpio);
+extern int gpio_direction_output(unsigned gpio, int value);
+
+static inline int gpio_get_value(unsigned gpio)
+{
+	return at91_get_gpio_value(gpio);
+}
+
+static inline void gpio_set_value(unsigned gpio, int value)
+{
+	at91_set_gpio_value(gpio, value);
+}
+
+#include <asm-generic/gpio.h>		/* cansleep wrappers */
 
 static inline int gpio_to_irq(unsigned gpio)
 {

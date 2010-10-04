@@ -15,7 +15,6 @@
 #include <linux/moduleparam.h>
 #include <linux/types.h>
 #include <linux/ioport.h>
-#include <linux/kernel.h>
 #include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/init.h>
@@ -26,7 +25,6 @@
 #include <linux/uio.h>
 #include <linux/mutex.h>
 #include <linux/smp_lock.h>
-#include <linux/slab.h>
 #include <asm/io.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
@@ -717,8 +715,8 @@ static ssize_t show_algo(struct device *dev, struct device_attribute *attr, char
 	 */
 	debug0 = *(uint64_t *) soft->debug_addr;
 
-	return sprintf(buf, "0x%x 0x%x\n",
-		       upper_32_bits(debug0), lower_32_bits(debug0));
+	return sprintf(buf, "0x%lx 0x%lx\n",
+		       (debug0 >> 32), (debug0 & 0xffffffff));
 }
 
 static ssize_t store_algo(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)

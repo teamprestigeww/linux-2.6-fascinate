@@ -20,7 +20,6 @@
 #include <linux/init.h>
 #include <linux/bootmem.h> /* max_low_pfn */
 #include <linux/vmalloc.h>
-#include <linux/gfp.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -190,20 +189,8 @@ callback_init(void * kernel_end)
 
 	if (alpha_using_srm) {
 		static struct vm_struct console_remap_vm;
-		unsigned long nr_pages = 0;
-		unsigned long vaddr;
+		unsigned long vaddr = VMALLOC_START;
 		unsigned long i, j;
-
-		/* calculate needed size */
-		for (i = 0; i < crb->map_entries; ++i)
-			nr_pages += crb->map[i].count;
-
-		/* register the vm area */
-		console_remap_vm.flags = VM_ALLOC;
-		console_remap_vm.size = nr_pages << PAGE_SHIFT;
-		vm_area_register_early(&console_remap_vm, PAGE_SIZE);
-
-		vaddr = (unsigned long)console_remap_vm.addr;
 
 		/* Set up the third level PTEs and update the virtual
 		   addresses of the CRB entries.  */
@@ -226,6 +213,12 @@ callback_init(void * kernel_end)
 				vaddr += PAGE_SIZE;
 			}
 		}
+
+		/* Let vmalloc know that we've allocated some space.  */
+		console_remap_vm.flags = VM_ALLOC;
+		console_remap_vm.addr = (void *) VMALLOC_START;
+		console_remap_vm.size = vaddr - VMALLOC_START;
+		vmlist = &console_remap_vm;
 	}
 
 	callback_init_done = 1;
@@ -300,7 +293,7 @@ printk_memory_info(void)
 	initsize =  (unsigned long) &__init_end - (unsigned long) &__init_begin;
 
 	printk("Memory: %luk/%luk available (%luk kernel code, %luk reserved, %luk data, %luk init)\n",
-	       nr_free_pages() << (PAGE_SHIFT-10),
+	       (unsigned long) nr_free_pages() << (PAGE_SHIFT-10),
 	       max_mapnr << (PAGE_SHIFT-10),
 	       codesize >> 10,
 	       reservedpages << (PAGE_SHIFT-10),

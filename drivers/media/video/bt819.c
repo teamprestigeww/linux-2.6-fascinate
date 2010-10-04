@@ -35,7 +35,6 @@
 #include <linux/i2c.h>
 #include <linux/i2c-id.h>
 #include <linux/videodev2.h>
-#include <linux/slab.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-chip-ident.h>
 #include <media/v4l2-i2c-drv.h>
@@ -255,7 +254,7 @@ static int bt819_s_std(struct v4l2_subdev *sd, v4l2_std_id std)
 		v4l2_err(sd, "no notify found!\n");
 
 	if (std & V4L2_STD_NTSC) {
-		v4l2_subdev_notify(sd, BT819_FIFO_RESET_LOW, NULL);
+		v4l2_subdev_notify(sd, BT819_FIFO_RESET_LOW, 0);
 		bt819_setbit(decoder, 0x01, 0, 1);
 		bt819_setbit(decoder, 0x01, 1, 0);
 		bt819_setbit(decoder, 0x01, 5, 0);
@@ -264,7 +263,7 @@ static int bt819_s_std(struct v4l2_subdev *sd, v4l2_std_id std)
 		/* bt819_setbit(decoder, 0x1a,  5, 1); */
 		timing = &timing_data[1];
 	} else if (std & V4L2_STD_PAL) {
-		v4l2_subdev_notify(sd, BT819_FIFO_RESET_LOW, NULL);
+		v4l2_subdev_notify(sd, BT819_FIFO_RESET_LOW, 0);
 		bt819_setbit(decoder, 0x01, 0, 1);
 		bt819_setbit(decoder, 0x01, 1, 1);
 		bt819_setbit(decoder, 0x01, 5, 1);
@@ -289,7 +288,7 @@ static int bt819_s_std(struct v4l2_subdev *sd, v4l2_std_id std)
 	bt819_write(decoder, 0x08, (timing->hscale >> 8) & 0xff);
 	bt819_write(decoder, 0x09, timing->hscale & 0xff);
 	decoder->norm = std;
-	v4l2_subdev_notify(sd, BT819_FIFO_RESET_HIGH, NULL);
+	v4l2_subdev_notify(sd, BT819_FIFO_RESET_HIGH, 0);
 	return 0;
 }
 
@@ -300,14 +299,14 @@ static int bt819_s_routing(struct v4l2_subdev *sd,
 
 	v4l2_dbg(1, debug, sd, "set input %x\n", input);
 
-	if (input > 7)
+	if (input < 0 || input > 7)
 		return -EINVAL;
 
 	if (sd->v4l2_dev == NULL || sd->v4l2_dev->notify == NULL)
 		v4l2_err(sd, "no notify found!\n");
 
 	if (decoder->input != input) {
-		v4l2_subdev_notify(sd, BT819_FIFO_RESET_LOW, NULL);
+		v4l2_subdev_notify(sd, BT819_FIFO_RESET_LOW, 0);
 		decoder->input = input;
 		/* select mode */
 		if (decoder->input == 0) {
@@ -317,7 +316,7 @@ static int bt819_s_routing(struct v4l2_subdev *sd,
 			bt819_setbit(decoder, 0x0b, 6, 1);
 			bt819_setbit(decoder, 0x1a, 1, 0);
 		}
-		v4l2_subdev_notify(sd, BT819_FIFO_RESET_HIGH, NULL);
+		v4l2_subdev_notify(sd, BT819_FIFO_RESET_HIGH, 0);
 	}
 	return 0;
 }

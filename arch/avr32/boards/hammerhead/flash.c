@@ -15,6 +15,7 @@
 #include <linux/mtd/physmap.h>
 #include <linux/usb/isp116x.h>
 #include <linux/dma-mapping.h>
+#include <linux/platform_device.h>
 #include <linux/delay.h>
 
 #include <mach/portmux.h>
@@ -280,13 +281,13 @@ static struct resource hh_fpga0_resource[] = {
 	},
 };
 
-static u64 hh_fpga0_dma_mask = DMA_BIT_MASK(32);
+static u64 hh_fpga0_dma_mask = DMA_32BIT_MASK;
 static struct platform_device hh_fpga0_device = {
 	.name		= "hh_fpga",
 	.id		= 0,
 	.dev		= {
 		.dma_mask = &hh_fpga0_dma_mask,
-		.coherent_dma_mask = DMA_BIT_MASK(32),
+		.coherent_dma_mask = DMA_32BIT_MASK,
 	},
 	.resource	= hh_fpga0_resource,
 	.num_resources	= ARRAY_SIZE(hh_fpga0_resource),

@@ -4,7 +4,7 @@
  * Note that you can not swap over this thing, yet. Seems to work but
  * deadlocks sometimes - you can not swap over TCP in general.
  * 
- * Copyright 1997-2000, 2008 Pavel Machek <pavel@ucw.cz>
+ * Copyright 1997-2000 Pavel Machek <pavel@ucw.cz>
  * Parts copyright 2001 Steven Whitehouse <steve@chygwyn.com>
  *
  * This file is released under GPLv2 or later.
@@ -24,11 +24,9 @@
 #include <linux/errno.h>
 #include <linux/file.h>
 #include <linux/ioctl.h>
-#include <linux/smp_lock.h>
 #include <linux/compiler.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <net/sock.h>
 #include <linux/net.h>
 #include <linux/kthread.h>
@@ -112,7 +110,7 @@ static void nbd_end_request(struct request *req)
 			req, error ? "failed" : "done");
 
 	spin_lock_irqsave(q->queue_lock, flags);
-	__blk_end_request_all(req, error);
+	__blk_end_request(req, error, req->nr_sectors << 9);
 	spin_unlock_irqrestore(q->queue_lock, flags);
 }
 
@@ -233,19 +231,19 @@ static int nbd_send_req(struct nbd_device *lo, struct request *req)
 {
 	int result, flags;
 	struct nbd_request request;
-	unsigned long size = blk_rq_bytes(req);
+	unsigned long size = req->nr_sectors << 9;
 
 	request.magic = htonl(NBD_REQUEST_MAGIC);
 	request.type = htonl(nbd_cmd(req));
-	request.from = cpu_to_be64((u64)blk_rq_pos(req) << 9);
+	request.from = cpu_to_be64((u64) req->sector << 9);
 	request.len = htonl(size);
 	memcpy(request.handle, &req, sizeof(req));
 
-	dprintk(DBG_TX, "%s: request %p: sending control (%s@%llu,%uB)\n",
+	dprintk(DBG_TX, "%s: request %p: sending control (%s@%llu,%luB)\n",
 			lo->disk->disk_name, req,
 			nbdcmd_to_ascii(nbd_cmd(req)),
-			(unsigned long long)blk_rq_pos(req) << 9,
-			blk_rq_bytes(req));
+			(unsigned long long)req->sector << 9,
+			req->nr_sectors << 9);
 	result = sock_xmit(lo, 1, &request, sizeof(request),
 			(nbd_cmd(req) == NBD_CMD_WRITE) ? MSG_MORE : 0);
 	if (result <= 0) {
@@ -278,7 +276,7 @@ static int nbd_send_req(struct nbd_device *lo, struct request *req)
 	return 0;
 
 error_out:
-	return -EIO;
+	return 1;
 }
 
 static struct request *nbd_find_request(struct nbd_device *lo,
@@ -449,7 +447,7 @@ static void nbd_clear_que(struct nbd_device *lo)
 
 static void nbd_handle_req(struct nbd_device *lo, struct request *req)
 {
-	if (req->cmd_type != REQ_TYPE_FS)
+	if (!blk_fs_request(req))
 		goto error_out;
 
 	nbd_cmd(req) = NBD_CMD_READ;
@@ -469,7 +467,9 @@ static void nbd_handle_req(struct nbd_device *lo, struct request *req)
 		mutex_unlock(&lo->tx_lock);
 		printk(KERN_ERR "%s: Attempted send on closed socket\n",
 		       lo->disk->disk_name);
-		goto error_out;
+		req->errors++;
+		nbd_end_request(req);
+		return;
 	}
 
 	lo->active_req = req;
@@ -531,12 +531,14 @@ static int nbd_thread(void *data)
  *   { printk( "Warning: Ignoring result!\n"); nbd_end_request( req ); }
  */
 
-static void do_nbd_request(struct request_queue *q)
+static void do_nbd_request(struct request_queue * q)
 {
 	struct request *req;
 	
-	while ((req = blk_fetch_request(q)) != NULL) {
+	while ((req = elv_next_request(q)) != NULL) {
 		struct nbd_device *lo;
+
+		blkdev_dequeue_request(req);
 
 		spin_unlock_irq(q->queue_lock);
 
@@ -566,43 +568,60 @@ static void do_nbd_request(struct request_queue *q)
 	}
 }
 
-/* Must be called with tx_lock held */
-
-static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *lo,
-		       unsigned int cmd, unsigned long arg)
+static int nbd_ioctl(struct block_device *bdev, fmode_t mode,
+		     unsigned int cmd, unsigned long arg)
 {
+	struct nbd_device *lo = bdev->bd_disk->private_data;
+	struct file *file;
+	int error;
+	struct request sreq ;
+	struct task_struct *thread;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	BUG_ON(lo->magic != LO_MAGIC);
+
+	/* Anyone capable of this syscall can do *real bad* things */
+	dprintk(DBG_IOCTL, "%s: nbd_ioctl cmd=%s(0x%x) arg=%lu\n",
+			lo->disk->disk_name, ioctl_cmd_to_ascii(cmd), cmd, arg);
+
 	switch (cmd) {
-	case NBD_DISCONNECT: {
-		struct request sreq;
-
+	case NBD_DISCONNECT:
 	        printk(KERN_INFO "%s: NBD_DISCONNECT\n", lo->disk->disk_name);
-
 		blk_rq_init(NULL, &sreq);
 		sreq.cmd_type = REQ_TYPE_SPECIAL;
 		nbd_cmd(&sreq) = NBD_CMD_DISC;
-		if (!lo->sock)
+		/*
+		 * Set these to sane values in case server implementation
+		 * fails to check the request type first and also to keep
+		 * debugging output cleaner.
+		 */
+		sreq.sector = 0;
+		sreq.nr_sectors = 0;
+                if (!lo->sock)
 			return -EINVAL;
-		nbd_send_req(lo, &sreq);
+		mutex_lock(&lo->tx_lock);
+                nbd_send_req(lo, &sreq);
+		mutex_unlock(&lo->tx_lock);
                 return 0;
-	}
  
-	case NBD_CLEAR_SOCK: {
-		struct file *file;
-
+	case NBD_CLEAR_SOCK:
+		error = 0;
+		mutex_lock(&lo->tx_lock);
 		lo->sock = NULL;
+		mutex_unlock(&lo->tx_lock);
 		file = lo->file;
 		lo->file = NULL;
 		nbd_clear_que(lo);
 		BUG_ON(!list_empty(&lo->queue_head));
 		if (file)
 			fput(file);
-		return 0;
-	}
-
-	case NBD_SET_SOCK: {
-		struct file *file;
+		return error;
+	case NBD_SET_SOCK:
 		if (lo->file)
 			return -EBUSY;
+		error = -EINVAL;
 		file = fget(arg);
 		if (file) {
 			struct inode *inode = file->f_path.dentry->d_inode;
@@ -611,14 +630,12 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *lo,
 				lo->sock = SOCKET_I(inode);
 				if (max_part > 0)
 					bdev->bd_invalidated = 1;
-				return 0;
+				error = 0;
 			} else {
 				fput(file);
 			}
 		}
-		return -EINVAL;
-	}
-
+		return error;
 	case NBD_SET_BLKSIZE:
 		lo->blksize = arg;
 		lo->bytesize &= ~(lo->blksize-1);
@@ -626,50 +643,35 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *lo,
 		set_blocksize(bdev, lo->blksize);
 		set_capacity(lo->disk, lo->bytesize >> 9);
 		return 0;
-
 	case NBD_SET_SIZE:
 		lo->bytesize = arg & ~(lo->blksize-1);
 		bdev->bd_inode->i_size = lo->bytesize;
 		set_blocksize(bdev, lo->blksize);
 		set_capacity(lo->disk, lo->bytesize >> 9);
 		return 0;
-
 	case NBD_SET_TIMEOUT:
 		lo->xmit_timeout = arg * HZ;
 		return 0;
-
 	case NBD_SET_SIZE_BLOCKS:
 		lo->bytesize = ((u64) arg) * lo->blksize;
 		bdev->bd_inode->i_size = lo->bytesize;
 		set_blocksize(bdev, lo->blksize);
 		set_capacity(lo->disk, lo->bytesize >> 9);
 		return 0;
-
-	case NBD_DO_IT: {
-		struct task_struct *thread;
-		struct file *file;
-		int error;
-
+	case NBD_DO_IT:
 		if (lo->pid)
 			return -EBUSY;
 		if (!lo->file)
 			return -EINVAL;
-
-		mutex_unlock(&lo->tx_lock);
-
 		thread = kthread_create(nbd_thread, lo, lo->disk->disk_name);
-		if (IS_ERR(thread)) {
-			mutex_lock(&lo->tx_lock);
+		if (IS_ERR(thread))
 			return PTR_ERR(thread);
-		}
 		wake_up_process(thread);
 		error = nbd_do_it(lo);
 		kthread_stop(thread);
-
-		mutex_lock(&lo->tx_lock);
 		if (error)
 			return error;
-		sock_shutdown(lo, 0);
+		sock_shutdown(lo, 1);
 		file = lo->file;
 		lo->file = NULL;
 		nbd_clear_que(lo);
@@ -682,8 +684,6 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *lo,
 		if (max_part > 0)
 			ioctl_by_bdev(bdev, BLKRRPART, 0);
 		return lo->harderror;
-	}
-
 	case NBD_CLEAR_QUE:
 		/*
 		 * This is for compatibility only.  The queue is always cleared
@@ -691,7 +691,6 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *lo,
 		 */
 		BUG_ON(!lo->sock && !list_empty(&lo->queue_head));
 		return 0;
-
 	case NBD_PRINT_DEBUG:
 		printk(KERN_INFO "%s: next = %p, prev = %p, head = %p\n",
 			bdev->bd_disk->disk_name,
@@ -699,37 +698,13 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *lo,
 			&lo->queue_head);
 		return 0;
 	}
-	return -ENOTTY;
+	return -EINVAL;
 }
 
-static int nbd_ioctl(struct block_device *bdev, fmode_t mode,
-		     unsigned int cmd, unsigned long arg)
-{
-	struct nbd_device *lo = bdev->bd_disk->private_data;
-	int error;
-
-	if (!capable(CAP_SYS_ADMIN))
-		return -EPERM;
-
-	BUG_ON(lo->magic != LO_MAGIC);
-
-	/* Anyone capable of this syscall can do *real bad* things */
-	dprintk(DBG_IOCTL, "%s: nbd_ioctl cmd=%s(0x%x) arg=%lu\n",
-			lo->disk->disk_name, ioctl_cmd_to_ascii(cmd), cmd, arg);
-
-	lock_kernel();
-	mutex_lock(&lo->tx_lock);
-	error = __nbd_ioctl(bdev, lo, cmd, arg);
-	mutex_unlock(&lo->tx_lock);
-	unlock_kernel();
-
-	return error;
-}
-
-static const struct block_device_operations nbd_fops =
+static struct block_device_operations nbd_fops =
 {
 	.owner =	THIS_MODULE,
-	.ioctl =	nbd_ioctl,
+	.locked_ioctl =	nbd_ioctl,
 };
 
 /*

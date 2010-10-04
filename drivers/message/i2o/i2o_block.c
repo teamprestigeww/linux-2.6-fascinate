@@ -51,9 +51,7 @@
  */
 
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/i2o.h>
-#include <linux/smp_lock.h>
 
 #include <linux/mempool.h>
 
@@ -428,9 +426,15 @@ static void i2o_block_end_request(struct request *req, int error,
 	struct request_queue *q = req->q;
 	unsigned long flags;
 
-	if (blk_end_request(req, error, nr_bytes))
+	if (blk_end_request(req, error, nr_bytes)) {
+		int leftover = (req->hard_nr_sectors << KERNEL_SECTOR_SHIFT);
+
+		if (blk_pc_request(req))
+			leftover = req->data_len;
+
 		if (error)
-			blk_end_request_all(req, -EIO);
+			blk_end_request(req, -EIO, leftover);
+	}
 
 	spin_lock_irqsave(q->queue_lock, flags);
 
@@ -578,7 +582,6 @@ static int i2o_block_open(struct block_device *bdev, fmode_t mode)
 	if (!dev->i2o_dev)
 		return -ENODEV;
 
-	lock_kernel();
 	if (dev->power > 0x1f)
 		i2o_block_device_power(dev, 0x02);
 
@@ -587,7 +590,6 @@ static int i2o_block_open(struct block_device *bdev, fmode_t mode)
 	i2o_block_device_lock(dev->i2o_dev, -1);
 
 	osm_debug("Ready.\n");
-	unlock_kernel();
 
 	return 0;
 };
@@ -618,7 +620,6 @@ static int i2o_block_release(struct gendisk *disk, fmode_t mode)
 	if (!dev->i2o_dev)
 		return 0;
 
-	lock_kernel();
 	i2o_block_device_flush(dev->i2o_dev);
 
 	i2o_block_device_unlock(dev->i2o_dev, -1);
@@ -629,7 +630,6 @@ static int i2o_block_release(struct gendisk *disk, fmode_t mode)
 		operation = 0x24;
 
 	i2o_block_device_power(dev, operation);
-	unlock_kernel();
 
 	return 0;
 }
@@ -657,40 +657,30 @@ static int i2o_block_ioctl(struct block_device *bdev, fmode_t mode,
 {
 	struct gendisk *disk = bdev->bd_disk;
 	struct i2o_block_device *dev = disk->private_data;
-	int ret = -ENOTTY;
 
 	/* Anyone capable of this syscall can do *real bad* things */
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
-	lock_kernel();
 	switch (cmd) {
 	case BLKI2OGRSTRAT:
-		ret = put_user(dev->rcache, (int __user *)arg);
-		break;
+		return put_user(dev->rcache, (int __user *)arg);
 	case BLKI2OGWSTRAT:
-		ret = put_user(dev->wcache, (int __user *)arg);
-		break;
+		return put_user(dev->wcache, (int __user *)arg);
 	case BLKI2OSRSTRAT:
-		ret = -EINVAL;
 		if (arg < 0 || arg > CACHE_SMARTFETCH)
-			break;
+			return -EINVAL;
 		dev->rcache = arg;
-		ret = 0;
 		break;
 	case BLKI2OSWSTRAT:
-		ret = -EINVAL;
 		if (arg != 0
 		    && (arg < CACHE_WRITETHROUGH || arg > CACHE_SMARTBACK))
-			break;
+			return -EINVAL;
 		dev->wcache = arg;
-		ret = 0;
 		break;
 	}
-	unlock_kernel();
-
-	return ret;
+	return -ENOTTY;
 };
 
 /**
@@ -727,7 +717,7 @@ static int i2o_block_transfer(struct request *req)
 {
 	struct i2o_block_device *dev = req->rq_disk->private_data;
 	struct i2o_controller *c;
-	u32 tid;
+	u32 tid = dev->i2o_dev->lct_data.tid;
 	struct i2o_message *msg;
 	u32 *mptr;
 	struct i2o_block_request *ireq = req->special;
@@ -743,7 +733,6 @@ static int i2o_block_transfer(struct request *req)
 		goto exit;
 	}
 
-	tid = dev->i2o_dev->lct_data.tid;
 	c = dev->i2o_dev->iop;
 
 	msg = i2o_msg_get(c);
@@ -772,7 +761,7 @@ static int i2o_block_transfer(struct request *req)
 			break;
 
 		case CACHE_SMARTFETCH:
-			if (blk_rq_sectors(req) > 16)
+			if (req->nr_sectors > 16)
 				ctl_flags = 0x201F0008;
 			else
 				ctl_flags = 0x001F0000;
@@ -792,13 +781,13 @@ static int i2o_block_transfer(struct request *req)
 			ctl_flags = 0x001F0010;
 			break;
 		case CACHE_SMARTBACK:
-			if (blk_rq_sectors(req) > 16)
+			if (req->nr_sectors > 16)
 				ctl_flags = 0x001F0004;
 			else
 				ctl_flags = 0x001F0010;
 			break;
 		case CACHE_SMARTTHROUGH:
-			if (blk_rq_sectors(req) > 16)
+			if (req->nr_sectors > 16)
 				ctl_flags = 0x001F0004;
 			else
 				ctl_flags = 0x001F0010;
@@ -811,9 +800,8 @@ static int i2o_block_transfer(struct request *req)
 	if (c->adaptec) {
 		u8 cmd[10];
 		u32 scsi_flags;
-		u16 hwsec;
+		u16 hwsec = queue_hardsect_size(req->q) >> KERNEL_SECTOR_SHIFT;
 
-		hwsec = queue_logical_block_size(req->q) >> KERNEL_SECTOR_SHIFT;
 		memset(cmd, 0, 10);
 
 		sgl_offset = SGL_OFFSET_12;
@@ -839,22 +827,22 @@ static int i2o_block_transfer(struct request *req)
 
 		*mptr++ = cpu_to_le32(scsi_flags);
 
-		*((u32 *) & cmd[2]) = cpu_to_be32(blk_rq_pos(req) * hwsec);
-		*((u16 *) & cmd[7]) = cpu_to_be16(blk_rq_sectors(req) * hwsec);
+		*((u32 *) & cmd[2]) = cpu_to_be32(req->sector * hwsec);
+		*((u16 *) & cmd[7]) = cpu_to_be16(req->nr_sectors * hwsec);
 
 		memcpy(mptr, cmd, 10);
 		mptr += 4;
-		*mptr++ = cpu_to_le32(blk_rq_bytes(req));
+		*mptr++ = cpu_to_le32(req->nr_sectors << KERNEL_SECTOR_SHIFT);
 	} else
 #endif
 	{
 		msg->u.head[1] = cpu_to_le32(cmd | HOST_TID << 12 | tid);
 		*mptr++ = cpu_to_le32(ctl_flags);
-		*mptr++ = cpu_to_le32(blk_rq_bytes(req));
+		*mptr++ = cpu_to_le32(req->nr_sectors << KERNEL_SECTOR_SHIFT);
 		*mptr++ =
-		    cpu_to_le32((u32) (blk_rq_pos(req) << KERNEL_SECTOR_SHIFT));
+		    cpu_to_le32((u32) (req->sector << KERNEL_SECTOR_SHIFT));
 		*mptr++ =
-		    cpu_to_le32(blk_rq_pos(req) >> (32 - KERNEL_SECTOR_SHIFT));
+		    cpu_to_le32(req->sector >> (32 - KERNEL_SECTOR_SHIFT));
 	}
 
 	if (!i2o_block_sglist_alloc(c, ireq, &mptr)) {
@@ -895,11 +883,11 @@ static void i2o_block_request_fn(struct request_queue *q)
 	struct request *req;
 
 	while (!blk_queue_plugged(q)) {
-		req = blk_peek_request(q);
+		req = elv_next_request(q);
 		if (!req)
 			break;
 
-		if (req->cmd_type == REQ_TYPE_FS) {
+		if (blk_fs_request(req)) {
 			struct i2o_block_delayed_request *dreq;
 			struct i2o_block_request *ireq = req->special;
 			unsigned int queue_depth;
@@ -908,7 +896,7 @@ static void i2o_block_request_fn(struct request_queue *q)
 
 			if (queue_depth < I2O_BLOCK_MAX_OPEN_REQUESTS) {
 				if (!i2o_block_transfer(req)) {
-					blk_start_request(req);
+					blkdev_dequeue_request(req);
 					continue;
 				} else
 					osm_info("transfer error\n");
@@ -934,20 +922,17 @@ static void i2o_block_request_fn(struct request_queue *q)
 				blk_stop_queue(q);
 				break;
 			}
-		} else {
-			blk_start_request(req);
-			__blk_end_request_all(req, -EIO);
-		}
+		} else
+			end_request(req, 0);
 	}
 };
 
 /* I2O Block device operations definition */
-static const struct block_device_operations i2o_block_fops = {
+static struct block_device_operations i2o_block_fops = {
 	.owner = THIS_MODULE,
 	.open = i2o_block_open,
 	.release = i2o_block_release,
-	.ioctl = i2o_block_ioctl,
-	.compat_ioctl = i2o_block_ioctl,
+	.locked_ioctl = i2o_block_ioctl,
 	.getgeo = i2o_block_getgeo,
 	.media_changed = i2o_block_media_changed
 };
@@ -958,7 +943,7 @@ static const struct block_device_operations i2o_block_fops = {
  *	Allocate memory for the i2o_block_device struct, gendisk and request
  *	queue and initialize them as far as no additional information is needed.
  *
- *	Returns a pointer to the allocated I2O Block device on success or a
+ *	Returns a pointer to the allocated I2O Block device on succes or a
  *	negative error code on failure.
  */
 static struct i2o_block_device *i2o_block_device_alloc(void)
@@ -1083,8 +1068,9 @@ static int i2o_block_probe(struct device *dev)
 	queue = gd->queue;
 	queue->queuedata = i2o_blk_dev;
 
-	blk_queue_max_hw_sectors(queue, max_sectors);
-	blk_queue_max_segments(queue, i2o_sg_tablesize(c, body_size));
+	blk_queue_max_phys_segments(queue, I2O_MAX_PHYS_SEGMENTS);
+	blk_queue_max_sectors(queue, max_sectors);
+	blk_queue_max_hw_segments(queue, i2o_sg_tablesize(c, body_size));
 
 	osm_debug("max sectors = %d\n", queue->max_sectors);
 	osm_debug("phys segments = %d\n", queue->max_phys_segments);
@@ -1096,7 +1082,7 @@ static int i2o_block_probe(struct device *dev)
 	 */
 	if (!i2o_parm_field_get(i2o_dev, 0x0004, 1, &blocksize, 4) ||
 	    !i2o_parm_field_get(i2o_dev, 0x0000, 3, &blocksize, 4)) {
-		blk_queue_logical_block_size(queue, le32_to_cpu(blocksize));
+		blk_queue_hardsect_size(queue, le32_to_cpu(blocksize));
 	} else
 		osm_warn("unable to get blocksize of %s\n", gd->disk_name);
 

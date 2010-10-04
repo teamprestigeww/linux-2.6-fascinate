@@ -32,12 +32,15 @@
 
 /*
  * This driver handles the LM75 and compatible digital temperature sensors.
+ * Only types which are _not_ listed in I2C_CLIENT_INSMOD_*() need to be
+ * listed here.  We start at 9 since I2C_CLIENT_INSMOD_*() currently allow
+ * definition of up to 8 chip types (plus zero).
  */
 
 enum lm75_type {		/* keep sorted in alphabetical order */
-	ds1775,
+	ds1775 = 9,
 	ds75,
-	lm75,
+	/* lm75 -- in I2C_CLIENT_INSMOD_1() */
 	lm75a,
 	max6625,
 	max6626,
@@ -46,7 +49,6 @@ enum lm75_type {		/* keep sorted in alphabetical order */
 	tcn75,
 	tmp100,
 	tmp101,
-	tmp105,
 	tmp175,
 	tmp275,
 	tmp75,
@@ -55,6 +57,9 @@ enum lm75_type {		/* keep sorted in alphabetical order */
 /* Addresses scanned */
 static const unsigned short normal_i2c[] = { 0x48, 0x49, 0x4a, 0x4b, 0x4c,
 					0x4d, 0x4e, 0x4f, I2C_CLIENT_END };
+
+/* Insmod parameters */
+I2C_CLIENT_INSMOD_1(lm75);
 
 
 /* The LM75 registers */
@@ -192,6 +197,7 @@ lm75_probe(struct i2c_client *client, const struct i2c_device_id *id)
 exit_remove:
 	sysfs_remove_group(&client->dev.kobj, &lm75_group);
 exit_free:
+	i2c_set_clientdata(client, NULL);
 	kfree(data);
 	return status;
 }
@@ -203,6 +209,7 @@ static int lm75_remove(struct i2c_client *client)
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &lm75_group);
 	lm75_write_value(client, LM75_REG_CONF, data->orig_conf);
+	i2c_set_clientdata(client, NULL);
 	kfree(data);
 	return 0;
 }
@@ -219,7 +226,6 @@ static const struct i2c_device_id lm75_ids[] = {
 	{ "tcn75", tcn75, },
 	{ "tmp100", tmp100, },
 	{ "tmp101", tmp101, },
-	{ "tmp105", tmp105, },
 	{ "tmp175", tmp175, },
 	{ "tmp275", tmp275, },
 	{ "tmp75", tmp75, },
@@ -228,12 +234,11 @@ static const struct i2c_device_id lm75_ids[] = {
 MODULE_DEVICE_TABLE(i2c, lm75_ids);
 
 /* Return 0 if detection is successful, -ENODEV otherwise */
-static int lm75_detect(struct i2c_client *new_client,
+static int lm75_detect(struct i2c_client *new_client, int kind,
 		       struct i2c_board_info *info)
 {
 	struct i2c_adapter *adapter = new_client->adapter;
 	int i;
-	int cur, conf, hyst, os;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA |
 				     I2C_FUNC_SMBUS_WORD_DATA))
@@ -246,89 +251,55 @@ static int lm75_detect(struct i2c_client *new_client,
 	   The cycling+unused addresses combination is not tested,
 	   since it would significantly slow the detection down and would
 	   hardly add any value. */
+	if (kind < 0) {
+		int cur, conf, hyst, os;
 
-	/* Unused addresses */
-	cur = i2c_smbus_read_word_data(new_client, 0);
-	conf = i2c_smbus_read_byte_data(new_client, 1);
-	hyst = i2c_smbus_read_word_data(new_client, 2);
-	if (i2c_smbus_read_word_data(new_client, 4) != hyst
-	 || i2c_smbus_read_word_data(new_client, 5) != hyst
-	 || i2c_smbus_read_word_data(new_client, 6) != hyst
-	 || i2c_smbus_read_word_data(new_client, 7) != hyst)
-		return -ENODEV;
-	os = i2c_smbus_read_word_data(new_client, 3);
-	if (i2c_smbus_read_word_data(new_client, 4) != os
-	 || i2c_smbus_read_word_data(new_client, 5) != os
-	 || i2c_smbus_read_word_data(new_client, 6) != os
-	 || i2c_smbus_read_word_data(new_client, 7) != os)
-		return -ENODEV;
-
-	/* Unused bits */
-	if (conf & 0xe0)
-		return -ENODEV;
-
-	/* Addresses cycling */
-	for (i = 8; i < 0xff; i += 8) {
-		if (i2c_smbus_read_byte_data(new_client, i + 1) != conf
-		 || i2c_smbus_read_word_data(new_client, i + 2) != hyst
-		 || i2c_smbus_read_word_data(new_client, i + 3) != os)
+		/* Unused addresses */
+		cur = i2c_smbus_read_word_data(new_client, 0);
+		conf = i2c_smbus_read_byte_data(new_client, 1);
+		hyst = i2c_smbus_read_word_data(new_client, 2);
+		if (i2c_smbus_read_word_data(new_client, 4) != hyst
+		 || i2c_smbus_read_word_data(new_client, 5) != hyst
+		 || i2c_smbus_read_word_data(new_client, 6) != hyst
+		 || i2c_smbus_read_word_data(new_client, 7) != hyst)
 			return -ENODEV;
+		os = i2c_smbus_read_word_data(new_client, 3);
+		if (i2c_smbus_read_word_data(new_client, 4) != os
+		 || i2c_smbus_read_word_data(new_client, 5) != os
+		 || i2c_smbus_read_word_data(new_client, 6) != os
+		 || i2c_smbus_read_word_data(new_client, 7) != os)
+			return -ENODEV;
+
+		/* Unused bits */
+		if (conf & 0xe0)
+			return -ENODEV;
+
+		/* Addresses cycling */
+		for (i = 8; i < 0xff; i += 8)
+			if (i2c_smbus_read_byte_data(new_client, i + 1) != conf
+			 || i2c_smbus_read_word_data(new_client, i + 2) != hyst
+			 || i2c_smbus_read_word_data(new_client, i + 3) != os)
+				return -ENODEV;
 	}
 
+	/* NOTE: we treat "force=..." and "force_lm75=..." the same.
+	 * Only new-style driver binding distinguishes chip types.
+	 */
 	strlcpy(info->type, "lm75", I2C_NAME_SIZE);
 
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int lm75_suspend(struct device *dev)
-{
-	int status;
-	struct i2c_client *client = to_i2c_client(dev);
-	status = lm75_read_value(client, LM75_REG_CONF);
-	if (status < 0) {
-		dev_dbg(&client->dev, "Can't read config? %d\n", status);
-		return status;
-	}
-	status = status | LM75_SHUTDOWN;
-	lm75_write_value(client, LM75_REG_CONF, status);
-	return 0;
-}
-
-static int lm75_resume(struct device *dev)
-{
-	int status;
-	struct i2c_client *client = to_i2c_client(dev);
-	status = lm75_read_value(client, LM75_REG_CONF);
-	if (status < 0) {
-		dev_dbg(&client->dev, "Can't read config? %d\n", status);
-		return status;
-	}
-	status = status & ~LM75_SHUTDOWN;
-	lm75_write_value(client, LM75_REG_CONF, status);
-	return 0;
-}
-
-static const struct dev_pm_ops lm75_dev_pm_ops = {
-	.suspend	= lm75_suspend,
-	.resume		= lm75_resume,
-};
-#define LM75_DEV_PM_OPS (&lm75_dev_pm_ops)
-#else
-#define LM75_DEV_PM_OPS NULL
-#endif /* CONFIG_PM */
-
 static struct i2c_driver lm75_driver = {
 	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "lm75",
-		.pm	= LM75_DEV_PM_OPS,
 	},
 	.probe		= lm75_probe,
 	.remove		= lm75_remove,
 	.id_table	= lm75_ids,
 	.detect		= lm75_detect,
-	.address_list	= normal_i2c,
+	.address_data	= &addr_data,
 };
 
 /*-----------------------------------------------------------------------*/

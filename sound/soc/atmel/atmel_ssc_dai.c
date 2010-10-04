@@ -363,12 +363,12 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 	ssc_p->dma_params[dir] = dma_params;
 
 	/*
-	 * The snd_soc_pcm_stream->dma_data field is only used to communicate
-	 * the appropriate DMA parameters to the pcm driver hw_params()
+	 * The cpu_dai->dma_data field is only used to communicate the
+	 * appropriate DMA parameters to the pcm driver hw_params()
 	 * function.  It should not be used for other purposes
 	 * as it is common to all substreams.
 	 */
-	snd_soc_dai_set_dma_data(rtd->dai->cpu_dai, substream, dma_params);
+	rtd->dai->cpu_dai->dma_data = dma_params;
 
 	channels = params_channels(params);
 
@@ -549,6 +549,7 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 		printk(KERN_WARNING "atmel_ssc_dai: unsupported DAI format 0x%x\n",
 			ssc_p->daifmt);
 		return -EINVAL;
+		break;
 	}
 	pr_debug("atmel_ssc_hw_params: "
 			"RCMR=%08x RFMR=%08x TCMR=%08x TFMR=%08x\n",
@@ -696,15 +697,6 @@ static int atmel_ssc_resume(struct snd_soc_dai *cpu_dai)
 #define ATMEL_SSC_FORMATS (SNDRV_PCM_FMTBIT_S8     | SNDRV_PCM_FMTBIT_S16_LE |\
 			  SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE)
 
-static struct snd_soc_dai_ops atmel_ssc_dai_ops = {
-	.startup	= atmel_ssc_startup,
-	.shutdown	= atmel_ssc_shutdown,
-	.prepare	= atmel_ssc_prepare,
-	.hw_params	= atmel_ssc_hw_params,
-	.set_fmt	= atmel_ssc_set_dai_fmt,
-	.set_clkdiv	= atmel_ssc_set_dai_clkdiv,
-};
-
 struct snd_soc_dai atmel_ssc_dai[NUM_SSC_DEVICES] = {
 	{	.name = "atmel-ssc0",
 		.id = 0,
@@ -720,7 +712,13 @@ struct snd_soc_dai atmel_ssc_dai[NUM_SSC_DEVICES] = {
 			.channels_max = 2,
 			.rates = ATMEL_SSC_RATES,
 			.formats = ATMEL_SSC_FORMATS,},
-		.ops = &atmel_ssc_dai_ops,
+		.ops = {
+			.startup = atmel_ssc_startup,
+			.shutdown = atmel_ssc_shutdown,
+			.prepare = atmel_ssc_prepare,
+			.hw_params = atmel_ssc_hw_params,
+			.set_fmt = atmel_ssc_set_dai_fmt,
+			.set_clkdiv = atmel_ssc_set_dai_clkdiv,},
 		.private_data = &ssc_info[0],
 	},
 #if NUM_SSC_DEVICES == 3
@@ -738,7 +736,13 @@ struct snd_soc_dai atmel_ssc_dai[NUM_SSC_DEVICES] = {
 			.channels_max = 2,
 			.rates = ATMEL_SSC_RATES,
 			.formats = ATMEL_SSC_FORMATS,},
-		.ops = &atmel_ssc_dai_ops,
+		.ops = {
+			.startup = atmel_ssc_startup,
+			.shutdown = atmel_ssc_shutdown,
+			.prepare = atmel_ssc_prepare,
+			.hw_params = atmel_ssc_hw_params,
+			.set_fmt = atmel_ssc_set_dai_fmt,
+			.set_clkdiv = atmel_ssc_set_dai_clkdiv,},
 		.private_data = &ssc_info[1],
 	},
 	{	.name = "atmel-ssc2",
@@ -755,7 +759,13 @@ struct snd_soc_dai atmel_ssc_dai[NUM_SSC_DEVICES] = {
 			.channels_max = 2,
 			.rates = ATMEL_SSC_RATES,
 			.formats = ATMEL_SSC_FORMATS,},
-		.ops = &atmel_ssc_dai_ops,
+		.ops = {
+			.startup = atmel_ssc_startup,
+			.shutdown = atmel_ssc_shutdown,
+			.prepare = atmel_ssc_prepare,
+			.hw_params = atmel_ssc_hw_params,
+			.set_fmt = atmel_ssc_set_dai_fmt,
+			.set_clkdiv = atmel_ssc_set_dai_clkdiv,},
 		.private_data = &ssc_info[2],
 	},
 #endif

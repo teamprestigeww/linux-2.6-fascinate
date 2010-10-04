@@ -61,7 +61,8 @@ static int bq24022_disable(struct regulator_dev *rdev)
 
 static int bq24022_is_enabled(struct regulator_dev *rdev)
 {
-	struct bq24022_mach_info *pdata = rdev_get_drvdata(rdev);
+	struct platform_device *pdev = rdev_get_drvdata(rdev);
+	struct bq24022_mach_info *pdata = pdev->dev.platform_data;
 
 	return !gpio_get_value(pdata->gpio_nce);
 }
@@ -78,7 +79,6 @@ static struct regulator_desc bq24022_desc = {
 	.name  = "bq24022",
 	.ops   = &bq24022_ops,
 	.type  = REGULATOR_CURRENT,
-	.owner = THIS_MODULE,
 };
 
 static int __init bq24022_probe(struct platform_device *pdev)
@@ -105,8 +105,7 @@ static int __init bq24022_probe(struct platform_device *pdev)
 	ret = gpio_direction_output(pdata->gpio_iset2, 0);
 	ret = gpio_direction_output(pdata->gpio_nce, 1);
 
-	bq24022 = regulator_register(&bq24022_desc, &pdev->dev,
-				     pdata->init_data, pdata);
+	bq24022 = regulator_register(&bq24022_desc, &pdev->dev, pdata);
 	if (IS_ERR(bq24022)) {
 		dev_dbg(&pdev->dev, "couldn't register regulator\n");
 		ret = PTR_ERR(bq24022);

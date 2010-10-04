@@ -144,16 +144,40 @@ out:
 	return 0;
 }
 
+static __inline__ struct sock *atalk_get_socket_idx(loff_t pos)
+{
+	struct sock *s;
+	struct hlist_node *node;
+
+	sk_for_each(s, node, &atalk_sockets)
+		if (!pos--)
+			goto found;
+	s = NULL;
+found:
+	return s;
+}
+
 static void *atalk_seq_socket_start(struct seq_file *seq, loff_t *pos)
 	__acquires(atalk_sockets_lock)
 {
+	loff_t l = *pos;
+
 	read_lock_bh(&atalk_sockets_lock);
-	return seq_hlist_start_head(&atalk_sockets, *pos);
+	return l ? atalk_get_socket_idx(--l) : SEQ_START_TOKEN;
 }
 
 static void *atalk_seq_socket_next(struct seq_file *seq, void *v, loff_t *pos)
 {
-	return seq_hlist_next(v, &atalk_sockets, pos);
+	struct sock *i;
+
+	++*pos;
+	if (v == SEQ_START_TOKEN) {
+		i = sk_head(&atalk_sockets);
+		goto out;
+	}
+	i = sk_next(v);
+out:
+	return i;
 }
 
 static void atalk_seq_socket_stop(struct seq_file *seq, void *v)
@@ -173,15 +197,15 @@ static int atalk_seq_socket_show(struct seq_file *seq, void *v)
 		goto out;
 	}
 
-	s = sk_entry(v);
+	s = v;
 	at = at_sk(s);
 
 	seq_printf(seq, "%02X   %04X:%02X:%02X  %04X:%02X:%02X  %08X:%08X "
 			"%02X %d\n",
 		   s->sk_type, ntohs(at->src_net), at->src_node, at->src_port,
 		   ntohs(at->dest_net), at->dest_node, at->dest_port,
-		   sk_wmem_alloc_get(s),
-		   sk_rmem_alloc_get(s),
+		   atomic_read(&s->sk_wmem_alloc),
+		   atomic_read(&s->sk_rmem_alloc),
 		   s->sk_state, SOCK_INODE(s->sk_socket)->i_uid);
 out:
 	return 0;
@@ -257,6 +281,7 @@ int __init atalk_proc_init(void)
 	atalk_proc_dir = proc_mkdir("atalk", init_net.proc_net);
 	if (!atalk_proc_dir)
 		goto out;
+	atalk_proc_dir->owner = THIS_MODULE;
 
 	p = proc_create("interface", S_IRUGO, atalk_proc_dir,
 			&atalk_seq_interface_fops);

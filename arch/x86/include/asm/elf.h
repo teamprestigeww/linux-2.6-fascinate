@@ -112,7 +112,7 @@ extern unsigned int vdso_enabled;
  * now struct_user_regs, they are different)
  */
 
-#define ELF_CORE_COPY_REGS_COMMON(pr_reg, regs)	\
+#define ELF_CORE_COPY_REGS(pr_reg, regs)	\
 do {						\
 	pr_reg[0] = regs->bx;			\
 	pr_reg[1] = regs->cx;			\
@@ -124,24 +124,13 @@ do {						\
 	pr_reg[7] = regs->ds & 0xffff;		\
 	pr_reg[8] = regs->es & 0xffff;		\
 	pr_reg[9] = regs->fs & 0xffff;		\
+	savesegment(gs, pr_reg[10]);		\
 	pr_reg[11] = regs->orig_ax;		\
 	pr_reg[12] = regs->ip;			\
 	pr_reg[13] = regs->cs & 0xffff;		\
 	pr_reg[14] = regs->flags;		\
 	pr_reg[15] = regs->sp;			\
 	pr_reg[16] = regs->ss & 0xffff;		\
-} while (0);
-
-#define ELF_CORE_COPY_REGS(pr_reg, regs)	\
-do {						\
-	ELF_CORE_COPY_REGS_COMMON(pr_reg, regs);\
-	pr_reg[10] = get_user_gs(regs);		\
-} while (0);
-
-#define ELF_CORE_COPY_KERNEL_REGS(pr_reg, regs)	\
-do {						\
-	ELF_CORE_COPY_REGS_COMMON(pr_reg, regs);\
-	savesegment(gs, pr_reg[10]);		\
 } while (0);
 
 #define ELF_PLATFORM	(utsname()->machine)
@@ -157,6 +146,19 @@ do {						\
 
 #define compat_elf_check_arch(x)	elf_check_arch_ia32(x)
 
+static inline void start_ia32_thread(struct pt_regs *regs, u32 ip, u32 sp)
+{
+	loadsegment(fs, 0);
+	loadsegment(ds, __USER32_DS);
+	loadsegment(es, __USER32_DS);
+	load_gs_index(0);
+	regs->ip = ip;
+	regs->sp = sp;
+	regs->flags = X86_EFLAGS_IF;
+	regs->cs = __USER32_CS;
+	regs->ss = __USER32_DS;
+}
+
 static inline void elf_common_init(struct thread_struct *t,
 				   struct pt_regs *regs, const u16 ds)
 {
@@ -170,16 +172,28 @@ static inline void elf_common_init(struct thread_struct *t,
 }
 
 #define ELF_PLAT_INIT(_r, load_addr)			\
-	elf_common_init(&current->thread, _r, 0)
+do {							\
+	elf_common_init(&current->thread, _r, 0);	\
+	clear_thread_flag(TIF_IA32);			\
+} while (0)
 
 #define	COMPAT_ELF_PLAT_INIT(regs, load_addr)		\
 	elf_common_init(&current->thread, regs, __USER_DS)
 
-void start_thread_ia32(struct pt_regs *regs, u32 new_ip, u32 new_sp);
-#define compat_start_thread start_thread_ia32
+#define	compat_start_thread(regs, ip, sp)		\
+do {							\
+	start_ia32_thread(regs, ip, sp);		\
+	set_fs(USER_DS);				\
+} while (0)
 
-void set_personality_ia32(void);
-#define COMPAT_SET_PERSONALITY(ex) set_personality_ia32()
+#define COMPAT_SET_PERSONALITY(ex)			\
+do {							\
+	if (test_thread_flag(TIF_IA32))			\
+		clear_thread_flag(TIF_ABI_PENDING);	\
+	else						\
+		set_thread_flag(TIF_ABI_PENDING);	\
+	current->personality |= force_personality32;	\
+} while (0)
 
 #define COMPAT_ELF_PLATFORM			("i686")
 
@@ -230,6 +244,7 @@ extern int force_personality32;
 #endif /* !CONFIG_X86_32 */
 
 #define CORE_DUMP_USE_REGSET
+#define USE_ELF_CORE_DUMP
 #define ELF_EXEC_PAGESIZE	4096
 
 /* This is the location that an ET_DYN program is loaded if exec'ed.  Typical
@@ -272,8 +287,6 @@ do {									\
 } while (0)
 
 #ifdef CONFIG_X86_32
-
-#define STACK_RND_MASK (0x7ff)
 
 #define VDSO_HIGH_BASE		(__fix_to_virt(FIX_VDSO))
 

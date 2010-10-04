@@ -30,6 +30,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/poll.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <asm/io.h>
 
@@ -1032,7 +1033,7 @@ long pwc_video_do_ioctl(struct file *file, unsigned int cmd, void *arg)
 			if (std->index != 0)
 				return -EINVAL;
 			std->id = V4L2_STD_UNKNOWN;
-			strlcpy(std->name, "webcam", sizeof(std->name));
+			strncpy(std->name, "webcam", sizeof(std->name));
 			return 0;
 		}
 

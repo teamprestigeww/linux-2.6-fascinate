@@ -84,9 +84,9 @@ static struct ata_port_operations sch_pata_ops = {
 
 static struct ata_port_info sch_port_info = {
 	.flags		= ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	.mwdma_mask	= ATA_MWDMA2,
-	.udma_mask	= ATA_UDMA5,
+	.pio_mask	= ATA_PIO4,   /* pio0-4 */
+	.mwdma_mask	= ATA_MWDMA2, /* mwdma0-2 */
+	.udma_mask	= ATA_UDMA5,  /* udma0-5 */
 	.port_ops	= &sch_pata_ops,
 };
 
@@ -174,12 +174,22 @@ static int __devinit sch_init_one(struct pci_dev *pdev,
 {
 	static int printed_version;
 	const struct ata_port_info *ppi[] = { &sch_port_info, NULL };
+	struct ata_host *host;
+	int rc;
 
 	if (!printed_version++)
 		dev_printk(KERN_DEBUG, &pdev->dev,
 			   "version " DRV_VERSION "\n");
 
-	return ata_pci_bmdma_init_one(pdev, ppi, &sch_sht, NULL, 0);
+	/* enable device and prepare host */
+	rc = pcim_enable_device(pdev);
+	if (rc)
+		return rc;
+	rc = ata_pci_sff_prepare_host(pdev, ppi, &host);
+	if (rc)
+		return rc;
+	pci_set_master(pdev);
+	return ata_pci_sff_activate_host(host, ata_sff_interrupt, &sch_sht);
 }
 
 static int __init sch_init(void)

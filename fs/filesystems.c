@@ -10,10 +10,10 @@
 #include <linux/fs.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 #include <linux/kmod.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <asm/uaccess.h>
 
 /*
@@ -199,7 +199,7 @@ SYSCALL_DEFINE3(sysfs, int, option, unsigned long, arg1, unsigned long, arg2)
 	return retval;
 }
 
-int __init get_filesystem_list(char *buf)
+int get_filesystem_list(char * buf)
 {
 	int len = 0;
 	struct file_system_type * tmp;

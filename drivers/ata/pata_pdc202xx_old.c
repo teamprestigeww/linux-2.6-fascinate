@@ -2,7 +2,7 @@
  * pata_pdc202xx_old.c 	- Promise PDC202xx PATA for new ATA layer
  *			  (C) 2005 Red Hat Inc
  *			  Alan Cox <alan@lxorguk.ukuu.org.uk>
- *			  (C) 2007,2009,2010 Bartlomiej Zolnierkiewicz
+ *			  (C) 2007 Bartlomiej Zolnierkiewicz
  *
  * Based in part on linux/drivers/ide/pci/pdc202xx_old.c
  *
@@ -33,15 +33,6 @@ static int pdc2026x_cable_detect(struct ata_port *ap)
 	if (cis & (1 << (10 + ap->port_no)))
 		return ATA_CBL_PATA40;
 	return ATA_CBL_PATA80;
-}
-
-static void pdc202xx_exec_command(struct ata_port *ap,
-				  const struct ata_taskfile *tf)
-{
-	DPRINTK("ata%u: cmd 0x%X\n", ap->print_id, tf->command);
-
-	iowrite8(tf->command, ap->ioaddr.command_addr);
-	ndelay(400);
 }
 
 /**
@@ -167,7 +158,7 @@ static void pdc2026x_bmdma_start(struct ata_queued_cmd *qc)
 	u32 len;
 
 	/* Check we keep host level locking here */
-	if (adev->dma_mode > XFER_UDMA_2)
+	if (adev->dma_mode >= XFER_UDMA_2)
 		iowrite8(ioread8(clock) | sel66, clock);
 	else
 		iowrite8(ioread8(clock) & ~sel66, clock);
@@ -221,7 +212,7 @@ static void pdc2026x_bmdma_stop(struct ata_queued_cmd *qc)
 		iowrite8(ioread8(clock) & ~sel66, clock);
 	}
 	/* Flip back to 33Mhz for PIO */
-	if (adev->dma_mode > XFER_UDMA_2)
+	if (adev->dma_mode >= XFER_UDMA_2)
 		iowrite8(ioread8(clock) & ~sel66, clock);
 	ata_bmdma_stop(qc);
 	pdc202xx_set_piomode(ap, adev);
@@ -249,7 +240,7 @@ static int pdc2026x_port_start(struct ata_port *ap)
 		u8 burst = ioread8(bmdma + 0x1f);
 		iowrite8(burst | 0x01, bmdma + 0x1f);
 	}
-	return ata_bmdma_port_start(ap);
+	return ata_sff_port_start(ap);
 }
 
 /**
@@ -280,8 +271,6 @@ static struct ata_port_operations pdc2024x_port_ops = {
 	.cable_detect		= ata_cable_40wire,
 	.set_piomode		= pdc202xx_set_piomode,
 	.set_dmamode		= pdc202xx_set_dmamode,
-
-	.sff_exec_command	= pdc202xx_exec_command,
 };
 
 static struct ata_port_operations pdc2026x_port_ops = {
@@ -295,8 +284,6 @@ static struct ata_port_operations pdc2026x_port_ops = {
 	.dev_config		= pdc2026x_dev_config,
 
 	.port_start		= pdc2026x_port_start,
-
-	.sff_exec_command	= pdc202xx_exec_command,
 };
 
 static int pdc202xx_init_one(struct pci_dev *dev, const struct pci_device_id *id)
@@ -304,22 +291,22 @@ static int pdc202xx_init_one(struct pci_dev *dev, const struct pci_device_id *id
 	static const struct ata_port_info info[3] = {
 		{
 			.flags = ATA_FLAG_SLAVE_POSS,
-			.pio_mask = ATA_PIO4,
-			.mwdma_mask = ATA_MWDMA2,
+			.pio_mask = 0x1f,
+			.mwdma_mask = 0x07,
 			.udma_mask = ATA_UDMA2,
 			.port_ops = &pdc2024x_port_ops
 		},
 		{
 			.flags = ATA_FLAG_SLAVE_POSS,
-			.pio_mask = ATA_PIO4,
-			.mwdma_mask = ATA_MWDMA2,
+			.pio_mask = 0x1f,
+			.mwdma_mask = 0x07,
 			.udma_mask = ATA_UDMA4,
 			.port_ops = &pdc2026x_port_ops
 		},
 		{
 			.flags = ATA_FLAG_SLAVE_POSS,
-			.pio_mask = ATA_PIO4,
-			.mwdma_mask = ATA_MWDMA2,
+			.pio_mask = 0x1f,
+			.mwdma_mask = 0x07,
 			.udma_mask = ATA_UDMA5,
 			.port_ops = &pdc2026x_port_ops
 		}
@@ -337,7 +324,7 @@ static int pdc202xx_init_one(struct pci_dev *dev, const struct pci_device_id *id
 				return -ENODEV;
 		}
 	}
-	return ata_pci_bmdma_init_one(dev, ppi, &pdc202xx_sht, NULL, 0);
+	return ata_pci_sff_init_one(dev, ppi, &pdc202xx_sht, NULL);
 }
 
 static const struct pci_device_id pdc202xx[] = {

@@ -32,33 +32,18 @@
 #include "drmP.h"
 #include "drm_crtc.h"
 #include "drm_crtc_helper.h"
-#include "drm_fb_helper.h"
 
-static bool drm_kms_helper_poll = true;
-module_param_named(poll, drm_kms_helper_poll, bool, 0600);
-
-static void drm_mode_validate_flag(struct drm_connector *connector,
-				   int flags)
-{
-	struct drm_display_mode *mode, *t;
-
-	if (flags == (DRM_MODE_FLAG_DBLSCAN | DRM_MODE_FLAG_INTERLACE))
-		return;
-
-	list_for_each_entry_safe(mode, t, &connector->modes, head) {
-		if ((mode->flags & DRM_MODE_FLAG_INTERLACE) &&
-				!(flags & DRM_MODE_FLAG_INTERLACE))
-			mode->status = MODE_NO_INTERLACE;
-		if ((mode->flags & DRM_MODE_FLAG_DBLSCAN) &&
-				!(flags & DRM_MODE_FLAG_DBLSCAN))
-			mode->status = MODE_NO_DBLESCAN;
-	}
-
-	return;
-}
+/*
+ * Detailed mode info for 800x600@60Hz
+ */
+static struct drm_display_mode std_modes[] = {
+	{ DRM_MODE("800x600", DRM_MODE_TYPE_DEFAULT, 40000, 800, 840,
+		   968, 1056, 0, 600, 601, 605, 628, 0,
+		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC) },
+};
 
 /**
- * drm_helper_probe_single_connector_modes - get complete set of display modes
+ * drm_helper_probe_connector_modes - get complete set of display modes
  * @dev: DRM device
  * @maxX: max width for modes
  * @maxY: max height for modes
@@ -87,58 +72,37 @@ int drm_helper_probe_single_connector_modes(struct drm_connector *connector,
 	struct drm_connector_helper_funcs *connector_funcs =
 		connector->helper_private;
 	int count = 0;
-	int mode_flags = 0;
 
-	DRM_DEBUG_KMS("[CONNECTOR:%d:%s]\n", connector->base.id,
-			drm_get_connector_name(connector));
+	DRM_DEBUG("%s\n", drm_get_connector_name(connector));
 	/* set all modes to the unverified state */
 	list_for_each_entry_safe(mode, t, &connector->modes, head)
 		mode->status = MODE_UNVERIFIED;
 
-	if (connector->force) {
-		if (connector->force == DRM_FORCE_ON)
-			connector->status = connector_status_connected;
-		else
-			connector->status = connector_status_disconnected;
-		if (connector->funcs->force)
-			connector->funcs->force(connector);
-	} else {
-		connector->status = connector->funcs->detect(connector, true);
-		drm_kms_helper_poll_enable(dev);
-	}
+	connector->status = connector->funcs->detect(connector);
 
 	if (connector->status == connector_status_disconnected) {
-		DRM_DEBUG_KMS("[CONNECTOR:%d:%s] disconnected\n",
-			connector->base.id, drm_get_connector_name(connector));
-		drm_mode_connector_update_edid_property(connector, NULL);
-		goto prune;
+		DRM_DEBUG("%s is disconnected\n",
+			  drm_get_connector_name(connector));
+		/* TODO set EDID to NULL */
+		return 0;
 	}
 
 	count = (*connector_funcs->get_modes)(connector);
-	if (count == 0 && connector->status == connector_status_connected)
-		count = drm_add_modes_noedid(connector, 1024, 768);
-	if (count == 0)
-		goto prune;
+	if (!count)
+		return 0;
 
 	drm_mode_connector_list_update(connector);
 
 	if (maxX && maxY)
 		drm_mode_validate_size(dev, &connector->modes, maxX,
 				       maxY, 0);
-
-	if (connector->interlace_allowed)
-		mode_flags |= DRM_MODE_FLAG_INTERLACE;
-	if (connector->doublescan_allowed)
-		mode_flags |= DRM_MODE_FLAG_DBLSCAN;
-	drm_mode_validate_flag(connector, mode_flags);
-
 	list_for_each_entry_safe(mode, t, &connector->modes, head) {
 		if (mode->status == MODE_OK)
 			mode->status = connector_funcs->mode_valid(connector,
 								   mode);
 	}
 
-prune:
+
 	drm_mode_prune_invalid(dev, &connector->modes, true);
 
 	if (list_empty(&connector->modes))
@@ -146,8 +110,7 @@ prune:
 
 	drm_mode_sort(&connector->modes);
 
-	DRM_DEBUG_KMS("[CONNECTOR:%d:%s] probed modes :\n", connector->base.id,
-			drm_get_connector_name(connector));
+	DRM_DEBUG("Probed modes for %s\n", drm_get_connector_name(connector));
 	list_for_each_entry_safe(mode, t, &connector->modes, head) {
 		mode->vrefresh = drm_mode_vrefresh(mode);
 
@@ -159,28 +122,53 @@ prune:
 }
 EXPORT_SYMBOL(drm_helper_probe_single_connector_modes);
 
-/**
- * drm_helper_encoder_in_use - check if a given encoder is in use
- * @encoder: encoder to check
- *
- * LOCKING:
- * Caller must hold mode config lock.
- *
- * Walk @encoders's DRM device's mode_config and see if it's in use.
- *
- * RETURNS:
- * True if @encoder is part of the mode_config, false otherwise.
- */
-bool drm_helper_encoder_in_use(struct drm_encoder *encoder)
+int drm_helper_probe_connector_modes(struct drm_device *dev, uint32_t maxX,
+				      uint32_t maxY)
 {
 	struct drm_connector *connector;
-	struct drm_device *dev = encoder->dev;
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head)
-		if (connector->encoder == encoder)
-			return true;
-	return false;
+	int count = 0;
+
+	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+		count += drm_helper_probe_single_connector_modes(connector,
+								 maxX, maxY);
+	}
+
+	return count;
 }
-EXPORT_SYMBOL(drm_helper_encoder_in_use);
+EXPORT_SYMBOL(drm_helper_probe_connector_modes);
+
+static void drm_helper_add_std_modes(struct drm_device *dev,
+				     struct drm_connector *connector)
+{
+	struct drm_display_mode *mode, *t;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(std_modes); i++) {
+		struct drm_display_mode *stdmode;
+
+		/*
+		 * When no valid EDID modes are available we end up
+		 * here and bailed in the past, now we add some standard
+		 * modes and move on.
+		 */
+		stdmode = drm_mode_duplicate(dev, &std_modes[i]);
+		drm_mode_probed_add(connector, stdmode);
+		drm_mode_list_concat(&connector->probed_modes,
+				     &connector->modes);
+
+		DRM_DEBUG("Adding mode %s to %s\n", stdmode->name,
+			  drm_get_connector_name(connector));
+	}
+	drm_mode_sort(&connector->modes);
+
+	DRM_DEBUG("Added std modes on %s\n", drm_get_connector_name(connector));
+	list_for_each_entry_safe(mode, t, &connector->modes, head) {
+		mode->vrefresh = drm_mode_vrefresh(mode);
+
+		drm_mode_set_crtcinfo(mode, CRTC_INTERLACE_HALVE_V);
+		drm_mode_debug_printmodeline(mode);
+	}
+}
 
 /**
  * drm_helper_crtc_in_use - check if a given CRTC is in a mode_config
@@ -200,25 +188,14 @@ bool drm_helper_crtc_in_use(struct drm_crtc *crtc)
 	struct drm_device *dev = crtc->dev;
 	/* FIXME: Locking around list access? */
 	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head)
-		if (encoder->crtc == crtc && drm_helper_encoder_in_use(encoder))
+		if (encoder->crtc == crtc)
 			return true;
 	return false;
 }
 EXPORT_SYMBOL(drm_helper_crtc_in_use);
 
-static void
-drm_encoder_disable(struct drm_encoder *encoder)
-{
-	struct drm_encoder_helper_funcs *encoder_funcs = encoder->helper_private;
-
-	if (encoder_funcs->disable)
-		(*encoder_funcs->disable)(encoder);
-	else
-		(*encoder_funcs->dpms)(encoder, DRM_MODE_DPMS_OFF);
-}
-
 /**
- * drm_helper_disable_unused_functions - disable unused objects
+ * drm_disable_unused_functions - disable unused objects
  * @dev: DRM device
  *
  * LOCKING:
@@ -230,37 +207,251 @@ drm_encoder_disable(struct drm_encoder *encoder)
 void drm_helper_disable_unused_functions(struct drm_device *dev)
 {
 	struct drm_encoder *encoder;
-	struct drm_connector *connector;
+	struct drm_encoder_helper_funcs *encoder_funcs;
 	struct drm_crtc *crtc;
 
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		if (!connector->encoder)
-			continue;
-		if (connector->status == connector_status_disconnected)
-			connector->encoder = NULL;
-	}
-
 	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
-		if (!drm_helper_encoder_in_use(encoder)) {
-			drm_encoder_disable(encoder);
-			/* disconnector encoder from any connector */
-			encoder->crtc = NULL;
-		}
+		encoder_funcs = encoder->helper_private;
+		if (!encoder->crtc)
+			(*encoder_funcs->dpms)(encoder, DRM_MODE_DPMS_OFF);
 	}
 
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
 		struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
 		crtc->enabled = drm_helper_crtc_in_use(crtc);
 		if (!crtc->enabled) {
-			if (crtc_funcs->disable)
-				(*crtc_funcs->disable)(crtc);
-			else
-				(*crtc_funcs->dpms)(crtc, DRM_MODE_DPMS_OFF);
+			crtc_funcs->dpms(crtc, DRM_MODE_DPMS_OFF);
 			crtc->fb = NULL;
 		}
 	}
 }
 EXPORT_SYMBOL(drm_helper_disable_unused_functions);
+
+static struct drm_display_mode *drm_has_preferred_mode(struct drm_connector *connector, int width, int height)
+{
+	struct drm_display_mode *mode;
+
+	list_for_each_entry(mode, &connector->modes, head) {
+		if (drm_mode_width(mode) > width ||
+		    drm_mode_height(mode) > height)
+			continue;
+		if (mode->type & DRM_MODE_TYPE_PREFERRED)
+			return mode;
+	}
+	return NULL;
+}
+
+static bool drm_connector_enabled(struct drm_connector *connector, bool strict)
+{
+	bool enable;
+
+	if (strict) {
+		enable = connector->status == connector_status_connected;
+	} else {
+		enable = connector->status != connector_status_disconnected;
+	}
+	return enable;
+}
+
+static void drm_enable_connectors(struct drm_device *dev, bool *enabled)
+{
+	bool any_enabled = false;
+	struct drm_connector *connector;
+	int i = 0;
+
+	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+		enabled[i] = drm_connector_enabled(connector, true);
+		DRM_DEBUG("connector %d enabled? %s\n", connector->base.id,
+			  enabled[i] ? "yes" : "no");
+		any_enabled |= enabled[i];
+		i++;
+	}
+
+	if (any_enabled)
+		return;
+
+	i = 0;
+	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+		enabled[i] = drm_connector_enabled(connector, false);
+		i++;
+	}
+}
+
+static bool drm_target_preferred(struct drm_device *dev,
+				 struct drm_display_mode **modes,
+				 bool *enabled, int width, int height)
+{
+	struct drm_connector *connector;
+	int i = 0;
+
+	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+
+		if (enabled[i] == false) {
+			i++;
+			continue;
+		}
+
+		DRM_DEBUG("looking for preferred mode on connector %d\n",
+			  connector->base.id);
+
+		modes[i] = drm_has_preferred_mode(connector, width, height);
+		/* No preferred modes, pick one off the list */
+		if (!modes[i] && !list_empty(&connector->modes)) {
+			list_for_each_entry(modes[i], &connector->modes, head)
+				break;
+		}
+		DRM_DEBUG("found mode %s\n", modes[i] ? modes[i]->name :
+			  "none");
+		i++;
+	}
+	return true;
+}
+
+static int drm_pick_crtcs(struct drm_device *dev,
+			  struct drm_crtc **best_crtcs,
+			  struct drm_display_mode **modes,
+			  int n, int width, int height)
+{
+	int c, o;
+	struct drm_connector *connector;
+	struct drm_connector_helper_funcs *connector_funcs;
+	struct drm_encoder *encoder;
+	struct drm_crtc *best_crtc;
+	int my_score, best_score, score;
+	struct drm_crtc **crtcs, *crtc;
+
+	if (n == dev->mode_config.num_connector)
+		return 0;
+	c = 0;
+	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+		if (c == n)
+			break;
+		c++;
+	}
+
+	best_crtcs[n] = NULL;
+	best_crtc = NULL;
+	best_score = drm_pick_crtcs(dev, best_crtcs, modes, n+1, width, height);
+	if (modes[n] == NULL)
+		return best_score;
+
+	crtcs = kmalloc(dev->mode_config.num_connector *
+			sizeof(struct drm_crtc *), GFP_KERNEL);
+	if (!crtcs)
+		return best_score;
+
+	my_score = 1;
+	if (connector->status == connector_status_connected)
+		my_score++;
+	if (drm_has_preferred_mode(connector, width, height))
+		my_score++;
+
+	connector_funcs = connector->helper_private;
+	encoder = connector_funcs->best_encoder(connector);
+	if (!encoder)
+		goto out;
+
+	connector->encoder = encoder;
+
+	/* select a crtc for this connector and then attempt to configure
+	   remaining connectors */
+	c = 0;
+	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
+
+		if ((connector->encoder->possible_crtcs & (1 << c)) == 0) {
+			c++;
+			continue;
+		}
+
+		for (o = 0; o < n; o++)
+			if (best_crtcs[o] == crtc)
+				break;
+
+		if (o < n) {
+			/* ignore cloning for now */
+			c++;
+			continue;
+		}
+
+		crtcs[n] = crtc;
+		memcpy(crtcs, best_crtcs, n * sizeof(struct drm_crtc *));
+		score = my_score + drm_pick_crtcs(dev, crtcs, modes, n + 1,
+						  width, height);
+		if (score > best_score) {
+			best_crtc = crtc;
+			best_score = score;
+			memcpy(best_crtcs, crtcs,
+			       dev->mode_config.num_connector *
+			       sizeof(struct drm_crtc *));
+		}
+		c++;
+	}
+out:
+	kfree(crtcs);
+	return best_score;
+}
+
+static void drm_setup_crtcs(struct drm_device *dev)
+{
+	struct drm_crtc **crtcs;
+	struct drm_display_mode **modes;
+	struct drm_encoder *encoder;
+	struct drm_connector *connector;
+	bool *enabled;
+	int width, height;
+	int i, ret;
+
+	DRM_DEBUG("\n");
+
+	width = dev->mode_config.max_width;
+	height = dev->mode_config.max_height;
+
+	/* clean out all the encoder/crtc combos */
+	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
+		encoder->crtc = NULL;
+	}
+
+	crtcs = kcalloc(dev->mode_config.num_connector,
+			sizeof(struct drm_crtc *), GFP_KERNEL);
+	modes = kcalloc(dev->mode_config.num_connector,
+			sizeof(struct drm_display_mode *), GFP_KERNEL);
+	enabled = kcalloc(dev->mode_config.num_connector,
+			  sizeof(bool), GFP_KERNEL);
+
+	drm_enable_connectors(dev, enabled);
+
+	ret = drm_target_preferred(dev, modes, enabled, width, height);
+	if (!ret)
+		DRM_ERROR("Unable to find initial modes\n");
+
+	DRM_DEBUG("picking CRTCs for %dx%d config\n", width, height);
+
+	drm_pick_crtcs(dev, crtcs, modes, 0, width, height);
+
+	i = 0;
+	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+		struct drm_display_mode *mode = modes[i];
+		struct drm_crtc *crtc = crtcs[i];
+
+		if (connector->encoder == NULL) {
+			i++;
+			continue;
+		}
+
+		if (mode && crtc) {
+			DRM_DEBUG("desired mode %s set on crtc %d\n",
+				  mode->name, crtc->base.id);
+			crtc->desired_mode = mode;
+			connector->encoder->crtc = crtc;
+		} else
+			connector->encoder->crtc = NULL;
+		i++;
+	}
+
+	kfree(crtcs);
+	kfree(modes);
+	kfree(enabled);
+}
 
 /**
  * drm_encoder_crtc_ok - can a given crtc drive a given encoder?
@@ -306,11 +497,11 @@ drm_crtc_prepare_encoders(struct drm_device *dev)
 		encoder_funcs = encoder->helper_private;
 		/* Disable unused encoders */
 		if (encoder->crtc == NULL)
-			drm_encoder_disable(encoder);
+			(*encoder_funcs->dpms)(encoder, DRM_MODE_DPMS_OFF);
 		/* Disable encoders whose CRTC is about to change */
 		if (encoder_funcs->get_crtc &&
 		    encoder->crtc != (*encoder_funcs->get_crtc)(encoder))
-			drm_encoder_disable(encoder);
+			(*encoder_funcs->dpms)(encoder, DRM_MODE_DPMS_OFF);
 	}
 }
 
@@ -342,6 +533,7 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 	int saved_x, saved_y;
 	struct drm_encoder *encoder;
 	bool ret = true;
+	bool depth_changed, bpp_changed;
 
 	adjusted_mode = drm_mode_duplicate(dev, mode);
 
@@ -349,6 +541,15 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 
 	if (!crtc->enabled)
 		return true;
+
+	if (old_fb && crtc->fb) {
+		depth_changed = (old_fb->depth != crtc->fb->depth);
+		bpp_changed = (old_fb->bits_per_pixel !=
+			       crtc->fb->bits_per_pixel);
+	} else {
+		depth_changed = true;
+		bpp_changed = true;
+	}
 
 	saved_mode = crtc->mode;
 	saved_x = crtc->x;
@@ -360,6 +561,15 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 	crtc->mode = *mode;
 	crtc->x = x;
 	crtc->y = y;
+
+	if (drm_mode_equal(&saved_mode, &crtc->mode)) {
+		if (saved_x != crtc->x || saved_y != crtc->y ||
+		    depth_changed || bpp_changed) {
+			ret = !crtc_funcs->mode_set_base(crtc, crtc->x, crtc->y,
+							 old_fb);
+			goto done;
+		}
+	}
 
 	/* Pass our mode to the connectors and the CRTC to give them a chance to
 	 * adjust it according to limitations or connector properties, and also
@@ -379,7 +589,6 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 	if (!(ret = crtc_funcs->mode_fixup(crtc, mode, adjusted_mode))) {
 		goto done;
 	}
-	DRM_DEBUG_KMS("[CRTC:%d]\n", crtc->base.id);
 
 	/* Prepare the encoders and CRTCs before setting the mode. */
 	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
@@ -407,9 +616,8 @@ bool drm_crtc_helper_set_mode(struct drm_crtc *crtc,
 		if (encoder->crtc != crtc)
 			continue;
 
-		DRM_DEBUG_KMS("[ENCODER:%d:%s] set [MODE:%d:%s]\n",
-			encoder->base.id, drm_get_encoder_name(encoder),
-			mode->base.id, mode->name);
+		DRM_INFO("%s: set mode %s %x\n", drm_get_encoder_name(encoder),
+			 mode->name, mode->base.id);
 		encoder_funcs = encoder->helper_private;
 		encoder_funcs->mode_set(encoder, mode, adjusted_mode);
 	}
@@ -462,17 +670,18 @@ EXPORT_SYMBOL(drm_crtc_helper_set_mode);
 int drm_crtc_helper_set_config(struct drm_mode_set *set)
 {
 	struct drm_device *dev;
-	struct drm_crtc *save_crtcs, *new_crtc, *crtc;
-	struct drm_encoder *save_encoders, *new_encoder, *encoder;
+	struct drm_crtc **save_crtcs, *new_crtc;
+	struct drm_encoder **save_encoders, *new_encoder;
 	struct drm_framebuffer *old_fb = NULL;
-	bool mode_changed = false; /* if true do a full mode set */
-	bool fb_changed = false; /* if true and !mode_changed just do a flip */
-	struct drm_connector *save_connectors, *connector;
+	bool save_enabled;
+	bool mode_changed = false;
+	bool fb_changed = false;
+	struct drm_connector *connector;
 	int count = 0, ro, fail = 0;
 	struct drm_crtc_helper_funcs *crtc_funcs;
 	int ret = 0;
 
-	DRM_DEBUG_KMS("\n");
+	DRM_DEBUG("\n");
 
 	if (!set)
 		return -EINVAL;
@@ -485,57 +694,29 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 
 	crtc_funcs = set->crtc->helper_private;
 
-	if (set->fb) {
-		DRM_DEBUG_KMS("[CRTC:%d] [FB:%d] #connectors=%d (x y) (%i %i)\n",
-				set->crtc->base.id, set->fb->base.id,
-				(int)set->num_connectors, set->x, set->y);
-	} else {
-		DRM_DEBUG_KMS("[CRTC:%d] [NOFB] #connectors=%d (x y) (%i %i)\n",
-				set->crtc->base.id, (int)set->num_connectors,
-				set->x, set->y);
-	}
+	DRM_DEBUG("crtc: %p %d fb: %p connectors: %p num_connectors: %d (x, y) (%i, %i)\n",
+		  set->crtc, set->crtc->base.id, set->fb, set->connectors,
+		  (int)set->num_connectors, set->x, set->y);
 
 	dev = set->crtc->dev;
 
-	/* Allocate space for the backup of all (non-pointer) crtc, encoder and
-	 * connector data. */
-	save_crtcs = kzalloc(dev->mode_config.num_crtc *
-			     sizeof(struct drm_crtc), GFP_KERNEL);
+	/* save previous config */
+	save_enabled = set->crtc->enabled;
+
+	/*
+	 * We do mode_config.num_connectors here since we'll look at the
+	 * CRTC and encoder associated with each connector later.
+	 */
+	save_crtcs = kzalloc(dev->mode_config.num_connector *
+			     sizeof(struct drm_crtc *), GFP_KERNEL);
 	if (!save_crtcs)
 		return -ENOMEM;
 
-	save_encoders = kzalloc(dev->mode_config.num_encoder *
-				sizeof(struct drm_encoder), GFP_KERNEL);
+	save_encoders = kzalloc(dev->mode_config.num_connector *
+				sizeof(struct drm_encoders *), GFP_KERNEL);
 	if (!save_encoders) {
 		kfree(save_crtcs);
 		return -ENOMEM;
-	}
-
-	save_connectors = kzalloc(dev->mode_config.num_connector *
-				sizeof(struct drm_connector), GFP_KERNEL);
-	if (!save_connectors) {
-		kfree(save_crtcs);
-		kfree(save_encoders);
-		return -ENOMEM;
-	}
-
-	/* Copy data. Note that driver private data is not affected.
-	 * Should anything bad happen only the expected state is
-	 * restored, not the drivers personal bookkeeping.
-	 */
-	count = 0;
-	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
-		save_crtcs[count++] = *crtc;
-	}
-
-	count = 0;
-	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
-		save_encoders[count++] = *encoder;
-	}
-
-	count = 0;
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		save_connectors[count++] = *connector;
 	}
 
 	/* We should be able to check here if the fb has the same properties
@@ -543,11 +724,13 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 	if (set->crtc->fb != set->fb) {
 		/* If we have no fb then treat it as a full mode set */
 		if (set->crtc->fb == NULL) {
-			DRM_DEBUG_KMS("crtc has no fb, full mode set\n");
+			DRM_DEBUG("crtc has no fb, full mode set\n");
 			mode_changed = true;
-		} else if (set->fb == NULL) {
-			mode_changed = true;
-		} else
+		} else if ((set->fb->bits_per_pixel !=
+			 set->crtc->fb->bits_per_pixel) ||
+			 set->fb->depth != set->crtc->fb->depth)
+			fb_changed = true;
+		else
 			fb_changed = true;
 	}
 
@@ -555,7 +738,7 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 		fb_changed = true;
 
 	if (set->mode && !drm_mode_equal(set->mode, &set->crtc->mode)) {
-		DRM_DEBUG_KMS("modes are different, full mode set\n");
+		DRM_DEBUG("modes are different, full mode set\n");
 		drm_mode_debug_printmodeline(&set->crtc->mode);
 		drm_mode_debug_printmodeline(set->mode);
 		mode_changed = true;
@@ -566,6 +749,7 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
 		struct drm_connector_helper_funcs *connector_funcs =
 			connector->helper_private;
+		save_encoders[count++] = connector->encoder;
 		new_encoder = connector->encoder;
 		for (ro = 0; ro < set->num_connectors; ro++) {
 			if (set->connectors[ro] == connector) {
@@ -580,26 +764,23 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 		}
 
 		if (new_encoder != connector->encoder) {
-			DRM_DEBUG_KMS("encoder changed, full mode switch\n");
+			DRM_DEBUG("encoder changed, full mode switch\n");
 			mode_changed = true;
-			/* If the encoder is reused for another connector, then
-			 * the appropriate crtc will be set later.
-			 */
-			if (connector->encoder)
-				connector->encoder->crtc = NULL;
 			connector->encoder = new_encoder;
 		}
 	}
 
 	if (fail) {
 		ret = -EINVAL;
-		goto fail;
+		goto fail_no_encoder;
 	}
 
 	count = 0;
 	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
 		if (!connector->encoder)
 			continue;
+
+		save_crtcs[count++] = connector->encoder->crtc;
 
 		if (connector->encoder->crtc == set->crtc)
 			new_crtc = NULL;
@@ -615,21 +796,15 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 		if (new_crtc &&
 		    !drm_encoder_crtc_ok(connector->encoder, new_crtc)) {
 			ret = -EINVAL;
-			goto fail;
+			goto fail_set_mode;
 		}
 		if (new_crtc != connector->encoder->crtc) {
-			DRM_DEBUG_KMS("crtc changed, full mode switch\n");
+			DRM_DEBUG("crtc changed, full mode switch\n");
 			mode_changed = true;
 			connector->encoder->crtc = new_crtc;
 		}
-		if (new_crtc) {
-			DRM_DEBUG_KMS("[CONNECTOR:%d:%s] to [CRTC:%d]\n",
-				connector->base.id, drm_get_connector_name(connector),
-				new_crtc->base.id);
-		} else {
-			DRM_DEBUG_KMS("[CONNECTOR:%d:%s] to [NOCRTC]\n",
-				connector->base.id, drm_get_connector_name(connector));
-		}
+		DRM_DEBUG("setting connector %d crtc to %p\n",
+			  connector->base.id, new_crtc);
 	}
 
 	/* mode_set_base is not a required function */
@@ -637,146 +812,141 @@ int drm_crtc_helper_set_config(struct drm_mode_set *set)
 		mode_changed = true;
 
 	if (mode_changed) {
+		old_fb = set->crtc->fb;
+		set->crtc->fb = set->fb;
 		set->crtc->enabled = (set->mode != NULL);
 		if (set->mode != NULL) {
-			DRM_DEBUG_KMS("attempting to set mode from"
-					" userspace\n");
+			DRM_DEBUG("attempting to set mode from userspace\n");
 			drm_mode_debug_printmodeline(set->mode);
-			old_fb = set->crtc->fb;
-			set->crtc->fb = set->fb;
 			if (!drm_crtc_helper_set_mode(set->crtc, set->mode,
 						      set->x, set->y,
 						      old_fb)) {
-				DRM_ERROR("failed to set mode on [CRTC:%d]\n",
-					  set->crtc->base.id);
+				DRM_ERROR("failed to set mode on crtc %p\n",
+					  set->crtc);
 				ret = -EINVAL;
-				goto fail;
+				goto fail_set_mode;
 			}
+			/* TODO are these needed? */
+			set->crtc->desired_x = set->x;
+			set->crtc->desired_y = set->y;
+			set->crtc->desired_mode = set->mode;
 		}
 		drm_helper_disable_unused_functions(dev);
 	} else if (fb_changed) {
-		set->crtc->x = set->x;
-		set->crtc->y = set->y;
-
 		old_fb = set->crtc->fb;
 		if (set->crtc->fb != set->fb)
 			set->crtc->fb = set->fb;
 		ret = crtc_funcs->mode_set_base(set->crtc,
 						set->x, set->y, old_fb);
 		if (ret != 0)
-			goto fail;
+		    goto fail_set_mode;
 	}
 
-	kfree(save_connectors);
 	kfree(save_encoders);
 	kfree(save_crtcs);
 	return 0;
 
-fail:
-	/* Restore all previous data. */
-	count = 0;
-	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
-		*crtc = save_crtcs[count++];
-	}
-
-	count = 0;
-	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
-		*encoder = save_encoders[count++];
-	}
-
+fail_set_mode:
+	set->crtc->enabled = save_enabled;
+	set->crtc->fb = old_fb;
 	count = 0;
 	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		*connector = save_connectors[count++];
-	}
+		if (!connector->encoder)
+			continue;
 
-	kfree(save_connectors);
-	kfree(save_encoders);
+		connector->encoder->crtc = save_crtcs[count++];
+	}
+fail_no_encoder:
 	kfree(save_crtcs);
+	count = 0;
+	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+		connector->encoder = save_encoders[count++];
+	}
+	kfree(save_encoders);
 	return ret;
 }
 EXPORT_SYMBOL(drm_crtc_helper_set_config);
 
-static int drm_helper_choose_encoder_dpms(struct drm_encoder *encoder)
+bool drm_helper_plugged_event(struct drm_device *dev)
 {
-	int dpms = DRM_MODE_DPMS_OFF;
-	struct drm_connector *connector;
-	struct drm_device *dev = encoder->dev;
+	DRM_DEBUG("\n");
 
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head)
-		if (connector->encoder == encoder)
-			if (connector->dpms < dpms)
-				dpms = connector->dpms;
-	return dpms;
+	drm_helper_probe_connector_modes(dev, dev->mode_config.max_width,
+					 dev->mode_config.max_height);
+
+	drm_setup_crtcs(dev);
+
+	/* alert the driver fb layer */
+	dev->mode_config.funcs->fb_changed(dev);
+
+	/* FIXME: send hotplug event */
+	return true;
 }
-
-static int drm_helper_choose_crtc_dpms(struct drm_crtc *crtc)
+/**
+ * drm_initial_config - setup a sane initial connector configuration
+ * @dev: DRM device
+ * @can_grow: this configuration is growable
+ *
+ * LOCKING:
+ * Called at init time, must take mode config lock.
+ *
+ * Scan the CRTCs and connectors and try to put together an initial setup.
+ * At the moment, this is a cloned configuration across all heads with
+ * a new framebuffer object as the backing store.
+ *
+ * RETURNS:
+ * Zero if everything went ok, nonzero otherwise.
+ */
+bool drm_helper_initial_config(struct drm_device *dev, bool can_grow)
 {
-	int dpms = DRM_MODE_DPMS_OFF;
 	struct drm_connector *connector;
-	struct drm_device *dev = crtc->dev;
+	int count = 0;
 
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head)
-		if (connector->encoder && connector->encoder->crtc == crtc)
-			if (connector->dpms < dpms)
-				dpms = connector->dpms;
-	return dpms;
+	count = drm_helper_probe_connector_modes(dev,
+						 dev->mode_config.max_width,
+						 dev->mode_config.max_height);
+
+	/*
+	 * None of the available connectors had any modes, so add some
+	 * and try to light them up anyway
+	 */
+	if (!count) {
+		DRM_ERROR("connectors have no modes, using standard modes\n");
+		list_for_each_entry(connector,
+				    &dev->mode_config.connector_list,
+				    head)
+			drm_helper_add_std_modes(dev, connector);
+	}
+
+	drm_setup_crtcs(dev);
+
+	/* alert the driver fb layer */
+	dev->mode_config.funcs->fb_changed(dev);
+
+	return 0;
 }
+EXPORT_SYMBOL(drm_helper_initial_config);
 
 /**
- * drm_helper_connector_dpms
- * @connector affected connector
- * @mode DPMS mode
+ * drm_hotplug_stage_two
+ * @dev DRM device
+ * @connector hotpluged connector
  *
- * Calls the low-level connector DPMS function, then
- * calls appropriate encoder and crtc DPMS functions as well
+ * LOCKING.
+ * Caller must hold mode config lock, function might grab struct lock.
+ *
+ * Stage two of a hotplug.
+ *
+ * RETURNS:
+ * Zero on success, errno on failure.
  */
-void drm_helper_connector_dpms(struct drm_connector *connector, int mode)
+int drm_helper_hotplug_stage_two(struct drm_device *dev)
 {
-	struct drm_encoder *encoder = connector->encoder;
-	struct drm_crtc *crtc = encoder ? encoder->crtc : NULL;
-	int old_dpms;
+	drm_helper_plugged_event(dev);
 
-	if (mode == connector->dpms)
-		return;
-
-	old_dpms = connector->dpms;
-	connector->dpms = mode;
-
-	/* from off to on, do crtc then encoder */
-	if (mode < old_dpms) {
-		if (crtc) {
-			struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
-			if (crtc_funcs->dpms)
-				(*crtc_funcs->dpms) (crtc,
-						     drm_helper_choose_crtc_dpms(crtc));
-		}
-		if (encoder) {
-			struct drm_encoder_helper_funcs *encoder_funcs = encoder->helper_private;
-			if (encoder_funcs->dpms)
-				(*encoder_funcs->dpms) (encoder,
-							drm_helper_choose_encoder_dpms(encoder));
-		}
-	}
-
-	/* from on to off, do encoder then crtc */
-	if (mode > old_dpms) {
-		if (encoder) {
-			struct drm_encoder_helper_funcs *encoder_funcs = encoder->helper_private;
-			if (encoder_funcs->dpms)
-				(*encoder_funcs->dpms) (encoder,
-							drm_helper_choose_encoder_dpms(encoder));
-		}
-		if (crtc) {
-			struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
-			if (crtc_funcs->dpms)
-				(*crtc_funcs->dpms) (crtc,
-						     drm_helper_choose_crtc_dpms(crtc));
-		}
-	}
-
-	return;
+	return 0;
 }
-EXPORT_SYMBOL(drm_helper_connector_dpms);
+EXPORT_SYMBOL(drm_helper_hotplug_stage_two);
 
 int drm_helper_mode_fill_fb_struct(struct drm_framebuffer *fb,
 				   struct drm_mode_fb_cmd *mode_cmd)
@@ -794,9 +964,6 @@ EXPORT_SYMBOL(drm_helper_mode_fill_fb_struct);
 int drm_helper_resume_force_mode(struct drm_device *dev)
 {
 	struct drm_crtc *crtc;
-	struct drm_encoder *encoder;
-	struct drm_encoder_helper_funcs *encoder_funcs;
-	struct drm_crtc_helper_funcs *crtc_funcs;
 	int ret;
 
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
@@ -809,130 +976,7 @@ int drm_helper_resume_force_mode(struct drm_device *dev)
 
 		if (ret == false)
 			DRM_ERROR("failed to set mode on crtc %p\n", crtc);
-
-		/* Turn off outputs that were already powered off */
-		if (drm_helper_choose_crtc_dpms(crtc)) {
-			list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
-
-				if(encoder->crtc != crtc)
-					continue;
-
-				encoder_funcs = encoder->helper_private;
-				if (encoder_funcs->dpms)
-					(*encoder_funcs->dpms) (encoder,
-								drm_helper_choose_encoder_dpms(encoder));
-			}
-
-			crtc_funcs = crtc->helper_private;
-			if (crtc_funcs->dpms)
-				(*crtc_funcs->dpms) (crtc,
-						     drm_helper_choose_crtc_dpms(crtc));
-		}
 	}
-	/* disable the unused connectors while restoring the modesetting */
-	drm_helper_disable_unused_functions(dev);
 	return 0;
 }
 EXPORT_SYMBOL(drm_helper_resume_force_mode);
-
-#define DRM_OUTPUT_POLL_PERIOD (10*HZ)
-static void output_poll_execute(struct work_struct *work)
-{
-	struct delayed_work *delayed_work = to_delayed_work(work);
-	struct drm_device *dev = container_of(delayed_work, struct drm_device, mode_config.output_poll_work);
-	struct drm_connector *connector;
-	enum drm_connector_status old_status, status;
-	bool repoll = false, changed = false;
-
-	if (!drm_kms_helper_poll)
-		return;
-
-	mutex_lock(&dev->mode_config.mutex);
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-
-		/* if this is HPD or polled don't check it -
-		   TV out for instance */
-		if (!connector->polled)
-			continue;
-
-		else if (connector->polled & (DRM_CONNECTOR_POLL_CONNECT | DRM_CONNECTOR_POLL_DISCONNECT))
-			repoll = true;
-
-		old_status = connector->status;
-		/* if we are connected and don't want to poll for disconnect
-		   skip it */
-		if (old_status == connector_status_connected &&
-		    !(connector->polled & DRM_CONNECTOR_POLL_DISCONNECT) &&
-		    !(connector->polled & DRM_CONNECTOR_POLL_HPD))
-			continue;
-
-		status = connector->funcs->detect(connector, false);
-		if (old_status != status)
-			changed = true;
-	}
-
-	mutex_unlock(&dev->mode_config.mutex);
-
-	if (changed) {
-		/* send a uevent + call fbdev */
-		drm_sysfs_hotplug_event(dev);
-		if (dev->mode_config.funcs->output_poll_changed)
-			dev->mode_config.funcs->output_poll_changed(dev);
-	}
-
-	if (repoll)
-		queue_delayed_work(system_nrt_wq, delayed_work, DRM_OUTPUT_POLL_PERIOD);
-}
-
-void drm_kms_helper_poll_disable(struct drm_device *dev)
-{
-	if (!dev->mode_config.poll_enabled)
-		return;
-	cancel_delayed_work_sync(&dev->mode_config.output_poll_work);
-}
-EXPORT_SYMBOL(drm_kms_helper_poll_disable);
-
-void drm_kms_helper_poll_enable(struct drm_device *dev)
-{
-	bool poll = false;
-	struct drm_connector *connector;
-
-	if (!dev->mode_config.poll_enabled || !drm_kms_helper_poll)
-		return;
-
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		if (connector->polled)
-			poll = true;
-	}
-
-	if (poll)
-		queue_delayed_work(system_nrt_wq, &dev->mode_config.output_poll_work, DRM_OUTPUT_POLL_PERIOD);
-}
-EXPORT_SYMBOL(drm_kms_helper_poll_enable);
-
-void drm_kms_helper_poll_init(struct drm_device *dev)
-{
-	INIT_DELAYED_WORK(&dev->mode_config.output_poll_work, output_poll_execute);
-	dev->mode_config.poll_enabled = true;
-
-	drm_kms_helper_poll_enable(dev);
-}
-EXPORT_SYMBOL(drm_kms_helper_poll_init);
-
-void drm_kms_helper_poll_fini(struct drm_device *dev)
-{
-	drm_kms_helper_poll_disable(dev);
-}
-EXPORT_SYMBOL(drm_kms_helper_poll_fini);
-
-void drm_helper_hpd_irq_event(struct drm_device *dev)
-{
-	if (!dev->mode_config.poll_enabled)
-		return;
-
-	/* kill timer and schedule immediate execution, this doesn't block */
-	cancel_delayed_work(&dev->mode_config.output_poll_work);
-	if (drm_kms_helper_poll)
-		queue_delayed_work(system_nrt_wq, &dev->mode_config.output_poll_work, 0);
-}
-EXPORT_SYMBOL(drm_helper_hpd_irq_event);

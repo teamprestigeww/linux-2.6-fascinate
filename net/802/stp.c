@@ -11,7 +11,6 @@
 #include <linux/skbuff.h>
 #include <linux/etherdevice.h>
 #include <linux/llc.h>
-#include <linux/slab.h>
 #include <net/llc.h>
 #include <net/llc_pdu.h>
 #include <net/stp.h>

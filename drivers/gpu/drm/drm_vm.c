@@ -36,7 +36,6 @@
 #include "drmP.h"
 #if defined(__ia64__)
 #include <linux/efi.h>
-#include <linux/slab.h>
 #endif
 
 static void drm_vm_open(struct vm_area_struct *vma);
@@ -61,7 +60,7 @@ static pgprot_t drm_io_prot(uint32_t map_type, struct vm_area_struct *vma)
 		tmp = pgprot_writecombine(tmp);
 	else
 		tmp = pgprot_noncached(tmp);
-#elif defined(__sparc__) || defined(__arm__)
+#elif defined(__sparc__)
 	tmp = pgprot_noncached(tmp);
 #endif
 	return tmp;
@@ -92,7 +91,7 @@ static int drm_do_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct drm_file *priv = vma->vm_file->private_data;
 	struct drm_device *dev = priv->minor->dev;
-	struct drm_local_map *map = NULL;
+	struct drm_map *map = NULL;
 	struct drm_map_list *r_list;
 	struct drm_hash_item *hash;
 
@@ -116,9 +115,9 @@ static int drm_do_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 		 * Using vm_pgoff as a selector forces us to use this unusual
 		 * addressing scheme.
 		 */
-		resource_size_t offset = (unsigned long)vmf->virtual_address -
-			vma->vm_start;
-		resource_size_t baddr = map->offset + offset;
+		unsigned long offset = (unsigned long)vmf->virtual_address -
+								vma->vm_start;
+		unsigned long baddr = map->offset + offset;
 		struct drm_agp_mem *agpmem;
 		struct page *page;
 
@@ -138,22 +137,20 @@ static int drm_do_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 				break;
 		}
 
-		if (&agpmem->head == &dev->agp->memory)
+		if (!agpmem)
 			goto vm_fault_error;
 
 		/*
 		 * Get the page, inc the use count, and return it
 		 */
 		offset = (baddr - agpmem->bound) >> PAGE_SHIFT;
-		page = agpmem->memory->pages[offset];
+		page = virt_to_page(__va(agpmem->memory->memory[offset]));
 		get_page(page);
 		vmf->page = page;
 
 		DRM_DEBUG
-		    ("baddr = 0x%llx page = 0x%p, offset = 0x%llx, count=%d\n",
-		     (unsigned long long)baddr,
-		     agpmem->memory->pages[offset],
-		     (unsigned long long)offset,
+		    ("baddr = 0x%lx page = 0x%p, offset = 0x%lx, count=%d\n",
+		     baddr, __va(agpmem->memory->memory[offset]), offset,
 		     page_count(page));
 		return 0;
 	}
@@ -179,7 +176,7 @@ static int drm_do_vm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
  */
 static int drm_do_vm_shm_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
-	struct drm_local_map *map = vma->vm_private_data;
+	struct drm_map *map = (struct drm_map *) vma->vm_private_data;
 	unsigned long offset;
 	unsigned long i;
 	struct page *page;
@@ -212,7 +209,7 @@ static void drm_vm_shm_close(struct vm_area_struct *vma)
 	struct drm_file *priv = vma->vm_file->private_data;
 	struct drm_device *dev = priv->minor->dev;
 	struct drm_vma_entry *pt, *temp;
-	struct drm_local_map *map;
+	struct drm_map *map;
 	struct drm_map_list *r_list;
 	int found_maps = 0;
 
@@ -228,7 +225,7 @@ static void drm_vm_shm_close(struct vm_area_struct *vma)
 			found_maps++;
 		if (pt->vma == vma) {
 			list_del(&pt->head);
-			kfree(pt);
+			drm_free(pt, sizeof(*pt), DRM_MEM_VMAS);
 		}
 	}
 
@@ -274,7 +271,7 @@ static void drm_vm_shm_close(struct vm_area_struct *vma)
 				DRM_ERROR("tried to rmmap GEM object\n");
 				break;
 			}
-			kfree(map);
+			drm_free(map, sizeof(*map), DRM_MEM_MAPS);
 		}
 	}
 	mutex_unlock(&dev->struct_mutex);
@@ -325,7 +322,7 @@ static int drm_do_vm_dma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
  */
 static int drm_do_vm_sg_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
-	struct drm_local_map *map = vma->vm_private_data;
+	struct drm_map *map = (struct drm_map *) vma->vm_private_data;
 	struct drm_file *priv = vma->vm_file->private_data;
 	struct drm_device *dev = priv->minor->dev;
 	struct drm_sg_mem *entry = dev->sg;
@@ -370,28 +367,28 @@ static int drm_vm_sg_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 }
 
 /** AGP virtual memory operations */
-static const struct vm_operations_struct drm_vm_ops = {
+static struct vm_operations_struct drm_vm_ops = {
 	.fault = drm_vm_fault,
 	.open = drm_vm_open,
 	.close = drm_vm_close,
 };
 
 /** Shared virtual memory operations */
-static const struct vm_operations_struct drm_vm_shm_ops = {
+static struct vm_operations_struct drm_vm_shm_ops = {
 	.fault = drm_vm_shm_fault,
 	.open = drm_vm_open,
 	.close = drm_vm_shm_close,
 };
 
 /** DMA virtual memory operations */
-static const struct vm_operations_struct drm_vm_dma_ops = {
+static struct vm_operations_struct drm_vm_dma_ops = {
 	.fault = drm_vm_dma_fault,
 	.open = drm_vm_open,
 	.close = drm_vm_close,
 };
 
 /** Scatter-gather virtual memory operations */
-static const struct vm_operations_struct drm_vm_sg_ops = {
+static struct vm_operations_struct drm_vm_sg_ops = {
 	.fault = drm_vm_sg_fault,
 	.open = drm_vm_open,
 	.close = drm_vm_close,
@@ -415,7 +412,7 @@ void drm_vm_open_locked(struct vm_area_struct *vma)
 		  vma->vm_start, vma->vm_end - vma->vm_start);
 	atomic_inc(&dev->vma_count);
 
-	vma_entry = kmalloc(sizeof(*vma_entry), GFP_KERNEL);
+	vma_entry = drm_alloc(sizeof(*vma_entry), DRM_MEM_VMAS);
 	if (vma_entry) {
 		vma_entry->vma = vma;
 		vma_entry->pid = current->pid;
@@ -433,25 +430,6 @@ static void drm_vm_open(struct vm_area_struct *vma)
 	mutex_unlock(&dev->struct_mutex);
 }
 
-void drm_vm_close_locked(struct vm_area_struct *vma)
-{
-	struct drm_file *priv = vma->vm_file->private_data;
-	struct drm_device *dev = priv->minor->dev;
-	struct drm_vma_entry *pt, *temp;
-
-	DRM_DEBUG("0x%08lx,0x%08lx\n",
-		  vma->vm_start, vma->vm_end - vma->vm_start);
-	atomic_dec(&dev->vma_count);
-
-	list_for_each_entry_safe(pt, temp, &dev->vmalist, head) {
-		if (pt->vma == vma) {
-			list_del(&pt->head);
-			kfree(pt);
-			break;
-		}
-	}
-}
-
 /**
  * \c close method for all virtual memory types.
  *
@@ -464,9 +442,20 @@ static void drm_vm_close(struct vm_area_struct *vma)
 {
 	struct drm_file *priv = vma->vm_file->private_data;
 	struct drm_device *dev = priv->minor->dev;
+	struct drm_vma_entry *pt, *temp;
+
+	DRM_DEBUG("0x%08lx,0x%08lx\n",
+		  vma->vm_start, vma->vm_end - vma->vm_start);
+	atomic_dec(&dev->vma_count);
 
 	mutex_lock(&dev->struct_mutex);
-	drm_vm_close_locked(vma);
+	list_for_each_entry_safe(pt, temp, &dev->vmalist, head) {
+		if (pt->vma == vma) {
+			list_del(&pt->head);
+			drm_free(pt, sizeof(*pt), DRM_MEM_VMAS);
+			break;
+		}
+	}
 	mutex_unlock(&dev->struct_mutex);
 }
 
@@ -523,14 +512,14 @@ static int drm_mmap_dma(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
-resource_size_t drm_core_get_map_ofs(struct drm_local_map * map)
+unsigned long drm_core_get_map_ofs(struct drm_map * map)
 {
 	return map->offset;
 }
 
 EXPORT_SYMBOL(drm_core_get_map_ofs);
 
-resource_size_t drm_core_get_reg_ofs(struct drm_device *dev)
+unsigned long drm_core_get_reg_ofs(struct drm_device *dev)
 {
 #ifdef __alpha__
 	return dev->hose->dense_mem_base - dev->hose->mem_space->start;
@@ -558,8 +547,8 @@ int drm_mmap_locked(struct file *filp, struct vm_area_struct *vma)
 {
 	struct drm_file *priv = filp->private_data;
 	struct drm_device *dev = priv->minor->dev;
-	struct drm_local_map *map = NULL;
-	resource_size_t offset = 0;
+	struct drm_map *map = NULL;
+	unsigned long offset = 0;
 	struct drm_hash_item *hash;
 
 	DRM_DEBUG("start = 0x%lx, end = 0x%lx, page offset = 0x%lx\n",
@@ -609,7 +598,6 @@ int drm_mmap_locked(struct file *filp, struct vm_area_struct *vma)
 	}
 
 	switch (map->type) {
-#if !defined(__arm__)
 	case _DRM_AGP:
 		if (drm_core_has_AGP(dev) && dev->agp->cant_use_aperture) {
 			/*
@@ -624,31 +612,20 @@ int drm_mmap_locked(struct file *filp, struct vm_area_struct *vma)
 			break;
 		}
 		/* fall through to _DRM_FRAME_BUFFER... */
-#endif
 	case _DRM_FRAME_BUFFER:
 	case _DRM_REGISTERS:
 		offset = dev->driver->get_reg_ofs(dev);
 		vma->vm_flags |= VM_IO;	/* not in core dump */
 		vma->vm_page_prot = drm_io_prot(map->type, vma);
-#if !defined(__arm__)
 		if (io_remap_pfn_range(vma, vma->vm_start,
 				       (map->offset + offset) >> PAGE_SHIFT,
 				       vma->vm_end - vma->vm_start,
 				       vma->vm_page_prot))
 			return -EAGAIN;
-#else
-		if (remap_pfn_range(vma, vma->vm_start,
-					(map->offset + offset) >> PAGE_SHIFT,
-					vma->vm_end - vma->vm_start,
-					vma->vm_page_prot))
-			return -EAGAIN;
-#endif
-
 		DRM_DEBUG("   Type = %d; start = 0x%lx, end = 0x%lx,"
-			  " offset = 0x%llx\n",
+			  " offset = 0x%lx\n",
 			  map->type,
-			  vma->vm_start, vma->vm_end, (unsigned long long)(map->offset + offset));
-
+			  vma->vm_start, vma->vm_end, map->offset + offset);
 		vma->vm_ops = &drm_vm_ops;
 		break;
 	case _DRM_CONSISTENT:

@@ -57,7 +57,7 @@ static struct card_info card_info_table[] = {
 	{ {0x03, 0x01}, "3Com Token Link Velocity"},
 };
 
-static DEFINE_PCI_DEVICE_TABLE(tmspci_pci_tbl) = {
+static struct pci_device_id tmspci_pci_tbl[] = {
 	{ PCI_VENDOR_ID_COMPAQ, PCI_DEVICE_ID_COMPAQ_TOKENRING, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
 	{ PCI_VENDOR_ID_SYSKONNECT, PCI_DEVICE_ID_SYSKONNECT_TR, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 1 },
 	{ PCI_VENDOR_ID_TCONRAD, PCI_DEVICE_ID_TCONRAD_TOKENRING, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 2 },
@@ -152,13 +152,13 @@ static int __devinit tms_pci_attach(struct pci_dev *pdev, const struct pci_devic
 
 	tp->tmspriv = cardinfo;
 
-	dev->netdev_ops = &tms380tr_netdev_ops;
-
 	ret = request_irq(pdev->irq, tms380tr_interrupt, IRQF_SHARED,
 			  dev->name, dev);
 	if (ret)
 		goto err_out_tmsdev;
 
+	dev->open = tms380tr_open;
+	dev->stop = tms380tr_close;
 	pci_set_drvdata(pdev, dev);
 	SET_NETDEV_DEV(dev, &pdev->dev);
 

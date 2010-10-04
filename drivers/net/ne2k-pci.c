@@ -62,9 +62,8 @@ static int options[MAX_UNITS];
 #include "8390.h"
 
 /* These identify the driver base version and may not be removed. */
-static const char version[] __devinitconst =
-	KERN_INFO DRV_NAME ".c:v" DRV_VERSION " " DRV_RELDATE
-	" D. Becker/P. Gortmaker\n";
+static char version[] __devinitdata =
+KERN_INFO DRV_NAME ".c:v" DRV_VERSION " " DRV_RELDATE " D. Becker/P. Gortmaker\n";
 
 #if defined(__powerpc__)
 #define inl_le(addr)  le32_to_cpu(inl(addr))
@@ -136,7 +135,7 @@ static struct {
 };
 
 
-static DEFINE_PCI_DEVICE_TABLE(ne2k_pci_tbl) = {
+static struct pci_device_id ne2k_pci_tbl[] = {
 	{ 0x10ec, 0x8029, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CH_RealTek_RTL_8029 },
 	{ 0x1050, 0x0940, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CH_Winbond_89C940 },
 	{ 0x11f6, 0x1401, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CH_Compex_RL2000 },
@@ -374,16 +373,17 @@ static int __devinit ne2k_pci_init_one (struct pci_dev *pdev,
 	dev->ethtool_ops = &ne2k_pci_ethtool_ops;
 	NS8390_init(dev, 0);
 
-	memcpy(dev->dev_addr, SA_prom, dev->addr_len);
-	memcpy(dev->perm_addr, dev->dev_addr, dev->addr_len);
-
 	i = register_netdev(dev);
 	if (i)
 		goto err_out_free_netdev;
 
+	for(i = 0; i < 6; i++)
+		dev->dev_addr[i] = SA_prom[i];
 	printk("%s: %s found at %#lx, IRQ %d, %pM.\n",
 	       dev->name, pci_clone_list[chip_idx].name, ioaddr, dev->irq,
 	       dev->dev_addr);
+
+	memcpy(dev->perm_addr, dev->dev_addr, dev->addr_len);
 
 	return 0;
 
@@ -631,6 +631,7 @@ static void ne2k_pci_block_output(struct net_device *dev, int count,
 
 	outb(ENISR_RDC, nic_base + EN0_ISR);	/* Ack intr. */
 	ei_status.dmaing &= ~0x01;
+	return;
 }
 
 static void ne2k_pci_get_drvinfo(struct net_device *dev,

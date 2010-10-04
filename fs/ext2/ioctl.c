@@ -13,6 +13,7 @@
 #include <linux/sched.h>
 #include <linux/compat.h>
 #include <linux/mount.h>
+#include <linux/smp_lock.h>
 #include <asm/current.h>
 #include <asm/uaccess.h>
 

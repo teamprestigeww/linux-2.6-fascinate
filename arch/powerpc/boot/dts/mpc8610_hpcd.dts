@@ -35,8 +35,6 @@
 			i-cache-line-size = <32>;
 			d-cache-size = <32768>;		// L1
 			i-cache-size = <32768>;		// L1
-			sleep = <&pmc 0x00008000 0	// core
-				 &pmc 0x00004000 0>;	// timebase
 			timebase-frequency = <0>;	// From uboot
 			bus-frequency = <0>;		// From uboot
 			clock-frequency = <0>;		// From uboot
@@ -62,7 +60,6 @@
 			  5 0 0xe8480000 0x00008000
 			  6 0 0xe84c0000 0x00008000
 			  3 0 0xe8000000 0x00000020>;
-		sleep = <&pmc 0x08000000 0>;
 
 		flash@0,0 {
 			compatible = "cfi-flash";
@@ -103,20 +100,8 @@
 		};
 
 		board-control@3,0 {
-			#address-cells = <1>;
-			#size-cells = <1>;
 			compatible = "fsl,fpga-pixis";
 			reg = <3 0 0x20>;
-			ranges = <0 3 0 0x20>;
-			interrupt-parent = <&mpic>;
-			interrupts = <8 8>;
-
-			sdcsr_pio: gpio-controller@a {
-				#gpio-cells = <2>;
-				compatible = "fsl,fpga-pixis-gpio-bank";
-				reg = <0xa 1>;
-				gpio-controller;
-			};
 		};
 	};
 
@@ -127,20 +112,8 @@
 		device_type = "soc";
 		compatible = "fsl,mpc8610-immr", "simple-bus";
 		ranges = <0x0 0xe0000000 0x00100000>;
+		reg = <0xe0000000 0x1000>;
 		bus-frequency = <0>;
-
-		mcm-law@0 {
-			compatible = "fsl,mcm-law";
-			reg = <0x0 0x1000>;
-			fsl,num-laws = <10>;
-		};
-
-		mcm@1000 {
-			compatible = "fsl,mpc8610-mcm", "fsl,mcm";
-			reg = <0x1000 0x1000>;
-			interrupts = <17 2>;
-			interrupt-parent = <&mpic>;
-		};
 
 		i2c@3000 {
 			#address-cells = <1>;
@@ -168,7 +141,6 @@
 			reg = <0x3100 0x100>;
 			interrupts = <43 2>;
 			interrupt-parent = <&mpic>;
-			sleep = <&pmc 0x00000004 0>;
 			dfsrr;
 		};
 
@@ -180,7 +152,6 @@
 			clock-frequency = <0>;
 			interrupts = <42 2>;
 			interrupt-parent = <&mpic>;
-			sleep = <&pmc 0x00000002 0>;
 		};
 
 		serial1: serial@4600 {
@@ -191,30 +162,6 @@
 			clock-frequency = <0>;
 			interrupts = <42 2>;
 			interrupt-parent = <&mpic>;
-			sleep = <&pmc 0x00000008 0>;
-		};
-
-		spi@7000 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			compatible = "fsl,mpc8610-spi", "fsl,spi";
-			reg = <0x7000 0x40>;
-			cell-index = <0>;
-			interrupts = <59 2>;
-			interrupt-parent = <&mpic>;
-			mode = "cpu";
-			gpios = <&sdcsr_pio 7 0>;
-			sleep = <&pmc 0x00000800 0>;
-
-			mmc-slot@0 {
-				compatible = "fsl,mpc8610hpcd-mmc-slot",
-					     "mmc-spi-slot";
-				reg = <0>;
-				gpios = <&sdcsr_pio 0 1   /* nCD */
-					 &sdcsr_pio 1 0>; /*  WP */
-				voltage-ranges = <3300 3300>;
-				spi-max-frequency = <50000000>;
-			};
 		};
 
 		display@2c000 {
@@ -222,7 +169,6 @@
 			reg = <0x2c000 100>;
 			interrupts = <72 2>;
 			interrupt-parent = <&mpic>;
-			sleep = <&pmc 0x04000000 0>;
 		};
 
 		mpic: interrupt-controller@40000 {
@@ -251,18 +197,9 @@
 		};
 
 		global-utilities@e0000 {
-			#address-cells = <1>;
-			#size-cells = <1>;
 			compatible = "fsl,mpc8610-guts";
 			reg = <0xe0000 0x1000>;
-			ranges = <0 0xe0000 0x1000>;
 			fsl,has-rstcr;
-
-			pmc: power@70 {
-				compatible = "fsl,mpc8610-pmc",
-					     "fsl,mpc8641d-pmc";
-				reg = <0x70 0x20>;
-			};
 		};
 
 		wdt@e4000 {
@@ -280,8 +217,6 @@
 			codec-handle = <&cs4270>;
 			fsl,playback-dma = <&dma00>;
 			fsl,capture-dma = <&dma01>;
-			fsl,fifo-depth = <8>;
-			sleep = <&pmc 0 0x08000000>;
 		};
 
 		ssi@16100 {
@@ -290,8 +225,6 @@
 			reg = <0x16100 0x100>;
 			interrupt-parent = <&mpic>;
 			interrupts = <63 2>;
-			fsl,fifo-depth = <8>;
-			sleep = <&pmc 0 0x04000000>;
 		};
 
 		dma@21300 {
@@ -301,7 +234,6 @@
 			cell-index = <0>;
 			reg = <0x21300 0x4>; /* DMA general status register */
 			ranges = <0x0 0x21100 0x200>;
-			sleep = <&pmc 0x00000400 0>;
 
 			dma00: dma-channel@0 {
 				compatible = "fsl,mpc8610-dma-channel",
@@ -344,7 +276,6 @@
 			cell-index = <1>;
 			reg = <0xc300 0x4>; /* DMA general status register */
 			ranges = <0x0 0xc100 0x200>;
-			sleep = <&pmc 0x00000200 0>;
 
 			dma-channel@0 {
 				compatible = "fsl,mpc8610-dma-channel",
@@ -383,6 +314,7 @@
 	};
 
 	pci0: pci@e0008000 {
+		cell-index = <0>;
 		compatible = "fsl,mpc8610-pci";
 		device_type = "pci";
 		#interrupt-cells = <1>;
@@ -392,7 +324,6 @@
 		bus-range = <0 0>;
 		ranges = <0x02000000 0x0 0x80000000 0x80000000 0x0 0x10000000
 			  0x01000000 0x0 0x00000000 0xe1000000 0x0 0x00100000>;
-		sleep = <&pmc 0x80000000 0>;
 		clock-frequency = <33333333>;
 		interrupt-parent = <&mpic>;
 		interrupts = <24 2>;
@@ -413,6 +344,7 @@
 	};
 
 	pci1: pcie@e000a000 {
+		cell-index = <1>;
 		compatible = "fsl,mpc8641-pcie";
 		device_type = "pci";
 		#interrupt-cells = <1>;
@@ -422,7 +354,6 @@
 		bus-range = <1 3>;
 		ranges = <0x02000000 0x0 0xa0000000 0xa0000000 0x0 0x10000000
 			  0x01000000 0x0 0x00000000 0xe3000000 0x0 0x00100000>;
-		sleep = <&pmc 0x40000000 0>;
 		clock-frequency = <33333333>;
 		interrupt-parent = <&mpic>;
 		interrupts = <26 2>;
@@ -499,7 +430,6 @@
 				 0x0000 0 0 4 &mpic 7 1>;
 		interrupt-parent = <&mpic>;
 		interrupts = <25 2>;
-		sleep = <&pmc 0x20000000 0>;
 		clock-frequency = <33333333>;
 	};
 };

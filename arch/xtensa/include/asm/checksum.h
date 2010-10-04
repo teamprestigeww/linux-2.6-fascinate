@@ -113,8 +113,7 @@ static __inline__ __sum16 ip_fast_csum(const void *iph, unsigned int ihl)
 	   are modified, we must also specify them as outputs, or gcc
 	   will assume they contain their original values. */
 		: "=r" (sum), "=r" (iph), "=r" (ihl), "=&r" (tmp), "=&r" (endaddr)
-		: "1" (iph), "2" (ihl)
-		: "memory");
+		: "1" (iph), "2" (ihl));
 
 	return	csum_fold(sum);
 }
@@ -228,8 +227,7 @@ static __inline__ __sum16 csum_ipv6_magic(const struct in6_addr *saddr,
 		"1:\t"
 		: "=r" (sum), "=&r" (__dummy)
 		: "r" (saddr), "r" (daddr),
-		  "r" (htonl(len)), "r" (htonl(proto)), "0" (sum)
-		: "memory");
+		  "r" (htonl(len)), "r" (htonl(proto)), "0" (sum));
 
 	return csum_fold(sum);
 }

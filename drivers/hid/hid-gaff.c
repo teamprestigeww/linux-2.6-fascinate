@@ -28,12 +28,9 @@
  */
 
 #include <linux/input.h>
-#include <linux/slab.h>
 #include <linux/usb.h>
 #include <linux/hid.h>
 #include "hid-ids.h"
-
-#ifdef CONFIG_GREENASIA_FF
 #include "usbhid/usbhid.h"
 
 struct gaff_device {
@@ -133,12 +130,6 @@ static int gaff_init(struct hid_device *hid)
 
 	return 0;
 }
-#else
-static inline int gaff_init(struct hid_device *hdev)
-{
-	return 0;
-}
-#endif
 
 static int ga_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
@@ -190,3 +181,5 @@ static void __exit ga_exit(void)
 module_init(ga_init);
 module_exit(ga_exit);
 MODULE_LICENSE("GPL");
+
+HID_COMPAT_LOAD_DRIVER(greenasia);

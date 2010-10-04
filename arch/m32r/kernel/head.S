@@ -23,7 +23,7 @@ __INITDATA
 /*
  * References to members of the boot_cpu_data structure.
  */
-__HEAD
+.section .text.head, "ax"
 	.global	start_kernel
 	.global __bss_start
 	.global _end
@@ -268,13 +268,13 @@ ENTRY(empty_zero_page)
 /*------------------------------------------------------------------------
  * Stack area
  */
-	.section .init.data, "aw"
+	.section .spi
 	ALIGN
 	.global spi_stack_top
 	.zero	1024
 spi_stack_top:
 
-	.section .init.data, "aw"
+	.section .spu
 	ALIGN
 	.global spu_stack_top
 	.zero	1024

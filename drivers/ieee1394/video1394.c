@@ -30,7 +30,6 @@
  */
 #include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/wait.h>
@@ -720,7 +719,7 @@ static inline unsigned video1394_buffer_state(struct dma_iso_ctx *d,
 static long video1394_ioctl(struct file *file,
 			    unsigned int cmd, unsigned long arg)
 {
-	struct file_ctx *ctx = file->private_data;
+	struct file_ctx *ctx = (struct file_ctx *)file->private_data;
 	struct ti_ohci *ohci = ctx->ohci;
 	unsigned long flags;
 	void __user *argp = (void __user *)arg;
@@ -1045,9 +1044,14 @@ static long video1394_ioctl(struct file *file,
 			if (get_user(qv, &p->packet_sizes))
 				return -EFAULT;
 
-			psizes = memdup_user(qv, buf_size);
-			if (IS_ERR(psizes))
-				return PTR_ERR(psizes);
+			psizes = kmalloc(buf_size, GFP_KERNEL);
+			if (!psizes)
+				return -ENOMEM;
+
+			if (copy_from_user(psizes, qv, buf_size)) {
+				kfree(psizes);
+				return -EFAULT;
+			}
 		}
 
 		spin_lock_irqsave(&d->lock,flags);
@@ -1172,7 +1176,7 @@ static long video1394_ioctl(struct file *file,
 
 static int video1394_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	struct file_ctx *ctx = file->private_data;
+	struct file_ctx *ctx = (struct file_ctx *)file->private_data;
 
 	if (ctx->current_ctx == NULL) {
 		PRINT(KERN_ERR, ctx->ohci->host->id,
@@ -1234,12 +1238,12 @@ static int video1394_open(struct inode *inode, struct file *file)
 	ctx->current_ctx = NULL;
 	file->private_data = ctx;
 
-	return nonseekable_open(inode, file);
+	return 0;
 }
 
 static int video1394_release(struct inode *inode, struct file *file)
 {
-	struct file_ctx *ctx = file->private_data;
+	struct file_ctx *ctx = (struct file_ctx *)file->private_data;
 	struct ti_ohci *ohci = ctx->ohci;
 	struct list_head *lh, *next;
 	u64 mask;
@@ -1282,8 +1286,7 @@ static const struct file_operations video1394_fops=
 	.poll =		video1394_poll,
 	.mmap =		video1394_mmap,
 	.open =		video1394_open,
-	.release =	video1394_release,
-	.llseek =	no_llseek,
+	.release =	video1394_release
 };
 
 /*** HOTPLUG STUFF **********************************************************/
@@ -1291,7 +1294,7 @@ static const struct file_operations video1394_fops=
  * Export information about protocols/devices supported by this driver.
  */
 #ifdef MODULE
-static const struct ieee1394_device_id video1394_id_table[] = {
+static struct ieee1394_device_id video1394_id_table[] = {
 	{
 		.match_flags	= IEEE1394_MATCH_SPECIFIER_ID | IEEE1394_MATCH_VERSION,
 		.specifier_id	= CAMERA_UNIT_SPEC_ID_ENTRY & 0xffffff,

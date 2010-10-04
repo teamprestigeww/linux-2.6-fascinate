@@ -18,7 +18,6 @@
 
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/gfp.h>
 #include <linux/sched.h>
 #include <linux/notifier.h>
 #include <linux/cpumask.h>
@@ -30,8 +29,8 @@
 
 #include <asm/idle.h>
 
-#include "../dma/ioat/hw.h"
-#include "../dma/ioat/registers.h"
+#include "../dma/ioatdma_hw.h"
+#include "../dma/ioatdma_registers.h"
 
 #define I7300_IDLE_DRIVER_VERSION	"1.55"
 #define I7300_PRINT			"i7300_idle:"
@@ -41,10 +40,6 @@
 static int debug;
 module_param_named(debug, debug, uint, 0644);
 MODULE_PARM_DESC(debug, "Enable debug printks in this driver");
-
-static int forceload;
-module_param_named(forceload, forceload, uint, 0644);
-MODULE_PARM_DESC(debug, "Enable driver testing on unvalidated i5000");
 
 #define dprintk(fmt, arg...) \
 	do { if (debug) printk(KERN_INFO I7300_PRINT fmt, ##arg); } while (0)
@@ -82,7 +77,7 @@ static u8 i7300_idle_thrtctl_saved;
 static u8 i7300_idle_thrtlow_saved;
 static u32 i7300_idle_mc_saved;
 
-static cpumask_var_t idle_cpumask;
+static cpumask_t idle_cpumask;
 static ktime_t start_ktime;
 static unsigned long avg_idle_us;
 
@@ -127,9 +122,9 @@ static void i7300_idle_ioat_stop(void)
 		udelay(10);
 
 		sts = readq(ioat_chanbase + IOAT1_CHANSTS_OFFSET) &
-			IOAT_CHANSTS_STATUS;
+			IOAT_CHANSTS_DMA_TRANSFER_STATUS;
 
-		if (sts != IOAT_CHANSTS_ACTIVE)
+		if (sts != IOAT_CHANSTS_DMA_TRANSFER_STATUS_ACTIVE)
 			break;
 
 	}
@@ -161,9 +156,9 @@ static int __init i7300_idle_ioat_selftest(u8 *ctl,
 	udelay(1000);
 
 	chan_sts = readq(ioat_chanbase + IOAT1_CHANSTS_OFFSET) &
-			IOAT_CHANSTS_STATUS;
+			IOAT_CHANSTS_DMA_TRANSFER_STATUS;
 
-	if (chan_sts != IOAT_CHANSTS_DONE) {
+	if (chan_sts != IOAT_CHANSTS_DMA_TRANSFER_STATUS_DONE) {
 		/* Not complete, reset the channel */
 		writeb(IOAT_CHANCMD_RESET,
 		       ioat_chanbase + IOAT1_CHANCMD_OFFSET);
@@ -183,7 +178,7 @@ static int __init i7300_idle_ioat_selftest(u8 *ctl,
 
 static struct device dummy_dma_dev = {
 	.init_name = "fallback device",
-	.coherent_dma_mask = DMA_BIT_MASK(64),
+	.coherent_dma_mask = DMA_64BIT_MASK,
 	.dma_mask = &dummy_dma_dev.coherent_dma_mask,
 };
 
@@ -289,9 +284,9 @@ static void __exit i7300_idle_ioat_exit(void)
 		       ioat_chanbase + IOAT1_CHANCMD_OFFSET);
 
 		chan_sts = readq(ioat_chanbase + IOAT1_CHANSTS_OFFSET) &
-			IOAT_CHANSTS_STATUS;
+			IOAT_CHANSTS_DMA_TRANSFER_STATUS;
 
-		if (chan_sts != IOAT_CHANSTS_ACTIVE) {
+		if (chan_sts != IOAT_CHANSTS_DMA_TRANSFER_STATUS_ACTIVE) {
 			writew(0, ioat_chanbase + IOAT_CHANCTRL_OFFSET);
 			break;
 		}
@@ -299,14 +294,14 @@ static void __exit i7300_idle_ioat_exit(void)
 	}
 
 	chan_sts = readq(ioat_chanbase + IOAT1_CHANSTS_OFFSET) &
-			IOAT_CHANSTS_STATUS;
+			IOAT_CHANSTS_DMA_TRANSFER_STATUS;
 
 	/*
 	 * We tried to reset multiple times. If IO A/T channel is still active
 	 * flag an error and return without cleanup. Memory leak is better
 	 * than random corruption in that extreme error situation.
 	 */
-	if (chan_sts == IOAT_CHANSTS_ACTIVE) {
+	if (chan_sts == IOAT_CHANSTS_DMA_TRANSFER_STATUS_ACTIVE) {
 		printk(KERN_ERR I7300_PRINT "Unable to stop IO A/T channels."
 			" Not freeing resources\n");
 		return;
@@ -460,9 +455,9 @@ static int i7300_idle_notifier(struct notifier_block *nb, unsigned long val,
 	spin_lock_irqsave(&i7300_idle_lock, flags);
 	if (val == IDLE_START) {
 
-		cpumask_set_cpu(smp_processor_id(), idle_cpumask);
+		cpu_set(smp_processor_id(), idle_cpumask);
 
-		if (cpumask_weight(idle_cpumask) != num_online_cpus())
+		if (cpus_weight(idle_cpumask) != num_online_cpus())
 			goto end;
 
 		now_ktime = ktime_get();
@@ -479,8 +474,8 @@ static int i7300_idle_notifier(struct notifier_block *nb, unsigned long val,
 		i7300_idle_ioat_start();
 
 	} else if (val == IDLE_END) {
-		cpumask_clear_cpu(smp_processor_id(), idle_cpumask);
-		if (cpumask_weight(idle_cpumask) == (num_online_cpus() - 1)) {
+		cpu_clear(smp_processor_id(), idle_cpumask);
+		if (cpus_weight(idle_cpumask) == (num_online_cpus() - 1)) {
 			/* First CPU coming out of idle */
 			u64 idle_duration_us;
 
@@ -554,9 +549,10 @@ struct debugfs_file_info {
 static int __init i7300_idle_init(void)
 {
 	spin_lock_init(&i7300_idle_lock);
+	cpus_clear(idle_cpumask);
 	total_us = 0;
 
-	if (i7300_idle_platform_probe(&fbd_dev, &ioat_dev, forceload))
+	if (i7300_idle_platform_probe(&fbd_dev, &ioat_dev))
 		return -ENODEV;
 
 	if (i7300_idle_thrt_save())
@@ -564,9 +560,6 @@ static int __init i7300_idle_init(void)
 
 	if (i7300_idle_ioat_init())
 		return -ENODEV;
-
-	if (!zalloc_cpumask_var(&idle_cpumask, GFP_KERNEL))
-		return -ENOMEM;
 
 	debugfs_dir = debugfs_create_dir("i7300_idle", NULL);
 	if (debugfs_dir) {
@@ -592,7 +585,6 @@ static int __init i7300_idle_init(void)
 static void __exit i7300_idle_exit(void)
 {
 	idle_notifier_unregister(&i7300_idle_nb);
-	free_cpumask_var(idle_cpumask);
 
 	if (debugfs_dir) {
 		int i = 0;

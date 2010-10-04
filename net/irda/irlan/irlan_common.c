@@ -27,11 +27,9 @@
 
 #include <linux/kernel.h>
 #include <linux/string.h>
-#include <linux/gfp.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/proc_fs.h>
-#include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/random.h>
 #include <linux/netdevice.h>
@@ -71,14 +69,14 @@ static int eth;   /* Use "eth" or "irlan" name for devices */
 static int access = ACCESS_PEER; /* PEER, DIRECT or HOSTED */
 
 #ifdef CONFIG_PROC_FS
-static const char *const irlan_access[] = {
+static const char *irlan_access[] = {
 	"UNKNOWN",
 	"DIRECT",
 	"PEER",
 	"HOSTED"
 };
 
-static const char *const irlan_media[] = {
+static const char *irlan_media[] = {
 	"UNKNOWN",
 	"802.3",
 	"802.5"
@@ -1102,7 +1100,7 @@ int irlan_extract_param(__u8 *buf, char *name, char *value, __u16 *len)
 	memcpy(&val_len, buf+n, 2); /* To avoid alignment problems */
 	le16_to_cpus(&val_len); n+=2;
 
-	if (val_len >= 1016) {
+	if (val_len > 1016) {
 		IRDA_DEBUG(2, "%s(), parameter length to long\n", __func__ );
 		return -RSP_INVALID_COMMAND_FORMAT;
 	}
@@ -1129,14 +1127,34 @@ int irlan_extract_param(__u8 *buf, char *name, char *value, __u16 *len)
  */
 static void *irlan_seq_start(struct seq_file *seq, loff_t *pos)
 {
+	int i = 1;
+	struct irlan_cb *self;
+
 	rcu_read_lock();
-	return seq_list_start_head(&irlans, *pos);
+	if (*pos == 0)
+		return SEQ_START_TOKEN;
+
+	list_for_each_entry(self, &irlans, dev_list) {
+		if (*pos == i)
+			return self;
+		++i;
+	}
+	return NULL;
 }
 
 /* Return entry after v, and increment pos */
 static void *irlan_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
-	return seq_list_next(v, &irlans, pos);
+	struct list_head *nxt;
+
+	++*pos;
+	if (v == SEQ_START_TOKEN)
+		nxt = irlans.next;
+	else
+		nxt = ((struct irlan_cb *)v)->dev_list.next;
+
+	return (nxt == &irlans) ? NULL
+		: list_entry(nxt, struct irlan_cb, dev_list);
 }
 
 /* End of reading /proc file */
@@ -1151,10 +1169,10 @@ static void irlan_seq_stop(struct seq_file *seq, void *v)
  */
 static int irlan_seq_show(struct seq_file *seq, void *v)
 {
-	if (v == &irlans)
+	if (v == SEQ_START_TOKEN)
 		seq_puts(seq, "IrLAN instances:\n");
 	else {
-		struct irlan_cb *self = list_entry(v, struct irlan_cb, dev_list);
+		struct irlan_cb *self = v;
 
 		IRDA_ASSERT(self != NULL, return -1;);
 		IRDA_ASSERT(self->magic == IRLAN_MAGIC, return -1;);

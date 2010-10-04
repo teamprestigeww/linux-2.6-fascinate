@@ -46,12 +46,12 @@
 #include <linux/kexec.h>
 #include <linux/crash_dump.h>
 
+#include <asm/ia32.h>
 #include <asm/machvec.h>
 #include <asm/mca.h>
 #include <asm/meminit.h>
 #include <asm/page.h>
 #include <asm/paravirt.h>
-#include <asm/paravirt_patch.h>
 #include <asm/patch.h>
 #include <asm/pgtable.h>
 #include <asm/processor.h>
@@ -73,7 +73,7 @@ unsigned long __per_cpu_offset[NR_CPUS];
 EXPORT_SYMBOL(__per_cpu_offset);
 #endif
 
-DEFINE_PER_CPU(struct cpuinfo_ia64, ia64_cpu_info);
+DEFINE_PER_CPU(struct cpuinfo_ia64, cpu_info);
 DEFINE_PER_CPU(unsigned long, local_per_cpu_offset);
 unsigned long ia64_cycles_per_usec;
 struct ia64_boot_param *ia64_boot_param;
@@ -97,6 +97,12 @@ static struct resource bss_resource = {
 };
 
 unsigned long ia64_max_cacheline_size;
+
+int dma_get_cache_alignment(void)
+{
+        return ia64_max_cacheline_size;
+}
+EXPORT_SYMBOL(dma_get_cache_alignment);
 
 unsigned long ia64_iobase;	/* virtual address for I/O accesses */
 EXPORT_SYMBOL(ia64_iobase);
@@ -144,9 +150,9 @@ int num_rsvd_regions __initdata;
  * This routine does not assume the incoming segments are sorted.
  */
 int __init
-filter_rsvd_memory (u64 start, u64 end, void *arg)
+filter_rsvd_memory (unsigned long start, unsigned long end, void *arg)
 {
-	u64 range_start, range_end, prev_start;
+	unsigned long range_start, range_end, prev_start;
 	void (*func)(unsigned long, unsigned long, int);
 	int i;
 
@@ -184,7 +190,7 @@ filter_rsvd_memory (u64 start, u64 end, void *arg)
  * are not filtered out.
  */
 int __init
-filter_memory(u64 start, u64 end, void *arg)
+filter_memory(unsigned long start, unsigned long end, void *arg)
 {
 	void (*func)(unsigned long, unsigned long, int);
 
@@ -390,7 +396,7 @@ find_initrd (void)
 		initrd_start = (unsigned long)__va(ia64_boot_param->initrd_start);
 		initrd_end   = initrd_start+ia64_boot_param->initrd_size;
 
-		printk(KERN_INFO "Initial ramdisk at: 0x%lx (%llu bytes)\n",
+		printk(KERN_INFO "Initial ramdisk at: 0x%lx (%lu bytes)\n",
 		       initrd_start, ia64_boot_param->initrd_size);
 	}
 #endif
@@ -498,9 +504,9 @@ static int __init parse_elfcorehdr(char *arg)
 }
 early_param("elfcorehdr", parse_elfcorehdr);
 
-int __init reserve_elfcorehdr(u64 *start, u64 *end)
+int __init reserve_elfcorehdr(unsigned long *start, unsigned long *end)
 {
-	u64 length;
+	unsigned long length;
 
 	/* We get the address using the kernel command line,
 	 * but the size is extracted from the EFI tables.
@@ -531,7 +537,6 @@ setup_arch (char **cmdline_p)
 	paravirt_arch_setup_early();
 
 	ia64_patch_vtop((u64) __start___vtop_patchlist, (u64) __end___vtop_patchlist);
-	paravirt_patch_apply();
 
 	*cmdline_p = __va(ia64_boot_param->command_line);
 	strlcpy(boot_command_line, *cmdline_p, COMMAND_LINE_SIZE);
@@ -559,18 +564,19 @@ setup_arch (char **cmdline_p)
 	early_acpi_boot_init();
 # ifdef CONFIG_ACPI_NUMA
 	acpi_numa_init();
-#  ifdef CONFIG_ACPI_HOTPLUG_CPU
+#ifdef CONFIG_ACPI_HOTPLUG_CPU
 	prefill_possible_map();
-#  endif
+#endif
 	per_cpu_scan_finalize((cpus_weight(early_cpu_possible_map) == 0 ?
 		32 : cpus_weight(early_cpu_possible_map)),
 		additional_cpus > 0 ? additional_cpus : 0);
 # endif
+#else
+# ifdef CONFIG_SMP
+	smp_build_cpu_map();	/* happens, e.g., with the Ski simulator */
+# endif
 #endif /* CONFIG_APCI_BOOT */
 
-#ifdef CONFIG_SMP
-	smp_build_cpu_map();
-#endif
 	find_memory();
 
 	/* process SAL system table: */
@@ -580,7 +586,7 @@ setup_arch (char **cmdline_p)
 	ia64_patch_rse((u64) __start___rse_patchlist, (u64) __end___rse_patchlist);
 #else
 	{
-		unsigned long num_phys_stacked;
+		u64 num_phys_stacked;
 
 		if (ia64_pal_rse_info(&num_phys_stacked, 0) == 0 && num_phys_stacked > 96)
 			ia64_patch_rse((u64) __start___rse_patchlist, (u64) __end___rse_patchlist);
@@ -724,10 +730,10 @@ static void *
 c_start (struct seq_file *m, loff_t *pos)
 {
 #ifdef CONFIG_SMP
-	while (*pos < nr_cpu_ids && !cpu_online(*pos))
+	while (*pos < NR_CPUS && !cpu_isset(*pos, cpu_online_map))
 		++*pos;
 #endif
-	return *pos < nr_cpu_ids ? cpu_data(*pos) : NULL;
+	return *pos < NR_CPUS ? cpu_data(*pos) : NULL;
 }
 
 static void *
@@ -847,6 +853,12 @@ identify_cpu (struct cpuinfo_ia64 *c)
 	c->unimpl_pa_mask = ~((1L<<63) | ((1L << phys_addr_size) - 1));
 }
 
+void __init
+setup_per_cpu_areas (void)
+{
+	/* start_kernel() requires this... */
+}
+
 /*
  * Do the following calculations:
  *
@@ -858,9 +870,9 @@ static void __cpuinit
 get_cache_info(void)
 {
 	unsigned long line_size, max = 1;
-	unsigned long l, levels, unique_caches;
-	pal_cache_config_info_t cci;
-	long status;
+	u64 l, levels, unique_caches;
+        pal_cache_config_info_t cci;
+        s64 status;
 
         status = ia64_pal_cache_summary(&levels, &unique_caches);
         if (status != 0) {
@@ -878,9 +890,9 @@ get_cache_info(void)
 		/* cache_type (data_or_unified)=2 */
 		status = ia64_pal_cache_config_info(l, 2, &cci);
 		if (status != 0) {
-			printk(KERN_ERR "%s: ia64_pal_cache_config_info"
-				"(l=%lu, 2) failed (status=%ld)\n",
-				__func__, l, status);
+			printk(KERN_ERR
+			       "%s: ia64_pal_cache_config_info(l=%lu, 2) failed (status=%ld)\n",
+			       __func__, l, status);
 			max = SMP_CACHE_BYTES;
 			/* The safest setup for "flush_icache_range()" */
 			cci.pcci_stride = I_CACHE_STRIDE_SHIFT;
@@ -900,10 +912,10 @@ get_cache_info(void)
 			/* cache_type (instruction)=1*/
 			status = ia64_pal_cache_config_info(l, 1, &cci);
 			if (status != 0) {
-				printk(KERN_ERR "%s: ia64_pal_cache_config_info"
-					"(l=%lu, 1) failed (status=%ld)\n",
+				printk(KERN_ERR
+				"%s: ia64_pal_cache_config_info(l=%lu, 1) failed (status=%ld)\n",
 					__func__, l, status);
-				/* The safest setup for flush_icache_range() */
+				/* The safest setup for "flush_icache_range()" */
 				cci.pcci_stride = I_CACHE_STRIDE_SHIFT;
 			}
 		}
@@ -960,7 +972,7 @@ cpu_init (void)
 	 * depends on the data returned by identify_cpu().  We break the dependency by
 	 * accessing cpu_data() through the canonical per-CPU address.
 	 */
-	cpu_info = cpu_data + ((char *) &__ia64_per_cpu_var(ia64_cpu_info) - __per_cpu_start);
+	cpu_info = cpu_data + ((char *) &__ia64_per_cpu_var(cpu_info) - __per_cpu_start);
 	identify_cpu(cpu_info);
 
 #ifdef CONFIG_MCKINLEY
@@ -1004,10 +1016,15 @@ cpu_init (void)
 					| IA64_DCR_DA | IA64_DCR_DD | IA64_DCR_LC));
 	atomic_inc(&init_mm.mm_count);
 	current->active_mm = &init_mm;
-	BUG_ON(current->mm);
+	if (current->mm)
+		BUG();
 
 	ia64_mmu_init(ia64_imva(cpu_data));
 	ia64_mca_cpu_init(ia64_imva(cpu_data));
+
+#ifdef CONFIG_IA32_SUPPORT
+	ia32_cpu_init();
+#endif
 
 	/* Clear ITC to eliminate sched_clock() overflows in human time.  */
 	ia64_set_itc(0);

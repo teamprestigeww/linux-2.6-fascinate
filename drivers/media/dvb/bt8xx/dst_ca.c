@@ -20,9 +20,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/init.h>
-#include <linux/smp_lock.h>
 #include <linux/string.h>
 #include <linux/dvb/ca.h>
 #include "dvbdev.h"
@@ -554,19 +552,16 @@ free_mem_and_exit:
 	return result;
 }
 
-static long dst_ca_ioctl(struct file *file, unsigned int cmd, unsigned long ioctl_arg)
+static int dst_ca_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long ioctl_arg)
 {
-	struct dvb_device *dvbdev;
-	struct dst_state *state;
+	struct dvb_device* dvbdev = (struct dvb_device*) file->private_data;
+	struct dst_state* state = (struct dst_state*) dvbdev->priv;
 	struct ca_slot_info *p_ca_slot_info;
 	struct ca_caps *p_ca_caps;
 	struct ca_msg *p_ca_message;
 	void __user *arg = (void __user *)ioctl_arg;
 	int result = 0;
 
-	lock_kernel();
-	dvbdev = file->private_data;
-	state = (struct dst_state *)dvbdev->priv;
 	p_ca_message = kmalloc(sizeof (struct ca_msg), GFP_KERNEL);
 	p_ca_slot_info = kmalloc(sizeof (struct ca_slot_info), GFP_KERNEL);
 	p_ca_caps = kmalloc(sizeof (struct ca_caps), GFP_KERNEL);
@@ -652,7 +647,6 @@ static long dst_ca_ioctl(struct file *file, unsigned int cmd, unsigned long ioct
 	kfree (p_ca_slot_info);
 	kfree (p_ca_caps);
 
-	unlock_kernel();
 	return result;
 }
 
@@ -688,9 +682,9 @@ static ssize_t dst_ca_write(struct file *file, const char __user *buffer, size_t
 	return 0;
 }
 
-static const struct file_operations dst_ca_fops = {
+static struct file_operations dst_ca_fops = {
 	.owner = THIS_MODULE,
-	.unlocked_ioctl = dst_ca_ioctl,
+	.ioctl = dst_ca_ioctl,
 	.open = dst_ca_open,
 	.release = dst_ca_release,
 	.read = dst_ca_read,

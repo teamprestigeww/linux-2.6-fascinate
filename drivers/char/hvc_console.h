@@ -28,7 +28,6 @@
 #define HVC_CONSOLE_H
 #include <linux/kref.h>
 #include <linux/tty.h>
-#include <linux/spinlock.h>
 
 /*
  * This is the max number of console adapters that can/will be found as
@@ -55,7 +54,7 @@ struct hvc_struct {
 	int outbuf_size;
 	int n_outbuf;
 	uint32_t vtermno;
-	const struct hv_ops *ops;
+	struct hv_ops *ops;
 	int irq_requested;
 	int data;
 	struct winsize ws;
@@ -76,12 +75,11 @@ struct hv_ops {
 };
 
 /* Register a vterm and a slot index for use as a console (console_init) */
-extern int hvc_instantiate(uint32_t vtermno, int index,
-			   const struct hv_ops *ops);
+extern int hvc_instantiate(uint32_t vtermno, int index, struct hv_ops *ops);
 
 /* register a vterm for hvc tty operation (module_init or hotplug add) */
-extern struct hvc_struct * hvc_alloc(uint32_t vtermno, int data,
-				     const struct hv_ops *ops, int outbuf_size);
+extern struct hvc_struct * __devinit hvc_alloc(uint32_t vtermno, int data,
+				struct hv_ops *ops, int outbuf_size);
 /* remove a vterm from hvc tty operation (module_exit or hotplug remove) */
 extern int hvc_remove(struct hvc_struct *hp);
 
@@ -90,16 +88,7 @@ int hvc_poll(struct hvc_struct *hp);
 void hvc_kick(void);
 
 /* Resize hvc tty terminal window */
-extern void __hvc_resize(struct hvc_struct *hp, struct winsize ws);
-
-static inline void hvc_resize(struct hvc_struct *hp, struct winsize ws)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&hp->lock, flags);
-	__hvc_resize(hp, ws);
-	spin_unlock_irqrestore(&hp->lock, flags);
-}
+extern void hvc_resize(struct hvc_struct *hp, struct winsize ws);
 
 /* default notifier for irq based notification */
 extern int notifier_add_irq(struct hvc_struct *hp, int data);

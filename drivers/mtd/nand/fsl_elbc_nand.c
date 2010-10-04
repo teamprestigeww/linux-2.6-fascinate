@@ -237,15 +237,12 @@ static int fsl_elbc_run_command(struct mtd_info *mtd)
 
 	ctrl->use_mdr = 0;
 
-	if (ctrl->status != LTESR_CC) {
-		dev_info(ctrl->dev,
-		         "command failed: fir %x fcr %x status %x mdr %x\n",
-		         in_be32(&lbc->fir), in_be32(&lbc->fcr),
-		         ctrl->status, ctrl->mdr);
-		return -EIO;
-	}
+	dev_vdbg(ctrl->dev,
+	         "fsl_elbc_run_command: stat=%08x mdr=%08x fmr=%08x\n",
+	         ctrl->status, ctrl->mdr, in_be32(&lbc->fmr));
 
-	return 0;
+	/* returns 0 on success otherwise non-zero) */
+	return ctrl->status == LTESR_CC ? 0 : -EIO;
 }
 
 static void fsl_elbc_do_read(struct nand_chip *chip, int oob)
@@ -256,17 +253,17 @@ static void fsl_elbc_do_read(struct nand_chip *chip, int oob)
 
 	if (priv->page_size) {
 		out_be32(&lbc->fir,
-		         (FIR_OP_CM0 << FIR_OP0_SHIFT) |
+		         (FIR_OP_CW0 << FIR_OP0_SHIFT) |
 		         (FIR_OP_CA  << FIR_OP1_SHIFT) |
 		         (FIR_OP_PA  << FIR_OP2_SHIFT) |
-		         (FIR_OP_CM1 << FIR_OP3_SHIFT) |
+		         (FIR_OP_CW1 << FIR_OP3_SHIFT) |
 		         (FIR_OP_RBW << FIR_OP4_SHIFT));
 
 		out_be32(&lbc->fcr, (NAND_CMD_READ0 << FCR_CMD0_SHIFT) |
 		                    (NAND_CMD_READSTART << FCR_CMD1_SHIFT));
 	} else {
 		out_be32(&lbc->fir,
-		         (FIR_OP_CM0 << FIR_OP0_SHIFT) |
+		         (FIR_OP_CW0 << FIR_OP0_SHIFT) |
 		         (FIR_OP_CA  << FIR_OP1_SHIFT) |
 		         (FIR_OP_PA  << FIR_OP2_SHIFT) |
 		         (FIR_OP_RBW << FIR_OP3_SHIFT));
@@ -335,7 +332,7 @@ static void fsl_elbc_cmdfunc(struct mtd_info *mtd, unsigned int command,
 	case NAND_CMD_READID:
 		dev_vdbg(ctrl->dev, "fsl_elbc_cmdfunc: NAND_CMD_READID.\n");
 
-		out_be32(&lbc->fir, (FIR_OP_CM0 << FIR_OP0_SHIFT) |
+		out_be32(&lbc->fir, (FIR_OP_CW0 << FIR_OP0_SHIFT) |
 		                    (FIR_OP_UA  << FIR_OP1_SHIFT) |
 		                    (FIR_OP_RBW << FIR_OP2_SHIFT));
 		out_be32(&lbc->fcr, NAND_CMD_READID << FCR_CMD0_SHIFT);
@@ -362,20 +359,16 @@ static void fsl_elbc_cmdfunc(struct mtd_info *mtd, unsigned int command,
 		dev_vdbg(ctrl->dev, "fsl_elbc_cmdfunc: NAND_CMD_ERASE2.\n");
 
 		out_be32(&lbc->fir,
-		         (FIR_OP_CM0 << FIR_OP0_SHIFT) |
+		         (FIR_OP_CW0 << FIR_OP0_SHIFT) |
 		         (FIR_OP_PA  << FIR_OP1_SHIFT) |
-		         (FIR_OP_CM2 << FIR_OP2_SHIFT) |
-		         (FIR_OP_CW1 << FIR_OP3_SHIFT) |
-		         (FIR_OP_RS  << FIR_OP4_SHIFT));
+		         (FIR_OP_CM1 << FIR_OP2_SHIFT));
 
 		out_be32(&lbc->fcr,
 		         (NAND_CMD_ERASE1 << FCR_CMD0_SHIFT) |
-		         (NAND_CMD_STATUS << FCR_CMD1_SHIFT) |
-		         (NAND_CMD_ERASE2 << FCR_CMD2_SHIFT));
+		         (NAND_CMD_ERASE2 << FCR_CMD1_SHIFT));
 
 		out_be32(&lbc->fbcr, 0);
 		ctrl->read_bytes = 0;
-		ctrl->use_mdr = 1;
 
 		fsl_elbc_run_command(mtd);
 		return;
@@ -390,41 +383,40 @@ static void fsl_elbc_cmdfunc(struct mtd_info *mtd, unsigned int command,
 
 		ctrl->column = column;
 		ctrl->oob = 0;
-		ctrl->use_mdr = 1;
-
-		fcr = (NAND_CMD_STATUS   << FCR_CMD1_SHIFT) |
-		      (NAND_CMD_SEQIN    << FCR_CMD2_SHIFT) |
-		      (NAND_CMD_PAGEPROG << FCR_CMD3_SHIFT);
 
 		if (priv->page_size) {
+			fcr = (NAND_CMD_SEQIN << FCR_CMD0_SHIFT) |
+			      (NAND_CMD_PAGEPROG << FCR_CMD1_SHIFT);
+
 			out_be32(&lbc->fir,
-			         (FIR_OP_CM2 << FIR_OP0_SHIFT) |
+			         (FIR_OP_CW0 << FIR_OP0_SHIFT) |
 			         (FIR_OP_CA  << FIR_OP1_SHIFT) |
 			         (FIR_OP_PA  << FIR_OP2_SHIFT) |
 			         (FIR_OP_WB  << FIR_OP3_SHIFT) |
-			         (FIR_OP_CM3 << FIR_OP4_SHIFT) |
-			         (FIR_OP_CW1 << FIR_OP5_SHIFT) |
-			         (FIR_OP_RS  << FIR_OP6_SHIFT));
+			         (FIR_OP_CW1 << FIR_OP4_SHIFT));
 		} else {
+			fcr = (NAND_CMD_PAGEPROG << FCR_CMD1_SHIFT) |
+			      (NAND_CMD_SEQIN << FCR_CMD2_SHIFT);
+
 			out_be32(&lbc->fir,
-			         (FIR_OP_CM0 << FIR_OP0_SHIFT) |
+			         (FIR_OP_CW0 << FIR_OP0_SHIFT) |
 			         (FIR_OP_CM2 << FIR_OP1_SHIFT) |
 			         (FIR_OP_CA  << FIR_OP2_SHIFT) |
 			         (FIR_OP_PA  << FIR_OP3_SHIFT) |
 			         (FIR_OP_WB  << FIR_OP4_SHIFT) |
-			         (FIR_OP_CM3 << FIR_OP5_SHIFT) |
-			         (FIR_OP_CW1 << FIR_OP6_SHIFT) |
-			         (FIR_OP_RS  << FIR_OP7_SHIFT));
+			         (FIR_OP_CW1 << FIR_OP5_SHIFT));
 
 			if (column >= mtd->writesize) {
 				/* OOB area --> READOOB */
 				column -= mtd->writesize;
 				fcr |= NAND_CMD_READOOB << FCR_CMD0_SHIFT;
 				ctrl->oob = 1;
-			} else {
-				WARN_ON(column != 0);
+			} else if (column < 256) {
 				/* First 256 bytes --> READ0 */
 				fcr |= NAND_CMD_READ0 << FCR_CMD0_SHIFT;
+			} else {
+				/* Second 256 bytes --> READ1 */
+				fcr |= NAND_CMD_READ1 << FCR_CMD0_SHIFT;
 			}
 		}
 
@@ -636,6 +628,22 @@ static int fsl_elbc_wait(struct mtd_info *mtd, struct nand_chip *chip)
 {
 	struct fsl_elbc_mtd *priv = chip->priv;
 	struct fsl_elbc_ctrl *ctrl = priv->ctrl;
+	struct fsl_lbc_regs __iomem *lbc = ctrl->regs;
+
+	if (ctrl->status != LTESR_CC)
+		return NAND_STATUS_FAIL;
+
+	/* Use READ_STATUS command, but wait for the device to be ready */
+	ctrl->use_mdr = 0;
+	out_be32(&lbc->fir,
+	         (FIR_OP_CW0 << FIR_OP0_SHIFT) |
+	         (FIR_OP_RBW << FIR_OP1_SHIFT));
+	out_be32(&lbc->fcr, NAND_CMD_STATUS << FCR_CMD0_SHIFT);
+	out_be32(&lbc->fbcr, 1);
+	set_addr(mtd, 0, 0, 0);
+	ctrl->read_bytes = 1;
+
+	fsl_elbc_run_command(mtd);
 
 	if (ctrl->status != LTESR_CC)
 		return NAND_STATUS_FAIL;
@@ -643,7 +651,8 @@ static int fsl_elbc_wait(struct mtd_info *mtd, struct nand_chip *chip)
 	/* The chip always seems to report that it is
 	 * write-protected, even when it is not.
 	 */
-	return (ctrl->mdr & 0xff) | NAND_STATUS_WP;
+	setbits8(ctrl->addr, NAND_STATUS_WP);
+	return fsl_elbc_read_byte(mtd);
 }
 
 static int fsl_elbc_chip_init_tail(struct mtd_info *mtd)
@@ -730,8 +739,7 @@ static int fsl_elbc_chip_init_tail(struct mtd_info *mtd)
 
 static int fsl_elbc_read_page(struct mtd_info *mtd,
                               struct nand_chip *chip,
-			      uint8_t *buf,
-			      int page)
+                              uint8_t *buf)
 {
 	fsl_elbc_read_buf(mtd, buf, mtd->writesize);
 	fsl_elbc_read_buf(mtd, chip->oob_poi, mtd->oobsize);
@@ -874,7 +882,7 @@ static int __devinit fsl_elbc_chip_probe(struct fsl_elbc_ctrl *ctrl,
 	priv->ctrl = ctrl;
 	priv->dev = ctrl->dev;
 
-	priv->vbase = ioremap(res.start, resource_size(&res));
+	priv->vbase = ioremap(res.start, res.end - res.start + 1);
 	if (!priv->vbase) {
 		dev_err(ctrl->dev, "failed to map chip region\n");
 		ret = -ENOMEM;
@@ -891,7 +899,7 @@ static int __devinit fsl_elbc_chip_probe(struct fsl_elbc_ctrl *ctrl,
 	if (ret)
 		goto err;
 
-	ret = nand_scan_ident(&priv->mtd, 1, NULL);
+	ret = nand_scan_ident(&priv->mtd, 1);
 	if (ret)
 		goto err;
 
@@ -937,13 +945,6 @@ static int __devinit fsl_elbc_ctrl_init(struct fsl_elbc_ctrl *ctrl)
 {
 	struct fsl_lbc_regs __iomem *lbc = ctrl->regs;
 
-	/*
-	 * NAND transactions can tie up the bus for a long time, so set the
-	 * bus timeout to max by clearing LBCR[BMT] (highest base counter
-	 * value) and setting LBCR[BMTPS] to the highest prescaler value.
-	 */
-	clrsetbits_be32(&lbc->lbcr, LBCR_BMT, 15);
-
 	/* clear event registers */
 	setbits32(&lbc->ltesr, LTESR_NAND_MASK);
 	out_be32(&lbc->lteatr, 0);
@@ -958,7 +959,7 @@ static int __devinit fsl_elbc_ctrl_init(struct fsl_elbc_ctrl *ctrl)
 	return 0;
 }
 
-static int fsl_elbc_ctrl_remove(struct platform_device *ofdev)
+static int fsl_elbc_ctrl_remove(struct of_device *ofdev)
 {
 	struct fsl_elbc_ctrl *ctrl = dev_get_drvdata(&ofdev->dev);
 	int i;
@@ -1013,7 +1014,7 @@ static irqreturn_t fsl_elbc_ctrl_irq(int irqno, void *data)
  * in the chip probe function.
 */
 
-static int __devinit fsl_elbc_ctrl_probe(struct platform_device *ofdev,
+static int __devinit fsl_elbc_ctrl_probe(struct of_device *ofdev,
                                          const struct of_device_id *match)
 {
 	struct device_node *child;
@@ -1030,14 +1031,14 @@ static int __devinit fsl_elbc_ctrl_probe(struct platform_device *ofdev,
 	init_waitqueue_head(&ctrl->controller.wq);
 	init_waitqueue_head(&ctrl->irq_wait);
 
-	ctrl->regs = of_iomap(ofdev->dev.of_node, 0);
+	ctrl->regs = of_iomap(ofdev->node, 0);
 	if (!ctrl->regs) {
 		dev_err(&ofdev->dev, "failed to get memory region\n");
 		ret = -ENODEV;
 		goto err;
 	}
 
-	ctrl->irq = of_irq_to_resource(ofdev->dev.of_node, 0, NULL);
+	ctrl->irq = of_irq_to_resource(ofdev->node, 0, NULL);
 	if (ctrl->irq == NO_IRQ) {
 		dev_err(&ofdev->dev, "failed to get irq resource\n");
 		ret = -ENODEV;
@@ -1058,7 +1059,7 @@ static int __devinit fsl_elbc_ctrl_probe(struct platform_device *ofdev,
 		goto err;
 	}
 
-	for_each_child_of_node(ofdev->dev.of_node, child)
+	for_each_child_of_node(ofdev->node, child)
 		if (of_device_is_compatible(child, "fsl,elbc-fcm-nand"))
 			fsl_elbc_chip_probe(ctrl, child);
 
@@ -1078,10 +1079,9 @@ static const struct of_device_id fsl_elbc_match[] = {
 
 static struct of_platform_driver fsl_elbc_ctrl_driver = {
 	.driver = {
-		.name = "fsl-elbc",
-		.owner = THIS_MODULE,
-		.of_match_table = fsl_elbc_match,
+		.name	= "fsl-elbc",
 	},
+	.match_table = fsl_elbc_match,
 	.probe = fsl_elbc_ctrl_probe,
 	.remove = fsl_elbc_ctrl_remove,
 };

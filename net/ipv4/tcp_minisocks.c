@@ -20,14 +20,19 @@
 
 #include <linux/mm.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/sysctl.h>
 #include <linux/workqueue.h>
 #include <net/tcp.h>
 #include <net/inet_common.h>
 #include <net/xfrm.h>
 
-int sysctl_tcp_syncookies __read_mostly = 1;
+#ifdef CONFIG_SYSCTL
+#define SYNC_INIT 0 /* let the user enable it */
+#else
+#define SYNC_INIT 1
+#endif
+
+int sysctl_tcp_syncookies __read_mostly = SYNC_INIT;
 EXPORT_SYMBOL(sysctl_tcp_syncookies);
 
 int sysctl_tcp_abort_on_overflow __read_mostly;
@@ -47,6 +52,7 @@ struct inet_timewait_death_row tcp_death_row = {
 	.twcal_timer	= TIMER_INITIALIZER(inet_twdr_twcal_tick, 0,
 					    (unsigned long)&tcp_death_row),
 };
+
 EXPORT_SYMBOL_GPL(tcp_death_row);
 
 static __inline__ int tcp_in_window(u32 seq, u32 end_seq, u32 s_win, u32 e_win)
@@ -90,19 +96,18 @@ enum tcp_tw_status
 tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 			   const struct tcphdr *th)
 {
-	struct tcp_options_received tmp_opt;
-	u8 *hash_location;
 	struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
+	struct tcp_options_received tmp_opt;
 	int paws_reject = 0;
 
 	tmp_opt.saw_tstamp = 0;
 	if (th->doff > (sizeof(*th) >> 2) && tcptw->tw_ts_recent_stamp) {
-		tcp_parse_options(skb, &tmp_opt, &hash_location, 0);
+		tcp_parse_options(skb, &tmp_opt, 0);
 
 		if (tmp_opt.saw_tstamp) {
 			tmp_opt.ts_recent	= tcptw->tw_ts_recent;
 			tmp_opt.ts_recent_stamp	= tcptw->tw_ts_recent_stamp;
-			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
+			paws_reject = tcp_paws_check(&tmp_opt, th->rst);
 		}
 	}
 
@@ -123,8 +128,7 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 			goto kill_with_rst;
 
 		/* Dup ACK? */
-		if (!th->ack ||
-		    !after(TCP_SKB_CB(skb)->end_seq, tcptw->tw_rcv_nxt) ||
+		if (!after(TCP_SKB_CB(skb)->end_seq, tcptw->tw_rcv_nxt) ||
 		    TCP_SKB_CB(skb)->end_seq == TCP_SKB_CB(skb)->seq) {
 			inet_twsk_put(tw);
 			return TCP_TW_SUCCESS;
@@ -261,7 +265,6 @@ kill:
 	inet_twsk_put(tw);
 	return TCP_TW_SUCCESS;
 }
-EXPORT_SYMBOL(tcp_timewait_state_process);
 
 /*
  * Move a socket to time-wait or dead fin-wait-2 state.
@@ -318,7 +321,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 			if (key != NULL) {
 				memcpy(&tcptw->tw_md5_key, key->key, key->keylen);
 				tcptw->tw_md5_keylen = key->keylen;
-				if (tcp_alloc_md5sig_pool(sk) == NULL)
+				if (tcp_alloc_md5sig_pool() == NULL)
 					BUG();
 			}
 		} while (0);
@@ -359,9 +362,10 @@ void tcp_twsk_destructor(struct sock *sk)
 #ifdef CONFIG_TCP_MD5SIG
 	struct tcp_timewait_sock *twsk = tcp_twsk(sk);
 	if (twsk->tw_md5_keylen)
-		tcp_free_md5sig_pool();
+		tcp_put_md5sig_pool();
 #endif
 }
+
 EXPORT_SYMBOL_GPL(tcp_twsk_destructor);
 
 static inline void TCP_ECN_openreq_child(struct tcp_sock *tp,
@@ -384,47 +388,18 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 		const struct inet_request_sock *ireq = inet_rsk(req);
 		struct tcp_request_sock *treq = tcp_rsk(req);
 		struct inet_connection_sock *newicsk = inet_csk(newsk);
-		struct tcp_sock *newtp = tcp_sk(newsk);
-		struct tcp_sock *oldtp = tcp_sk(sk);
-		struct tcp_cookie_values *oldcvp = oldtp->cookie_values;
-
-		/* TCP Cookie Transactions require space for the cookie pair,
-		 * as it differs for each connection.  There is no need to
-		 * copy any s_data_payload stored at the original socket.
-		 * Failure will prevent resuming the connection.
-		 *
-		 * Presumed copied, in order of appearance:
-		 *	cookie_in_always, cookie_out_never
-		 */
-		if (oldcvp != NULL) {
-			struct tcp_cookie_values *newcvp =
-				kzalloc(sizeof(*newtp->cookie_values),
-					GFP_ATOMIC);
-
-			if (newcvp != NULL) {
-				kref_init(&newcvp->kref);
-				newcvp->cookie_desired =
-						oldcvp->cookie_desired;
-				newtp->cookie_values = newcvp;
-			} else {
-				/* Not Yet Implemented */
-				newtp->cookie_values = NULL;
-			}
-		}
+		struct tcp_sock *newtp;
 
 		/* Now setup tcp_sock */
+		newtp = tcp_sk(newsk);
 		newtp->pred_flags = 0;
-
-		newtp->rcv_wup = newtp->copied_seq =
-		newtp->rcv_nxt = treq->rcv_isn + 1;
-
-		newtp->snd_sml = newtp->snd_una =
-		newtp->snd_nxt = newtp->snd_up =
-			treq->snt_isn + 1 + tcp_s_data_size(oldtp);
+		newtp->rcv_wup = newtp->copied_seq = newtp->rcv_nxt = treq->rcv_isn + 1;
+		newtp->snd_sml = newtp->snd_una = newtp->snd_nxt = treq->snt_isn + 1;
+		newtp->snd_up = treq->snt_isn + 1;
 
 		tcp_prequeue_init(newtp);
 
-		tcp_init_wl(newtp, treq->rcv_isn);
+		tcp_init_wl(newtp, treq->snt_isn, treq->rcv_isn);
 
 		newtp->srtt = 0;
 		newtp->mdev = TCP_TIMEOUT_INIT;
@@ -434,7 +409,7 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 		newtp->retrans_out = 0;
 		newtp->sacked_out = 0;
 		newtp->fackets_out = 0;
-		newtp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+		newtp->snd_ssthresh = 0x7fffffff;
 
 		/* So many TCP implementations out there (incorrectly) count the
 		 * initial SYN frame in their delayed-ACK and congestion control
@@ -453,14 +428,15 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 		tcp_set_ca_state(newsk, TCP_CA_Open);
 		tcp_init_xmit_timers(newsk);
 		skb_queue_head_init(&newtp->out_of_order_queue);
-		newtp->write_seq = newtp->pushed_seq =
-			treq->snt_isn + 1 + tcp_s_data_size(oldtp);
+		newtp->write_seq = treq->snt_isn + 1;
+		newtp->pushed_seq = newtp->write_seq;
 
 		newtp->rx_opt.saw_tstamp = 0;
 
 		newtp->rx_opt.dsack = 0;
-		newtp->rx_opt.num_sacks = 0;
+		newtp->rx_opt.eff_sacks = 0;
 
+		newtp->rx_opt.num_sacks = 0;
 		newtp->urg_data = 0;
 
 		if (sock_flag(newsk, SOCK_KEEPOPEN))
@@ -500,7 +476,7 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 		if (newtp->af_specific->md5_lookup(sk, newsk))
 			newtp->tcp_header_len += TCPOLEN_MD5SIG_ALIGNED;
 #endif
-		if (skb->len >= TCP_MSS_DEFAULT + newtp->tcp_header_len)
+		if (skb->len >= TCP_MIN_RCVMSS+newtp->tcp_header_len)
 			newicsk->icsk_ack.last_seg_size = skb->len - newtp->tcp_header_len;
 		newtp->rx_opt.mss_clamp = req->mss;
 		TCP_ECN_openreq_child(newtp, req);
@@ -509,7 +485,6 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 	}
 	return newsk;
 }
-EXPORT_SYMBOL(tcp_create_openreq_child);
 
 /*
  *	Process an incoming packet for SYN_RECV sockets represented
@@ -520,16 +495,15 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 			   struct request_sock *req,
 			   struct request_sock **prev)
 {
-	struct tcp_options_received tmp_opt;
-	u8 *hash_location;
-	struct sock *child;
 	const struct tcphdr *th = tcp_hdr(skb);
 	__be32 flg = tcp_flag_word(th) & (TCP_FLAG_RST|TCP_FLAG_SYN|TCP_FLAG_ACK);
 	int paws_reject = 0;
+	struct tcp_options_received tmp_opt;
+	struct sock *child;
 
 	tmp_opt.saw_tstamp = 0;
 	if (th->doff > (sizeof(struct tcphdr)>>2)) {
-		tcp_parse_options(skb, &tmp_opt, &hash_location, 0);
+		tcp_parse_options(skb, &tmp_opt, 0);
 
 		if (tmp_opt.saw_tstamp) {
 			tmp_opt.ts_recent = req->ts_recent;
@@ -538,7 +512,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 			 * from another data.
 			 */
 			tmp_opt.ts_recent_stamp = get_seconds() - ((TCP_TIMEOUT_INIT/HZ)<<req->retrans);
-			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
+			paws_reject = tcp_paws_check(&tmp_opt, th->rst);
 		}
 	}
 
@@ -563,7 +537,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		 * Enforce "SYN-ACK" according to figure 8, figure 6
 		 * of RFC793, fixed by RFC1122.
 		 */
-		req->rsk_ops->rtx_syn_ack(sk, req, NULL);
+		req->rsk_ops->rtx_syn_ack(sk, req);
 		return NULL;
 	}
 
@@ -622,8 +596,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	 * Invalid ACK: reset will be sent by listening socket
 	 */
 	if ((flg & TCP_FLAG_ACK) &&
-	    (TCP_SKB_CB(skb)->ack_seq !=
-	     tcp_rsk(req)->snt_isn + 1 + tcp_s_data_size(tcp_sk(sk))))
+	    (TCP_SKB_CB(skb)->ack_seq != tcp_rsk(req)->snt_isn + 1))
 		return sk;
 
 	/* Also, it would be not so bad idea to check rcv_tsecr, which
@@ -668,11 +641,10 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	if (!(flg & TCP_FLAG_ACK))
 		return NULL;
 
-	/* While TCP_DEFER_ACCEPT is active, drop bare ACK. */
-	if (req->retrans < inet_csk(sk)->icsk_accept_queue.rskq_defer_accept &&
+	/* If TCP_DEFER_ACCEPT is set, drop bare ACK. */
+	if (inet_csk(sk)->icsk_accept_queue.rskq_defer_accept &&
 	    TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1) {
 		inet_rsk(req)->acked = 1;
-		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPDEFERACCEPTDROP);
 		return NULL;
 	}
 
@@ -685,6 +657,29 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	child = inet_csk(sk)->icsk_af_ops->syn_recv_sock(sk, skb, req, NULL);
 	if (child == NULL)
 		goto listen_overflow;
+#ifdef CONFIG_TCP_MD5SIG
+	else {
+		/* Copy over the MD5 key from the original socket */
+		struct tcp_md5sig_key *key;
+		struct tcp_sock *tp = tcp_sk(sk);
+		key = tp->af_specific->md5_lookup(sk, child);
+		if (key != NULL) {
+			/*
+			 * We're using one, so create a matching key on the
+			 * newsk structure. If we fail to get memory then we
+			 * end up not copying the key across. Shucks.
+			 */
+			char *newkey = kmemdup(key->key, key->keylen,
+					       GFP_ATOMIC);
+			if (newkey) {
+				if (!tcp_alloc_md5sig_pool())
+					BUG();
+				tp->af_specific->md5_add(child, child, newkey,
+							 key->keylen);
+			}
+		}
+	}
+#endif
 
 	inet_csk_reqsk_queue_unlink(sk, req, prev);
 	inet_csk_reqsk_queue_removed(sk, req);
@@ -706,7 +701,6 @@ embryonic_reset:
 	inet_csk_reqsk_queue_drop(sk, req, prev);
 	return NULL;
 }
-EXPORT_SYMBOL(tcp_check_req);
 
 /*
  * Queue segment on the new socket if the new socket is active,
@@ -731,11 +725,15 @@ int tcp_child_process(struct sock *parent, struct sock *child,
 		 * in main socket hash table and lock on listening
 		 * socket does not protect us more.
 		 */
-		__sk_add_backlog(child, skb);
+		sk_add_backlog(child, skb);
 	}
 
 	bh_unlock_sock(child);
 	sock_put(child);
 	return ret;
 }
+
+EXPORT_SYMBOL(tcp_check_req);
 EXPORT_SYMBOL(tcp_child_process);
+EXPORT_SYMBOL(tcp_create_openreq_child);
+EXPORT_SYMBOL(tcp_timewait_state_process);

@@ -5,7 +5,9 @@
 #include <linux/tracepoint.h>
 
 DECLARE_TRACE(subsys_event,
-	TP_PROTO(struct inode *inode, struct file *file),
-	TP_ARGS(inode, file));
-DECLARE_TRACE_NOARGS(subsys_eventb);
+	TPPROTO(struct inode *inode, struct file *file),
+	TPARGS(inode, file));
+DECLARE_TRACE(subsys_eventb,
+	TPPROTO(void),
+	TPARGS());
 #endif

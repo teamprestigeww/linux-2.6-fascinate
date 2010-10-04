@@ -1,10 +1,13 @@
 #ifndef B43_DMA_H_
 #define B43_DMA_H_
 
-#include <linux/err.h>
+#include <linux/list.h>
+#include <linux/spinlock.h>
+#include <linux/workqueue.h>
+#include <linux/linkage.h>
+#include <asm/atomic.h>
 
 #include "b43.h"
-
 
 /* DMA-Interrupt reasons. */
 #define B43_DMAIRQ_FATALMASK	((1 << 10) | (1 << 11) | (1 << 12) \
@@ -67,7 +70,7 @@
 struct b43_dmadesc32 {
 	__le32 control;
 	__le32 address;
-} __packed;
+} __attribute__ ((__packed__));
 #define B43_DMA32_DCTL_BYTECNT		0x00001FFF
 #define B43_DMA32_DCTL_ADDREXT_MASK		0x00030000
 #define B43_DMA32_DCTL_ADDREXT_SHIFT	16
@@ -140,7 +143,7 @@ struct b43_dmadesc64 {
 	__le32 control1;
 	__le32 address_low;
 	__le32 address_high;
-} __packed;
+} __attribute__ ((__packed__));
 #define B43_DMA64_DCTL0_DTABLEEND		0x10000000
 #define B43_DMA64_DCTL0_IRQ			0x20000000
 #define B43_DMA64_DCTL0_FRAMEEND		0x40000000
@@ -153,22 +156,19 @@ struct b43_dmadesc_generic {
 	union {
 		struct b43_dmadesc32 dma32;
 		struct b43_dmadesc64 dma64;
-	} __packed;
-} __packed;
+	} __attribute__ ((__packed__));
+} __attribute__ ((__packed__));
 
 /* Misc DMA constants */
 #define B43_DMA_RINGMEMSIZE		PAGE_SIZE
-#define B43_DMA0_RX_FRAMEOFFSET		30
+#define B43_DMA0_RX_FRAMEOFFSET	30
+#define B43_DMA3_RX_FRAMEOFFSET	0
 
 /* DMA engine tuning knobs */
-#define B43_TXRING_SLOTS		256
+#define B43_TXRING_SLOTS		128
 #define B43_RXRING_SLOTS		64
-#define B43_DMA0_RX_BUFFERSIZE		IEEE80211_MAX_FRAME_LEN
-
-/* Pointer poison */
-#define B43_DMA_PTR_POISON		((void *)ERR_PTR(-ENOMEM))
-#define b43_dma_ptr_is_poisoned(ptr)	(unlikely((ptr) == B43_DMA_PTR_POISON))
-
+#define B43_DMA0_RX_BUFFERSIZE	(2304 + 100)
+#define B43_DMA3_RX_BUFFERSIZE	16
 
 struct sk_buff;
 struct b43_private;
@@ -215,7 +215,7 @@ struct b43_dmaring {
 	void *descbase;
 	/* Meta data about all descriptors. */
 	struct b43_dmadesc_meta *meta;
-	/* Cache of TX headers for each TX frame.
+	/* Cache of TX headers for each slot.
 	 * This is to avoid an allocation on each TX.
 	 * This is NULL for an RX ring.
 	 */
@@ -228,6 +228,8 @@ struct b43_dmaring {
 	int used_slots;
 	/* Currently used slot in the ring. */
 	int current_slot;
+	/* Total number of packets sent. Statistics only. */
+	unsigned int nr_tx_packets;
 	/* Frameoffset in octets. */
 	u32 frameoffset;
 	/* Descriptor buffer size. */
@@ -245,6 +247,8 @@ struct b43_dmaring {
 	/* The QOS priority assigned to this ring. Only used for TX rings.
 	 * This is the mac80211 "queue" value. */
 	u8 queue_prio;
+	/* Lock, only used for TX. */
+	spinlock_t lock;
 	struct b43_wldev *dev;
 #ifdef CONFIG_B43_DEBUG
 	/* Maximum number of used slots. */
@@ -275,6 +279,9 @@ void b43_dma_free(struct b43_wldev *dev);
 
 void b43_dma_tx_suspend(struct b43_wldev *dev);
 void b43_dma_tx_resume(struct b43_wldev *dev);
+
+void b43_dma_get_tx_stats(struct b43_wldev *dev,
+			  struct ieee80211_tx_queue_stats *stats);
 
 int b43_dma_tx(struct b43_wldev *dev,
 	       struct sk_buff *skb);

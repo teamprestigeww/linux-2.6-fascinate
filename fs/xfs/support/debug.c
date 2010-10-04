@@ -22,8 +22,8 @@
 #include "xfs_sb.h"
 #include "xfs_inum.h"
 #include "xfs_ag.h"
+#include "xfs_dmapi.h"
 #include "xfs_mount.h"
-#include "xfs_error.h"
 
 static char		message[1024];	/* keep it off the stack */
 static DEFINE_SPINLOCK(xfs_err_lock);

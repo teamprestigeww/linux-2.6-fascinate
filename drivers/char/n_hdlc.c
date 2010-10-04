@@ -10,6 +10,7 @@
  *	Paul Mackerras <Paul.Mackerras@cs.anu.edu.au>
  *
  * Original release 01/11/99
+ * $Id: n_hdlc.c,v 4.8 2003/05/06 21:18:51 paulkf Exp $
  *
  * This code is released under the GNU General Public License (GPL)
  *
@@ -78,6 +79,7 @@
  */
 
 #define HDLC_MAGIC 0x239e
+#define HDLC_VERSION "$Revision: 4.8 $"
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -97,7 +99,6 @@
 #include <linux/slab.h>
 #include <linux/tty.h>
 #include <linux/errno.h>
-#include <linux/smp_lock.h>
 #include <linux/string.h>	/* used in new tty drivers */
 #include <linux/signal.h>	/* used in new tty drivers */
 #include <linux/if.h>
@@ -113,7 +114,7 @@
 #define MAX_HDLC_FRAME_SIZE 65535 
 #define DEFAULT_RX_BUF_COUNT 10
 #define MAX_RX_BUF_COUNT 60
-#define DEFAULT_TX_BUF_COUNT 3
+#define DEFAULT_TX_BUF_COUNT 1
 
 struct n_hdlc_buf {
 	struct n_hdlc_buf *link;
@@ -198,31 +199,6 @@ static void n_hdlc_tty_wakeup(struct tty_struct *tty);
 #define tty2n_hdlc(tty)	((struct n_hdlc *) ((tty)->disc_data))
 #define n_hdlc2tty(n_hdlc)	((n_hdlc)->tty)
 
-static void flush_rx_queue(struct tty_struct *tty)
-{
-	struct n_hdlc *n_hdlc = tty2n_hdlc(tty);
-	struct n_hdlc_buf *buf;
-
-	while ((buf = n_hdlc_buf_get(&n_hdlc->rx_buf_list)))
-		n_hdlc_buf_put(&n_hdlc->rx_free_buf_list, buf);
-}
-
-static void flush_tx_queue(struct tty_struct *tty)
-{
-	struct n_hdlc *n_hdlc = tty2n_hdlc(tty);
-	struct n_hdlc_buf *buf;
-	unsigned long flags;
-
-	while ((buf = n_hdlc_buf_get(&n_hdlc->tx_buf_list)))
-		n_hdlc_buf_put(&n_hdlc->tx_free_buf_list, buf);
- 	spin_lock_irqsave(&n_hdlc->tx_buf_list.spinlock, flags);
-	if (n_hdlc->tbuf) {
-		n_hdlc_buf_put(&n_hdlc->tx_free_buf_list, n_hdlc->tbuf);
-		n_hdlc->tbuf = NULL;
-	}
-	spin_unlock_irqrestore(&n_hdlc->tx_buf_list.spinlock, flags);
-}
-
 static struct tty_ldisc_ops n_hdlc_ldisc = {
 	.owner		= THIS_MODULE,
 	.magic		= TTY_LDISC_MAGIC,
@@ -235,7 +211,6 @@ static struct tty_ldisc_ops n_hdlc_ldisc = {
 	.poll		= n_hdlc_tty_poll,
 	.receive_buf	= n_hdlc_tty_receive,
 	.write_wakeup	= n_hdlc_tty_wakeup,
-	.flush_buffer   = flush_rx_queue,
 };
 
 /**
@@ -366,7 +341,10 @@ static int n_hdlc_tty_open (struct tty_struct *tty)
 	set_bit(TTY_NO_WRITE_SPLIT,&tty->flags);
 #endif
 	
-	/* flush receive data from driver */
+	/* Flush any pending characters in the driver and discipline. */
+	if (tty->ldisc.ops->flush_buffer)
+		tty->ldisc.ops->flush_buffer(tty);
+
 	tty_driver_flush_buffer(tty);
 		
 	if (debuglevel >= DEBUG_LEVEL_INFO)	
@@ -598,18 +576,18 @@ static ssize_t n_hdlc_tty_read(struct tty_struct *tty, struct file *file,
 		return -EFAULT;
 	}
 
-	tty_lock();
+	lock_kernel();
 
 	for (;;) {
 		if (test_bit(TTY_OTHER_CLOSED, &tty->flags)) {
-			tty_unlock();
+			unlock_kernel();
 			return -EIO;
 		}
 
 		n_hdlc = tty2n_hdlc (tty);
 		if (!n_hdlc || n_hdlc->magic != HDLC_MAGIC ||
 			 tty != n_hdlc->tty) {
-			tty_unlock();
+			unlock_kernel();
 			return 0;
 		}
 
@@ -619,13 +597,13 @@ static ssize_t n_hdlc_tty_read(struct tty_struct *tty, struct file *file,
 			
 		/* no data */
 		if (file->f_flags & O_NONBLOCK) {
-			tty_unlock();
+			unlock_kernel();
 			return -EAGAIN;
 		}
 			
 		interruptible_sleep_on (&tty->read_wait);
 		if (signal_pending(current)) {
-			tty_unlock();
+			unlock_kernel();
 			return -EINTR;
 		}
 	}
@@ -648,7 +626,7 @@ static ssize_t n_hdlc_tty_read(struct tty_struct *tty, struct file *file,
 		kfree(rbuf);
 	else	
 		n_hdlc_buf_put(&n_hdlc->rx_free_buf_list,rbuf);
-	tty_unlock();
+	unlock_kernel();
 	return ret;
 	
 }	/* end of n_hdlc_tty_read() */
@@ -691,7 +669,7 @@ static ssize_t n_hdlc_tty_write(struct tty_struct *tty, struct file *file,
 		count = maxframe;
 	}
 	
-	tty_lock();
+	lock_kernel();
 
 	add_wait_queue(&tty->write_wait, &wait);
 	set_current_state(TASK_INTERRUPTIBLE);
@@ -731,7 +709,7 @@ static ssize_t n_hdlc_tty_write(struct tty_struct *tty, struct file *file,
 		n_hdlc_buf_put(&n_hdlc->tx_buf_list,tbuf);
 		n_hdlc_send_frames(n_hdlc,tty);
 	}
-	tty_unlock();
+	unlock_kernel();
 	return error;
 	
 }	/* end of n_hdlc_tty_write() */
@@ -784,14 +762,6 @@ static int n_hdlc_tty_ioctl(struct tty_struct *tty, struct file *file,
 		spin_unlock_irqrestore(&n_hdlc->tx_buf_list.spinlock,flags);
 		error = put_user(count, (int __user *)arg);
 		break;
-
-	case TCFLSH:
-		switch (arg) {
-		case TCIOFLUSH:
-		case TCOFLUSH:
-			flush_tx_queue(tty);
-		}
-		/* fall through to default */
 
 	default:
 		error = n_tty_ioctl_helper(tty, file, cmd, arg);
@@ -949,7 +919,8 @@ static struct n_hdlc_buf* n_hdlc_buf_get(struct n_hdlc_buf_list *list)
 }	/* end of n_hdlc_buf_get() */
 
 static char hdlc_banner[] __initdata =
-	KERN_INFO "HDLC line discipline maxframe=%u\n";
+	KERN_INFO "HDLC line discipline: version " HDLC_VERSION
+	", maxframe=%u\n";
 static char hdlc_register_ok[] __initdata =
 	KERN_INFO "N_HDLC line discipline registered.\n";
 static char hdlc_register_fail[] __initdata =

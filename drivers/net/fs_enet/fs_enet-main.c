@@ -36,8 +36,6 @@
 #include <linux/fs.h>
 #include <linux/platform_device.h>
 #include <linux/phy.h>
-#include <linux/of.h>
-#include <linux/of_mdio.h>
 #include <linux/of_platform.h>
 #include <linux/of_gpio.h>
 
@@ -108,7 +106,9 @@ static int fs_enet_rx_napi(struct napi_struct *napi, int budget)
 		 * the last indicator should be set.
 		 */
 		if ((sc & BD_ENET_RX_LAST) == 0)
-			dev_warn(fep->dev, "rcv is not +last\n");
+			printk(KERN_WARNING DRV_MODULE_NAME
+			       ": %s rcv is not +last\n",
+			       dev->name);
 
 		/*
 		 * Check for errors.
@@ -176,8 +176,9 @@ static int fs_enet_rx_napi(struct napi_struct *napi, int budget)
 				received++;
 				netif_receive_skb(skb);
 			} else {
-				dev_warn(fep->dev,
-					 "Memory squeeze, dropping packet.\n");
+				printk(KERN_WARNING DRV_MODULE_NAME
+				       ": %s Memory squeeze, dropping packet.\n",
+				       dev->name);
 				fep->stats.rx_dropped++;
 				skbn = skb;
 			}
@@ -208,7 +209,7 @@ static int fs_enet_rx_napi(struct napi_struct *napi, int budget)
 
 	if (received < budget) {
 		/* done */
-		napi_complete(napi);
+		netif_rx_complete(napi);
 		(*fep->ops->napi_enable_rx)(dev);
 	}
 	return received;
@@ -239,7 +240,9 @@ static int fs_enet_rx_non_napi(struct net_device *dev)
 		 * the last indicator should be set.
 		 */
 		if ((sc & BD_ENET_RX_LAST) == 0)
-			dev_warn(fep->dev, "rcv is not +last\n");
+			printk(KERN_WARNING DRV_MODULE_NAME
+			       ": %s rcv is not +last\n",
+			       dev->name);
 
 		/*
 		 * Check for errors.
@@ -308,8 +311,9 @@ static int fs_enet_rx_non_napi(struct net_device *dev)
 				received++;
 				netif_rx(skb);
 			} else {
-				dev_warn(fep->dev,
-					 "Memory squeeze, dropping packet.\n");
+				printk(KERN_WARNING DRV_MODULE_NAME
+				       ": %s Memory squeeze, dropping packet.\n",
+				       dev->name);
 				fep->stats.rx_dropped++;
 				skbn = skb;
 			}
@@ -382,10 +386,10 @@ static void fs_enet_tx(struct net_device *dev)
 		} else
 			fep->stats.tx_packets++;
 
-		if (sc & BD_ENET_TX_READY) {
-			dev_warn(fep->dev,
-				 "HEY! Enet xmit interrupt and TX_READY.\n");
-		}
+		if (sc & BD_ENET_TX_READY)
+			printk(KERN_WARNING DRV_MODULE_NAME
+			       ": %s HEY! Enet xmit interrupt and TX_READY.\n",
+			       dev->name);
 
 		/*
 		 * Deferred means some collisions occurred during transmit,
@@ -474,7 +478,7 @@ fs_enet_interrupt(int irq, void *dev_id)
 				/* NOTE: it is possible for FCCs in NAPI mode    */
 				/* to submit a spurious interrupt while in poll  */
 				if (napi_ok)
-					__napi_schedule(&fep->napi);
+					__netif_rx_schedule(&fep->napi);
 			}
 		}
 
@@ -505,8 +509,9 @@ void fs_init_bds(struct net_device *dev)
 	for (i = 0, bdp = fep->rx_bd_base; i < fep->rx_ring; i++, bdp++) {
 		skb = dev_alloc_skb(ENET_RX_FRSIZE);
 		if (skb == NULL) {
-			dev_warn(fep->dev,
-				 "Memory squeeze, unable to allocate skb\n");
+			printk(KERN_WARNING DRV_MODULE_NAME
+			       ": %s Memory squeeze, unable to allocate skb\n",
+			       dev->name);
 			break;
 		}
 		skb_align(skb, ENET_RX_ALIGN);
@@ -580,40 +585,6 @@ void fs_cleanup_bds(struct net_device *dev)
 
 /**********************************************************************************/
 
-#ifdef CONFIG_FS_ENET_MPC5121_FEC
-/*
- * MPC5121 FEC requeries 4-byte alignment for TX data buffer!
- */
-static struct sk_buff *tx_skb_align_workaround(struct net_device *dev,
-					       struct sk_buff *skb)
-{
-	struct sk_buff *new_skb;
-	struct fs_enet_private *fep = netdev_priv(dev);
-
-	/* Alloc new skb */
-	new_skb = dev_alloc_skb(skb->len + 4);
-	if (!new_skb) {
-		if (net_ratelimit()) {
-			dev_warn(fep->dev,
-				 "Memory squeeze, dropping tx packet.\n");
-		}
-		return NULL;
-	}
-
-	/* Make sure new skb is properly aligned */
-	skb_align(new_skb, 4);
-
-	/* Copy data to new skb ... */
-	skb_copy_from_linear_data(skb, new_skb->data, skb->len);
-	skb_put(new_skb, skb->len);
-
-	/* ... and free an old one */
-	dev_kfree_skb_any(skb);
-
-	return new_skb;
-}
-#endif
-
 static int fs_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct fs_enet_private *fep = netdev_priv(dev);
@@ -622,19 +593,6 @@ static int fs_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	u16 sc;
 	unsigned long flags;
 
-#ifdef CONFIG_FS_ENET_MPC5121_FEC
-	if (((unsigned long)skb->data) & 0x3) {
-		skb = tx_skb_align_workaround(dev, skb);
-		if (!skb) {
-			/*
-			 * We have lost packet due to memory allocation error
-			 * in tx_skb_align_workaround(). Hopefully original
-			 * skb is still valid, so try transmit it later.
-			 */
-			return NETDEV_TX_BUSY;
-		}
-	}
-#endif
 	spin_lock_irqsave(&fep->tx_lock, flags);
 
 	/*
@@ -650,7 +608,8 @@ static int fs_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		 * Ooops.  All transmit buffers are full.  Bail out.
 		 * This should not happen, since the tx queue should be stopped.
 		 */
-		dev_warn(fep->dev, "tx queue full!.\n");
+		printk(KERN_WARNING DRV_MODULE_NAME
+		       ": %s tx queue full!.\n", dev->name);
 		return NETDEV_TX_BUSY;
 	}
 
@@ -673,6 +632,8 @@ static int fs_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	CBDW_BUFADDR(bdp, dma_map_single(fep->dev,
 				skb->data, skb->len, DMA_TO_DEVICE));
 	CBDW_DATLEN(bdp, skb->len);
+
+	dev->trans_start = jiffies;
 
 	/*
 	 * If this was the last BD in the ring, start at the beginning again.
@@ -791,16 +752,16 @@ static int fs_init_phy(struct net_device *dev)
 	fep->oldlink = 0;
 	fep->oldspeed = 0;
 	fep->oldduplex = -1;
-
-	phydev = of_phy_connect(dev, fep->fpi->phy_node, &fs_adjust_link, 0,
+	if(fep->fpi->bus_id)
+		phydev = phy_connect(dev, fep->fpi->bus_id, &fs_adjust_link, 0,
 				PHY_INTERFACE_MODE_MII);
-	if (!phydev) {
-		phydev = of_phy_connect_fixed_link(dev, &fs_adjust_link,
-						   PHY_INTERFACE_MODE_MII);
+	else {
+		printk("No phy bus ID specified in BSP code\n");
+		return -EINVAL;
 	}
-	if (!phydev) {
-		dev_err(&dev->dev, "Could not attach to PHY\n");
-		return -ENODEV;
+	if (IS_ERR(phydev)) {
+		printk(KERN_ERR "%s: Could not attach to PHY\n", dev->name);
+		return PTR_ERR(phydev);
 	}
 
 	fep->phydev = phydev;
@@ -825,7 +786,8 @@ static int fs_enet_open(struct net_device *dev)
 	r = request_irq(fep->interrupt, fs_enet_interrupt, IRQF_SHARED,
 			"fs_enet-mac", dev);
 	if (r != 0) {
-		dev_err(fep->dev, "Could not allocate FS_ENET IRQ!");
+		printk(KERN_ERR DRV_MODULE_NAME
+		       ": %s Could not allocate FS_ENET IRQ!", dev->name);
 		if (fep->fpi->use_napi)
 			napi_disable(&fep->napi);
 		return -EINVAL;
@@ -963,11 +925,12 @@ static const struct ethtool_ops fs_ethtool_ops = {
 static int fs_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
 	struct fs_enet_private *fep = netdev_priv(dev);
+	struct mii_ioctl_data *mii = (struct mii_ioctl_data *)&rq->ifr_data;
 
 	if (!netif_running(dev))
 		return -EINVAL;
 
-	return phy_mii_ioctl(fep->phydev, rq, cmd);
+	return phy_mii_ioctl(fep->phydev, mii, cmd);
 }
 
 extern int fs_mii_connect(struct net_device *dev);
@@ -975,29 +938,88 @@ extern void fs_mii_disconnect(struct net_device *dev);
 
 /**************************************************************************************/
 
+/* handy pointer to the immap */
+void __iomem *fs_enet_immap = NULL;
+
+static int setup_immap(void)
+{
+#ifdef CONFIG_CPM1
+	fs_enet_immap = ioremap(IMAP_ADDR, 0x4000);
+	WARN_ON(!fs_enet_immap);
+#elif defined(CONFIG_CPM2)
+	fs_enet_immap = cpm2_immr;
+#endif
+
+	return 0;
+}
+
+static void cleanup_immap(void)
+{
+#if defined(CONFIG_CPM1)
+	iounmap(fs_enet_immap);
+#endif
+}
+
+/**************************************************************************************/
+
+static int __devinit find_phy(struct device_node *np,
+                              struct fs_platform_info *fpi)
+{
+	struct device_node *phynode, *mdionode;
+	int ret = 0, len, bus_id;
+	const u32 *data;
+
+	data  = of_get_property(np, "fixed-link", NULL);
+	if (data) {
+		snprintf(fpi->bus_id, 16, "%x:%02x", 0, *data);
+		return 0;
+	}
+
+	data = of_get_property(np, "phy-handle", &len);
+	if (!data || len != 4)
+		return -EINVAL;
+
+	phynode = of_find_node_by_phandle(*data);
+	if (!phynode)
+		return -EINVAL;
+
+	data = of_get_property(phynode, "reg", &len);
+	if (!data || len != 4) {
+		ret = -EINVAL;
+		goto out_put_phy;
+	}
+
+	mdionode = of_get_parent(phynode);
+	if (!mdionode) {
+		ret = -EINVAL;
+		goto out_put_phy;
+	}
+
+	bus_id = of_get_gpio(mdionode, 0);
+	if (bus_id < 0) {
+		struct resource res;
+		ret = of_address_to_resource(mdionode, 0, &res);
+		if (ret)
+			goto out_put_mdio;
+		bus_id = res.start;
+	}
+
+	snprintf(fpi->bus_id, 16, "%x:%02x", bus_id, *data);
+
+out_put_mdio:
+	of_node_put(mdionode);
+out_put_phy:
+	of_node_put(phynode);
+	return ret;
+}
+
 #ifdef CONFIG_FS_ENET_HAS_FEC
 #define IS_FEC(match) ((match)->data == &fs_fec_ops)
 #else
 #define IS_FEC(match) 0
 #endif
 
-static const struct net_device_ops fs_enet_netdev_ops = {
-	.ndo_open		= fs_enet_open,
-	.ndo_stop		= fs_enet_close,
-	.ndo_get_stats		= fs_enet_get_stats,
-	.ndo_start_xmit		= fs_enet_start_xmit,
-	.ndo_tx_timeout		= fs_timeout,
-	.ndo_set_multicast_list	= fs_set_multicast_list,
-	.ndo_do_ioctl		= fs_ioctl,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_mac_address	= eth_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= fs_enet_netpoll,
-#endif
-};
-
-static int __devinit fs_enet_probe(struct platform_device *ofdev,
+static int __devinit fs_enet_probe(struct of_device *ofdev,
                                    const struct of_device_id *match)
 {
 	struct net_device *ndev;
@@ -1012,7 +1034,7 @@ static int __devinit fs_enet_probe(struct platform_device *ofdev,
 		return -ENOMEM;
 
 	if (!IS_FEC(match)) {
-		data = of_get_property(ofdev->dev.of_node, "fsl,cpm-command", &len);
+		data = of_get_property(ofdev->node, "fsl,cpm-command", &len);
 		if (!data || len != 4)
 			goto out_free_fpi;
 
@@ -1024,9 +1046,9 @@ static int __devinit fs_enet_probe(struct platform_device *ofdev,
 	fpi->rx_copybreak = 240;
 	fpi->use_napi = 1;
 	fpi->napi_weight = 17;
-	fpi->phy_node = of_parse_phandle(ofdev->dev.of_node, "phy-handle", 0);
-	if ((!fpi->phy_node) && (!of_get_property(ofdev->dev.of_node, "fixed-link",
-						  NULL)))
+
+	ret = find_phy(ofdev->node, fpi);
+	if (ret)
 		goto out_free_fpi;
 
 	privsize = sizeof(*fep) +
@@ -1039,7 +1061,6 @@ static int __devinit fs_enet_probe(struct platform_device *ofdev,
 		goto out_free_fpi;
 	}
 
-	SET_NETDEV_DEV(ndev, &ofdev->dev);
 	dev_set_drvdata(&ofdev->dev, ndev);
 
 	fep = netdev_priv(ndev);
@@ -1058,7 +1079,7 @@ static int __devinit fs_enet_probe(struct platform_device *ofdev,
 	spin_lock_init(&fep->lock);
 	spin_lock_init(&fep->tx_lock);
 
-	mac_addr = of_get_mac_address(ofdev->dev.of_node);
+	mac_addr = of_get_mac_address(ofdev->node);
 	if (mac_addr)
 		memcpy(ndev->dev_addr, mac_addr, 6);
 
@@ -1072,13 +1093,22 @@ static int __devinit fs_enet_probe(struct platform_device *ofdev,
 	fep->tx_ring = fpi->tx_ring;
 	fep->rx_ring = fpi->rx_ring;
 
-	ndev->netdev_ops = &fs_enet_netdev_ops;
+	ndev->open = fs_enet_open;
+	ndev->hard_start_xmit = fs_enet_start_xmit;
+	ndev->tx_timeout = fs_timeout;
 	ndev->watchdog_timeo = 2 * HZ;
+	ndev->stop = fs_enet_close;
+	ndev->get_stats = fs_enet_get_stats;
+	ndev->set_multicast_list = fs_set_multicast_list;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	ndev->poll_controller = fs_enet_netpoll;
+#endif
 	if (fpi->use_napi)
 		netif_napi_add(ndev, &fep->napi, fs_enet_rx_napi,
 		               fpi->napi_weight);
 
 	ndev->ethtool_ops = &fs_ethtool_ops;
+	ndev->do_ioctl = fs_ioctl;
 
 	init_timer(&fep->phy_timer_list);
 
@@ -1088,7 +1118,7 @@ static int __devinit fs_enet_probe(struct platform_device *ofdev,
 	if (ret)
 		goto out_free_bd;
 
-	pr_info("%s: fs_enet: %pM\n", ndev->name, ndev->dev_addr);
+	printk(KERN_INFO "%s: fs_enet: %pM\n", ndev->name, ndev->dev_addr);
 
 	return 0;
 
@@ -1099,13 +1129,12 @@ out_cleanup_data:
 out_free_dev:
 	free_netdev(ndev);
 	dev_set_drvdata(&ofdev->dev, NULL);
-	of_node_put(fpi->phy_node);
 out_free_fpi:
 	kfree(fpi);
 	return ret;
 }
 
-static int fs_enet_remove(struct platform_device *ofdev)
+static int fs_enet_remove(struct of_device *ofdev)
 {
 	struct net_device *ndev = dev_get_drvdata(&ofdev->dev);
 	struct fs_enet_private *fep = netdev_priv(ndev);
@@ -1115,7 +1144,7 @@ static int fs_enet_remove(struct platform_device *ofdev)
 	fep->ops->free_bd(ndev);
 	fep->ops->cleanup_data(ndev);
 	dev_set_drvdata(fep->dev, NULL);
-	of_node_put(fep->fpi->phy_node);
+
 	free_netdev(ndev);
 	return 0;
 }
@@ -1138,40 +1167,42 @@ static struct of_device_id fs_enet_match[] = {
 	},
 #endif
 #ifdef CONFIG_FS_ENET_HAS_FEC
-#ifdef CONFIG_FS_ENET_MPC5121_FEC
-	{
-		.compatible = "fsl,mpc5121-fec",
-		.data = (void *)&fs_fec_ops,
-	},
-#else
 	{
 		.compatible = "fsl,pq1-fec-enet",
 		.data = (void *)&fs_fec_ops,
 	},
 #endif
-#endif
 	{}
 };
-MODULE_DEVICE_TABLE(of, fs_enet_match);
 
 static struct of_platform_driver fs_enet_driver = {
-	.driver = {
-		.owner = THIS_MODULE,
-		.name = "fs_enet",
-		.of_match_table = fs_enet_match,
-	},
+	.name	= "fs_enet",
+	.match_table = fs_enet_match,
 	.probe = fs_enet_probe,
 	.remove = fs_enet_remove,
 };
 
 static int __init fs_init(void)
 {
-	return of_register_platform_driver(&fs_enet_driver);
+	int r = setup_immap();
+	if (r != 0)
+		return r;
+
+	r = of_register_platform_driver(&fs_enet_driver);
+	if (r != 0)
+		goto out;
+
+	return 0;
+
+out:
+	cleanup_immap();
+	return r;
 }
 
 static void __exit fs_cleanup(void)
 {
 	of_unregister_platform_driver(&fs_enet_driver);
+	cleanup_immap();
 }
 
 #ifdef CONFIG_NET_POLL_CONTROLLER

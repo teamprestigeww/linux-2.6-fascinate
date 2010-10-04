@@ -9,24 +9,25 @@
  * published by the Free Software Foundation.
  */
 
+typedef int (*set_wake_t)(unsigned int, unsigned int);
+
 struct sys_timer;
 
 extern struct sys_timer pxa_timer;
-extern void __init pxa_init_irq(int irq_nr,
-				int (*set_wake)(unsigned int, unsigned int));
+extern void __init pxa_init_irq(int irq_nr, set_wake_t fn);
+extern void __init pxa_init_gpio(int gpio_nr, set_wake_t fn);
 extern void __init pxa25x_init_irq(void);
-#ifdef CONFIG_CPU_PXA26x
-extern void __init pxa26x_init_irq(void);
-#endif
 extern void __init pxa27x_init_irq(void);
 extern void __init pxa3xx_init_irq(void);
 extern void __init pxa_map_io(void);
 
 extern unsigned int get_clk_frequency_khz(int info);
+extern int pxa_last_gpio;
 
 #define SET_BANK(__nr,__start,__size) \
 	mi->bank[__nr].start = (__start), \
-	mi->bank[__nr].size = (__size)
+	mi->bank[__nr].size = (__size), \
+	mi->bank[__nr].node = (((unsigned)(__start) - PHYS_OFFSET) >> 27)
 
 #define ARRAY_AND_SIZE(x)	(x), ARRAY_SIZE(x)
 
@@ -66,8 +67,3 @@ extern struct sysdev_class pxa_irq_sysclass;
 extern struct sysdev_class pxa_gpio_sysclass;
 extern struct sysdev_class pxa2xx_mfp_sysclass;
 extern struct sysdev_class pxa3xx_mfp_sysclass;
-
-void __init pxa_set_ffuart_info(void *info);
-void __init pxa_set_btuart_info(void *info);
-void __init pxa_set_stuart_info(void *info);
-void __init pxa_set_hwuart_info(void *info);

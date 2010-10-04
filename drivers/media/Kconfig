@@ -2,14 +2,8 @@
 # Multimedia device configuration
 #
 
-menuconfig MEDIA_SUPPORT
-	tristate "Multimedia support"
+menu "Multimedia devices"
 	depends on HAS_IOMEM
-	help
-	  If you want to use Video for Linux, DVB for Linux, or DAB adapters,
-	  enable this option and other options below.
-
-if MEDIA_SUPPORT
 
 comment "Multimedia core support"
 
@@ -94,12 +88,12 @@ config DVB_CORE
 
 config VIDEO_MEDIA
 	tristate
-	default (DVB_CORE && (VIDEO_DEV = n)) || (VIDEO_DEV && (DVB_CORE = n)) || (DVB_CORE && VIDEO_DEV)
+	#default (DVB_CORE && (VIDEO_DEV = n)) || (VIDEO_DEV && (DVB_CORE = n)) || (DVB_CORE && VIDEO_DEV)
+	default n
 
 comment "Multimedia drivers"
 
 source "drivers/media/common/Kconfig"
-source "drivers/media/IR/Kconfig"
 
 #
 # Tuner drivers for DVB and V4L
@@ -124,7 +118,7 @@ source "drivers/media/dvb/Kconfig"
 config DAB
 	boolean "DAB adapters"
 	---help---
-	  Allow selecting support for Digital Audio Broadcasting (DAB)
+	  Allow selecting support for for Digital Audio Broadcasting (DAB)
 	  Receiver adapters.
 
 if DAB
@@ -143,4 +137,4 @@ config USB_DABUSB
 	  module will be called dabusb.
 endif # DAB
 
-endif # MEDIA_SUPPORT
+endmenu

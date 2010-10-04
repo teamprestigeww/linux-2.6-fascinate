@@ -33,7 +33,6 @@
 
 #include <linux/pci.h>
 #include <linux/netdevice.h>
-#include <linux/slab.h>
 #include <linux/vmalloc.h>
 
 #include "ipath_kernel.h"
@@ -456,7 +455,7 @@ static void init_shadow_tids(struct ipath_devdata *dd)
 	if (!addrs) {
 		ipath_dev_err(dd, "failed to allocate shadow dma handle "
 			      "array, no expected sends!\n");
-		vfree(pages);
+		vfree(dd->ipath_pageshadow);
 		dd->ipath_pageshadow = NULL;
 		return;
 	}

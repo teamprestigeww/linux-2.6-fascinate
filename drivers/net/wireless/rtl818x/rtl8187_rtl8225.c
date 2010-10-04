@@ -88,15 +88,9 @@ static void rtl8225_write_8051(struct ieee80211_hw *dev, u8 addr, __le16 data)
 	rtl818x_iowrite16(priv, &priv->map->RFPinsOutput, reg80);
 	udelay(10);
 
-	mutex_lock(&priv->io_mutex);
-
-	priv->io_dmabuf->bits16 = data;
 	usb_control_msg(priv->udev, usb_sndctrlpipe(priv->udev, 0),
 			RTL8187_REQ_SET_REG, RTL8187_REQT_WRITE,
-			addr, 0x8225, &priv->io_dmabuf->bits16, sizeof(data),
-			HZ / 2);
-
-	mutex_unlock(&priv->io_mutex);
+			addr, 0x8225, &data, sizeof(data), HZ / 2);
 
 	rtl818x_iowrite16(priv, &priv->map->RFPinsOutput, reg80 | (1 << 2));
 	udelay(10);
@@ -366,8 +360,8 @@ static void rtl8225_rf_init(struct ieee80211_hw *dev)
 		rtl8225_write(dev, 0x02, 0x044d);
 		msleep(100);
 		if (!(rtl8225_read(dev, 6) & (1 << 7)))
-			wiphy_warn(dev->wiphy, "RF Calibration Failed! %x\n",
-				   rtl8225_read(dev, 6));
+			printk(KERN_WARNING "%s: RF Calibration Failed! %x\n",
+			       wiphy_name(dev->wiphy), rtl8225_read(dev, 6));
 	}
 
 	rtl8225_write(dev, 0x0, 0x127);
@@ -735,8 +729,8 @@ static void rtl8225z2_rf_init(struct ieee80211_hw *dev)
 		rtl8225_write(dev, 0x02, 0x044D);
 		msleep(100);
 		if (!(rtl8225_read(dev, 6) & (1 << 7)))
-			wiphy_warn(dev->wiphy, "RF Calibration Failed! %x\n",
-				   rtl8225_read(dev, 6));
+			printk(KERN_WARNING "%s: RF Calibration Failed! %x\n",
+			       wiphy_name(dev->wiphy), rtl8225_read(dev, 6));
 	}
 
 	msleep(200);

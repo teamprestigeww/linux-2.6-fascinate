@@ -21,7 +21,6 @@
 #include <linux/tsacct_kern.h>
 #include <linux/acct.h>
 #include <linux/jiffies.h>
-#include <linux/mm.h>
 
 /*
  * fill in basic accounting fields

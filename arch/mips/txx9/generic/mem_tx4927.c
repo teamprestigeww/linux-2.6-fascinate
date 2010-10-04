@@ -1,4 +1,6 @@
 /*
+ * linux/arch/mips/txx9/generic/mem_tx4927.c
+ *
  * common tx4927 memory interface
  *
  * Author: MontaVista Software, Inc.

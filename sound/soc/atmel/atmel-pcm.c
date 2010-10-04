@@ -77,6 +77,7 @@ struct atmel_runtime_data {
 	size_t period_size;
 
 	dma_addr_t period_ptr;		/* physical address of next period */
+	int periods;			/* period index of period_ptr */
 
 	/* PDC register save */
 	u32 pdc_xpr_save;
@@ -179,7 +180,7 @@ static int atmel_pcm_hw_params(struct snd_pcm_substream *substream,
 	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
 	runtime->dma_bytes = params_buffer_bytes(params);
 
-	prtd->params = snd_soc_dai_get_dma_data(rtd->dai->cpu_dai, substream);
+	prtd->params = rtd->dai->cpu_dai->dma_data;
 	prtd->params->dma_intr_handler = atmel_pcm_dma_irq;
 
 	prtd->dma_buffer = runtime->dma_addr;
@@ -346,7 +347,7 @@ static int atmel_pcm_mmap(struct snd_pcm_substream *substream,
 		       vma->vm_end - vma->vm_start, vma->vm_page_prot);
 }
 
-static struct snd_pcm_ops atmel_pcm_ops = {
+struct snd_pcm_ops atmel_pcm_ops = {
 	.open		= atmel_pcm_open,
 	.close		= atmel_pcm_close,
 	.ioctl		= snd_pcm_lib_ioctl,
@@ -414,12 +415,9 @@ static void atmel_pcm_free_dma_buffers(struct snd_pcm *pcm)
 }
 
 #ifdef CONFIG_PM
-static int atmel_pcm_suspend(struct snd_soc_dai_link *dai_link)
+static int atmel_pcm_suspend(struct snd_soc_dai *dai)
 {
-	struct snd_pcm *pcm = dai_link->pcm;
-	struct snd_pcm_str *stream = &pcm->streams[0];
-	struct snd_pcm_substream *substream = stream->substream;
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_pcm_runtime *runtime = dai->runtime;
 	struct atmel_runtime_data *prtd;
 	struct atmel_pcm_dma_params *params;
 
@@ -441,12 +439,9 @@ static int atmel_pcm_suspend(struct snd_soc_dai_link *dai_link)
 	return 0;
 }
 
-static int atmel_pcm_resume(struct snd_soc_dai_link *dai_link)
+static int atmel_pcm_resume(struct snd_soc_dai *dai)
 {
-	struct snd_pcm *pcm = dai_link->pcm;
-	struct snd_pcm_str *stream = &pcm->streams[0];
-	struct snd_pcm_substream *substream = stream->substream;
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_pcm_runtime *runtime = dai->runtime;
 	struct atmel_runtime_data *prtd;
 	struct atmel_pcm_dma_params *params;
 

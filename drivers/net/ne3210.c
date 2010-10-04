@@ -104,7 +104,7 @@ static int __init ne3210_eisa_probe (struct device *device)
 	}
 
 	SET_NETDEV_DEV(dev, device);
-	dev_set_drvdata(device, dev);
+	device->driver_data = dev;
 	ioaddr = edev->base_addr;
 
 	if (!request_region(ioaddr, NE3210_IO_EXTENT, DRV_NAME)) {
@@ -150,8 +150,7 @@ static int __init ne3210_eisa_probe (struct device *device)
 		if (phys_mem < virt_to_phys(high_memory)) {
 			printk(KERN_CRIT "ne3210.c: Card RAM overlaps with normal memory!!!\n");
 			printk(KERN_CRIT "ne3210.c: Use EISA SCU to set card memory below 1MB,\n");
-			printk(KERN_CRIT "ne3210.c: or to an address above 0x%llx.\n",
-				(u64)virt_to_phys(high_memory));
+			printk(KERN_CRIT "ne3210.c: or to an address above 0x%lx.\n", virt_to_phys(high_memory));
 			printk(KERN_CRIT "ne3210.c: Driver NOT installed.\n");
 			retval = -EINVAL;
 			goto out3;
@@ -225,7 +224,7 @@ static int __init ne3210_eisa_probe (struct device *device)
 
 static int __devexit ne3210_eisa_remove (struct device *device)
 {
-	struct net_device  *dev    = dev_get_drvdata(device);
+	struct net_device  *dev    = device->driver_data;
 	unsigned long       ioaddr = to_eisa_device (device)->base_addr;
 
 	unregister_netdev (dev);
@@ -255,6 +254,8 @@ static void ne3210_reset_8390(struct net_device *dev)
 	ei_status.txing = 0;
 	outb(0x01, ioaddr + NE3210_RESET_PORT);
 	if (ei_debug > 1) printk("reset done\n");
+
+	return;
 }
 
 /*

@@ -22,8 +22,9 @@
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-
-#include <mach/pxa930.h>
+#include <mach/hardware.h>
+#include <mach/pxa3xx-regs.h>
+#include <mach/mfp-pxa930.h>
 #include <mach/pxafb.h>
 #include <mach/pxa27x_keypad.h>
 
@@ -476,10 +477,6 @@ static void __init tavorevb_init(void)
 {
 	/* initialize MFP configurations */
 	pxa3xx_mfp_config(ARRAY_AND_SIZE(tavorevb_mfp_cfg));
-
-	pxa_set_ffuart_info(NULL);
-	pxa_set_btuart_info(NULL);
-	pxa_set_stuart_info(NULL);
 
 	platform_device_register(&smc91x_device);
 

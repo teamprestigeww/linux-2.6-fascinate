@@ -46,11 +46,9 @@
 #include <linux/init.h>
 #include <linux/wait.h>
 #include <linux/blkdev.h>
-#include <linux/smp_lock.h>
 #include <linux/blkpg.h>
 #include <linux/delay.h>
 #include <linux/io.h>
-#include <linux/gfp.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -132,9 +130,9 @@ static struct gendisk *xd_gendisk[2];
 
 static int xd_getgeo(struct block_device *bdev, struct hd_geometry *geo);
 
-static const struct block_device_operations xd_fops = {
+static struct block_device_operations xd_fops = {
 	.owner	= THIS_MODULE,
-	.ioctl	= xd_ioctl,
+	.locked_ioctl	= xd_ioctl,
 	.getgeo = xd_getgeo,
 };
 static DECLARE_WAIT_QUEUE_HEAD(xd_wait_int);
@@ -171,6 +169,13 @@ static int __init xd_init(void)
 
 	init_timer (&xd_watchdog_int); xd_watchdog_int.function = xd_watchdog;
 
+	if (!xd_dma_buffer)
+		xd_dma_buffer = (char *)xd_dma_mem_alloc(xd_maxsectors * 0x200);
+	if (!xd_dma_buffer) {
+		printk(KERN_ERR "xd: Out of memory.\n");
+		return -ENOMEM;
+	}
+
 	err = -EBUSY;
 	if (register_blkdev(XT_DISK_MAJOR, "xd"))
 		goto out1;
@@ -195,19 +200,6 @@ static int __init xd_init(void)
 		
 		printk("Detected %d hard drive%s (using IRQ%d & DMA%d)\n",
 			xd_drives,xd_drives == 1 ? "" : "s",xd_irq,xd_dma);
-	}
-
-	/*
-	 * With the drive detected, xd_maxsectors should now be known.
-	 * If xd_maxsectors is 0, nothing was detected and we fall through
-	 * to return -ENODEV
-	 */
-	if (!xd_dma_buffer && xd_maxsectors) {
-		xd_dma_buffer = (char *)xd_dma_mem_alloc(xd_maxsectors * 0x200);
-		if (!xd_dma_buffer) {
-			printk(KERN_ERR "xd: Out of memory.\n");
-			goto out3;
-		}
 	}
 
 	err = -ENODEV;
@@ -244,7 +236,7 @@ static int __init xd_init(void)
 	}
 
 	/* xd_maxsectors depends on controller - so set after detection */
-	blk_queue_max_hw_sectors(xd_queue, xd_maxsectors);
+	blk_queue_max_sectors(xd_queue, xd_maxsectors);
 
 	for (i = 0; i < xd_drives; i++)
 		add_disk(xd_gendisk[i]);
@@ -257,17 +249,15 @@ out4:
 	for (i = 0; i < xd_drives; i++)
 		put_disk(xd_gendisk[i]);
 out3:
-	if (xd_maxsectors)
-		release_region(xd_iobase,4);
-
-	if (xd_dma_buffer)
-		xd_dma_mem_free((unsigned long)xd_dma_buffer,
-				xd_maxsectors * 0x200);
+	release_region(xd_iobase,4);
 out2:
 	blk_cleanup_queue(xd_queue);
 out1a:
 	unregister_blkdev(XT_DISK_MAJOR, "xd");
 out1:
+	if (xd_dma_buffer)
+		xd_dma_mem_free((unsigned long)xd_dma_buffer,
+				xd_maxsectors * 0x200);
 	return err;
 Enomem:
 	err = -ENOMEM;
@@ -315,25 +305,30 @@ static void do_xd_request (struct request_queue * q)
 	if (xdc_busy)
 		return;
 
-	req = blk_fetch_request(q);
-	while (req) {
-		unsigned block = blk_rq_pos(req);
-		unsigned count = blk_rq_cur_sectors(req);
+	while ((req = elv_next_request(q)) != NULL) {
+		unsigned block = req->sector;
+		unsigned count = req->nr_sectors;
+		int rw = rq_data_dir(req);
 		XD_INFO *disk = req->rq_disk->private_data;
-		int res = -EIO;
+		int res = 0;
 		int retry;
 
-		if (req->cmd_type != REQ_TYPE_FS)
-			goto done;
-		if (block + count > get_capacity(req->rq_disk))
-			goto done;
+		if (!blk_fs_request(req)) {
+			end_request(req, 0);
+			continue;
+		}
+		if (block + count > get_capacity(req->rq_disk)) {
+			end_request(req, 0);
+			continue;
+		}
+		if (rw != READ && rw != WRITE) {
+			printk("do_xd_request: unknown request\n");
+			end_request(req, 0);
+			continue;
+		}
 		for (retry = 0; (retry < XD_RETRIES) && !res; retry++)
-			res = xd_readwrite(rq_data_dir(req), disk, req->buffer,
-					   block, count);
-	done:
-		/* wrap up, 0 = success, -errno = fail */
-		if (!__blk_end_request_cur(req, res))
-			req = blk_fetch_request(q);
+			res = xd_readwrite(rw, disk, req->buffer, block, count);
+		end_request(req, res);	/* wrap up, 0 = fail, 1 = success */
 	}
 }
 
@@ -348,7 +343,7 @@ static int xd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 }
 
 /* xd_ioctl: handle device ioctl's */
-static int xd_locked_ioctl(struct block_device *bdev, fmode_t mode, u_int cmd, u_long arg)
+static int xd_ioctl(struct block_device *bdev, fmode_t mode, u_int cmd, u_long arg)
 {
 	switch (cmd) {
 		case HDIO_SET_DMA:
@@ -374,18 +369,6 @@ static int xd_locked_ioctl(struct block_device *bdev, fmode_t mode, u_int cmd, u
 		default:
 			return -EINVAL;
 	}
-}
-
-static int xd_ioctl(struct block_device *bdev, fmode_t mode,
-			     unsigned int cmd, unsigned long param)
-{
-	int ret;
-
-	lock_kernel();
-	ret = xd_locked_ioctl(bdev, mode, cmd, param);
-	unlock_kernel();
-
-	return ret;
 }
 
 /* xd_readwrite: handle a read/write request */
@@ -435,7 +418,7 @@ static int xd_readwrite (u_char operation,XD_INFO *p,char *buffer,u_int block,u_
 				printk("xd%c: %s timeout, recalibrating drive\n",'a'+drive,(operation == READ ? "read" : "write"));
 				xd_recalibrate(drive);
 				spin_lock_irq(&xd_lock);
-				return -EIO;
+				return (0);
 			case 2:
 				if (sense[0] & 0x30) {
 					printk("xd%c: %s - ",'a'+drive,(operation == READ ? "reading" : "writing"));
@@ -456,7 +439,7 @@ static int xd_readwrite (u_char operation,XD_INFO *p,char *buffer,u_int block,u_
 				else
 					printk(" - no valid disk address\n");
 				spin_lock_irq(&xd_lock);
-				return -EIO;
+				return (0);
 		}
 		if (xd_dma_buffer)
 			for (i=0; i < (temp * 0x200); i++)
@@ -465,7 +448,7 @@ static int xd_readwrite (u_char operation,XD_INFO *p,char *buffer,u_int block,u_
 		count -= temp, buffer += temp * 0x200, block += temp;
 	}
 	spin_lock_irq(&xd_lock);
-	return 0;
+	return (1);
 }
 
 /* xd_recalibrate: recalibrate a given drive and reset controller if necessary */

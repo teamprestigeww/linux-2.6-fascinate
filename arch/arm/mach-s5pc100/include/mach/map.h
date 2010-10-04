@@ -1,9 +1,11 @@
 /* linux/arch/arm/mach-s5pc100/include/mach/map.h
  *
- * Copyright 2009 Samsung Electronics Co.
- *	Byungho Min <bhmin@samsung.com>
+ * Copyright 2008 Samsung Electronics Co.
+ * Copyright 2008 Simtec Electronics
+ *	http://armlinux.simtec.co.uk/
+ *	Ben Dooks <ben@simtec.co.uk>
  *
- * S5PC100 - Memory map definitions
+ * S5PC1XX - Memory map definitions
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -14,146 +16,206 @@
 #define __ASM_ARCH_MAP_H __FILE__
 
 #include <plat/map-base.h>
-#include <plat/map-s5p.h>
-
-/*
- * map-base.h has already defined virtual memory address
- * S3C_VA_IRQ		S3C_ADDR(0x00000000)	irq controller(s)
- * S3C_VA_SYS		S3C_ADDR(0x00100000)	system control
- * S3C_VA_MEM		S3C_ADDR(0x00200000)	system control (not used)
- * S3C_VA_TIMER		S3C_ADDR(0x00300000)	timer block
- * S3C_VA_WATCHDOG	S3C_ADDR(0x00400000)	watchdog
- * S3C_VA_UART		S3C_ADDR(0x01000000)	UART
- *
- * S5PC100 specific virtual memory address can be defined here
- * S5PC1XX_VA_GPIO	S3C_ADDR(0x00500000)	GPIO
- *
- */
-
-#define S5PC100_PA_ONENAND_BUF	(0xB0000000)
-#define S5PC100_SZ_ONENAND_BUF	(SZ_256M - SZ_32M)
-
-/* Chip ID */
-
-#define S5PC100_PA_CHIPID	(0xE0000000)
-#define S5P_PA_CHIPID		S5PC100_PA_CHIPID
-
-#define S5PC100_PA_SYSCON	(0xE0100000)
-#define S5P_PA_SYSCON		S5PC100_PA_SYSCON
-
-#define S5PC100_PA_OTHERS	(0xE0200000)
-#define S5PC100_VA_OTHERS	(S3C_VA_SYS + 0x10000)
-
-#define S5P_PA_GPIO		(0xE0300000)
-#define S5PC1XX_VA_GPIO		S3C_ADDR(0x00500000)
-
-/* Interrupt */
-#define S5PC100_PA_VIC		(0xE4000000)
-#define S5PC100_VA_VIC		S3C_VA_IRQ
-#define S5PC100_PA_VIC_OFFSET	0x100000
-#define S5PC100_VA_VIC_OFFSET	0x10000
-#define S5PC1XX_PA_VIC(x)	(S5PC100_PA_VIC + ((x) * S5PC100_PA_VIC_OFFSET))
-#define S5PC1XX_VA_VIC(x)	(S5PC100_VA_VIC + ((x) * S5PC100_VA_VIC_OFFSET))
-#define S5P_PA_VIC0		S5PC1XX_PA_VIC(0)
-#define S5P_PA_VIC1		S5PC1XX_PA_VIC(1)
-#define S5P_PA_VIC2		S5PC1XX_PA_VIC(2)
-
-
-#define S5PC100_PA_ONENAND	(0xE7100000)
-
-#define S5PC100_PA_CFCON	(0xE7800000)
-
-/* DMA */
-#define S5PC100_PA_MDMA		(0xE8100000)
-#define S5PC100_PA_PDMA0	(0xE9000000)
-#define S5PC100_PA_PDMA1	(0xE9200000)
-
-/* Timer */
-#define S5PC100_PA_TIMER	(0xEA000000)
-#define S5P_PA_TIMER		S5PC100_PA_TIMER
-
-#define S5PC100_PA_SYSTIMER	(0xEA100000)
-
-#define S5PC100_PA_WATCHDOG	(0xEA200000)
-#define S5PC100_PA_RTC		(0xEA300000)
 
 #define S5PC100_PA_UART		(0xEC000000)
+#define S5PC1XX_PA_UART		S5PC100_PA_UART
+#define S5PC1XX_PA_TIMER	(0xEA000000)
+#define S5PC1XX_PA_IIC0		(0xEC100000)
+#define S5PC1XX_PA_IIC1		(0xEC200000)
+#define S5PC1XX_PA_GPIO		(0xE0300000)
+#define S5PC1XX_PA_VIC0		(0xE4000000)
+#define S5PC1XX_PA_VIC1		(0xE4100000)
+#define S5PC1XX_PA_VIC2		(0xE4200000)
+#define S5PC1XX_PA_SROMC	(0xE7000000)
+#define S5PC1XX_PA_LCD	   	(0xEE000000)
+#define S5PC1XX_PA_SYSTIMER   	(0xEA100000)
+#define S5PC1XX_PA_ADC		(0xF3000000)
+#define S5PC1XX_PA_RTC		(0xEA300000)
+#define S5PC1XX_PA_IIS	   	(0xF2000000)
+#define S5PC1XX_PA_NAND         (0xE7200000)
+#define S5PC1XX_PA_USBHOST      (0xED400000)
+#define S5PC1XX_PA_OTG          (0xED200000)
+#define S5PC1XX_PA_OTGSFR       (0xED300000)
+#define S5PC1XX_PA_FIMC0	(0xEE200000)
+#define S5PC1XX_PA_FIMC1	(0xEE300000)
+#define S5PC1XX_PA_FIMC2	(0xEE400000)
+#define S5PC1XX_PA_DMA   	(0xE8100000)
+#define S5PC1XX_PA_HSMMC(x)     (0xED800000 + ((x) * 0x100000))
+#define S5PC1XX_PA_SPI0         (0xEC300000)
+#define S5PC1XX_PA_SPI1         (0xEC400000)
+#define S5PC1XX_PA_SPI2         (0xEC500000)
+#define S5PC1XX_PA_KEYPAD	(0xF3100000)
+#define S5PC1XX_PA_WDT          (0xEA200000)
+#define S5PC1XX_PA_MFC		(0xF1000000)
+#define S5PC1XX_PA_JPEG		(0xEE500000)
+#define S5PC1XX_PA_AC97         (0xF2300000)
+#define S5PC1XX_PA_G3D		(0xEF000000)
+#define S5PC1XX_PA_ROTATOR	(0xEE100000)
+#define S5PC1XX_PA_IEC		(0xE1100000)
+#define S5PC1XX_PA_APC		(0xE1000000)
 
-#define S5P_PA_UART0		(S5PC100_PA_UART + 0x0)
-#define S5P_PA_UART1		(S5PC100_PA_UART + 0x400)
-#define S5P_PA_UART2		(S5PC100_PA_UART + 0x800)
-#define S5P_PA_UART3		(S5PC100_PA_UART + 0xC00)
-#define S5P_SZ_UART		SZ_256
+#define S5PC1XX_PA_SPDIF        (0xF2600000)            //add kwak for spdif
+#define S5PC1XX_SZ_SPDIF        SZ_256                  //add kwak for spdif
 
-#define S5PC100_PA_IIC0		(0xEC100000)
-#define S5PC100_PA_IIC1		(0xEC200000)
+/* UART */
+#define S3C_PA_UART		S5PC1XX_PA_UART
+#define S3C_PA_UART0		(S3C_PA_UART + 0x00)
+#define S3C_PA_UART1		(S3C_PA_UART + 0x400)
+#define S3C_PA_UART2		(S3C_PA_UART + 0x800)
+#define S3C_PA_UART3		(S3C_PA_UART + 0xC00)
+#define S3C_UART_OFFSET		(0x400)
 
-/* SPI */
-#define S5PC100_PA_SPI0		0xEC300000
-#define S5PC100_PA_SPI1		0xEC400000
-#define S5PC100_PA_SPI2		0xEC500000
+/* See notes on UART VA mapping in debug-macro.S */
+#define S3C_VA_UARTx(x)		(S3C_VA_UART + (S3C_PA_UART & 0xfffff) + ((x) * S3C_UART_OFFSET))
 
-/* USB HS OTG */
-#define S5PC100_PA_USB_HSOTG	(0xED200000)
-#define S5PC100_PA_USB_HSPHY	(0xED300000)
+#define S3C_VA_UART0		S3C_VA_UARTx(0)
+#define S3C_VA_UART1		S3C_VA_UARTx(1)
+#define S3C_VA_UART2		S3C_VA_UARTx(2)
+#define S3C_VA_UART3		S3C_VA_UARTx(3)
 
-#define S5PC100_PA_FB		(0xEE000000)
+/* SYSCON */
+#define S5PC1XX_PA_SYSCON	(0xE0100000)
+#define S5PC1XX_VA_SYSCON       S3C_VA_SYS
+#define S5PC1XX_SZ_SYSCON       SZ_2M  
 
-#define S5PC100_PA_FIMC0	(0xEE200000)
-#define S5PC100_PA_FIMC1	(0xEE300000)
-#define S5PC100_PA_FIMC2	(0xEE400000)
+/* GPIO */
+#define S5PC1XX_VA_GPIO		S3C_ADDR(0x00500000)
+#define S5PC1XX_SZ_GPIO		SZ_4K
 
-#define S5PC100_PA_I2S0		(0xF2000000)
-#define S5PC100_PA_I2S1		(0xF2100000)
-#define S5PC100_PA_I2S2		(0xF2200000)
+/* SDRAM */
+#define S5PC1XX_PA_SDRAM	(0x20000000)
 
-#define S5PC100_PA_AC97		0xF2300000
+/* SROMC */
+#define S5PC1XX_VA_SROMC	S3C_VA_SROMC
+#define S5PC1XX_SZ_SROMC	SZ_4K
 
-/* PCM */
-#define S5PC100_PA_PCM0		0xF2400000
-#define S5PC100_PA_PCM1		0xF2500000
+/* LCD-FIMD */
+#define S5PC1XX_VA_LCD	   	S3C_VA_LCD
+#define S5PC1XX_SZ_LCD		SZ_1M
 
-#define S5PC100_PA_TSADC	(0xF3000000)
+/* G2D */
+#define S5PC1XX_PA_G2D	   	(0xEE800000)
+#define S5PC1XX_SZ_G2D		SZ_1M
 
-/* KEYPAD */
-#define S5PC100_PA_KEYPAD	(0xF3100000)
+/* SYSTEM TIMER */
+#define S5PC1XX_VA_SYSTIMER   	S3C_VA_SYSTIMER
+#define S5PC1XX_SZ_SYSTIMER	SZ_1M
 
-#define S5PC100_PA_HSMMC(x)	(0xED800000 + ((x) * 0x100000))
+/* SMC9115 */
+#define S5PC1XX_PA_SMC9115	(0x98000000)
 
-#define S5PC100_PA_SDRAM	(0x20000000)
-#define S5P_PA_SDRAM		S5PC100_PA_SDRAM
+/* I2S */
+#define S3C_SZ_IIS		SZ_4K
+
+/* CHIP ID */
+#define S5PC1XX_PA_CHIPID	(0xE0000000)
+#define S5PC1XX_VA_CHIPID	S3C_ADDR(0x00700000)
+
+/* NAND flash controller */
+#define S5PC1XX_VA_NAND		S3C_VA_NAND
+#define S5PC1XX_SZ_NAND         SZ_1M
+
+/* place VICs close together */
+#define S3C_VA_VIC0		(S3C_VA_IRQ + 0x0)
+#define S3C_VA_VIC1		(S3C_VA_IRQ + 0x10000)
+#define S3C_VA_VIC2		(S3C_VA_IRQ + 0x20000)
+#define S3C_VA_VIC3		(S3C_VA_IRQ + 0x30000)
+
+/* USB Host */
+#define S5PC1XX_SZ_USBHOST      SZ_1M
+
+/* USB OTG */
+#define S5PC1XX_VA_OTG          S3C_ADDR(0x00E00000)
+#define S5PC1XX_SZ_OTG          SZ_1M
+
+/* USB OTG SFR */
+#define S5PC1XX_VA_OTGSFR       S3C_ADDR(0x00F00000)
+#define S5PC1XX_SZ_OTGSFR       SZ_1M
+
+/* HSMMC units */
+#define S5PC1XX_PA_HSMMC0       S5PC1XX_PA_HSMMC(0)
+#define S5PC1XX_PA_HSMMC1       S5PC1XX_PA_HSMMC(1)
+#define S5PC1XX_PA_HSMMC2       S5PC1XX_PA_HSMMC(2)
+#define S5PC1XX_SZ_HSMMC        SZ_1M
+
+#define S3C_PA_HSMMC0           S5PC1XX_PA_HSMMC0
+#define S3C_PA_HSMMC1           S5PC1XX_PA_HSMMC1
+#define S3C_PA_HSMMC2           S5PC1XX_PA_HSMMC2
+
+
+#define S3C_PA_SPI0		S5PC1XX_PA_SPI0
+#define S3C_PA_SPI1		S5PC1XX_PA_SPI1
+#define S3C_PA_SPI2		S5PC1XX_PA_SPI2
+#define S3C_SZ_SPI0		SZ_4K
+#define S3C_SZ_SPI1		SZ_4K
+#define S3C_SZ_SPI2		SZ_4K
+
+/* ONENAND CON*/
+#define S5PC1XX_PA_ONENAND      (0xE7100000)
+#define S5PC1XX_SZ_ONENAND      SZ_1M
+
+/* KEYPAD IF */
+#define S5PC1XX_SZ_KEYPAD	SZ_4K
+
+#define S3C_PA_IIS		S5PC1XX_PA_IIS
+#define S3C_PA_ADC		S5PC1XX_PA_ADC
+#define S3C_PA_DMA		S5PC1XX_PA_DMA
+#define S3C_PA_RTC              S5PC1XX_PA_RTC
+#define S3C_PA_KEYPAD           S5PC1XX_PA_KEYPAD
+#define S3C_SZ_KEYPAD           S5PC1XX_SZ_KEYPAD
+
+/* WATCHDOG TIMER*/
+#define S3C_PA_WDT              S5PC1XX_PA_WDT
+
+/* MFC V4.0 */
+#define S5PC1XX_SZ_MFC		SZ_4K
+
+/* JPEG */
+#define S5PC1XX_SZ_JPEG		SZ_1M
+
+/* AC97 */
+#define S5PC1XX_SZ_AC97         SZ_1M
+
+/* G3D */
+#define S5PC1XX_SZ_G3D		SZ_16M
+
+/* spdif */
+#define S5P_PA_SPDIF            S5PC1XX_PA_SPDIF        
+
+/* Rotator */
+#define S5PC1XX_SZ_ROTATOR	SZ_1M
+
+/* MIPI CSIS */
+#define S5PC1XX_PA_CSIS		(0xECC00000)
+#define S5PC1XX_SZ_CSIS		SZ_1M
 
 /* compatibiltiy defines. */
-#define S3C_PA_UART		S5PC100_PA_UART
-#define S3C_PA_IIC		S5PC100_PA_IIC0
-#define S3C_PA_IIC1		S5PC100_PA_IIC1
-#define S3C_PA_FB		S5PC100_PA_FB
-#define S3C_PA_G2D		S5PC100_PA_G2D
-#define S3C_PA_G3D		S5PC100_PA_G3D
-#define S3C_PA_JPEG		S5PC100_PA_JPEG
-#define S3C_PA_ROTATOR		S5PC100_PA_ROTATOR
-#define S5P_VA_VIC0		S5PC1XX_VA_VIC(0)
-#define S5P_VA_VIC1		S5PC1XX_VA_VIC(1)
-#define S5P_VA_VIC2		S5PC1XX_VA_VIC(2)
-#define S3C_PA_USB_HSOTG	S5PC100_PA_USB_HSOTG
-#define S3C_PA_USB_HSPHY	S5PC100_PA_USB_HSPHY
-#define S3C_PA_HSMMC0		S5PC100_PA_HSMMC(0)
-#define S3C_PA_HSMMC1		S5PC100_PA_HSMMC(1)
-#define S3C_PA_HSMMC2		S5PC100_PA_HSMMC(2)
-#define S3C_PA_KEYPAD		S5PC100_PA_KEYPAD
-#define S3C_PA_WDT		S5PC100_PA_WATCHDOG
-#define S3C_PA_TSADC		S5PC100_PA_TSADC
-#define S3C_PA_ONENAND		S5PC100_PA_ONENAND
-#define S3C_PA_ONENAND_BUF	S5PC100_PA_ONENAND_BUF
-#define S3C_SZ_ONENAND_BUF	S5PC100_SZ_ONENAND_BUF
-#define S3C_PA_RTC		S5PC100_PA_RTC
+#define S3C_SZ_HSMMC		S5PC1XX_SZ_HSMMC
 
-#define SAMSUNG_PA_ADC		S5PC100_PA_TSADC
-#define SAMSUNG_PA_CFCON	S5PC100_PA_CFCON
-#define SAMSUNG_PA_KEYPAD	S5PC100_PA_KEYPAD
+#define S3C_PA_TIMER		S5PC1XX_PA_TIMER
+#define S3C_PA_IIC		S5PC1XX_PA_IIC0
+#define S3C_PA_IIC1		S5PC1XX_PA_IIC1
 
-#define S5P_PA_FIMC0		S5PC100_PA_FIMC0
-#define S5P_PA_FIMC1		S5PC100_PA_FIMC1
-#define S5P_PA_FIMC2		S5PC100_PA_FIMC2
+#define S3C_VA_OTG              S5PC1XX_VA_OTG
+#define S3C_PA_OTG              S5PC1XX_PA_OTG
+#define S3C_SZ_OTG              S5PC1XX_SZ_OTG
 
-#endif /* __ASM_ARCH_C100_MAP_H */
+#define S3C_VA_OTGSFR           S5PC1XX_VA_OTGSFR
+#define S3C_PA_OTGSFR           S5PC1XX_PA_OTGSFR
+#define S3C_SZ_OTGSFR           S5PC1XX_SZ_OTGSFR
+
+
+#define S5PC1XX_VA_IEC		S3C_ADDR(0x00800000)
+
+#define S5PC1XX_VA_APC		S3C_ADDR(0x00900000)
+
+
+//[mkh: for tvout/hdmi
+#define S5PC1XX_PA_TVOUT        (0xF0000000)
+#define S5PC1XX_SZ_TVOUT        SZ_4M
+#define S5PC1XX_PA_CLK_OTHER    (S5PC1XX_PA_SYSCON + 0x100000)
+#define S5PC1XX_SZ_CLK_OTHER    SZ_4K
+//]
+
+
+#endif /* __ASM_ARCH_6400_MAP_H */

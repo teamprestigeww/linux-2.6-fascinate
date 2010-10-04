@@ -5,14 +5,10 @@
 
 #include <linux/module.h>
 #include <linux/pagemap.h>
-#include <linux/slab.h>
 #include <linux/mount.h>
 #include <linux/vfs.h>
-#include <linux/quotaops.h>
 #include <linux/mutex.h>
 #include <linux/exportfs.h>
-#include <linux/writeback.h>
-#include <linux/buffer_head.h>
 
 #include <asm/uaccess.h>
 
@@ -48,7 +44,7 @@ static int simple_delete_dentry(struct dentry *dentry)
  */
 struct dentry *simple_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 {
-	static const struct dentry_operations simple_dentry_operations = {
+	static struct dentry_operations simple_dentry_operations = {
 		.d_delete = simple_delete_dentry,
 	};
 
@@ -59,6 +55,11 @@ struct dentry *simple_lookup(struct inode *dir, struct dentry *dentry, struct na
 	return NULL;
 }
 
+int simple_sync_file(struct file * file, struct dentry *dentry, int datasync)
+{
+	return 0;
+}
+ 
 int dcache_dir_open(struct inode *inode, struct file *file)
 {
 	static struct qstr cursor_name = {.len = 1, .name = "."};
@@ -186,7 +187,7 @@ const struct file_operations simple_dir_operations = {
 	.llseek		= dcache_dir_lseek,
 	.read		= generic_read_dir,
 	.readdir	= dcache_readdir,
-	.fsync		= noop_fsync,
+	.fsync		= simple_sync_file,
 };
 
 const struct inode_operations simple_dir_inode_operations = {
@@ -214,7 +215,7 @@ int get_sb_pseudo(struct file_system_type *fs_type, char *name,
 		return PTR_ERR(s);
 
 	s->s_flags = MS_NOUSER;
-	s->s_maxbytes = MAX_LFS_FILESIZE;
+	s->s_maxbytes = ~0ULL;
 	s->s_blocksize = PAGE_SIZE;
 	s->s_blocksize_bits = PAGE_SHIFT;
 	s->s_magic = magic;
@@ -241,11 +242,11 @@ int get_sb_pseudo(struct file_system_type *fs_type, char *name,
 	d_instantiate(dentry, root);
 	s->s_root = dentry;
 	s->s_flags |= MS_ACTIVE;
-	simple_set_mnt(mnt, s);
-	return 0;
+	return simple_set_mnt(mnt, s);
 
 Enomem:
-	deactivate_locked_super(s);
+	up_write(&s->s_umount);
+	deactivate_super(s);
 	return -ENOMEM;
 }
 
@@ -326,39 +327,6 @@ int simple_rename(struct inode *old_dir, struct dentry *old_dentry,
 	return 0;
 }
 
-/**
- * simple_setattr - setattr for simple filesystem
- * @dentry: dentry
- * @iattr: iattr structure
- *
- * Returns 0 on success, -error on failure.
- *
- * simple_setattr is a simple ->setattr implementation without a proper
- * implementation of size changes.
- *
- * It can either be used for in-memory filesystems or special files
- * on simple regular filesystems.  Anything that needs to change on-disk
- * or wire state on size changes needs its own setattr method.
- */
-int simple_setattr(struct dentry *dentry, struct iattr *iattr)
-{
-	struct inode *inode = dentry->d_inode;
-	int error;
-
-	WARN_ON_ONCE(inode->i_op->truncate);
-
-	error = inode_change_ok(inode, iattr);
-	if (error)
-		return error;
-
-	if (iattr->ia_valid & ATTR_SIZE)
-		truncate_setsize(inode, iattr->ia_size);
-	setattr_copy(inode, iattr);
-	mark_inode_dirty(inode);
-	return 0;
-}
-EXPORT_SYMBOL(simple_setattr);
-
 int simple_readpage(struct file *file, struct page *page)
 {
 	clear_highpage(page);
@@ -368,14 +336,28 @@ int simple_readpage(struct file *file, struct page *page)
 	return 0;
 }
 
+int simple_prepare_write(struct file *file, struct page *page,
+			unsigned from, unsigned to)
+{
+	if (!PageUptodate(page)) {
+		if (to - from != PAGE_CACHE_SIZE)
+			zero_user_segments(page,
+				0, from,
+				to, PAGE_CACHE_SIZE);
+	}
+	return 0;
+}
+
 int simple_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned flags,
 			struct page **pagep, void **fsdata)
 {
 	struct page *page;
 	pgoff_t index;
+	unsigned from;
 
 	index = pos >> PAGE_CACHE_SHIFT;
+	from = pos & (PAGE_CACHE_SIZE - 1);
 
 	page = grab_cache_page_write_begin(mapping, index, flags);
 	if (!page)
@@ -383,48 +365,14 @@ int simple_write_begin(struct file *file, struct address_space *mapping,
 
 	*pagep = page;
 
-	if (!PageUptodate(page) && (len != PAGE_CACHE_SIZE)) {
-		unsigned from = pos & (PAGE_CACHE_SIZE - 1);
-
-		zero_user_segments(page, 0, from, from + len, PAGE_CACHE_SIZE);
-	}
-	return 0;
+	return simple_prepare_write(file, page, from, from+len);
 }
 
-/**
- * simple_write_end - .write_end helper for non-block-device FSes
- * @available: See .write_end of address_space_operations
- * @file: 		"
- * @mapping: 		"
- * @pos: 		"
- * @len: 		"
- * @copied: 		"
- * @page: 		"
- * @fsdata: 		"
- *
- * simple_write_end does the minimum needed for updating a page after writing is
- * done. It has the same API signature as the .write_end of
- * address_space_operations vector. So it can just be set onto .write_end for
- * FSes that don't need any other processing. i_mutex is assumed to be held.
- * Block based filesystems should use generic_write_end().
- * NOTE: Even though i_size might get updated by this function, mark_inode_dirty
- * is not called, so a filesystem that actually does store data in .write_inode
- * should extend on what's done here with a call to mark_inode_dirty() in the
- * case that i_size has changed.
- */
-int simple_write_end(struct file *file, struct address_space *mapping,
-			loff_t pos, unsigned len, unsigned copied,
-			struct page *page, void *fsdata)
+static int simple_commit_write(struct file *file, struct page *page,
+			       unsigned from, unsigned to)
 {
 	struct inode *inode = page->mapping->host;
-	loff_t last_pos = pos + copied;
-
-	/* zero the stale part of the page if we did a short copy */
-	if (copied < len) {
-		unsigned from = pos & (PAGE_CACHE_SIZE - 1);
-
-		zero_user(page, from + copied, len - copied);
-	}
+	loff_t pos = ((loff_t)page->index << PAGE_CACHE_SHIFT) + to;
 
 	if (!PageUptodate(page))
 		SetPageUptodate(page);
@@ -432,10 +380,28 @@ int simple_write_end(struct file *file, struct address_space *mapping,
 	 * No need to use i_size_read() here, the i_size
 	 * cannot change under us because we hold the i_mutex.
 	 */
-	if (last_pos > inode->i_size)
-		i_size_write(inode, last_pos);
-
+	if (pos > inode->i_size)
+		i_size_write(inode, pos);
 	set_page_dirty(page);
+	return 0;
+}
+
+int simple_write_end(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned copied,
+			struct page *page, void *fsdata)
+{
+	unsigned from = pos & (PAGE_CACHE_SIZE - 1);
+
+	/* zero the stale part of the page if we did a short copy */
+	if (copied < len) {
+		void *kaddr = kmap_atomic(page, KM_USER0);
+		memset(kaddr + from + copied, 0, len - copied);
+		flush_dcache_page(page);
+		kunmap_atomic(kaddr, KM_USER0);
+	}
+
+	simple_commit_write(file, page, from, from+copied);
+
 	unlock_page(page);
 	page_cache_release(page);
 
@@ -447,8 +413,7 @@ int simple_write_end(struct file *file, struct address_space *mapping,
  * unique inode values later for this filesystem, then you must take care
  * to pass it an appropriate max_reserved value to avoid collisions.
  */
-int simple_fill_super(struct super_block *s, unsigned long magic,
-		      struct tree_descr *files)
+int simple_fill_super(struct super_block *s, int magic, struct tree_descr *files)
 {
 	struct inode *inode;
 	struct dentry *root;
@@ -560,52 +525,14 @@ ssize_t simple_read_from_buffer(void __user *to, size_t count, loff_t *ppos,
 				const void *from, size_t available)
 {
 	loff_t pos = *ppos;
-	size_t ret;
-
 	if (pos < 0)
 		return -EINVAL;
-	if (pos >= available || !count)
+	if (pos >= available)
 		return 0;
 	if (count > available - pos)
 		count = available - pos;
-	ret = copy_to_user(to, from + pos, count);
-	if (ret == count)
+	if (copy_to_user(to, from + pos, count))
 		return -EFAULT;
-	count -= ret;
-	*ppos = pos + count;
-	return count;
-}
-
-/**
- * simple_write_to_buffer - copy data from user space to the buffer
- * @to: the buffer to write to
- * @available: the size of the buffer
- * @ppos: the current position in the buffer
- * @from: the user space buffer to read from
- * @count: the maximum number of bytes to read
- *
- * The simple_write_to_buffer() function reads up to @count bytes from the user
- * space address starting at @from into the buffer @to at offset @ppos.
- *
- * On success, the number of bytes written is returned and the offset @ppos is
- * advanced by this number, or negative value is returned on error.
- **/
-ssize_t simple_write_to_buffer(void *to, size_t available, loff_t *ppos,
-		const void __user *from, size_t count)
-{
-	loff_t pos = *ppos;
-	size_t res;
-
-	if (pos < 0)
-		return -EINVAL;
-	if (pos >= available || !count)
-		return 0;
-	if (count > available - pos)
-		count = available - pos;
-	res = copy_from_user(to + pos, from, count);
-	if (res == count)
-		return -EFAULT;
-	count -= res;
 	*ppos = pos + count;
 	return count;
 }
@@ -647,21 +574,6 @@ ssize_t memory_read_from_buffer(void *to, size_t count, loff_t *ppos,
  * possibly a read which collects the result - which is stored in a
  * file-local buffer.
  */
-
-void simple_transaction_set(struct file *file, size_t n)
-{
-	struct simple_transaction_argresp *ar = file->private_data;
-
-	BUG_ON(n > SIMPLE_TRANSACTION_LIMIT);
-
-	/*
-	 * The barrier ensures that ar->size will really remain zero until
-	 * ar->data is ready for reading.
-	 */
-	smp_mb();
-	ar->size = n;
-}
-
 char *simple_transaction_get(struct file *file, const char __user *buf, size_t size)
 {
 	struct simple_transaction_argresp *ar;
@@ -806,11 +718,10 @@ ssize_t simple_attr_write(struct file *file, const char __user *buf,
 	if (copy_from_user(attr->set_buf, buf, size))
 		goto out;
 
+	ret = len; /* claim we got the whole input */
 	attr->set_buf[size] = '\0';
 	val = simple_strtol(attr->set_buf, NULL, 0);
-	ret = attr->set(attr->data, val);
-	if (ret == 0)
-		ret = len; /* on success, claim we got the whole input */
+	attr->set(attr->data, val);
 out:
 	mutex_unlock(&attr->mutex);
 	return ret;
@@ -881,46 +792,6 @@ struct dentry *generic_fh_to_parent(struct super_block *sb, struct fid *fid,
 }
 EXPORT_SYMBOL_GPL(generic_fh_to_parent);
 
-/**
- * generic_file_fsync - generic fsync implementation for simple filesystems
- * @file:	file to synchronize
- * @datasync:	only synchronize essential metadata if true
- *
- * This is a generic implementation of the fsync method for simple
- * filesystems which track all non-inode metadata in the buffers list
- * hanging off the address_space structure.
- */
-int generic_file_fsync(struct file *file, int datasync)
-{
-	struct writeback_control wbc = {
-		.sync_mode = WB_SYNC_ALL,
-		.nr_to_write = 0, /* metadata-only; caller takes care of data */
-	};
-	struct inode *inode = file->f_mapping->host;
-	int err;
-	int ret;
-
-	ret = sync_mapping_buffers(inode->i_mapping);
-	if (!(inode->i_state & I_DIRTY))
-		return ret;
-	if (datasync && !(inode->i_state & I_DIRTY_DATASYNC))
-		return ret;
-
-	err = sync_inode(inode, &wbc);
-	if (ret == 0)
-		ret = err;
-	return ret;
-}
-EXPORT_SYMBOL(generic_file_fsync);
-
-/*
- * No-op implementation of ->fsync for in-memory filesystems.
- */
-int noop_fsync(struct file *file, int datasync)
-{
-	return 0;
-}
-
 EXPORT_SYMBOL(dcache_dir_close);
 EXPORT_SYMBOL(dcache_dir_lseek);
 EXPORT_SYMBOL(dcache_dir_open);
@@ -932,22 +803,22 @@ EXPORT_SYMBOL(simple_write_end);
 EXPORT_SYMBOL(simple_dir_inode_operations);
 EXPORT_SYMBOL(simple_dir_operations);
 EXPORT_SYMBOL(simple_empty);
+EXPORT_SYMBOL(d_alloc_name);
 EXPORT_SYMBOL(simple_fill_super);
 EXPORT_SYMBOL(simple_getattr);
 EXPORT_SYMBOL(simple_link);
 EXPORT_SYMBOL(simple_lookup);
 EXPORT_SYMBOL(simple_pin_fs);
+EXPORT_UNUSED_SYMBOL(simple_prepare_write);
 EXPORT_SYMBOL(simple_readpage);
 EXPORT_SYMBOL(simple_release_fs);
 EXPORT_SYMBOL(simple_rename);
 EXPORT_SYMBOL(simple_rmdir);
 EXPORT_SYMBOL(simple_statfs);
-EXPORT_SYMBOL(noop_fsync);
+EXPORT_SYMBOL(simple_sync_file);
 EXPORT_SYMBOL(simple_unlink);
 EXPORT_SYMBOL(simple_read_from_buffer);
-EXPORT_SYMBOL(simple_write_to_buffer);
 EXPORT_SYMBOL(memory_read_from_buffer);
-EXPORT_SYMBOL(simple_transaction_set);
 EXPORT_SYMBOL(simple_transaction_get);
 EXPORT_SYMBOL(simple_transaction_read);
 EXPORT_SYMBOL(simple_transaction_release);

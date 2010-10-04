@@ -21,7 +21,6 @@
 #include <linux/mm.h>
 #include <linux/netdevice.h>
 #include <linux/signal.h>
-#include <linux/slab.h>
 #include <net/scm.h>
 #include <net/sock.h>
 #include <linux/ipx.h>

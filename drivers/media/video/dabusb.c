@@ -32,7 +32,6 @@
 #include <linux/list.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/init.h>
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
@@ -616,12 +615,10 @@ static int dabusb_open (struct inode *inode, struct file *file)
 {
 	int devnum = iminor(inode);
 	pdabusb_t s;
-	int r;
 
 	if (devnum < DABUSB_MINOR || devnum >= (DABUSB_MINOR + NRDABUSB))
 		return -EIO;
 
-	lock_kernel();
 	s = &dabusb[devnum - DABUSB_MINOR];
 
 	dbg("dabusb_open");
@@ -636,7 +633,6 @@ static int dabusb_open (struct inode *inode, struct file *file)
 		msleep_interruptible(500);
 
 		if (signal_pending (current)) {
-			unlock_kernel();
 			return -EAGAIN;
 		}
 		mutex_lock(&s->mutex);
@@ -644,7 +640,6 @@ static int dabusb_open (struct inode *inode, struct file *file)
 	if (usb_set_interface (s->usbdev, _DABUSB_IF, 1) < 0) {
 		mutex_unlock(&s->mutex);
 		dev_err(&s->usbdev->dev, "set_interface failed\n");
-		unlock_kernel();
 		return -EINVAL;
 	}
 	s->opened = 1;
@@ -653,9 +648,7 @@ static int dabusb_open (struct inode *inode, struct file *file)
 	file->f_pos = 0;
 	file->private_data = s;
 
-	r = nonseekable_open(inode, file);
-	unlock_kernel();
-	return r;
+	return nonseekable_open(inode, file);
 }
 
 static int dabusb_release (struct inode *inode, struct file *file)
@@ -706,11 +699,16 @@ static long dabusb_ioctl (struct file *file, unsigned int cmd, unsigned long arg
 	switch (cmd) {
 
 	case IOCTL_DAB_BULK:
-		pbulk = memdup_user((void __user *)arg,
-				    sizeof(bulk_transfer_t));
+		pbulk = kmalloc(sizeof (bulk_transfer_t), GFP_KERNEL);
 
-		if (IS_ERR(pbulk)) {
-			ret = PTR_ERR(pbulk);
+		if (!pbulk) {
+			ret = -ENOMEM;
+			break;
+		}
+
+		if (copy_from_user (pbulk, (void __user *) arg, sizeof (bulk_transfer_t))) {
+			ret = -EFAULT;
+			kfree (pbulk);
 			break;
 		}
 
@@ -749,14 +747,14 @@ static const struct file_operations dabusb_fops =
 	.release =	dabusb_release,
 };
 
-static char *dabusb_devnode(struct device *dev, mode_t *mode)
+static char *dabusb_nodename(struct device *dev)
 {
 	return kasprintf(GFP_KERNEL, "usb/%s", dev_name(dev));
 }
 
 static struct usb_class_driver dabusb_class = {
 	.name =		"dabusb%d",
-	.devnode =	dabusb_devnode,
+	.nodename =	dabusb_nodename,
 	.fops =		&dabusb_fops,
 	.minor_base =	DABUSB_MINOR,
 };
@@ -914,8 +912,6 @@ static void __exit dabusb_cleanup (void)
 MODULE_AUTHOR( DRIVER_AUTHOR );
 MODULE_DESCRIPTION( DRIVER_DESC );
 MODULE_LICENSE("GPL");
-MODULE_FIRMWARE("dabusb/firmware.fw");
-MODULE_FIRMWARE("dabusb/bitstream.bin");
 
 module_param(buffers, int, 0);
 MODULE_PARM_DESC (buffers, "Number of buffers (default=256)");

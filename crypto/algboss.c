@@ -10,7 +10,7 @@
  *
  */
 
-#include <crypto/internal/aead.h>
+#include <linux/crypto.h>
 #include <linux/ctype.h>
 #include <linux/err.h>
 #include <linux/init.h>
@@ -19,7 +19,6 @@
 #include <linux/notifier.h>
 #include <linux/rtnetlink.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/string.h>
 
 #include "internal.h"
@@ -69,11 +68,6 @@ static int cryptomgr_probe(void *data)
 		goto err;
 
 	do {
-		if (tmpl->create) {
-			err = tmpl->create(tmpl, param->tb);
-			continue;
-		}
-
 		inst = tmpl->alloc(param->tb);
 		if (IS_ERR(inst))
 			err = PTR_ERR(inst);
@@ -212,11 +206,8 @@ static int cryptomgr_test(void *data)
 	u32 type = param->type;
 	int err = 0;
 
-#ifdef CONFIG_CRYPTO_MANAGER_DISABLE_TESTS
-	goto skiptest;
-#endif
-
-	if (type & CRYPTO_ALG_TESTED)
+	if (!((type ^ CRYPTO_ALG_TYPE_BLKCIPHER) &
+	      CRYPTO_ALG_TYPE_BLKCIPHER_MASK) && !(type & CRYPTO_ALG_GENIV))
 		goto skiptest;
 
 	err = alg_test(param->driver, param->alg, type, CRYPTO_ALG_TESTED);
@@ -232,7 +223,6 @@ static int cryptomgr_schedule_test(struct crypto_alg *alg)
 {
 	struct task_struct *thread;
 	struct crypto_test_param *param;
-	u32 type;
 
 	if (!try_module_get(THIS_MODULE))
 		goto err;
@@ -243,19 +233,7 @@ static int cryptomgr_schedule_test(struct crypto_alg *alg)
 
 	memcpy(param->driver, alg->cra_driver_name, sizeof(param->driver));
 	memcpy(param->alg, alg->cra_name, sizeof(param->alg));
-	type = alg->cra_flags;
-
-	/* This piece of crap needs to disappear into per-type test hooks. */
-	if ((!((type ^ CRYPTO_ALG_TYPE_BLKCIPHER) &
-	       CRYPTO_ALG_TYPE_BLKCIPHER_MASK) && !(type & CRYPTO_ALG_GENIV) &&
-	     ((alg->cra_flags & CRYPTO_ALG_TYPE_MASK) ==
-	      CRYPTO_ALG_TYPE_BLKCIPHER ? alg->cra_blkcipher.ivsize :
-					  alg->cra_ablkcipher.ivsize)) ||
-	    (!((type ^ CRYPTO_ALG_TYPE_AEAD) & CRYPTO_ALG_TYPE_MASK) &&
-	     alg->cra_type == &crypto_nivaead_type && alg->cra_aead.ivsize))
-		type |= CRYPTO_ALG_TESTED;
-
-	param->type = type;
+	param->type = alg->cra_flags;
 
 	thread = kthread_run(cryptomgr_test, param, "cryptomgr_test");
 	if (IS_ERR(thread))
@@ -290,13 +268,29 @@ static struct notifier_block cryptomgr_notifier = {
 
 static int __init cryptomgr_init(void)
 {
-	return crypto_register_notifier(&cryptomgr_notifier);
+	int err;
+
+	err = testmgr_init();
+	if (err)
+		return err;
+
+	err = crypto_register_notifier(&cryptomgr_notifier);
+	if (err)
+		goto free_testmgr;
+
+	return 0;
+
+free_testmgr:
+	testmgr_exit();
+	return err;
 }
 
 static void __exit cryptomgr_exit(void)
 {
 	int err = crypto_unregister_notifier(&cryptomgr_notifier);
 	BUG_ON(err);
+
+	testmgr_exit();
 }
 
 subsys_initcall(cryptomgr_init);

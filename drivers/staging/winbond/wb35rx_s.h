@@ -15,7 +15,8 @@
 //====================================
 // Internal variable for module
 //====================================
-struct wb35_rx {
+typedef struct _WB35RX
+{
 	u32			ByteReceived;// For calculating throughput of BulkIn
 	atomic_t		RxFireCounter;// Does Wb35Rx module fire?
 
@@ -41,4 +42,7 @@ struct wb35_rx {
 
 	int		EP3VM_status;
 	u8 *	pDRx;
-};
+
+} WB35RX, *PWB35RX;
+
+

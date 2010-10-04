@@ -73,6 +73,8 @@ static char *version =
    or override something. */
 #include <linux/module.h>
 
+#define PRINTK(x) printk x
+
 /*
   Sources:
 
@@ -88,6 +90,7 @@ static char *version =
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/in.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/nubus.h>
 #include <linux/errno.h>
@@ -97,7 +100,6 @@ static char *version =
 #include <linux/skbuff.h>
 #include <linux/delay.h>
 #include <linux/bitops.h>
-#include <linux/gfp.h>
 
 #include <asm/system.h>
 #include <asm/io.h>
@@ -110,6 +112,7 @@ static unsigned int net_debug = NET_DEBUG;
 
 /* Information that need to be kept for each board. */
 struct net_local {
+	struct net_device_stats stats;
 	int chip_type;		/* one of: CS8900, CS8920, CS8920M */
 	char chip_revision;	/* revision letter of the chip ('A'...) */
 	int send_cmd;		/* the propercommand used to send a packet. */
@@ -165,17 +168,6 @@ writereg(struct net_device *dev, int portno, int value)
 	nubus_writew(swab16(value), dev->mem_start + portno);
 }
 
-static const struct net_device_ops mac89x0_netdev_ops = {
-	.ndo_open		= net_open,
-	.ndo_stop		= net_close,
-	.ndo_start_xmit		= net_send_packet,
-	.ndo_get_stats		= net_get_stats,
-	.ndo_set_multicast_list	= set_multicast_list,
-	.ndo_set_mac_address	= set_mac_address,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-};
-
 /* Probe for the CS8900 card in slot E.  We won't bother looking
    anywhere else until we have a really good reason to do so. */
 struct net_device * __init mac89x0_probe(int unit)
@@ -221,8 +213,8 @@ struct net_device * __init mac89x0_probe(int unit)
 		int card_present;
 
 		local_irq_save(flags);
-		card_present = (hwreg_present((void*) ioaddr+4) &&
-				hwreg_present((void*) ioaddr + DATA_PORT));
+		card_present = hwreg_present((void*) ioaddr+4)
+		  && hwreg_present((void*) ioaddr + DATA_PORT);
 		local_irq_restore(flags);
 
 		if (!card_present)
@@ -288,7 +280,12 @@ struct net_device * __init mac89x0_probe(int unit)
 
 	printk(" IRQ %d ADDR %pM\n", dev->irq, dev->dev_addr);
 
-	dev->netdev_ops		= &mac89x0_netdev_ops;
+	dev->open		= net_open;
+	dev->stop		= net_close;
+	dev->hard_start_xmit = net_send_packet;
+	dev->get_stats	= net_get_stats;
+	dev->set_multicast_list = &set_multicast_list;
+	dev->set_mac_address = &set_mac_address;
 
 	err = register_netdev(dev);
 	if (err)
@@ -336,7 +333,7 @@ net_open(struct net_device *dev)
 	writereg(dev, PP_BusCTL, readreg(dev, PP_BusCTL) & ~ENABLE_IRQ);
 
 	/* Grab the interrupt */
-	if (request_irq(dev->irq, net_interrupt, 0, "cs89x0", dev))
+	if (request_irq(dev->irq, &net_interrupt, 0, "cs89x0", dev))
 		return -EAGAIN;
 
 	/* Set up the IRQ - Apparently magic */
@@ -399,7 +396,7 @@ net_send_packet(struct sk_buff *skb, struct net_device *dev)
 		/* Gasp!  It hasn't.  But that shouldn't happen since
 		   we're waiting for TxOk, so return 1 and requeue this packet. */
 		local_irq_restore(flags);
-		return NETDEV_TX_BUSY;
+		return 1;
 	}
 
 	/* Write the contents of the packet */
@@ -407,9 +404,10 @@ net_send_packet(struct sk_buff *skb, struct net_device *dev)
 				  skb->len+1);
 
 	local_irq_restore(flags);
+	dev->trans_start = jiffies;
 	dev_kfree_skb (skb);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /* The typical workload of the driver:
@@ -443,18 +441,13 @@ static irqreturn_t net_interrupt(int irq, void *dev_id)
 			net_rx(dev);
 			break;
 		case ISQ_TRANSMITTER_EVENT:
-			dev->stats.tx_packets++;
+			lp->stats.tx_packets++;
 			netif_wake_queue(dev);
-			if ((status & TX_OK) == 0)
-				dev->stats.tx_errors++;
-			if (status & TX_LOST_CRS)
-				dev->stats.tx_carrier_errors++;
-			if (status & TX_SQE_ERROR)
-				dev->stats.tx_heartbeat_errors++;
-			if (status & TX_LATE_COL)
-				dev->stats.tx_window_errors++;
-			if (status & TX_16_COL)
-				dev->stats.tx_aborted_errors++;
+			if ((status & TX_OK) == 0) lp->stats.tx_errors++;
+			if (status & TX_LOST_CRS) lp->stats.tx_carrier_errors++;
+			if (status & TX_SQE_ERROR) lp->stats.tx_heartbeat_errors++;
+			if (status & TX_LATE_COL) lp->stats.tx_window_errors++;
+			if (status & TX_16_COL) lp->stats.tx_aborted_errors++;
 			break;
 		case ISQ_BUFFER_EVENT:
 			if (status & READY_FOR_TX) {
@@ -473,10 +466,10 @@ static irqreturn_t net_interrupt(int irq, void *dev_id)
                         }
 			break;
 		case ISQ_RX_MISS_EVENT:
-			dev->stats.rx_missed_errors += (status >> 6);
+			lp->stats.rx_missed_errors += (status >>6);
 			break;
 		case ISQ_TX_COL_EVENT:
-			dev->stats.collisions += (status >> 6);
+			lp->stats.collisions += (status >>6);
 			break;
 		}
 	}
@@ -487,22 +480,19 @@ static irqreturn_t net_interrupt(int irq, void *dev_id)
 static void
 net_rx(struct net_device *dev)
 {
+	struct net_local *lp = netdev_priv(dev);
 	struct sk_buff *skb;
 	int status, length;
 
 	status = readreg(dev, PP_RxStatus);
 	if ((status & RX_OK) == 0) {
-		dev->stats.rx_errors++;
-		if (status & RX_RUNT)
-				dev->stats.rx_length_errors++;
-		if (status & RX_EXTRA_DATA)
-				dev->stats.rx_length_errors++;
-		if ((status & RX_CRC_ERROR) &&
-		    !(status & (RX_EXTRA_DATA|RX_RUNT)))
+		lp->stats.rx_errors++;
+		if (status & RX_RUNT) lp->stats.rx_length_errors++;
+		if (status & RX_EXTRA_DATA) lp->stats.rx_length_errors++;
+		if (status & RX_CRC_ERROR) if (!(status & (RX_EXTRA_DATA|RX_RUNT)))
 			/* per str 172 */
-			dev->stats.rx_crc_errors++;
-		if (status & RX_DRIBBLE)
-				dev->stats.rx_frame_errors++;
+			lp->stats.rx_crc_errors++;
+		if (status & RX_DRIBBLE) lp->stats.rx_frame_errors++;
 		return;
 	}
 
@@ -511,7 +501,7 @@ net_rx(struct net_device *dev)
 	skb = alloc_skb(length, GFP_ATOMIC);
 	if (skb == NULL) {
 		printk("%s: Memory squeeze, dropping packet.\n", dev->name);
-		dev->stats.rx_dropped++;
+		lp->stats.rx_dropped++;
 		return;
 	}
 	skb_put(skb, length);
@@ -526,8 +516,8 @@ net_rx(struct net_device *dev)
 
         skb->protocol=eth_type_trans(skb,dev);
 	netif_rx(skb);
-	dev->stats.rx_packets++;
-	dev->stats.rx_bytes += length;
+	lp->stats.rx_packets++;
+	lp->stats.rx_bytes += length;
 }
 
 /* The inverse routine to net_open(). */
@@ -555,15 +545,16 @@ net_close(struct net_device *dev)
 static struct net_device_stats *
 net_get_stats(struct net_device *dev)
 {
+	struct net_local *lp = netdev_priv(dev);
 	unsigned long flags;
 
 	local_irq_save(flags);
 	/* Update the statistics from the device registers. */
-	dev->stats.rx_missed_errors += (readreg(dev, PP_RxMiss) >> 6);
-	dev->stats.collisions += (readreg(dev, PP_TxCol) >> 6);
+	lp->stats.rx_missed_errors += (readreg(dev, PP_RxMiss) >> 6);
+	lp->stats.collisions += (readreg(dev, PP_TxCol) >> 6);
 	local_irq_restore(flags);
 
-	return &dev->stats;
+	return &lp->stats;
 }
 
 static void set_multicast_list(struct net_device *dev)
@@ -573,7 +564,9 @@ static void set_multicast_list(struct net_device *dev)
 	if(dev->flags&IFF_PROMISC)
 	{
 		lp->rx_mode = RX_ALL_ACCEPT;
-	} else if ((dev->flags & IFF_ALLMULTI) || !netdev_mc_empty(dev)) {
+	}
+	else if((dev->flags&IFF_ALLMULTI)||dev->mc_list)
+	{
 		/* The multicast-accept list is initialized to accept-all, and we
 		   rely on higher-level filtering for now. */
 		lp->rx_mode = RX_MULTCAST_ACCEPT;

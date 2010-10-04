@@ -21,7 +21,7 @@ const struct file_operations affs_dir_operations = {
 	.read		= generic_read_dir,
 	.llseek		= generic_file_llseek,
 	.readdir	= affs_readdir,
-	.fsync		= affs_file_fsync,
+	.fsync		= file_fsync,
 };
 
 /*

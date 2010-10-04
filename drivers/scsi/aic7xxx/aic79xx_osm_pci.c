@@ -178,7 +178,7 @@ ahd_linux_pci_dev_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		ahd_get_pci_bus(pci),
 		ahd_get_pci_slot(pci),
 		ahd_get_pci_function(pci));
-	name = kmalloc(strlen(buf) + 1, GFP_ATOMIC);
+	name = malloc(strlen(buf) + 1, M_DEVBUF, M_NOWAIT);
 	if (name == NULL)
 		return (-ENOMEM);
 	strcpy(name, buf);
@@ -194,16 +194,16 @@ ahd_linux_pci_dev_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (sizeof(dma_addr_t) > 4) {
 		const u64 required_mask = dma_get_required_mask(dev);
 
-		if (required_mask > DMA_BIT_MASK(39) &&
-		    dma_set_mask(dev, DMA_BIT_MASK(64)) == 0)
+		if (required_mask > DMA_39BIT_MASK &&
+		    dma_set_mask(dev, DMA_64BIT_MASK) == 0)
 			ahd->flags |= AHD_64BIT_ADDRESSING;
-		else if (required_mask > DMA_BIT_MASK(32) &&
-			 dma_set_mask(dev, DMA_BIT_MASK(39)) == 0)
+		else if (required_mask > DMA_32BIT_MASK &&
+			 dma_set_mask(dev, DMA_39BIT_MASK) == 0)
 			ahd->flags |= AHD_39BIT_ADDRESSING;
 		else
-			dma_set_mask(dev, DMA_BIT_MASK(32));
+			dma_set_mask(dev, DMA_32BIT_MASK);
 	} else {
-		dma_set_mask(dev, DMA_BIT_MASK(32));
+		dma_set_mask(dev, DMA_32BIT_MASK);
 	}
 	ahd->dev_softc = pci;
 	error = ahd_pci_config(ahd, entry);
@@ -333,7 +333,7 @@ ahd_pci_map_registers(struct ahd_softc *ahd)
 
 		if (ahd_pci_test_register_access(ahd) != 0) {
 
-			printk("aic79xx: PCI Device %d:%d:%d "
+			printf("aic79xx: PCI Device %d:%d:%d "
 			       "failed memory mapped test.  Using PIO.\n",
 			       ahd_get_pci_bus(ahd->dev_softc),
 			       ahd_get_pci_slot(ahd->dev_softc),
@@ -346,7 +346,7 @@ ahd_pci_map_registers(struct ahd_softc *ahd)
 		} else
 			command |= PCIM_CMD_MEMEN;
 	} else if (bootverbose) {
-		printk("aic79xx: PCI%d:%d:%d MEM region 0x%llx "
+		printf("aic79xx: PCI%d:%d:%d MEM region 0x%llx "
 		       "unavailable. Cannot memory map device.\n",
 		       ahd_get_pci_bus(ahd->dev_softc),
 		       ahd_get_pci_slot(ahd->dev_softc),
@@ -365,7 +365,7 @@ ahd_pci_map_registers(struct ahd_softc *ahd)
 			ahd->bshs[1].ioport = (u_long)base2;
 			command |= PCIM_CMD_PORTEN;
 		} else {
-			printk("aic79xx: PCI%d:%d:%d IO regions 0x%llx and "
+			printf("aic79xx: PCI%d:%d:%d IO regions 0x%llx and "
 			       "0x%llx unavailable. Cannot map device.\n",
 			       ahd_get_pci_bus(ahd->dev_softc),
 			       ahd_get_pci_slot(ahd->dev_softc),

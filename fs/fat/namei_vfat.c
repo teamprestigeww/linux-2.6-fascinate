@@ -19,6 +19,7 @@
 #include <linux/jiffies.h>
 #include <linux/ctype.h>
 #include <linux/slab.h>
+#include <linux/smp_lock.h>
 #include <linux/buffer_head.h>
 #include <linux/namei.h>
 #include "fat.h"
@@ -165,13 +166,13 @@ static int vfat_cmp(struct dentry *dentry, struct qstr *a, struct qstr *b)
 	return 1;
 }
 
-static const struct dentry_operations vfat_ci_dentry_ops = {
+static struct dentry_operations vfat_ci_dentry_ops = {
 	.d_revalidate	= vfat_revalidate_ci,
 	.d_hash		= vfat_hashi,
 	.d_compare	= vfat_cmpi,
 };
 
-static const struct dentry_operations vfat_dentry_ops = {
+static struct dentry_operations vfat_dentry_ops = {
 	.d_revalidate	= vfat_revalidate,
 	.d_hash		= vfat_hash,
 	.d_compare	= vfat_cmp,
@@ -309,7 +310,7 @@ static int vfat_create_shortname(struct inode *dir, struct nls_table *nls,
 {
 	struct fat_mount_options *opts = &MSDOS_SB(dir->i_sb)->options;
 	wchar_t *ip, *ext_start, *end, *name_start;
-	unsigned char base[9], ext[4], buf[5], *p;
+	unsigned char base[9], ext[4], buf[8], *p;
 	unsigned char charbuf[NLS_MAX_CHARSET_SIZE];
 	int chl, chi;
 	int sz = 0, extlen, baselen, i, numtail_baselen, numtail2_baselen;
@@ -467,7 +468,7 @@ static int vfat_create_shortname(struct inode *dir, struct nls_table *nls,
 			return 0;
 	}
 
-	i = jiffies;
+	i = jiffies & 0xffff;
 	sz = (jiffies >> 16) & 0x7;
 	if (baselen > 2) {
 		baselen = numtail2_baselen;
@@ -476,7 +477,7 @@ static int vfat_create_shortname(struct inode *dir, struct nls_table *nls,
 	name_res[baselen + 4] = '~';
 	name_res[baselen + 5] = '1' + sz;
 	while (1) {
-		snprintf(buf, sizeof(buf), "%04X", i & 0xffff);
+		sprintf(buf, "%04X", i);
 		memcpy(&name_res[baselen], buf, 4);
 		if (vfat_find_form(dir, name_res) < 0)
 			break;
@@ -499,17 +500,24 @@ xlate_to_uni(const unsigned char *name, int len, unsigned char *outname,
 	int charlen;
 
 	if (utf8) {
-		*outlen = utf8s_to_utf16s(name, len, (wchar_t *)outname);
-		if (*outlen < 0)
-			return *outlen;
-		else if (*outlen > FAT_LFN_LEN)
+		int name_len = strlen(name);
+
+		*outlen = utf8_mbstowcs((wchar_t *)outname, name, PATH_MAX);
+
+		/*
+		 * We stripped '.'s before and set len appropriately,
+		 * but utf8_mbstowcs doesn't care about len
+		 */
+		*outlen -= (name_len - len);
+
+		if (*outlen > 255)
 			return -ENAMETOOLONG;
 
 		op = &outname[*outlen * sizeof(wchar_t)];
 	} else {
 		if (nls) {
 			for (i = 0, ip = name, op = outname, *outlen = 0;
-			     i < len && *outlen <= FAT_LFN_LEN;
+			     i < len && *outlen <= 255;
 			     *outlen += 1)
 			{
 				if (escape && (*ip == ':')) {
@@ -549,7 +557,7 @@ xlate_to_uni(const unsigned char *name, int len, unsigned char *outname,
 				return -ENAMETOOLONG;
 		} else {
 			for (i = 0, ip = name, op = outname, *outlen = 0;
-			     i < len && *outlen <= FAT_LFN_LEN;
+			     i < len && *outlen <= 255;
 			     i++, *outlen += 1)
 			{
 				*op++ = *ip++;
@@ -594,6 +602,15 @@ static int vfat_build_slots(struct inode *dir, const unsigned char *name,
 	u8 time_cs;
 	int err, ulen, usize, i;
 	loff_t offset;
+
+#if 1	/* 2009-06-25/ Kyo.oh/ workaround code for hiding /sdcard/sd/ */
+	unsigned char InternalHiddneDir=false;
+	if( strcmp(name,"sd")==0 )
+	{
+		InternalHiddneDir=true;
+		printk(KERN_ERR "FAT: vfat_build_slots name [%s] hidden=%d\n",name,InternalHiddneDir);
+	}
+#endif	
 
 	*nr_slots = 0;
 
@@ -643,6 +660,12 @@ shortname:
 	(*nr_slots)++;
 	memcpy(de->name, msdos_name, MSDOS_NAME);
 	de->attr = is_dir ? ATTR_DIR : ATTR_ARCH;
+#if 1	/* 2009-06-06/ Kyo.oh/ workaround code for hiding /sdcard/sd/ */
+	if(InternalHiddneDir)
+	{
+		de->attr |=ATTR_HIDDEN;
+	}
+#endif	
 	de->lcase = lcase;
 	fat_time_unix2fat(sbi, ts, &time, &date, &time_cs);
 	de->time = de->ctime = time;
@@ -701,15 +724,6 @@ static int vfat_find(struct inode *dir, struct qstr *qname,
 	return fat_search_long(dir, qname->name, len, sinfo);
 }
 
-/*
- * (nfsd's) anonymous disconnected dentry?
- * NOTE: !IS_ROOT() is not anonymous (I.e. d_splice_alias() did the job).
- */
-static int vfat_d_anon_disconn(struct dentry *dentry)
-{
-	return IS_ROOT(dentry) && (dentry->d_flags & DCACHE_DISCONNECTED);
-}
-
 static struct dentry *vfat_lookup(struct inode *dir, struct dentry *dentry,
 				  struct nameidata *nd)
 {
@@ -738,11 +752,11 @@ static struct dentry *vfat_lookup(struct inode *dir, struct dentry *dentry,
 	}
 
 	alias = d_find_alias(inode);
-	if (alias && !vfat_d_anon_disconn(alias)) {
+	if (alias && !(alias->d_flags & DCACHE_DISCONNECTED)) {
 		/*
-		 * This inode has non anonymous-DCACHE_DISCONNECTED
-		 * dentry. This means, the user did ->lookup() by an
-		 * another name (longname vs 8.3 alias of it) in past.
+		 * This inode has non DCACHE_DISCONNECTED dentry. This
+		 * means, the user did ->lookup() by an another name
+		 * (longname vs 8.3 alias of it) in past.
 		 *
 		 * Switch to new one for reason of locality if possible.
 		 */
@@ -752,9 +766,7 @@ static struct dentry *vfat_lookup(struct inode *dir, struct dentry *dentry,
 		iput(inode);
 		unlock_super(sb);
 		return alias;
-	} else
-		dput(alias);
-
+	}
 out:
 	unlock_super(sb);
 	dentry->d_op = sb->s_root->d_op;
@@ -968,7 +980,7 @@ static int vfat_rename(struct inode *old_dir, struct dentry *old_dentry,
 		int start = MSDOS_I(new_dir)->i_logstart;
 		dotdot_de->start = cpu_to_le16(start);
 		dotdot_de->starthi = cpu_to_le16(start >> 16);
-		mark_buffer_dirty_inode(dotdot_bh, old_inode);
+		mark_buffer_dirty(dotdot_bh);
 		if (IS_DIRSYNC(new_dir)) {
 			err = sync_dirty_buffer(dotdot_bh);
 			if (err)
@@ -1012,7 +1024,7 @@ error_dotdot:
 		int start = MSDOS_I(old_dir)->i_logstart;
 		dotdot_de->start = cpu_to_le16(start);
 		dotdot_de->starthi = cpu_to_le16(start >> 16);
-		mark_buffer_dirty_inode(dotdot_bh, old_inode);
+		mark_buffer_dirty(dotdot_bh);
 		corrupt |= sync_dirty_buffer(dotdot_bh);
 	}
 error_inode:

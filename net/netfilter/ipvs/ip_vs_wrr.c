@@ -18,14 +18,9 @@
  *
  */
 
-#define KMSG_COMPONENT "IPVS"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
-
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/net.h>
-#include <linux/gcd.h>
 
 #include <net/ip_vs.h>
 
@@ -39,6 +34,20 @@ struct ip_vs_wrr_mark {
 	int di;			/* decreasing interval */
 };
 
+
+/*
+ *    Get the gcd of server weights
+ */
+static int gcd(int a, int b)
+{
+	int c;
+
+	while ((c = a % b)) {
+		a = b;
+		b = c;
+	}
+	return b;
+}
 
 static int ip_vs_wrr_gcd_weight(struct ip_vs_service *svc)
 {
@@ -65,12 +74,11 @@ static int ip_vs_wrr_gcd_weight(struct ip_vs_service *svc)
 static int ip_vs_wrr_max_weight(struct ip_vs_service *svc)
 {
 	struct ip_vs_dest *dest;
-	int new_weight, weight = 0;
+	int weight = 0;
 
 	list_for_each_entry(dest, &svc->destinations, n_list) {
-		new_weight = atomic_read(&dest->weight);
-		if (new_weight > weight)
-			weight = new_weight;
+		if (atomic_read(&dest->weight) > weight)
+			weight = atomic_read(&dest->weight);
 	}
 
 	return weight;
@@ -86,7 +94,7 @@ static int ip_vs_wrr_init_svc(struct ip_vs_service *svc)
 	 */
 	mark = kmalloc(sizeof(struct ip_vs_wrr_mark), GFP_ATOMIC);
 	if (mark == NULL) {
-		pr_err("%s(): no memory\n", __func__);
+		IP_VS_ERR("ip_vs_wrr_init_svc(): no memory\n");
 		return -ENOMEM;
 	}
 	mark->cl = &svc->destinations;
@@ -133,7 +141,7 @@ ip_vs_wrr_schedule(struct ip_vs_service *svc, const struct sk_buff *skb)
 	struct ip_vs_wrr_mark *mark = svc->sched_data;
 	struct list_head *p;
 
-	IP_VS_DBG(6, "%s(): Scheduling...\n", __func__);
+	IP_VS_DBG(6, "ip_vs_wrr_schedule(): Scheduling...\n");
 
 	/*
 	 * This loop will always terminate, because mark->cw in (0, max_weight]

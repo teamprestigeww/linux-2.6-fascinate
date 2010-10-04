@@ -30,7 +30,6 @@
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
-#include <linux/slab.h>
 #include <mach/hardware.h>
 
 #define MODULE_NAME "PNX4008-WDT: "
@@ -55,22 +54,22 @@
 
 /* WDTIM_CTRL bit definitions */
 #define COUNT_ENAB     1
-#define RESET_COUNT    (1 << 1)
-#define DEBUG_EN       (1 << 2)
+#define RESET_COUNT    (1<<1)
+#define DEBUG_EN       (1<<2)
 
 /* WDTIM_MCTRL bit definitions */
 #define MR0_INT        1
 #undef  RESET_COUNT0
-#define RESET_COUNT0   (1 << 2)
-#define STOP_COUNT0    (1 << 2)
-#define M_RES1         (1 << 3)
-#define M_RES2         (1 << 4)
-#define RESFRC1        (1 << 5)
-#define RESFRC2        (1 << 6)
+#define RESET_COUNT0   (1<<2)
+#define STOP_COUNT0    (1<<2)
+#define M_RES1         (1<<3)
+#define M_RES2         (1<<4)
+#define RESFRC1        (1<<5)
+#define RESFRC2        (1<<6)
 
 /* WDTIM_EMR bit definitions */
 #define EXT_MATCH0      1
-#define MATCH_OUTPUT_HIGH (2 << 4)	/*a MATCH_CTRL setting */
+#define MATCH_OUTPUT_HIGH (2<<4)	/*a MATCH_CTRL setting */
 
 /* WDTIM_RES bit definitions */
 #define WDOG_RESET      1	/* read only */
@@ -96,6 +95,9 @@ struct clk		*wdt_clk;
 static void wdt_enable(void)
 {
 	spin_lock(&io_lock);
+
+	if (wdt_clk)
+		clk_set_rate(wdt_clk, 1);
 
 	/* stop counter, initiate counter reset */
 	__raw_writel(RESET_COUNT, WDTIM_CTRL(wdt_base));
@@ -123,24 +125,18 @@ static void wdt_disable(void)
 	spin_lock(&io_lock);
 
 	__raw_writel(0, WDTIM_CTRL(wdt_base));	/*stop counter */
+	if (wdt_clk)
+		clk_set_rate(wdt_clk, 0);
 
 	spin_unlock(&io_lock);
 }
 
 static int pnx4008_wdt_open(struct inode *inode, struct file *file)
 {
-	int ret;
-
 	if (test_and_set_bit(WDT_IN_USE, &wdt_status))
 		return -EBUSY;
 
 	clear_bit(WDT_OK_TO_CLOSE, &wdt_status);
-
-	ret = clk_enable(wdt_clk);
-	if (ret) {
-		clear_bit(WDT_IN_USE, &wdt_status);
-		return ret;
-	}
 
 	wdt_enable();
 
@@ -229,7 +225,6 @@ static int pnx4008_wdt_release(struct inode *inode, struct file *file)
 		printk(KERN_WARNING "WATCHDOG: Device closed unexpectdly\n");
 
 	wdt_disable();
-	clk_disable(wdt_clk);
 	clear_bit(WDT_IN_USE, &wdt_status);
 	clear_bit(WDT_OK_TO_CLOSE, &wdt_status);
 
@@ -251,7 +246,7 @@ static struct miscdevice pnx4008_wdt_miscdev = {
 	.fops = &pnx4008_wdt_fops,
 };
 
-static int __devinit pnx4008_wdt_probe(struct platform_device *pdev)
+static int pnx4008_wdt_probe(struct platform_device *pdev)
 {
 	int ret = 0, size;
 	struct resource *res;
@@ -269,7 +264,7 @@ static int __devinit pnx4008_wdt_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	size = resource_size(res);
+	size = res->end - res->start + 1;
 	wdt_mem = request_mem_region(res->start, size, pdev->name);
 
 	if (wdt_mem == NULL) {
@@ -278,33 +273,25 @@ static int __devinit pnx4008_wdt_probe(struct platform_device *pdev)
 	}
 	wdt_base = (void __iomem *)IO_ADDRESS(res->start);
 
-	wdt_clk = clk_get(&pdev->dev, NULL);
+	wdt_clk = clk_get(&pdev->dev, "wdt_ck");
 	if (IS_ERR(wdt_clk)) {
 		ret = PTR_ERR(wdt_clk);
 		release_resource(wdt_mem);
 		kfree(wdt_mem);
 		goto out;
-	}
-
-	ret = clk_enable(wdt_clk);
-	if (ret) {
-		release_resource(wdt_mem);
-		kfree(wdt_mem);
-		goto out;
-	}
+	} else
+		clk_set_rate(wdt_clk, 1);
 
 	ret = misc_register(&pnx4008_wdt_miscdev);
 	if (ret < 0) {
 		printk(KERN_ERR MODULE_NAME "cannot register misc device\n");
 		release_resource(wdt_mem);
 		kfree(wdt_mem);
-		clk_disable(wdt_clk);
-		clk_put(wdt_clk);
+		clk_set_rate(wdt_clk, 0);
 	} else {
 		boot_status = (__raw_readl(WDTIM_RES(wdt_base)) & WDOG_RESET) ?
 		    WDIOF_CARDRESET : 0;
 		wdt_disable();		/*disable for now */
-		clk_disable(wdt_clk);
 		set_bit(WDT_DEVICE_INITED, &wdt_status);
 	}
 
@@ -312,13 +299,14 @@ out:
 	return ret;
 }
 
-static int __devexit pnx4008_wdt_remove(struct platform_device *pdev)
+static int pnx4008_wdt_remove(struct platform_device *pdev)
 {
 	misc_deregister(&pnx4008_wdt_miscdev);
-
-	clk_disable(wdt_clk);
-	clk_put(wdt_clk);
-
+	if (wdt_clk) {
+		clk_set_rate(wdt_clk, 0);
+		clk_put(wdt_clk);
+		wdt_clk = NULL;
+	}
 	if (wdt_mem) {
 		release_resource(wdt_mem);
 		kfree(wdt_mem);
@@ -329,11 +317,11 @@ static int __devexit pnx4008_wdt_remove(struct platform_device *pdev)
 
 static struct platform_driver platform_wdt_driver = {
 	.driver = {
-		.name = "pnx4008-watchdog",
+		.name = "watchdog",
 		.owner	= THIS_MODULE,
 	},
 	.probe = pnx4008_wdt_probe,
-	.remove = __devexit_p(pnx4008_wdt_remove),
+	.remove = pnx4008_wdt_remove,
 };
 
 static int __init pnx4008_wdt_init(void)
@@ -364,4 +352,4 @@ MODULE_PARM_DESC(nowayout,
 
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
-MODULE_ALIAS("platform:pnx4008-watchdog");
+MODULE_ALIAS("platform:watchdog");

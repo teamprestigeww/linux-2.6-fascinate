@@ -118,13 +118,6 @@
 #define resume_kernel		restore_all
 #endif
 
-/* how to get the thread information struct from ASM */
-#define GET_THREAD_INFO(reg)	GET_THREAD_INFO reg
-	.macro GET_THREAD_INFO reg
-	ldi	\reg, #-THREAD_SIZE
-	and	\reg, sp
-	.endm
-
 ENTRY(ret_from_fork)
 	pop	r0
 	bl	schedule_tail
@@ -235,9 +228,10 @@ work_resched:
 work_notifysig:				; deal with pending signals and
 					; notify-resume requests
 	mv	r0, sp			; arg1 : struct pt_regs *regs
-	mv	r1, r9			; arg2 : __u32 thread_info_flags
+	ldi	r1, #0			; arg2 : sigset_t *oldset
+	mv	r2, r9			; arg3 : __u32 thread_info_flags
 	bl	do_notify_resume
-	bra	resume_userspace
+	bra	restore_all
 
 	; perform syscall exit tracing
 	ALIGN

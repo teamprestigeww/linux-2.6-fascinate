@@ -6,6 +6,7 @@
  */
 
 #include "dm-exception-store.h"
+#include "dm-snap.h"
 
 #include <linux/mm.h>
 #include <linux/pagemap.h>
@@ -22,7 +23,7 @@ struct transient_c {
 	sector_t next_free;
 };
 
-static void transient_dtr(struct dm_exception_store *store)
+static void transient_destroy(struct dm_exception_store *store)
 {
 	kfree(store->context);
 }
@@ -36,22 +37,22 @@ static int transient_read_metadata(struct dm_exception_store *store,
 }
 
 static int transient_prepare_exception(struct dm_exception_store *store,
-				       struct dm_exception *e)
+				       struct dm_snap_exception *e)
 {
-	struct transient_c *tc = store->context;
-	sector_t size = get_dev_size(dm_snap_cow(store->snap)->bdev);
+	struct transient_c *tc = (struct transient_c *) store->context;
+	sector_t size = get_dev_size(store->snap->cow->bdev);
 
-	if (size < (tc->next_free + store->chunk_size))
+	if (size < (tc->next_free + store->snap->chunk_size))
 		return -1;
 
-	e->new_chunk = sector_to_chunk(store, tc->next_free);
-	tc->next_free += store->chunk_size;
+	e->new_chunk = sector_to_chunk(store->snap, tc->next_free);
+	tc->next_free += store->snap->chunk_size;
 
 	return 0;
 }
 
 static void transient_commit_exception(struct dm_exception_store *store,
-				       struct dm_exception *e,
+				       struct dm_snap_exception *e,
 				       void (*callback) (void *, int success),
 				       void *callback_context)
 {
@@ -59,20 +60,23 @@ static void transient_commit_exception(struct dm_exception_store *store,
 	callback(callback_context, 1);
 }
 
-static void transient_usage(struct dm_exception_store *store,
-			    sector_t *total_sectors,
-			    sector_t *sectors_allocated,
-			    sector_t *metadata_sectors)
+static void transient_fraction_full(struct dm_exception_store *store,
+				    sector_t *numerator, sector_t *denominator)
 {
-	*sectors_allocated = ((struct transient_c *) store->context)->next_free;
-	*total_sectors = get_dev_size(dm_snap_cow(store->snap)->bdev);
-	*metadata_sectors = 0;
+	*numerator = ((struct transient_c *) store->context)->next_free;
+	*denominator = get_dev_size(store->snap->cow->bdev);
 }
 
-static int transient_ctr(struct dm_exception_store *store,
-			 unsigned argc, char **argv)
+int dm_create_transient(struct dm_exception_store *store)
 {
 	struct transient_c *tc;
+
+	store->destroy = transient_destroy;
+	store->read_metadata = transient_read_metadata;
+	store->prepare_exception = transient_prepare_exception;
+	store->commit_exception = transient_commit_exception;
+	store->drop_snapshot = NULL;
+	store->fraction_full = transient_fraction_full;
 
 	tc = kmalloc(sizeof(struct transient_c), GFP_KERNEL);
 	if (!tc)
@@ -84,69 +88,11 @@ static int transient_ctr(struct dm_exception_store *store,
 	return 0;
 }
 
-static unsigned transient_status(struct dm_exception_store *store,
-				 status_type_t status, char *result,
-				 unsigned maxlen)
-{
-	unsigned sz = 0;
-
-	switch (status) {
-	case STATUSTYPE_INFO:
-		break;
-	case STATUSTYPE_TABLE:
-		DMEMIT(" N %llu", (unsigned long long)store->chunk_size);
-	}
-
-	return sz;
-}
-
-static struct dm_exception_store_type _transient_type = {
-	.name = "transient",
-	.module = THIS_MODULE,
-	.ctr = transient_ctr,
-	.dtr = transient_dtr,
-	.read_metadata = transient_read_metadata,
-	.prepare_exception = transient_prepare_exception,
-	.commit_exception = transient_commit_exception,
-	.usage = transient_usage,
-	.status = transient_status,
-};
-
-static struct dm_exception_store_type _transient_compat_type = {
-	.name = "N",
-	.module = THIS_MODULE,
-	.ctr = transient_ctr,
-	.dtr = transient_dtr,
-	.read_metadata = transient_read_metadata,
-	.prepare_exception = transient_prepare_exception,
-	.commit_exception = transient_commit_exception,
-	.usage = transient_usage,
-	.status = transient_status,
-};
-
 int dm_transient_snapshot_init(void)
 {
-	int r;
-
-	r = dm_exception_store_type_register(&_transient_type);
-	if (r) {
-		DMWARN("Unable to register transient exception store type");
-		return r;
-	}
-
-	r = dm_exception_store_type_register(&_transient_compat_type);
-	if (r) {
-		DMWARN("Unable to register old-style transient "
-		       "exception store type");
-		dm_exception_store_type_unregister(&_transient_type);
-		return r;
-	}
-
-	return r;
+	return 0;
 }
 
 void dm_transient_snapshot_exit(void)
 {
-	dm_exception_store_type_unregister(&_transient_type);
-	dm_exception_store_type_unregister(&_transient_compat_type);
 }

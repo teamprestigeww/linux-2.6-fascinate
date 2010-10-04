@@ -28,12 +28,13 @@
  * space and from the other side. The world is (sadly) configured to
  * take in only Ethernet devices...
  *
- * Because of this, when using firmwares <= v1.3, there is an
- * copy-each-rxed-packet overhead on the RX path. Each IP packet has
- * to be reallocated to add an ethernet header (as there is no space
- * in what we get from the device). This is a known drawback and
- * firmwares >= 1.4 add header space that can be used to insert the
- * ethernet header without having to reallocate and copy.
+ * Because of this, currently there is an copy-each-rxed-packet
+ * overhead on the RX path. Each IP packet has to be reallocated to
+ * add an ethernet header (as there is no space in what we get from
+ * the device). This is a known drawback and coming versions of the
+ * device's firmware are being changed to add header space that can be
+ * used to insert the ethernet header without having to reallocate and
+ * copy.
  *
  * TX error handling is tricky; because we have to FIFO/queue the
  * buffers for transmission (as the hardware likes it aggregated), we
@@ -66,16 +67,12 @@
  * i2400m_tx_timeout      Called when the device times out
  *
  * i2400m_net_rx          Called by the RX code when a data frame is
- *                        available (firmware <= 1.3)
- * i2400m_net_erx         Called by the RX code when a data frame is
- *                        available (firmware >= 1.4).
+ *                        available.
  * i2400m_netdev_setup    Called to setup all the netdev stuff from
  *                        alloc_netdev.
  */
 #include <linux/if_arp.h>
-#include <linux/slab.h>
 #include <linux/netdevice.h>
-#include <linux/ethtool.h>
 #include "i2400m.h"
 
 
@@ -84,15 +81,14 @@
 
 enum {
 /* netdev interface */
-	/* 20 secs? yep, this is the maximum timeout that the device
-	 * might take to get out of IDLE / negotiate it with the base
-	 * station. We add 1sec for good measure. */
-	I2400M_TX_TIMEOUT = 21 * HZ,
 	/*
-	 * Experimentation has determined that, 20 to be a good value
-	 * for minimizing the jitter in the throughput.
+	 * Out of NWG spec (R1_v1.2.2), 3.3.3 ASN Bearer Plane MTU Size
+	 *
+	 * The MTU is 1400 or less
 	 */
-	I2400M_TX_QLEN = 20,
+	I2400M_MAX_MTU = 1400,
+	I2400M_TX_TIMEOUT = HZ,
+	I2400M_TX_QLEN = 5,
 };
 
 
@@ -104,19 +100,22 @@ int i2400m_open(struct net_device *net_dev)
 	struct device *dev = i2400m_dev(i2400m);
 
 	d_fnstart(3, dev, "(net_dev %p [i2400m %p])\n", net_dev, i2400m);
-	/* Make sure we wait until init is complete... */
-	mutex_lock(&i2400m->init_mutex);
-	if (i2400m->updown)
-		result = 0;
-	else
+	if (i2400m->ready == 0) {
+		dev_err(dev, "Device is still initializing\n");
 		result = -EBUSY;
-	mutex_unlock(&i2400m->init_mutex);
+	} else
+		result = 0;
 	d_fnend(3, dev, "(net_dev %p [i2400m %p]) = %d\n",
 		net_dev, i2400m, result);
 	return result;
 }
 
 
+/*
+ *
+ * On kernel versions where cancel_work_sync() didn't return anything,
+ * we rely on wake_tx_skb() being non-NULL.
+ */
 static
 int i2400m_stop(struct net_device *net_dev)
 {
@@ -124,7 +123,21 @@ int i2400m_stop(struct net_device *net_dev)
 	struct device *dev = i2400m_dev(i2400m);
 
 	d_fnstart(3, dev, "(net_dev %p [i2400m %p])\n", net_dev, i2400m);
-	i2400m_net_wake_stop(i2400m);
+	/* See i2400m_hard_start_xmit(), references are taken there
+	 * and here we release them if the work was still
+	 * pending. Note we can't differentiate work not pending vs
+	 * never scheduled, so the NULL check does that. */
+	if (cancel_work_sync(&i2400m->wake_tx_ws) == 0
+	    && i2400m->wake_tx_skb != NULL) {
+		unsigned long flags;
+		struct sk_buff *wake_tx_skb;
+		spin_lock_irqsave(&i2400m->tx_lock, flags);
+		wake_tx_skb = i2400m->wake_tx_skb;	/* compat help */
+		i2400m->wake_tx_skb = NULL;	/* compat help */
+		spin_unlock_irqrestore(&i2400m->tx_lock, flags);
+		i2400m_put(i2400m);
+		kfree_skb(wake_tx_skb);
+	}
 	d_fnend(3, dev, "(net_dev %p [i2400m %p]) = 0\n", net_dev, i2400m);
 	return 0;
 }
@@ -153,7 +166,6 @@ void i2400m_wake_tx_work(struct work_struct *ws)
 {
 	int result;
 	struct i2400m *i2400m = container_of(ws, struct i2400m, wake_tx_ws);
-	struct net_device *net_dev = i2400m->wimax_dev.net_dev;
 	struct device *dev = i2400m_dev(i2400m);
 	struct sk_buff *skb = i2400m->wake_tx_skb;
 	unsigned long flags;
@@ -169,36 +181,27 @@ void i2400m_wake_tx_work(struct work_struct *ws)
 		dev_err(dev, "WAKE&TX: skb dissapeared!\n");
 		goto out_put;
 	}
-	/* If we have, somehow, lost the connection after this was
-	 * queued, don't do anything; this might be the device got
-	 * reset or just disconnected. */
-	if (unlikely(!netif_carrier_ok(net_dev)))
-		goto out_kfree;
 	result = i2400m_cmd_exit_idle(i2400m);
 	if (result == -EILSEQ)
 		result = 0;
 	if (result < 0) {
 		dev_err(dev, "WAKE&TX: device didn't get out of idle: "
-			"%d - resetting\n", result);
-		i2400m_reset(i2400m, I2400M_RT_BUS);
-		goto error;
+			"%d\n", result);
+			goto error;
 	}
 	result = wait_event_timeout(i2400m->state_wq,
-				    i2400m->state != I2400M_SS_IDLE,
-				    net_dev->watchdog_timeo - HZ/2);
+				    i2400m->state != I2400M_SS_IDLE, 5 * HZ);
 	if (result == 0)
 		result = -ETIMEDOUT;
 	if (result < 0) {
 		dev_err(dev, "WAKE&TX: error waiting for device to exit IDLE: "
-			"%d - resetting\n", result);
-		i2400m_reset(i2400m, I2400M_RT_BUS);
+			"%d\n", result);
 		goto error;
 	}
 	msleep(20);	/* device still needs some time or it drops it */
 	result = i2400m_tx(i2400m, skb->data, skb->len, I2400M_PT_DATA);
+	netif_wake_queue(i2400m->wimax_dev.net_dev);
 error:
-	netif_wake_queue(net_dev);
-out_kfree:
 	kfree_skb(skb);	/* refcount transferred by _hard_start_xmit() */
 out_put:
 	i2400m_put(i2400m);
@@ -222,37 +225,6 @@ void i2400m_tx_prep_header(struct sk_buff *skb)
 	skb_pull(skb, ETH_HLEN);
 	pl_hdr = (struct i2400m_pl_data_hdr *) skb_push(skb, sizeof(*pl_hdr));
 	pl_hdr->reserved = 0;
-}
-
-
-
-/*
- * Cleanup resources acquired during i2400m_net_wake_tx()
- *
- * This is called by __i2400m_dev_stop and means we have to make sure
- * the workqueue is flushed from any pending work.
- */
-void i2400m_net_wake_stop(struct i2400m *i2400m)
-{
-	struct device *dev = i2400m_dev(i2400m);
-
-	d_fnstart(3, dev, "(i2400m %p)\n", i2400m);
-	/* See i2400m_hard_start_xmit(), references are taken there
-	 * and here we release them if the work was still
-	 * pending. Note we can't differentiate work not pending vs
-	 * never scheduled, so the NULL check does that. */
-	if (cancel_work_sync(&i2400m->wake_tx_ws) == 0
-	    && i2400m->wake_tx_skb != NULL) {
-		unsigned long flags;
-		struct sk_buff *wake_tx_skb;
-		spin_lock_irqsave(&i2400m->tx_lock, flags);
-		wake_tx_skb = i2400m->wake_tx_skb;	/* compat help */
-		i2400m->wake_tx_skb = NULL;	/* compat help */
-		spin_unlock_irqrestore(&i2400m->tx_lock, flags);
-		i2400m_put(i2400m);
-		kfree_skb(wake_tx_skb);
-	}
-	d_fnend(3, dev, "(i2400m %p) = void\n", i2400m);
 }
 
 
@@ -361,28 +333,14 @@ int i2400m_net_tx(struct i2400m *i2400m, struct net_device *net_dev,
  * that will sleep. See i2400m_net_wake_tx() for details.
  */
 static
-netdev_tx_t i2400m_hard_start_xmit(struct sk_buff *skb,
-					 struct net_device *net_dev)
+int i2400m_hard_start_xmit(struct sk_buff *skb,
+			   struct net_device *net_dev)
 {
+	int result;
 	struct i2400m *i2400m = net_dev_to_i2400m(net_dev);
 	struct device *dev = i2400m_dev(i2400m);
-	int result;
 
 	d_fnstart(3, dev, "(skb %p net_dev %p)\n", skb, net_dev);
-	if (skb_header_cloned(skb)) {
-		/*
-		 * Make tcpdump/wireshark happy -- if they are
-		 * running, the skb is cloned and we will overwrite
-		 * the mac fields in i2400m_tx_prep_header. Expand
-		 * seems to fix this...
-		 */
-		result = pskb_expand_head(skb, 0, 0, GFP_ATOMIC);
-		if (result) {
-			result = NETDEV_TX_BUSY;
-			goto error_expand;
-		}
-	}
-
 	if (i2400m->state == I2400M_SS_IDLE)
 		result = i2400m_net_wake_tx(i2400m, net_dev, skb);
 	else
@@ -393,9 +351,8 @@ netdev_tx_t i2400m_hard_start_xmit(struct sk_buff *skb,
 		net_dev->stats.tx_packets++;
 		net_dev->stats.tx_bytes += skb->len;
 	}
-	result = NETDEV_TX_OK;
-error_expand:
 	kfree_skb(skb);
+	result = NETDEV_TX_OK;
 	d_fnend(3, dev, "(skb %p net_dev %p) = %d\n", skb, net_dev, result);
 	return result;
 }
@@ -431,6 +388,7 @@ void i2400m_tx_timeout(struct net_device *net_dev)
 	 * this, there might be data pending to be sent or not...
 	 */
 	net_dev->stats.tx_errors++;
+	return;
 }
 
 
@@ -438,20 +396,30 @@ void i2400m_tx_timeout(struct net_device *net_dev)
  * Create a fake ethernet header
  *
  * For emulating an ethernet device, every received IP header has to
- * be prefixed with an ethernet header. Fake it with the given
- * protocol.
+ * be prefixed with an ethernet header.
+ *
+ * What we receive has (potentially) many IP packets concatenated with
+ * no ETH_HLEN bytes prefixed. Thus there is no space for an eth
+ * header.
+ *
+ * We would have to reallocate or do ugly fragment tricks in order to
+ * add it.
+ *
+ * But what we do is use the header space of the RX transaction
+ * (*msg_hdr) as we don't need it anymore; then we'll point all the
+ * data skbs there, as they share the same backing store.
+ *
+ * We only support IPv4 for v3 firmware.
  */
 static
 void i2400m_rx_fake_eth_header(struct net_device *net_dev,
-			       void *_eth_hdr, __be16 protocol)
+			       void *_eth_hdr)
 {
-	struct i2400m *i2400m = net_dev_to_i2400m(net_dev);
 	struct ethhdr *eth_hdr = _eth_hdr;
 
 	memcpy(eth_hdr->h_dest, net_dev->dev_addr, sizeof(eth_hdr->h_dest));
-	memcpy(eth_hdr->h_source, i2400m->src_mac_addr,
-	       sizeof(eth_hdr->h_source));
-	eth_hdr->h_proto = protocol;
+	memset(eth_hdr->h_source, 0, sizeof(eth_hdr->h_dest));
+	eth_hdr->h_proto = __constant_cpu_to_be16(ETH_P_IP);
 }
 
 
@@ -463,13 +431,6 @@ void i2400m_rx_fake_eth_header(struct net_device *net_dev,
  * @i: 1 if payload is the only one
  * @buf: pointer to the buffer containing the data
  * @len: buffer's length
- *
- * This is only used now for the v1.3 firmware. It will be deprecated
- * in >= 2.6.31.
- *
- * Note that due to firmware limitations, we don't have space to add
- * an ethernet header, so we need to copy each packet. Firmware
- * versions >= v1.4 fix this [see i2400m_net_erx()].
  *
  * We just clone the skb and set it up so that it's skb->data pointer
  * points to "buf" and it's length.
@@ -517,8 +478,7 @@ void i2400m_net_rx(struct i2400m *i2400m, struct sk_buff *skb_rx,
 		memcpy(skb_put(skb, buf_len), buf, buf_len);
 	}
 	i2400m_rx_fake_eth_header(i2400m->wimax_dev.net_dev,
-				  skb->data - ETH_HLEN,
-				  cpu_to_be16(ETH_P_IP));
+				  skb->data - ETH_HLEN);
 	skb_set_mac_header(skb, -ETH_HLEN);
 	skb->dev = i2400m->wimax_dev.net_dev;
 	skb->protocol = htons(ETH_P_IP);
@@ -533,89 +493,6 @@ error_skb_realloc:
 		i2400m, buf, buf_len);
 }
 
-
-/*
- * i2400m_net_erx - pass a network packet to the stack (extended version)
- *
- * @i2400m: device descriptor
- * @skb: the skb where the packet is - the skb should be set to point
- *     at the IP packet; this function will add ethernet headers if
- *     needed.
- * @cs: packet type
- *
- * This is only used now for firmware >= v1.4. Note it is quite
- * similar to i2400m_net_rx() (used only for v1.3 firmware).
- *
- * This function is normally run from a thread context. However, we
- * still use netif_rx() instead of netif_receive_skb() as was
- * recommended in the mailing list. Reason is in some stress tests
- * when sending/receiving a lot of data we seem to hit a softlock in
- * the kernel's TCP implementation [aroudn tcp_delay_timer()]. Using
- * netif_rx() took care of the issue.
- *
- * This is, of course, still open to do more research on why running
- * with netif_receive_skb() hits this softlock. FIXME.
- */
-void i2400m_net_erx(struct i2400m *i2400m, struct sk_buff *skb,
-		    enum i2400m_cs cs)
-{
-	struct net_device *net_dev = i2400m->wimax_dev.net_dev;
-	struct device *dev = i2400m_dev(i2400m);
-	int protocol;
-
-	d_fnstart(2, dev, "(i2400m %p skb %p [%u] cs %d)\n",
-		  i2400m, skb, skb->len, cs);
-	switch(cs) {
-	case I2400M_CS_IPV4_0:
-	case I2400M_CS_IPV4:
-		protocol = ETH_P_IP;
-		i2400m_rx_fake_eth_header(i2400m->wimax_dev.net_dev,
-					  skb->data - ETH_HLEN,
-					  cpu_to_be16(ETH_P_IP));
-		skb_set_mac_header(skb, -ETH_HLEN);
-		skb->dev = i2400m->wimax_dev.net_dev;
-		skb->protocol = htons(ETH_P_IP);
-		net_dev->stats.rx_packets++;
-		net_dev->stats.rx_bytes += skb->len;
-		break;
-	default:
-		dev_err(dev, "ERX: BUG? CS type %u unsupported\n", cs);
-		goto error;
-
-	}
-	d_printf(3, dev, "ERX: receiving %d bytes to the network stack\n",
-		 skb->len);
-	d_dump(4, dev, skb->data, skb->len);
-	netif_rx_ni(skb);	/* see notes in function header */
-error:
-	d_fnend(2, dev, "(i2400m %p skb %p [%u] cs %d) = void\n",
-		i2400m, skb, skb->len, cs);
-}
-
-static const struct net_device_ops i2400m_netdev_ops = {
-	.ndo_open = i2400m_open,
-	.ndo_stop = i2400m_stop,
-	.ndo_start_xmit = i2400m_hard_start_xmit,
-	.ndo_tx_timeout = i2400m_tx_timeout,
-	.ndo_change_mtu = i2400m_change_mtu,
-};
-
-static void i2400m_get_drvinfo(struct net_device *net_dev,
-			       struct ethtool_drvinfo *info)
-{
-	struct i2400m *i2400m = net_dev_to_i2400m(net_dev);
-
-	strncpy(info->driver, KBUILD_MODNAME, sizeof(info->driver) - 1);
-	strncpy(info->fw_version, i2400m->fw_name, sizeof(info->fw_version) - 1);
-	if (net_dev->dev.parent)
-		strncpy(info->bus_info, dev_name(net_dev->dev.parent),
-			sizeof(info->bus_info) - 1);
-}
-
-static const struct ethtool_ops i2400m_ethtool_ops = {
-	.get_drvinfo = i2400m_get_drvinfo,
-	.get_link = ethtool_op_get_link,
-};
 
 /**
  * i2400m_netdev_setup - Setup setup @net_dev's i2400m private data
@@ -636,8 +513,11 @@ void i2400m_netdev_setup(struct net_device *net_dev)
 		& (~IFF_BROADCAST	/* i2400m is P2P */
 		   & ~IFF_MULTICAST);
 	net_dev->watchdog_timeo = I2400M_TX_TIMEOUT;
-	net_dev->netdev_ops = &i2400m_netdev_ops;
-	net_dev->ethtool_ops = &i2400m_ethtool_ops;
+	net_dev->open = i2400m_open;
+	net_dev->stop = i2400m_stop;
+	net_dev->hard_start_xmit = i2400m_hard_start_xmit;
+	net_dev->change_mtu = i2400m_change_mtu;
+	net_dev->tx_timeout = i2400m_tx_timeout;
 	d_fnend(3, NULL, "(net_dev %p) = void\n", net_dev);
 }
 EXPORT_SYMBOL_GPL(i2400m_netdev_setup);

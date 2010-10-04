@@ -52,7 +52,6 @@ cpm_cpm2_t __iomem *cpmp; /* Pointer to comm processor space */
  * the communication processor devices.
  */
 cpm2_map_t __iomem *cpm2_immr;
-EXPORT_SYMBOL(cpm2_immr);
 
 #define CPM_MAP_SIZE	(0x40000)	/* 256k - the PQ3 reserve this amount
 					   of space for CPM as it is larger
@@ -61,7 +60,7 @@ EXPORT_SYMBOL(cpm2_immr);
 void __init cpm2_reset(void)
 {
 #ifdef CONFIG_PPC_85xx
-	cpm2_immr = ioremap(get_immrbase() + 0x80000, CPM_MAP_SIZE);
+	cpm2_immr = ioremap(CPM_MAP_ADDR, CPM_MAP_SIZE);
 #else
 	cpm2_immr = ioremap(get_immrbase(), CPM_MAP_SIZE);
 #endif
@@ -130,8 +129,7 @@ void __cpm2_setbrg(uint brg, uint rate, uint clk, int div16, int src)
 		brg -= 4;
 	}
 	bp += brg;
-	/* Round the clock divider to the nearest integer. */
-	val = (((clk * 2 / rate) - 1) & ~1) | CPM_BRG_EN | src;
+	val = (((clk / rate) - 1) << 1) | CPM_BRG_EN | src;
 	if (div16)
 		val |= CPM_BRG_DIV16;
 
@@ -244,6 +242,9 @@ int cpm2_clk_setup(enum cpm_clk_target target, int clock, int mode)
 		return -EINVAL;
 	}
 
+	if (mode == CPM_CLK_RX)
+		shift += 3;
+
 	for (i = 0; i < ARRAY_SIZE(clk_map); i++) {
 		if (clk_map[i][0] == target && clk_map[i][1] == clock) {
 			bits = clk_map[i][2];
@@ -255,14 +256,6 @@ int cpm2_clk_setup(enum cpm_clk_target target, int clock, int mode)
 
 	bits <<= shift;
 	mask <<= shift;
-
-	if (mode == CPM_CLK_RTX) {
-		bits |= bits << 3;
-		mask |= mask << 3;
-	} else if (mode == CPM_CLK_RX) {
-		bits <<= 3;
-		mask <<= 3;
-	}
 
 	out_be32(reg, (in_be32(reg) & ~mask) | bits);
 

@@ -265,7 +265,7 @@ static int fast_reg_read_chunks(struct svcxprt_rdma *xprt,
 		frmr->page_list->page_list[page_no] =
 			ib_dma_map_single(xprt->sc_cm_id->device,
 					  page_address(rqstp->rq_arg.pages[page_no]),
-					  PAGE_SIZE, DMA_FROM_DEVICE);
+					  PAGE_SIZE, DMA_TO_DEVICE);
 		if (ib_dma_mapping_error(xprt->sc_cm_id->device,
 					 frmr->page_list->page_list[page_no]))
 			goto fatal_err;
@@ -337,9 +337,10 @@ static int rdma_set_ctxt_sge(struct svcxprt_rdma *xprt,
 
 static int rdma_read_max_sge(struct svcxprt_rdma *xprt, int sge_count)
 {
-	if ((rdma_node_get_transport(xprt->sc_cm_id->device->node_type) ==
-	     RDMA_TRANSPORT_IWARP) &&
-	    sge_count > 1)
+	if ((RDMA_TRANSPORT_IWARP ==
+	     rdma_node_get_transport(xprt->sc_cm_id->
+				     device->node_type))
+	    && sge_count > 1)
 		return 1;
 	else
 		return min_t(int, sge_count, xprt->sc_max_sge);
@@ -396,13 +397,13 @@ static int rdma_read_xdr(struct svcxprt_rdma *xprt,
 	if (!ch)
 		return 0;
 
-	svc_rdma_rcl_chunk_counts(ch, &ch_count, &byte_count);
-	if (ch_count > RPCSVC_MAXPAGES)
-		return -EINVAL;
-
 	/* Allocate temporary reply and chunk maps */
 	rpl_map = svc_rdma_get_req_map();
 	chl_map = svc_rdma_get_req_map();
+
+	svc_rdma_rcl_chunk_counts(ch, &ch_count, &byte_count);
+	if (ch_count > RPCSVC_MAXPAGES)
+		return -EINVAL;
 
 	if (!xprt->sc_frmr_pg_list_len)
 		sge_count = map_read_chunks(xprt, rqstp, hdr_ctxt, rmsgp,
@@ -566,6 +567,7 @@ static int rdma_read_complete(struct svc_rqst *rqstp,
 		ret, rqstp->rq_arg.len,	rqstp->rq_arg.head[0].iov_base,
 		rqstp->rq_arg.head[0].iov_len);
 
+	svc_xprt_received(rqstp->rq_xprt);
 	return ret;
 }
 
@@ -664,6 +666,7 @@ int svc_rdma_recvfrom(struct svc_rqst *rqstp)
 		rqstp->rq_arg.head[0].iov_len);
 	rqstp->rq_prot = IPPROTO_MAX;
 	svc_xprt_copy_addrs(rqstp, xprt);
+	svc_xprt_received(xprt);
 	return ret;
 
  close_out:
@@ -676,5 +679,6 @@ int svc_rdma_recvfrom(struct svc_rqst *rqstp)
 	 */
 	set_bit(XPT_CLOSE, &xprt->xpt_flags);
 defer:
+	svc_xprt_received(xprt);
 	return 0;
 }

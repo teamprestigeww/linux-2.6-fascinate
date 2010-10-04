@@ -10,15 +10,11 @@
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
-#define KMSG_COMPONENT "tape"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
-
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/proc_fs.h>
 #include <linux/mtio.h>
 #include <linux/smp_lock.h>
-#include <linux/compat.h>
 
 #include <asm/uaccess.h>
 
@@ -27,6 +23,8 @@
 #include "tape.h"
 #include "tape_std.h"
 #include "tape_class.h"
+
+#define PRINTK_HEADER "TAPE_CHAR: "
 
 #define TAPECHAR_MAJOR		0	/* get dynamic major */
 
@@ -37,20 +35,18 @@ static ssize_t tapechar_read(struct file *, char __user *, size_t, loff_t *);
 static ssize_t tapechar_write(struct file *, const char __user *, size_t, loff_t *);
 static int tapechar_open(struct inode *,struct file *);
 static int tapechar_release(struct inode *,struct file *);
-static long tapechar_ioctl(struct file *, unsigned int, unsigned long);
-#ifdef CONFIG_COMPAT
-static long tapechar_compat_ioctl(struct file *, unsigned int, unsigned long);
-#endif
+static int tapechar_ioctl(struct inode *, struct file *, unsigned int,
+			  unsigned long);
+static long tapechar_compat_ioctl(struct file *, unsigned int,
+			  unsigned long);
 
 static const struct file_operations tape_fops =
 {
 	.owner = THIS_MODULE,
 	.read = tapechar_read,
 	.write = tapechar_write,
-	.unlocked_ioctl = tapechar_ioctl,
-#ifdef CONFIG_COMPAT
+	.ioctl = tapechar_ioctl,
 	.compat_ioctl = tapechar_compat_ioctl,
-#endif
 	.open = tapechar_open,
 	.release = tapechar_release,
 };
@@ -105,6 +101,8 @@ tapechar_check_idalbuffer(struct tape_device *device, size_t block_size)
 
 	if (block_size > MAX_BLOCKSIZE) {
 		DBF_EVENT(3, "Invalid blocksize (%zd > %d)\n",
+			block_size, MAX_BLOCKSIZE);
+		PRINT_ERR("Invalid blocksize (%zd> %d)\n",
 			block_size, MAX_BLOCKSIZE);
 		return -EINVAL;
 	}
@@ -176,6 +174,7 @@ tapechar_read(struct file *filp, char __user *data, size_t count, loff_t *ppos)
 	if (rc == 0) {
 		rc = block_size - request->rescnt;
 		DBF_EVENT(6, "TCHAR:rbytes:  %x\n", rc);
+		filp->f_pos += rc;
 		/* Copy data from idal buffer to user space. */
 		if (idal_buffer_to_user(device->char_data.idal_buf,
 					data, rc) != 0)
@@ -243,6 +242,7 @@ tapechar_write(struct file *filp, const char __user *data, size_t count, loff_t 
 			break;
 		DBF_EVENT(6, "TCHAR:wbytes: %lx\n",
 			  block_size - request->rescnt);
+		filp->f_pos += block_size - request->rescnt;
 		written += block_size - request->rescnt;
 		if (request->rescnt != 0)
 			break;
@@ -290,20 +290,26 @@ tapechar_open (struct inode *inode, struct file *filp)
 	if (imajor(filp->f_path.dentry->d_inode) != tapechar_major)
 		return -ENODEV;
 
+	lock_kernel();
 	minor = iminor(filp->f_path.dentry->d_inode);
-	device = tape_find_device(minor / TAPE_MINORS_PER_DEV);
+	device = tape_get_device(minor / TAPE_MINORS_PER_DEV);
 	if (IS_ERR(device)) {
-		DBF_EVENT(3, "TCHAR:open: tape_find_device() failed\n");
-		return PTR_ERR(device);
+		DBF_EVENT(3, "TCHAR:open: tape_get_device() failed\n");
+		rc = PTR_ERR(device);
+		goto out;
 	}
+
 
 	rc = tape_open(device);
 	if (rc == 0) {
 		filp->private_data = device;
-		nonseekable_open(inode, filp);
-	} else
+		rc = nonseekable_open(inode, filp);
+	}
+	else
 		tape_put_device(device);
 
+out:
+	unlock_kernel();
 	return rc;
 }
 
@@ -340,8 +346,7 @@ tapechar_release(struct inode *inode, struct file *filp)
 		device->char_data.idal_buf = NULL;
 	}
 	tape_release(device);
-	filp->private_data = NULL;
-	tape_put_device(device);
+	filp->private_data = tape_put_device(device);
 
 	return 0;
 }
@@ -350,10 +355,15 @@ tapechar_release(struct inode *inode, struct file *filp)
  * Tape device io controls.
  */
 static int
-__tapechar_ioctl(struct tape_device *device,
-		 unsigned int no, unsigned long data)
+tapechar_ioctl(struct inode *inp, struct file *filp,
+	       unsigned int no, unsigned long data)
 {
+	struct tape_device *device;
 	int rc;
+
+	DBF_EVENT(6, "TCHAR:ioct\n");
+
+	device = (struct tape_device *) filp->private_data;
 
 	if (no == MTIOCTOP) {
 		struct mtop op;
@@ -447,44 +457,21 @@ __tapechar_ioctl(struct tape_device *device,
 }
 
 static long
-tapechar_ioctl(struct file *filp, unsigned int no, unsigned long data)
-{
-	struct tape_device *device;
-	long rc;
-
-	DBF_EVENT(6, "TCHAR:ioct\n");
-
-	device = (struct tape_device *) filp->private_data;
-	mutex_lock(&device->mutex);
-	rc = __tapechar_ioctl(device, no, data);
-	mutex_unlock(&device->mutex);
-	return rc;
-}
-
-#ifdef CONFIG_COMPAT
-static long
 tapechar_compat_ioctl(struct file *filp, unsigned int no, unsigned long data)
 {
 	struct tape_device *device = filp->private_data;
 	int rval = -ENOIOCTLCMD;
-	unsigned long argp;
 
-	/* The 'arg' argument of any ioctl function may only be used for
-	 * pointers because of the compat pointer conversion.
-	 * Consider this when adding new ioctls.
-	 */
-	argp = (unsigned long) compat_ptr(data);
 	if (device->discipline->ioctl_fn) {
-		mutex_lock(&device->mutex);
-		rval = device->discipline->ioctl_fn(device, no, argp);
-		mutex_unlock(&device->mutex);
+		lock_kernel();
+		rval = device->discipline->ioctl_fn(device, no, data);
+		unlock_kernel();
 		if (rval == -EINVAL)
 			rval = -ENOIOCTLCMD;
 	}
 
 	return rval;
 }
-#endif /* CONFIG_COMPAT */
 
 /*
  * Initialize character device frontend.
@@ -498,6 +485,7 @@ tapechar_init (void)
 		return -1;
 
 	tapechar_major = MAJOR(dev);
+	PRINT_INFO("tape gets major %d for character devices\n", MAJOR(dev));
 
 	return 0;
 }
@@ -508,5 +496,7 @@ tapechar_init (void)
 void
 tapechar_exit(void)
 {
+	PRINT_INFO("tape releases major %d for character devices\n",
+		tapechar_major);
 	unregister_chrdev_region(MKDEV(tapechar_major, 0), 256);
 }

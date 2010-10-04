@@ -16,7 +16,6 @@
 #include <linux/linkage.h>
 #include <asm/asm-offsets.h>
 #include <asm/processor.h>
-#include <asm/coprocessor.h>
 #include <asm/thread_info.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -105,7 +104,7 @@
  *   excsave has been restored, and
  *   stack pointer (a1) has been set.
  *
- * Note: _user_exception might be at an odd address. Don't use call0..call12
+ * Note: _user_exception might be at an odd adress. Don't use call0..call12
  */
 
 ENTRY(user_exception)
@@ -245,7 +244,7 @@ _user_exception:
  *   excsave has been restored, and
  *   stack pointer (a1) has been set.
  *
- * Note: _kernel_exception might be at an odd address. Don't use call0..call12
+ * Note: _kernel_exception might be at an odd adress. Don't use call0..call12
  */
 
 ENTRY(kernel_exception)
@@ -1464,7 +1463,6 @@ ENTRY(_spill_registers)
 	callx0	a0		# should not return
 1:	j	1b
 
-#ifdef CONFIG_MMU
 /*
  * We should never get here. Bail out!
  */
@@ -1777,7 +1775,7 @@ ENTRY(fast_store_prohibited)
 	bbsi.l	a2, PS_UM_BIT, 1f
 	j	_kernel_exception
 1:	j	_user_exception
-#endif /* CONFIG_MMU */
+
 
 /*
  * System Calls.

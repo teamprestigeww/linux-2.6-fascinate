@@ -13,16 +13,9 @@
 #define KSYM_SYMBOL_LEN (sizeof("%s+%#lx/%#lx [%s]") + (KSYM_NAME_LEN - 1) + \
 			 2*(BITS_PER_LONG*3/10) + (MODULE_NAME_LEN - 1) + 1)
 
-struct module;
-
 #ifdef CONFIG_KALLSYMS
 /* Lookup the address for a symbol. Returns 0 if not found. */
 unsigned long kallsyms_lookup_name(const char *name);
-
-/* Call a function on each kallsyms symbol in the core kernel */
-int kallsyms_on_each_symbol(int (*fn)(void *, const char *, struct module *,
-				      unsigned long),
-			    void *data);
 
 extern int kallsyms_lookup_size_offset(unsigned long addr,
 				  unsigned long *symbolsize,
@@ -46,14 +39,6 @@ int lookup_symbol_attrs(unsigned long addr, unsigned long *size, unsigned long *
 #else /* !CONFIG_KALLSYMS */
 
 static inline unsigned long kallsyms_lookup_name(const char *name)
-{
-	return 0;
-}
-
-static inline int kallsyms_on_each_symbol(int (*fn)(void *, const char *,
-						    struct module *,
-						    unsigned long),
-					  void *data)
 {
 	return 0;
 }
@@ -105,6 +90,18 @@ static inline void print_symbol(const char *fmt, unsigned long addr)
 	__check_printsym_format(fmt, "");
 	__print_symbol(fmt, (unsigned long)
 		       __builtin_extract_return_addr((void *)addr));
+}
+
+/*
+ * Pretty-print a function pointer.  This function is deprecated.
+ * Please use the "%pF" vsprintf format instead.
+ */
+static inline void __deprecated print_fn_descriptor_symbol(const char *fmt, void *addr)
+{
+#if defined(CONFIG_IA64) || defined(CONFIG_PPC64)
+	addr = *(void **)addr;
+#endif
+	print_symbol(fmt, (unsigned long)addr);
 }
 
 static inline void print_ip_sym(unsigned long ip)

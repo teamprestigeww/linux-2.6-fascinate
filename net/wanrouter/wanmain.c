@@ -48,7 +48,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>	/* support for loadable modules */
 #include <linux/slab.h>		/* kmalloc(), kfree() */
-#include <linux/mutex.h>
 #include <linux/mm.h>
 #include <linux/string.h>	/* inline mem*, str* functions */
 
@@ -71,7 +70,6 @@
  *	WAN device IOCTL handlers
  */
 
-static DEFINE_MUTEX(wanrouter_mutex);
 static int wanrouter_device_setup(struct wan_device *wandev,
 				  wandev_conf_t __user *u_conf);
 static int wanrouter_device_stat(struct wan_device *wandev,
@@ -88,10 +86,8 @@ static int wanrouter_device_del_if(struct wan_device *wandev,
 
 static struct wan_device *wanrouter_find_device(char *name);
 static int wanrouter_delete_interface(struct wan_device *wandev, char *name);
-static void lock_adapter_irq(spinlock_t *lock, unsigned long *smp_flags)
-	__acquires(lock);
-static void unlock_adapter_irq(spinlock_t *lock, unsigned long *smp_flags)
-	__releases(lock);
+static void lock_adapter_irq(spinlock_t *lock, unsigned long *smp_flags);
+static void unlock_adapter_irq(spinlock_t *lock, unsigned long *smp_flags);
 
 
 
@@ -377,7 +373,7 @@ long wanrouter_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	if (wandev->magic != ROUTER_MAGIC)
 		return -EINVAL;
 
-	mutex_lock(&wanrouter_mutex);
+	lock_kernel();
 	switch (cmd) {
 	case ROUTER_SETUP:
 		err = wanrouter_device_setup(wandev, data);
@@ -409,7 +405,7 @@ long wanrouter_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			err = wandev->ioctl(wandev, cmd, arg);
 		else err = -EINVAL;
 	}
-	mutex_unlock(&wanrouter_mutex);
+	unlock_kernel();
 	return err;
 }
 
@@ -767,14 +763,12 @@ static int wanrouter_delete_interface(struct wan_device *wandev, char *name)
 }
 
 static void lock_adapter_irq(spinlock_t *lock, unsigned long *smp_flags)
-	__acquires(lock)
 {
 	spin_lock_irqsave(lock, *smp_flags);
 }
 
 
 static void unlock_adapter_irq(spinlock_t *lock, unsigned long *smp_flags)
-	__releases(lock)
 {
 	spin_unlock_irqrestore(lock, *smp_flags);
 }

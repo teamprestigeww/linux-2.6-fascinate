@@ -19,19 +19,21 @@ struct iovec
 	__kernel_size_t iov_len; /* Must be size_t (1003.1g) */
 };
 
-/*
- *	UIO_MAXIOV shall be at least 16 1003.1g (5.4.1.1)
- */
- 
-#define UIO_FASTIOV	8
-#define UIO_MAXIOV	1024
-
 #ifdef __KERNEL__
 
 struct kvec {
 	void *iov_base; /* and that should *never* hold a userland pointer */
 	size_t iov_len;
 };
+
+#endif
+
+/*
+ *	UIO_MAXIOV shall be at least 16 1003.1g (5.4.1.1)
+ */
+ 
+#define UIO_FASTIOV	8
+#define UIO_MAXIOV	1024
 
 /*
  * Total number of bytes covered by an iovec.
@@ -51,6 +53,5 @@ static inline size_t iov_length(const struct iovec *iov, unsigned long nr_segs)
 }
 
 unsigned long iov_shorten(struct iovec *iov, unsigned long nr_segs, size_t to);
-#endif
 
 #endif

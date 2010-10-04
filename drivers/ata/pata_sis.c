@@ -2,7 +2,7 @@
  *    pata_sis.c - SiS ATA driver
  *
  *	(C) 2005 Red Hat
- *	(C) 2007,2009 Bartlomiej Zolnierkiewicz
+ *	(C) 2007 Bartlomiej Zolnierkiewicz
  *
  *    Based upon linux/drivers/ide/pci/sis5513.c
  * Copyright (C) 1999-2000	Andre Hedrick <andre@linux-ide.org>
@@ -552,57 +552,51 @@ static struct ata_port_operations sis_old_ops = {
 
 static const struct ata_port_info sis_info = {
 	.flags		= ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	.mwdma_mask	= ATA_MWDMA2,
-	/* No UDMA */
+	.pio_mask	= 0x1f,	/* pio0-4 */
+	.mwdma_mask	= 0x07,
+	.udma_mask	= 0,
 	.port_ops	= &sis_old_ops,
 };
 static const struct ata_port_info sis_info33 = {
 	.flags		= ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	.mwdma_mask	= ATA_MWDMA2,
-	.udma_mask	= ATA_UDMA2,
+	.pio_mask	= 0x1f,	/* pio0-4 */
+	.mwdma_mask	= 0x07,
+	.udma_mask	= ATA_UDMA2,	/* UDMA 33 */
 	.port_ops	= &sis_old_ops,
 };
 static const struct ata_port_info sis_info66 = {
 	.flags		= ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	/* No MWDMA */
-	.udma_mask	= ATA_UDMA4,
+	.pio_mask	= 0x1f,	/* pio0-4 */
+	.udma_mask	= ATA_UDMA4,	/* UDMA 66 */
 	.port_ops	= &sis_66_ops,
 };
 static const struct ata_port_info sis_info100 = {
 	.flags		= ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	/* No MWDMA */
+	.pio_mask	= 0x1f,	/* pio0-4 */
 	.udma_mask	= ATA_UDMA5,
 	.port_ops	= &sis_100_ops,
 };
 static const struct ata_port_info sis_info100_early = {
 	.flags		= ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	/* No MWDMA */
 	.udma_mask	= ATA_UDMA5,
+	.pio_mask	= 0x1f,	/* pio0-4 */
 	.port_ops	= &sis_66_ops,
 };
 static const struct ata_port_info sis_info133 = {
 	.flags		= ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	/* No MWDMA */
+	.pio_mask	= 0x1f,	/* pio0-4 */
 	.udma_mask	= ATA_UDMA6,
 	.port_ops	= &sis_133_ops,
 };
 const struct ata_port_info sis_info133_for_sata = {
 	.flags		= ATA_FLAG_SLAVE_POSS | ATA_FLAG_SRST,
-	.pio_mask	= ATA_PIO4,
-	/* No MWDMA */
+	.pio_mask	= 0x1f,	/* pio0-4 */
 	.udma_mask	= ATA_UDMA6,
 	.port_ops	= &sis_133_for_sata_ops,
 };
 static const struct ata_port_info sis_info133_early = {
 	.flags		= ATA_FLAG_SLAVE_POSS,
-	.pio_mask	= ATA_PIO4,
-	/* No MWDMA */
+	.pio_mask	= 0x1f,	/* pio0-4 */
 	.udma_mask	= ATA_UDMA6,
 	.port_ops	= &sis_133_early_ops,
 };
@@ -826,25 +820,8 @@ static int sis_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	sis_fixup(pdev, chipset);
 
-	return ata_pci_bmdma_init_one(pdev, ppi, &sis_sht, chipset, 0);
+	return ata_pci_sff_init_one(pdev, ppi, &sis_sht, chipset);
 }
-
-#ifdef CONFIG_PM
-static int sis_reinit_one(struct pci_dev *pdev)
-{
-	struct ata_host *host = dev_get_drvdata(&pdev->dev);
-	int rc;
-
-	rc = ata_pci_device_do_resume(pdev);
-	if (rc)
-		return rc;
-
-	sis_fixup(pdev, host->private_data);
-
-	ata_host_resume(host);
-	return 0;
-}
-#endif
 
 static const struct pci_device_id sis_pci_tbl[] = {
 	{ PCI_VDEVICE(SI, 0x5513), },	/* SiS 5513 */
@@ -861,7 +838,7 @@ static struct pci_driver sis_pci_driver = {
 	.remove			= ata_pci_remove_one,
 #ifdef CONFIG_PM
 	.suspend		= ata_pci_device_suspend,
-	.resume			= sis_reinit_one,
+	.resume			= ata_pci_device_resume,
 #endif
 };
 

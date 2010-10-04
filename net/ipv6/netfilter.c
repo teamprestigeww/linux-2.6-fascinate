@@ -12,7 +12,7 @@
 
 int ip6_route_me_harder(struct sk_buff *skb)
 {
-	struct net *net = dev_net(skb_dst(skb)->dev);
+	struct net *net = dev_net(skb->dst->dev);
 	struct ipv6hdr *iph = ipv6_hdr(skb);
 	struct dst_entry *dst;
 	struct flowi fl = {
@@ -25,6 +25,14 @@ int ip6_route_me_harder(struct sk_buff *skb)
 	};
 
 	dst = ip6_route_output(net, skb->sk, &fl);
+
+#ifdef CONFIG_XFRM
+	if (!(IP6CB(skb)->flags & IP6SKB_XFRM_TRANSFORMED) &&
+	    xfrm_decode_session(skb, &fl, AF_INET6) == 0)
+		if (xfrm_lookup(net, &skb->dst, &fl, skb->sk, 0))
+			return -1;
+#endif
+
 	if (dst->error) {
 		IP6_INC_STATS(net, ip6_dst_idev(dst), IPSTATS_MIB_OUTNOROUTES);
 		LIMIT_NETDEBUG(KERN_DEBUG "ip6_route_me_harder: No more route.\n");
@@ -33,20 +41,9 @@ int ip6_route_me_harder(struct sk_buff *skb)
 	}
 
 	/* Drop old route. */
-	skb_dst_drop(skb);
+	dst_release(skb->dst);
 
-	skb_dst_set(skb, dst);
-
-#ifdef CONFIG_XFRM
-	if (!(IP6CB(skb)->flags & IP6SKB_XFRM_TRANSFORMED) &&
-	    xfrm_decode_session(skb, &fl, AF_INET6) == 0) {
-		skb_dst_set(skb, NULL);
-		if (xfrm_lookup(net, &dst, &fl, skb->sk, 0))
-			return -1;
-		skb_dst_set(skb, dst);
-	}
-#endif
-
+	skb->dst = dst;
 	return 0;
 }
 EXPORT_SYMBOL(ip6_route_me_harder);
@@ -151,7 +148,9 @@ static __sum16 nf_ip6_checksum_partial(struct sk_buff *skb, unsigned int hook,
 							 protocol,
 							 csum_sub(0, hsum)));
 		skb->ip_summed = CHECKSUM_NONE;
-		return __skb_checksum_complete_head(skb, dataoff + len);
+		csum = __skb_checksum_complete_head(skb, dataoff + len);
+		if (!csum)
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
 	}
 	return csum;
 };

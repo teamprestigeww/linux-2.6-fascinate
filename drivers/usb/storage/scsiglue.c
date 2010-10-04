@@ -43,6 +43,7 @@
  * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 
@@ -72,8 +73,7 @@
 
 static const char* host_info(struct Scsi_Host *host)
 {
-	struct us_data *us = host_to_us(host);
-	return us->scsi_name;
+	return "SCSI emulation for USB Mass Storage devices";
 }
 
 static int slave_alloc (struct scsi_device *sdev)
@@ -132,15 +132,9 @@ static int slave_configure(struct scsi_device *sdev)
 
 		if (us->fflags & US_FL_MAX_SECTORS_MIN)
 			max_sectors = PAGE_CACHE_SIZE >> 9;
-		if (queue_max_hw_sectors(sdev->request_queue) > max_sectors)
-			blk_queue_max_hw_sectors(sdev->request_queue,
+		if (sdev->request_queue->max_sectors > max_sectors)
+			blk_queue_max_sectors(sdev->request_queue,
 					      max_sectors);
-	} else if (sdev->type == TYPE_TAPE) {
-		/* Tapes need much higher max_sector limits, so just
-		 * raise it to the maximum possible (4 GB / 512) and
-		 * let the queue segment size sort out the real limit.
-		 */
-		blk_queue_max_hw_sectors(sdev->request_queue, 0x7FFFFF);
 	}
 
 	/* Some USB host controllers can't do DMA; they have to use PIO.
@@ -483,7 +477,7 @@ static ssize_t show_max_sectors(struct device *dev, struct device_attribute *att
 {
 	struct scsi_device *sdev = to_scsi_device(dev);
 
-	return sprintf(buf, "%u\n", queue_max_hw_sectors(sdev->request_queue));
+	return sprintf(buf, "%u\n", sdev->request_queue->max_sectors);
 }
 
 /* Input routine for the sysfs max_sectors file */
@@ -493,9 +487,9 @@ static ssize_t store_max_sectors(struct device *dev, struct device_attribute *at
 	struct scsi_device *sdev = to_scsi_device(dev);
 	unsigned short ms;
 
-	if (sscanf(buf, "%hu", &ms) > 0) {
-		blk_queue_max_hw_sectors(sdev->request_queue, ms);
-		return count;
+	if (sscanf(buf, "%hu", &ms) > 0 && ms <= SCSI_DEFAULT_MAX_SECTORS) {
+		blk_queue_max_sectors(sdev->request_queue, ms);
+		return strlen(buf);
 	}
 	return -EINVAL;	
 }
@@ -538,7 +532,7 @@ struct scsi_host_template usb_stor_host_template = {
 	.slave_configure =		slave_configure,
 
 	/* lots of sg segments can be handled */
-	.sg_tablesize =			SCSI_MAX_SG_CHAIN_SEGMENTS,
+	.sg_tablesize =			SG_ALL,
 
 	/* limit the total size of a transfer to 120 KB */
 	.max_sectors =                  240,
@@ -569,4 +563,4 @@ unsigned char usb_stor_sense_invalidCDB[18] = {
 	[7]	= 0x0a,			    /* additional length */
 	[12]	= 0x24			    /* Invalid Field in CDB */
 };
-EXPORT_SYMBOL_GPL(usb_stor_sense_invalidCDB);
+

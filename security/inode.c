@@ -86,7 +86,7 @@ static int mknod(struct inode *dir, struct dentry *dentry,
 			 int mode, dev_t dev)
 {
 	struct inode *inode;
-	int error = -ENOMEM;
+	int error = -EPERM;
 
 	if (dentry->d_inode)
 		return -EEXIST;
@@ -156,20 +156,25 @@ static int create_by_name(const char *name, mode_t mode,
 	 * block. A pointer to that is in the struct vfsmount that we
 	 * have around.
 	 */
-	if (!parent)
-		parent = mount->mnt_sb->s_root;
+	if (!parent ) {
+		if (mount && mount->mnt_sb) {
+			parent = mount->mnt_sb->s_root;
+		}
+	}
+	if (!parent) {
+		pr_debug("securityfs: Ah! can not find a parent!\n");
+		return -EFAULT;
+	}
 
 	mutex_lock(&parent->d_inode->i_mutex);
 	*dentry = lookup_one_len(name, parent, strlen(name));
-	if (!IS_ERR(*dentry)) {
+	if (!IS_ERR(dentry)) {
 		if ((mode & S_IFMT) == S_IFDIR)
 			error = mkdir(parent->d_inode, *dentry, mode);
 		else
 			error = create(parent->d_inode, *dentry, mode);
-		if (error)
-			dput(*dentry);
 	} else
-		error = PTR_ERR(*dentry);
+		error = PTR_ERR(dentry);
 	mutex_unlock(&parent->d_inode->i_mutex);
 
 	return error;
@@ -197,11 +202,12 @@ static int create_by_name(const char *name, mode_t mode,
  * This function returns a pointer to a dentry if it succeeds.  This
  * pointer must be passed to the securityfs_remove() function when the file is
  * to be removed (no automatic cleanup happens if your module is unloaded,
- * you are responsible here).  If an error occurs, the function will return
- * the erorr value (via ERR_PTR).
+ * you are responsible here).  If an error occurs, %NULL is returned.
  *
  * If securityfs is not enabled in the kernel, the value %-ENODEV is
- * returned.
+ * returned.  It is not wise to check for this value, but rather, check for
+ * %NULL or !%NULL instead as to eliminate the need for #ifdef in the calling
+ * code.
  */
 struct dentry *securityfs_create_file(const char *name, mode_t mode,
 				   struct dentry *parent, void *data,
@@ -282,7 +288,7 @@ void securityfs_remove(struct dentry *dentry)
 {
 	struct dentry *parent;
 
-	if (!dentry || IS_ERR(dentry))
+	if (!dentry)
 		return;
 
 	parent = dentry->d_parent;

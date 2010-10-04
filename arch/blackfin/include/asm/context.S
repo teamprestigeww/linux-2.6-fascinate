@@ -1,7 +1,30 @@
 /*
- * Copyright 2007-2009 Analog Devices Inc.
+ * File:         arch/blackfin/kernel/context.S
+ * Based on:
+ * Author:
  *
- * Licensed under the GPL-2 or later.
+ * Created:
+ * Description:
+ *
+ * Modified:
+ *               Copyright 2004-2007 Analog Devices Inc.
+ *
+ * Bugs:         Enter bugs at http://blackfin.uclinux.org/
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see the file COPYING, or write
+ * to the Free Software Foundation, Inc.,
+ * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 /*
@@ -72,11 +95,6 @@
 	sti r0;
 #else
 	cli r0;
-#endif
-#ifdef CONFIG_TRACE_IRQFLAGS
-	sp += -12;
-	call _trace_hardirqs_off;
-	sp += 12;
 #endif
 	[--sp] = RETI;  /*orig_pc*/
 	/* Clear all L registers.  */
@@ -205,10 +223,9 @@
 	[--sp] = RETN;
 	[--sp] = RETE;
 	[--sp] = SEQSTAT;
-#ifdef CONFIG_DEBUG_KERNEL
-	p1.l = lo(IPEND);
-	p1.h = hi(IPEND);
-	r1 = [p1];
+#ifdef CONFIG_KGDB
+	r1.l = lo(IPEND);
+	r1.h = hi(IPEND);
 	[--sp] = r1;
 #else
 	[--sp] = r0;	/* Skip IPEND as well. */
@@ -284,13 +301,6 @@
 	RETN = [sp++];
 	RETX = [sp++];
 	RETI = [sp++];
-
-#ifdef CONFIG_TRACE_IRQFLAGS
-	sp += -12;
-	call _trace_hardirqs_on;
-	sp += 12;
-#endif
-
 	RETS = [sp++];
 
 #ifdef CONFIG_SMP
@@ -385,14 +395,4 @@
 	fp = [sp++];
 
 	(R7:0, P5:0) = [SP++];
-.endm
-
-.macro pseudo_long_call func:req, scratch:req
-#ifdef CONFIG_ROMKERNEL
-	\scratch\().l = \func;
-	\scratch\().h = \func;
-	call (\scratch);
-#else
-	call \func;
-#endif
 .endm

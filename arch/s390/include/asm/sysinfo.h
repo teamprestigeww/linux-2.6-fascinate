@@ -87,8 +87,7 @@ struct sysinfo_2_2_2 {
 
 struct sysinfo_3_2_2 {
 	char reserved_0[31];
-	unsigned char :4;
-	unsigned char count:4;
+	unsigned char count;
 	struct {
 		char reserved_0[4];
 		unsigned short cpus_total;
@@ -101,7 +100,6 @@ struct sysinfo_3_2_2 {
 		char reserved_1[24];
 
 	} vm[8];
-	char reserved_544[3552];
 };
 
 static inline int stsi(void *sysinfo, int fc, int sel1, int sel2)

@@ -51,6 +51,7 @@
 #include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/wait.h>
+#include <linux/zlib.h>
 #include <linux/pagemap.h>
 
 #include "squashfs_fs.h"
@@ -251,7 +252,6 @@ struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 	cache->entries = entries;
 	cache->block_size = block_size;
 	cache->pages = block_size >> PAGE_CACHE_SHIFT;
-	cache->pages = cache->pages ? cache->pages : 1;
 	cache->name = name;
 	cache->num_waiters = 0;
 	spin_lock_init(&cache->lock);

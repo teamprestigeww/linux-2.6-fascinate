@@ -59,7 +59,7 @@ MODULE_LICENSE("GPL");
 
 static /* const */ char drivername[] = DRIVER_NAME;
 
-static DEFINE_PCI_DEVICE_TABLE(vlsi_irda_table) = {
+static struct pci_device_id vlsi_irda_table [] = {
 	{
 		.class =        PCI_CLASS_WIRELESS_IRDA << 8,
 		.class_mask =	PCI_CLASS_SUBCLASS_MASK << 8, 
@@ -431,8 +431,8 @@ static struct vlsi_ring *vlsi_alloc_ring(struct pci_dev *pdev, struct ring_descr
 		memset(rd, 0, sizeof(*rd));
 		rd->hw = hwmap + i;
 		rd->buf = kmalloc(len, GFP_KERNEL|GFP_DMA);
-		if (rd->buf == NULL ||
-		    !(busaddr = pci_map_single(pdev, rd->buf, len, dir))) {
+		if (rd->buf == NULL
+		    ||  !(busaddr = pci_map_single(pdev, rd->buf, len, dir))) {
 			if (rd->buf) {
 				IRDA_ERROR("%s: failed to create PCI-MAP for %p",
 					   __func__, rd->buf);
@@ -854,8 +854,7 @@ static int vlsi_set_baud(vlsi_irda_dev_t *idev, unsigned iobase)
 	return ret;
 }
 
-static netdev_tx_t vlsi_hard_start_xmit(struct sk_buff *skb,
-					      struct net_device *ndev)
+static int vlsi_hard_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	vlsi_irda_dev_t *idev = netdev_priv(ndev);
 	struct vlsi_ring	*r = idev->tx_ring;
@@ -916,7 +915,7 @@ static netdev_tx_t vlsi_hard_start_xmit(struct sk_buff *skb,
 			 */
 		spin_unlock_irqrestore(&idev->lock, flags);
 		dev_kfree_skb_any(skb);
-		return NETDEV_TX_OK;
+		return 0;
 	}
 
 	/* sanity checks - simply drop the packet */
@@ -955,8 +954,8 @@ static netdev_tx_t vlsi_hard_start_xmit(struct sk_buff *skb,
 		}
 		for(;;) {
 			do_gettimeofday(&now);
-			if (now.tv_sec > ready.tv_sec ||
-			    (now.tv_sec==ready.tv_sec && now.tv_usec>=ready.tv_usec))
+			if (now.tv_sec > ready.tv_sec
+			    ||  (now.tv_sec==ready.tv_sec && now.tv_usec>=ready.tv_usec))
 			    	break;
 			udelay(100);
 			/* must not sleep here - called under netif_tx_lock! */
@@ -1037,6 +1036,7 @@ static netdev_tx_t vlsi_hard_start_xmit(struct sk_buff *skb,
 		wmb();
 		outw(0, iobase+VLSI_PIO_PROMPT);
 	}
+	ndev->trans_start = jiffies;
 
 	if (ring_put(r) == NULL) {
 		netif_stop_queue(ndev);
@@ -1044,7 +1044,7 @@ static netdev_tx_t vlsi_hard_start_xmit(struct sk_buff *skb,
 	}
 	spin_unlock_irqrestore(&idev->lock, flags);
 
-	return NETDEV_TX_OK;
+	return 0;
 
 drop_unlock:
 	spin_unlock_irqrestore(&idev->lock, flags);
@@ -1058,7 +1058,7 @@ drop:
 	 * packet for later retry of transmission - which isn't exactly
 	 * what we want after we've just called dev_kfree_skb_any ;-)
 	 */
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 static void vlsi_tx_interrupt(struct net_device *ndev)
@@ -1573,14 +1573,6 @@ static int vlsi_close(struct net_device *ndev)
 	return 0;
 }
 
-static const struct net_device_ops vlsi_netdev_ops = {
-	.ndo_open       = vlsi_open,
-	.ndo_stop       = vlsi_close,
-	.ndo_start_xmit = vlsi_hard_start_xmit,
-	.ndo_do_ioctl   = vlsi_ioctl,
-	.ndo_tx_timeout = vlsi_tx_timeout,
-};
-
 static int vlsi_irda_init(struct net_device *ndev)
 {
 	vlsi_irda_dev_t *idev = netdev_priv(ndev);
@@ -1593,8 +1585,8 @@ static int vlsi_irda_init(struct net_device *ndev)
 	 * see include file for details why we need these 2 masks, in this order!
 	 */
 
-	if (pci_set_dma_mask(pdev,DMA_MASK_USED_BY_HW) ||
-	    pci_set_dma_mask(pdev,DMA_MASK_MSTRPAGE)) {
+	if (pci_set_dma_mask(pdev,DMA_MASK_USED_BY_HW)
+	    || pci_set_dma_mask(pdev,DMA_MASK_MSTRPAGE)) {
 		IRDA_ERROR("%s: aborting due to PCI BM-DMA address limitations\n", __func__);
 		return -1;
 	}
@@ -1616,7 +1608,11 @@ static int vlsi_irda_init(struct net_device *ndev)
 	ndev->flags |= IFF_PORTSEL | IFF_AUTOMEDIA;
 	ndev->if_port = IF_PORT_UNKNOWN;
  
-	ndev->netdev_ops = &vlsi_netdev_ops;
+	ndev->open	      = vlsi_open;
+	ndev->stop	      = vlsi_close;
+	ndev->hard_start_xmit = vlsi_hard_start_xmit;
+	ndev->do_ioctl	      = vlsi_ioctl;
+	ndev->tx_timeout      = vlsi_tx_timeout;
 	ndev->watchdog_timeo  = 500*HZ/1000;	/* max. allowed turn time for IrLAP */
 
 	SET_NETDEV_DEV(ndev, &pdev->dev);
@@ -1640,8 +1636,8 @@ vlsi_irda_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	IRDA_MESSAGE("%s: IrDA PCI controller %s detected\n",
 		     drivername, pci_name(pdev));
 
-	if ( !pci_resource_start(pdev,0) ||
-	     !(pci_resource_flags(pdev,0) & IORESOURCE_IO) ) {
+	if ( !pci_resource_start(pdev,0)
+	     || !(pci_resource_flags(pdev,0) & IORESOURCE_IO) ) {
 		IRDA_ERROR("%s: bar 0 invalid", __func__);
 		goto out_disable;
 	}
@@ -1741,7 +1737,7 @@ static int vlsi_irda_suspend(struct pci_dev *pdev, pm_message_t state)
 	vlsi_irda_dev_t *idev;
 
 	if (!ndev) {
-		IRDA_ERROR("%s - %s: no netdevice\n",
+		IRDA_ERROR("%s - %s: no netdevice \n",
 			   __func__, pci_name(pdev));
 		return 0;
 	}
@@ -1780,7 +1776,7 @@ static int vlsi_irda_resume(struct pci_dev *pdev)
 	vlsi_irda_dev_t	*idev;
 
 	if (!ndev) {
-		IRDA_ERROR("%s - %s: no netdevice\n",
+		IRDA_ERROR("%s - %s: no netdevice \n",
 			   __func__, pci_name(pdev));
 		return 0;
 	}
@@ -1871,6 +1867,13 @@ static int __init vlsi_mod_init(void)
 	 * without procfs - it's not required for the driver to work.
 	 */
 	vlsi_proc_root = proc_mkdir(PROC_DIR, NULL);
+	if (vlsi_proc_root) {
+		/* protect registered procdir against module removal.
+		 * Because we are in the module init path there's no race
+		 * window after create_proc_entry (and no barrier needed).
+		 */
+		vlsi_proc_root->owner = THIS_MODULE;
+	}
 
 	ret = pci_register_driver(&vlsi_irda_driver);
 

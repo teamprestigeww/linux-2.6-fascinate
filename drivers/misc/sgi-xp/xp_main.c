@@ -44,9 +44,6 @@ EXPORT_SYMBOL_GPL(xp_region_size);
 unsigned long (*xp_pa) (void *addr);
 EXPORT_SYMBOL_GPL(xp_pa);
 
-unsigned long (*xp_socket_pa) (unsigned long gpa);
-EXPORT_SYMBOL_GPL(xp_socket_pa);
-
 enum xp_retval (*xp_remote_memcpy) (unsigned long dst_gpa,
 				    const unsigned long src_gpa, size_t len);
 EXPORT_SYMBOL_GPL(xp_remote_memcpy);
@@ -251,19 +248,19 @@ xp_init(void)
 	enum xp_retval ret;
 	int ch_number;
 
-	/* initialize the connection registration mutex */
-	for (ch_number = 0; ch_number < XPC_MAX_NCHANNELS; ch_number++)
-		mutex_init(&xpc_registrations[ch_number].mutex);
-
 	if (is_shub())
 		ret = xp_init_sn2();
 	else if (is_uv())
 		ret = xp_init_uv();
 	else
-		ret = 0;
+		ret = xpUnsupported;
 
 	if (ret != xpSuccess)
-		return ret;
+		return -ENODEV;
+
+	/* initialize the connection registration mutex */
+	for (ch_number = 0; ch_number < XPC_MAX_NCHANNELS; ch_number++)
+		mutex_init(&xpc_registrations[ch_number].mutex);
 
 	return 0;
 }

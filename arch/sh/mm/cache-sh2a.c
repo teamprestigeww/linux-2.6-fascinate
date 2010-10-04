@@ -15,7 +15,7 @@
 #include <asm/cacheflush.h>
 #include <asm/io.h>
 
-static void sh2a__flush_wback_region(void *start, int size)
+void __flush_wback_region(void *start, int size)
 {
 	unsigned long v;
 	unsigned long begin, end;
@@ -32,10 +32,10 @@ static void sh2a__flush_wback_region(void *start, int size)
 		unsigned long addr = CACHE_OC_ADDRESS_ARRAY | (v & 0x000007f0);
 		int way;
 		for (way = 0; way < 4; way++) {
-			unsigned long data =  __raw_readl(addr | (way << 11));
+			unsigned long data =  ctrl_inl(addr | (way << 11));
 			if ((data & CACHE_PHYSADDR_MASK) == (v & CACHE_PHYSADDR_MASK)) {
 				data &= ~SH_CACHE_UPDATED;
-				__raw_writel(data, addr | (way << 11));
+				ctrl_outl(data, addr | (way << 11));
 			}
 		}
 	}
@@ -44,7 +44,7 @@ static void sh2a__flush_wback_region(void *start, int size)
 	local_irq_restore(flags);
 }
 
-static void sh2a__flush_purge_region(void *start, int size)
+void __flush_purge_region(void *start, int size)
 {
 	unsigned long v;
 	unsigned long begin, end;
@@ -58,14 +58,14 @@ static void sh2a__flush_purge_region(void *start, int size)
 	jump_to_uncached();
 
 	for (v = begin; v < end; v+=L1_CACHE_BYTES) {
-		__raw_writel((v & CACHE_PHYSADDR_MASK),
+		ctrl_outl((v & CACHE_PHYSADDR_MASK),
 			  CACHE_OC_ADDRESS_ARRAY | (v & 0x000007f0) | 0x00000008);
 	}
 	back_to_cached();
 	local_irq_restore(flags);
 }
 
-static void sh2a__flush_invalidate_region(void *start, int size)
+void __flush_invalidate_region(void *start, int size)
 {
 	unsigned long v;
 	unsigned long begin, end;
@@ -78,17 +78,17 @@ static void sh2a__flush_invalidate_region(void *start, int size)
 	jump_to_uncached();
 
 #ifdef CONFIG_CACHE_WRITEBACK
-	__raw_writel(__raw_readl(CCR) | CCR_OCACHE_INVALIDATE, CCR);
+	ctrl_outl(ctrl_inl(CCR) | CCR_OCACHE_INVALIDATE, CCR);
 	/* I-cache invalidate */
 	for (v = begin; v < end; v+=L1_CACHE_BYTES) {
-		__raw_writel((v & CACHE_PHYSADDR_MASK),
+		ctrl_outl((v & CACHE_PHYSADDR_MASK),
 			  CACHE_IC_ADDRESS_ARRAY | (v & 0x000007f0) | 0x00000008);
 	}
 #else
 	for (v = begin; v < end; v+=L1_CACHE_BYTES) {
-		__raw_writel((v & CACHE_PHYSADDR_MASK),
+		ctrl_outl((v & CACHE_PHYSADDR_MASK),
 			  CACHE_IC_ADDRESS_ARRAY | (v & 0x000007f0) | 0x00000008);
-		__raw_writel((v & CACHE_PHYSADDR_MASK),
+		ctrl_outl((v & CACHE_PHYSADDR_MASK),
 			  CACHE_OC_ADDRESS_ARRAY | (v & 0x000007f0) | 0x00000008);
 	}
 #endif
@@ -97,15 +97,13 @@ static void sh2a__flush_invalidate_region(void *start, int size)
 }
 
 /* WBack O-Cache and flush I-Cache */
-static void sh2a_flush_icache_range(void *args)
+void flush_icache_range(unsigned long start, unsigned long end)
 {
-	struct flusher_data *data = args;
-	unsigned long start, end;
 	unsigned long v;
 	unsigned long flags;
 
-	start = data->addr1 & ~(L1_CACHE_BYTES-1);
-	end = (data->addr2 + L1_CACHE_BYTES-1) & ~(L1_CACHE_BYTES-1);
+	start = start & ~(L1_CACHE_BYTES-1);
+	end = (end + L1_CACHE_BYTES-1) & ~(L1_CACHE_BYTES-1);
 
 	local_irq_save(flags);
 	jump_to_uncached();
@@ -115,26 +113,17 @@ static void sh2a_flush_icache_range(void *args)
 		int way;
 		/* O-Cache writeback */
 		for (way = 0; way < 4; way++) {
-			unsigned long data =  __raw_readl(CACHE_OC_ADDRESS_ARRAY | addr | (way << 11));
+			unsigned long data =  ctrl_inl(CACHE_OC_ADDRESS_ARRAY | addr | (way << 11));
 			if ((data & CACHE_PHYSADDR_MASK) == (v & CACHE_PHYSADDR_MASK)) {
 				data &= ~SH_CACHE_UPDATED;
-				__raw_writel(data, CACHE_OC_ADDRESS_ARRAY | addr | (way << 11));
+				ctrl_outl(data, CACHE_OC_ADDRESS_ARRAY | addr | (way << 11));
 			}
 		}
 		/* I-Cache invalidate */
-		__raw_writel(addr,
+		ctrl_outl(addr,
 			  CACHE_IC_ADDRESS_ARRAY | addr | 0x00000008);
 	}
 
 	back_to_cached();
 	local_irq_restore(flags);
-}
-
-void __init sh2a_cache_init(void)
-{
-	local_flush_icache_range	= sh2a_flush_icache_range;
-
-	__flush_wback_region		= sh2a__flush_wback_region;
-	__flush_purge_region		= sh2a__flush_purge_region;
-	__flush_invalidate_region	= sh2a__flush_invalidate_region;
 }

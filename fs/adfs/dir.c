@@ -9,7 +9,15 @@
  *
  *  Common directory handling for ADFS
  */
+#include <linux/errno.h>
+#include <linux/fs.h>
+#include <linux/adfs_fs.h>
+#include <linux/time.h>
+#include <linux/stat.h>
+#include <linux/spinlock.h>
 #include <linux/smp_lock.h>
+#include <linux/buffer_head.h>		/* for file_fsync() */
+
 #include "adfs.h"
 
 /*
@@ -75,7 +83,7 @@ out:
 }
 
 int
-adfs_dir_update(struct super_block *sb, struct object_info *obj, int wait)
+adfs_dir_update(struct super_block *sb, struct object_info *obj)
 {
 	int ret = -EINVAL;
 #ifdef CONFIG_ADFS_FS_RW
@@ -97,12 +105,6 @@ adfs_dir_update(struct super_block *sb, struct object_info *obj, int wait)
 	write_lock(&adfs_dir_lock);
 	ret = ops->update(&dir, obj);
 	write_unlock(&adfs_dir_lock);
-
-	if (wait) {
-		int err = ops->sync(&dir);
-		if (!ret)
-			ret = err;
-	}
 
 	ops->free(&dir);
 out:
@@ -197,7 +199,7 @@ const struct file_operations adfs_dir_operations = {
 	.read		= generic_read_dir,
 	.llseek		= generic_file_llseek,
 	.readdir	= adfs_readdir,
-	.fsync		= generic_file_fsync,
+	.fsync		= file_fsync,
 };
 
 static int
@@ -261,7 +263,7 @@ adfs_compare(struct dentry *parent, struct qstr *entry, struct qstr *name)
 	return 0;
 }
 
-const struct dentry_operations adfs_dentry_operations = {
+struct dentry_operations adfs_dentry_operations = {
 	.d_hash		= adfs_hash,
 	.d_compare	= adfs_compare,
 };

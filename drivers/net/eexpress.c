@@ -111,6 +111,7 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/mca-legacy.h>
 #include <linux/spinlock.h>
 #include <linux/bitops.h>
@@ -245,8 +246,7 @@ static char mca_irqmap[] = { 12, 9, 3, 4, 5, 10, 11, 15 };
 static int eexp_open(struct net_device *dev);
 static int eexp_close(struct net_device *dev);
 static void eexp_timeout(struct net_device *dev);
-static netdev_tx_t eexp_xmit(struct sk_buff *buf,
-			     struct net_device *dev);
+static int eexp_xmit(struct sk_buff *buf, struct net_device *dev);
 
 static irqreturn_t eexp_irq(int irq, void *dev_addr);
 static void eexp_set_multicast(struct net_device *dev);
@@ -456,7 +456,7 @@ static int eexp_open(struct net_device *dev)
 	if (!dev->irq || !irqrmap[dev->irq])
 		return -ENXIO;
 
-	ret = request_irq(dev->irq, eexp_irq, 0, dev->name, dev);
+	ret = request_irq(dev->irq, &eexp_irq, 0, dev->name, dev);
 	if (ret)
 		return ret;
 
@@ -543,7 +543,7 @@ static void unstick_cu(struct net_device *dev)
 
 	if (lp->started)
 	{
-		if (time_after(jiffies, dev_trans_start(dev) + HZ/2))
+		if (time_after(jiffies, dev->trans_start + 50))
 		{
 			if (lp->tx_link==lp->last_tx_restart)
 			{
@@ -650,7 +650,7 @@ static void eexp_timeout(struct net_device *dev)
  * Called to transmit a packet, or to allow us to right ourselves
  * if the kernel thinks we've died.
  */
-static netdev_tx_t eexp_xmit(struct sk_buff *buf, struct net_device *dev)
+static int eexp_xmit(struct sk_buff *buf, struct net_device *dev)
 {
 	short length = buf->len;
 #ifdef CONFIG_SMP
@@ -664,7 +664,7 @@ static netdev_tx_t eexp_xmit(struct sk_buff *buf, struct net_device *dev)
 
 	if (buf->len < ETH_ZLEN) {
 		if (skb_padto(buf, ETH_ZLEN))
-			return NETDEV_TX_OK;
+			return 0;
 		length = ETH_ZLEN;
 	}
 
@@ -691,7 +691,7 @@ static netdev_tx_t eexp_xmit(struct sk_buff *buf, struct net_device *dev)
 	spin_unlock_irqrestore(&lp->lock, flags);
 #endif
 	enable_irq(dev->irq);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -1018,7 +1018,7 @@ static void eexp_hw_tx_pio(struct net_device *dev, unsigned short *buf,
 	outw(lp->tx_head+0x16, ioaddr + DATAPORT);
 	outw(0, ioaddr + DATAPORT);
 
-	outsw(ioaddr + DATAPORT, buf, (len+1)>>1);
+        outsw(ioaddr + DATAPORT, buf, (len+1)>>1);
 
 	outw(lp->tx_tail+0xc, ioaddr + WRITE_PTR);
 	outw(lp->tx_head, ioaddr + DATAPORT);
@@ -1042,17 +1042,6 @@ static void eexp_hw_tx_pio(struct net_device *dev, unsigned short *buf,
 	dev->stats.tx_packets++;
 	lp->last_tx = jiffies;
 }
-
-static const struct net_device_ops eexp_netdev_ops = {
-	.ndo_open 		= eexp_open,
-	.ndo_stop 		= eexp_close,
-	.ndo_start_xmit		= eexp_xmit,
-	.ndo_set_multicast_list = eexp_set_multicast,
-	.ndo_tx_timeout		= eexp_timeout,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_mac_address 	= eth_mac_addr,
-	.ndo_validate_addr	= eth_validate_addr,
-};
 
 /*
  * Sanity check the suspected EtherExpress card
@@ -1174,7 +1163,11 @@ static int __init eexp_hw_probe(struct net_device *dev, unsigned short ioaddr)
 	lp->rx_buf_start = TX_BUF_START + (lp->num_tx_bufs*TX_BUF_SIZE);
 	lp->width = buswidth;
 
-	dev->netdev_ops = &eexp_netdev_ops;
+	dev->open = eexp_open;
+	dev->stop = eexp_close;
+	dev->hard_start_xmit = eexp_xmit;
+	dev->set_multicast_list = &eexp_set_multicast;
+	dev->tx_timeout = eexp_timeout;
 	dev->watchdog_timeo = 2*HZ;
 
 	return register_netdev(dev);
@@ -1474,13 +1467,13 @@ static void eexp_hw_init586(struct net_device *dev)
 	outw(0x0000, ioaddr + 0x800c);
 	outw(0x0000, ioaddr + 0x800e);
 
-	for (i = 0; i < ARRAY_SIZE(start_code) * 2; i+=32) {
+	for (i = 0; i < (sizeof(start_code)); i+=32) {
 		int j;
 		outw(i, ioaddr + SM_PTR);
-		for (j = 0; j < 16 && (i+j)/2 < ARRAY_SIZE(start_code); j+=2)
+		for (j = 0; j < 16; j+=2)
 			outw(start_code[(i+j)/2],
 			     ioaddr+0x4000+j);
-		for (j = 0; j < 16 && (i+j+16)/2 < ARRAY_SIZE(start_code); j+=2)
+		for (j = 0; j < 16; j+=2)
 			outw(start_code[(i+j+16)/2],
 			     ioaddr+0x8000+j);
 	}
@@ -1570,13 +1563,14 @@ static void eexp_hw_init586(struct net_device *dev)
 #if NET_DEBUG > 6
         printk("%s: leaving eexp_hw_init586()\n", dev->name);
 #endif
+	return;
 }
 
 static void eexp_setup_filter(struct net_device *dev)
 {
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *dmi;
 	unsigned short ioaddr = dev->base_addr;
-	int count = netdev_mc_count(dev);
+	int count = dev->mc_count;
 	int i;
 	if (count > 8) {
 		printk(KERN_INFO "%s: too many multicast addresses (%d)\n",
@@ -1586,19 +1580,23 @@ static void eexp_setup_filter(struct net_device *dev)
 
 	outw(CONF_NR_MULTICAST & ~31, ioaddr+SM_PTR);
 	outw(6*count, ioaddr+SHADOW(CONF_NR_MULTICAST));
-	i = 0;
-	netdev_for_each_mc_addr(ha, dev) {
-		unsigned short *data = (unsigned short *) ha->addr;
-
-		if (i == count)
+	for (i = 0, dmi = dev->mc_list; i < count; i++, dmi = dmi->next) {
+		unsigned short *data;
+		if (!dmi) {
+			printk(KERN_INFO "%s: too few multicast addresses\n", dev->name);
 			break;
+		}
+		if (dmi->dmi_addrlen != ETH_ALEN) {
+			printk(KERN_INFO "%s: invalid multicast address length given.\n", dev->name);
+			continue;
+		}
+		data = (unsigned short *)dmi->dmi_addr;
 		outw((CONF_MULTICAST+(6*i)) & ~31, ioaddr+SM_PTR);
 		outw(data[0], ioaddr+SHADOW(CONF_MULTICAST+(6*i)));
 		outw((CONF_MULTICAST+(6*i)+2) & ~31, ioaddr+SM_PTR);
 		outw(data[1], ioaddr+SHADOW(CONF_MULTICAST+(6*i)+2));
 		outw((CONF_MULTICAST+(6*i)+4) & ~31, ioaddr+SM_PTR);
 		outw(data[2], ioaddr+SHADOW(CONF_MULTICAST+(6*i)+4));
-		i++;
 	}
 }
 
@@ -1621,9 +1619,9 @@ eexp_set_multicast(struct net_device *dev)
         }
         if (!(dev->flags & IFF_PROMISC)) {
                 eexp_setup_filter(dev);
-                if (lp->old_mc_count != netdev_mc_count(dev)) {
+                if (lp->old_mc_count != dev->mc_count) {
                         kick = 1;
-                        lp->old_mc_count = netdev_mc_count(dev);
+                        lp->old_mc_count = dev->mc_count;
                 }
         }
         if (kick) {

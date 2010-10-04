@@ -42,7 +42,6 @@
 #include <asm/time.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
-#include <asm/x86_init.h>
 
 #define EFI_DEBUG	1
 #define PFX 		"EFI: "
@@ -241,35 +240,10 @@ static void __init do_add_efi_memmap(void)
 		unsigned long long size = md->num_pages << EFI_PAGE_SHIFT;
 		int e820_type;
 
-		switch (md->type) {
-		case EFI_LOADER_CODE:
-		case EFI_LOADER_DATA:
-		case EFI_BOOT_SERVICES_CODE:
-		case EFI_BOOT_SERVICES_DATA:
-		case EFI_CONVENTIONAL_MEMORY:
-			if (md->attribute & EFI_MEMORY_WB)
-				e820_type = E820_RAM;
-			else
-				e820_type = E820_RESERVED;
-			break;
-		case EFI_ACPI_RECLAIM_MEMORY:
-			e820_type = E820_ACPI;
-			break;
-		case EFI_ACPI_MEMORY_NVS:
-			e820_type = E820_NVS;
-			break;
-		case EFI_UNUSABLE_MEMORY:
-			e820_type = E820_UNUSABLE;
-			break;
-		default:
-			/*
-			 * EFI_RESERVED_TYPE EFI_RUNTIME_SERVICES_CODE
-			 * EFI_RUNTIME_SERVICES_DATA EFI_MEMORY_MAPPED_IO
-			 * EFI_MEMORY_MAPPED_IO_PORT_SPACE EFI_PAL_CODE
-			 */
+		if (md->attribute & EFI_MEMORY_WB)
+			e820_type = E820_RAM;
+		else
 			e820_type = E820_RESERVED;
-			break;
-		}
 		e820_add_region(start, size, e820_type);
 	}
 	sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &e820.nr_map);
@@ -355,14 +329,14 @@ void __init efi_init(void)
 	 */
 	c16 = tmp = early_ioremap(efi.systab->fw_vendor, 2);
 	if (c16) {
-		for (i = 0; i < sizeof(vendor) - 1 && *c16; ++i)
+		for (i = 0; i < sizeof(vendor) && *c16; ++i)
 			vendor[i] = *c16++;
 		vendor[i] = '\0';
 	} else
 		printk(KERN_ERR PFX "Could not map the firmware vendor!\n");
 	early_iounmap(tmp, 2);
 
-	printk(KERN_INFO "EFI v%u.%.02u by %s\n",
+	printk(KERN_INFO "EFI v%u.%.02u by %s \n",
 	       efi.systab->hdr.revision >> 16,
 	       efi.systab->hdr.revision & 0xffff, vendor);
 
@@ -392,12 +366,10 @@ void __init efi_init(void)
 					SMBIOS_TABLE_GUID)) {
 			efi.smbios = config_tables[i].table;
 			printk(" SMBIOS=0x%lx ", config_tables[i].table);
-#ifdef CONFIG_X86_UV
 		} else if (!efi_guidcmp(config_tables[i].guid,
 					UV_SYSTEM_TABLE_GUID)) {
 			efi.uv_systab = config_tables[i].table;
 			printk(" UVsystab=0x%lx ", config_tables[i].table);
-#endif
 		} else if (!efi_guidcmp(config_tables[i].guid,
 					HCDP_TABLE_GUID)) {
 			efi.hcdp = config_tables[i].table;
@@ -453,11 +425,6 @@ void __init efi_init(void)
 
 	if (add_efi_memmap)
 		do_add_efi_memmap();
-
-#ifdef CONFIG_X86_32
-	x86_platform.get_wallclock = efi_get_time;
-	x86_platform.set_wallclock = efi_set_rtc_mmss;
-#endif
 
 	/* Setup for EFI runtime service */
 	reboot_type = BOOT_EFI;
@@ -518,7 +485,7 @@ void __init efi_enter_virtual_mode(void)
 			&& end_pfn <= max_pfn_mapped))
 			va = __va(md->phys_addr);
 		else
-			va = efi_ioremap(md->phys_addr, size, md->type);
+			va = efi_ioremap(md->phys_addr, size);
 
 		md->virt_addr = (u64) (unsigned long) va;
 

@@ -62,10 +62,8 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/list.h>
-#include <linux/slab.h>
 #include <linux/usb.h>
 #include <linux/usb/isp116x.h>
-#include <linux/usb/hcd.h>
 #include <linux/platform_device.h>
 
 #include <asm/io.h>
@@ -73,6 +71,7 @@
 #include <asm/system.h>
 #include <asm/byteorder.h>
 
+#include "../core/hcd.h"
 #include "isp116x.h"
 
 #define DRIVER_VERSION	"03 Nov 2005"
@@ -773,7 +772,7 @@ static int isp116x_urb_enqueue(struct usb_hcd *hcd,
 		break;
 	case PIPE_INTERRUPT:
 		urb->interval = ep->period;
-		ep->length = min_t(u32, ep->maxpacket,
+		ep->length = min((int)ep->maxpacket,
 				 urb->transfer_buffer_length);
 
 		/* urb submitted for already existing endpoint */

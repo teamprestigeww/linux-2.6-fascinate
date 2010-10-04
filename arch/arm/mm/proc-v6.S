@@ -10,7 +10,6 @@
  *
  *  This is the "shell" of the ARMv6 processor support.
  */
-#include <linux/init.h>
 #include <linux/linkage.h>
 #include <asm/assembler.h>
 #include <asm/asm-offsets.h>
@@ -32,21 +31,22 @@
 
 #ifndef CONFIG_SMP
 #define TTB_FLAGS	TTB_RGN_WBWA
-#define PMD_FLAGS	PMD_SECT_WB
 #else
 #define TTB_FLAGS	TTB_RGN_WBWA|TTB_S
-#define PMD_FLAGS	PMD_SECT_WBWA|PMD_SECT_S
 #endif
 
 ENTRY(cpu_v6_proc_init)
 	mov	pc, lr
 
 ENTRY(cpu_v6_proc_fin)
+	stmfd	sp!, {lr}
+	cpsid	if				@ disable interrupts
+	bl	v6_flush_kern_cache_all
 	mrc	p15, 0, r0, c1, c0, 0		@ ctrl register
 	bic	r0, r0, #0x1000			@ ...i............
 	bic	r0, r0, #0x0006			@ .............ca.
 	mcr	p15, 0, r0, c1, c0, 0		@ disable caches
-	mov	pc, lr
+	ldmfd	sp!, {pc}
 
 /*
  *	cpu_v6_reset(loc)
@@ -56,6 +56,8 @@ ENTRY(cpu_v6_proc_fin)
  *	to what would be the reset vector.
  *
  *	- loc   - location to jump to for soft reset
+ *
+ *	It is assumed that:
  */
 	.align	5
 ENTRY(cpu_v6_reset)
@@ -125,19 +127,12 @@ ENTRY(cpu_v6_set_pte_ext)
 
 
 
-	.type	cpu_v6_name, #object
+
 cpu_v6_name:
 	.asciz	"ARMv6-compatible processor"
-	.size	cpu_v6_name, . - cpu_v6_name
-
-	.type	cpu_pj4_name, #object
-cpu_pj4_name:
-	.asciz	"Marvell PJ4 processor"
-	.size	cpu_pj4_name, . - cpu_pj4_name
-
 	.align
 
-	__INIT
+	.section ".text.init", #alloc, #execinstr
 
 /*
  *	__v6_setup
@@ -174,9 +169,6 @@ __v6_setup:
 #endif /* CONFIG_MMU */
 	adr	r5, v6_crval
 	ldmia	r5, {r5, r6}
-#ifdef CONFIG_CPU_ENDIAN_BE8
-	orr	r6, r6, #1 << 25		@ big-endian page tables
-#endif
 	mrc	p15, 0, r0, c1, c0, 0		@ read control register
 	bic	r0, r0, r5			@ clear bits them
 	orr	r0, r0, r6			@ set them
@@ -195,7 +187,7 @@ v6_crval:
 	.type	v6_processor_functions, #object
 ENTRY(v6_processor_functions)
 	.word	v6_early_abort
-	.word	v6_pabort
+	.word	pabort_noifar
 	.word	cpu_v6_proc_init
 	.word	cpu_v6_proc_fin
 	.word	cpu_v6_reset
@@ -226,9 +218,10 @@ __v6_proc_info:
 	.long	0x0007b000
 	.long	0x0007f000
 	.long   PMD_TYPE_SECT | \
+		PMD_SECT_BUFFERABLE | \
+		PMD_SECT_CACHEABLE | \
 		PMD_SECT_AP_WRITE | \
-		PMD_SECT_AP_READ | \
-		PMD_FLAGS
+		PMD_SECT_AP_READ
 	.long   PMD_TYPE_SECT | \
 		PMD_SECT_XN | \
 		PMD_SECT_AP_WRITE | \
@@ -236,34 +229,10 @@ __v6_proc_info:
 	b	__v6_setup
 	.long	cpu_arch_name
 	.long	cpu_elf_name
-	/* See also feat_v6_fixup() for HWCAP_TLS */
-	.long	HWCAP_SWP|HWCAP_HALF|HWCAP_THUMB|HWCAP_FAST_MULT|HWCAP_EDSP|HWCAP_JAVA|HWCAP_TLS
+	.long	HWCAP_SWP|HWCAP_HALF|HWCAP_THUMB|HWCAP_FAST_MULT|HWCAP_EDSP|HWCAP_JAVA
 	.long	cpu_v6_name
 	.long	v6_processor_functions
 	.long	v6wbi_tlb_fns
 	.long	v6_user_fns
 	.long	v6_cache_fns
 	.size	__v6_proc_info, . - __v6_proc_info
-
-	.type	__pj4_v6_proc_info, #object
-__pj4_v6_proc_info:
-	.long	0x560f5810
-	.long	0xff0ffff0
-	.long   PMD_TYPE_SECT | \
-		PMD_SECT_AP_WRITE | \
-		PMD_SECT_AP_READ | \
-		PMD_FLAGS
-	.long   PMD_TYPE_SECT | \
-		PMD_SECT_XN | \
-		PMD_SECT_AP_WRITE | \
-		PMD_SECT_AP_READ
-	b	__v6_setup
-	.long	cpu_arch_name
-	.long	cpu_elf_name
-	.long	HWCAP_SWP|HWCAP_HALF|HWCAP_THUMB|HWCAP_FAST_MULT|HWCAP_EDSP|HWCAP_TLS
-	.long	cpu_pj4_name
-	.long	v6_processor_functions
-	.long	v6wbi_tlb_fns
-	.long	v6_user_fns
-	.long	v6_cache_fns
-	.size	__pj4_v6_proc_info, . - __pj4_v6_proc_info

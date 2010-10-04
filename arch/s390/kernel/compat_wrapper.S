@@ -252,7 +252,7 @@ sys32_chroot_wrapper:
 sys32_ustat_wrapper:
 	llgfr	%r2,%r2			# dev_t
 	llgtr	%r3,%r3			# struct ustat *
-	jg	compat_sys_ustat
+	jg	sys_ustat
 
 	.globl	sys32_dup2_wrapper
 sys32_dup2_wrapper:
@@ -409,7 +409,7 @@ sys32_munmap_wrapper:
 	.globl	sys32_truncate_wrapper
 sys32_truncate_wrapper:
 	llgtr	%r2,%r2			# const char *
-	lgfr	%r3,%r3			# long
+	llgfr	%r3,%r3			# unsigned long
 	jg	sys_truncate		# branch to system call
 
 	.globl	sys32_ftruncate_wrapper
@@ -547,7 +547,7 @@ sys32_setdomainname_wrapper:
 	.globl	sys32_newuname_wrapper
 sys32_newuname_wrapper:
 	llgtr	%r2,%r2			# struct new_utsname *
-	jg	sys_newuname		# branch to system call
+	jg	sys_s390_newuname	# branch to system call
 
 	.globl	compat_sys_adjtimex_wrapper
 compat_sys_adjtimex_wrapper:
@@ -568,18 +568,18 @@ compat_sys_sigprocmask_wrapper:
 	llgtr	%r4,%r4			# compat_old_sigset_t *
 	jg	compat_sys_sigprocmask		# branch to system call
 
-	.globl	sys_init_module_wrapper
-sys_init_module_wrapper:
+	.globl	sys32_init_module_wrapper
+sys32_init_module_wrapper:
 	llgtr	%r2,%r2			# void *
 	llgfr	%r3,%r3			# unsigned long
 	llgtr	%r4,%r4			# char *
-	jg	sys_init_module		# branch to system call
+	jg	sys32_init_module	# branch to system call
 
-	.globl	sys_delete_module_wrapper
-sys_delete_module_wrapper:
+	.globl	sys32_delete_module_wrapper
+sys32_delete_module_wrapper:
 	llgtr	%r2,%r2			# const char *
 	llgfr	%r3,%r3			# unsigned int
-	jg	sys_delete_module	# branch to system call
+	jg	sys32_delete_module	# branch to system call
 
 	.globl	sys32_quotactl_wrapper
 sys32_quotactl_wrapper:
@@ -614,7 +614,7 @@ sys32_sysfs_wrapper:
 
 	.globl	sys32_personality_wrapper
 sys32_personality_wrapper:
-	llgfr	%r2,%r2			# unsigned int
+	llgfr	%r2,%r2			# unsigned long
 	jg	sys_s390_personality	# branch to system call
 
 	.globl	sys32_setfsuid16_wrapper
@@ -688,6 +688,8 @@ sys32_getsid_wrapper:
 sys32_fdatasync_wrapper:
 	llgfr	%r2,%r2			# unsigned int
 	jg	sys_fdatasync		# branch to system call
+
+#sys32_sysctl_wrapper			# tbd
 
 	.globl	sys32_mlock_wrapper
 sys32_mlock_wrapper:
@@ -1085,8 +1087,8 @@ sys32_stime_wrapper:
 
 	.globl	sys32_sysctl_wrapper
 sys32_sysctl_wrapper:
-	llgtr	%r2,%r2 		# struct compat_sysctl_args *
-	jg	compat_sys_sysctl
+	llgtr	%r2,%r2 		# struct __sysctl_args32 *
+	jg	sys32_sysctl
 
 	.globl	sys32_fstat64_wrapper
 sys32_fstat64_wrapper:
@@ -1803,77 +1805,3 @@ compat_sys_keyctl_wrapper:
 	llgfr	%r5,%r5			# u32
 	llgfr	%r6,%r6			# u32
 	jg	compat_sys_keyctl	# branch to system call
-
-	.globl	compat_sys_preadv_wrapper
-compat_sys_preadv_wrapper:
-	llgfr	%r2,%r2			# unsigned long
-	llgtr	%r3,%r3			# compat_iovec *
-	llgfr	%r4,%r4			# unsigned long
-	llgfr	%r5,%r5			# u32
-	llgfr	%r6,%r6			# u32
-	jg	compat_sys_preadv	# branch to system call
-
-	.globl	compat_sys_pwritev_wrapper
-compat_sys_pwritev_wrapper:
-	llgfr	%r2,%r2			# unsigned long
-	llgtr	%r3,%r3			# compat_iovec *
-	llgfr	%r4,%r4			# unsigned long
-	llgfr	%r5,%r5			# u32
-	llgfr	%r6,%r6			# u32
-	jg	compat_sys_pwritev	# branch to system call
-
-	.globl	compat_sys_rt_tgsigqueueinfo_wrapper
-compat_sys_rt_tgsigqueueinfo_wrapper:
-	lgfr	%r2,%r2			# compat_pid_t
-	lgfr	%r3,%r3			# compat_pid_t
-	lgfr	%r4,%r4			# int
-	llgtr	%r5,%r5			# struct compat_siginfo *
-	jg	compat_sys_rt_tgsigqueueinfo_wrapper # branch to system call
-
-	.globl	sys_perf_event_open_wrapper
-sys_perf_event_open_wrapper:
-	llgtr	%r2,%r2			# const struct perf_event_attr *
-	lgfr	%r3,%r3			# pid_t
-	lgfr	%r4,%r4			# int
-	lgfr	%r5,%r5			# int
-	llgfr	%r6,%r6			# unsigned long
-	jg	sys_perf_event_open	# branch to system call
-
-	.globl	sys_clone_wrapper
-sys_clone_wrapper:
-	llgfr	%r2,%r2			# unsigned long
-	llgfr	%r3,%r3			# unsigned long
-	llgtr	%r4,%r4			# int *
-	llgtr	%r5,%r5			# int *
-	jg	sys_clone		# branch to system call
-
-	.globl	sys32_execve_wrapper
-sys32_execve_wrapper:
-	llgtr	%r2,%r2			# char *
-	llgtr	%r3,%r3			# compat_uptr_t *
-	llgtr	%r4,%r4			# compat_uptr_t *
-	jg	sys32_execve		# branch to system call
-
-	.globl	sys_fanotify_init_wrapper
-sys_fanotify_init_wrapper:
-	llgfr	%r2,%r2			# unsigned int
-	llgfr	%r3,%r3			# unsigned int
-	jg	sys_fanotify_init	# branch to system call
-
-	.globl	sys_fanotify_mark_wrapper
-sys_fanotify_mark_wrapper:
-	lgfr	%r2,%r2			# int
-	llgfr	%r3,%r3			# unsigned int
-	sllg	%r4,%r4,32		# get high word of 64bit mask
-	lr	%r4,%r5			# get low word of 64bit mask
-	llgfr	%r5,%r6			# unsigned int
-	llgt	%r6,164(%r15)		# char *
-	jg	sys_fanotify_mark	# branch to system call
-
-	.globl	sys_prlimit64_wrapper
-sys_prlimit64_wrapper:
-	lgfr	%r2,%r2			# pid_t
-	llgfr	%r3,%r3			# unsigned int
-	llgtr	%r4,%r4			# const struct rlimit64 __user *
-	llgtr	%r5,%r5			# struct rlimit64 __user *
-	jg	sys_prlimit64		# branch to system call

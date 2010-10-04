@@ -35,7 +35,6 @@
 
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/slab.h>
 
 #include <asm/uaccess.h>
 
@@ -286,7 +285,7 @@ ssize_t ib_uverbs_get_context(struct ib_uverbs_file *file,
 
 	ucontext = ibdev->alloc_ucontext(ibdev, &udata);
 	if (IS_ERR(ucontext)) {
-		ret = PTR_ERR(ucontext);
+		ret = PTR_ERR(file->ucontext);
 		goto err;
 	}
 
@@ -302,15 +301,10 @@ ssize_t ib_uverbs_get_context(struct ib_uverbs_file *file,
 
 	resp.num_comp_vectors = file->device->num_comp_vectors;
 
-	ret = get_unused_fd();
-	if (ret < 0)
-		goto err_free;
-	resp.async_fd = ret;
-
-	filp = ib_uverbs_alloc_event_file(file, 1);
+	filp = ib_uverbs_alloc_event_file(file, 1, &resp.async_fd);
 	if (IS_ERR(filp)) {
 		ret = PTR_ERR(filp);
-		goto err_fd;
+		goto err_free;
 	}
 
 	if (copy_to_user((void __user *) (unsigned long) cmd.response,
@@ -338,10 +332,8 @@ ssize_t ib_uverbs_get_context(struct ib_uverbs_file *file,
 	return in_len;
 
 err_file:
-	fput(filp);
-
-err_fd:
 	put_unused_fd(resp.async_fd);
+	fput(filp);
 
 err_free:
 	ibdev->dealloc_ucontext(ucontext);
@@ -723,7 +715,6 @@ ssize_t ib_uverbs_create_comp_channel(struct ib_uverbs_file *file,
 	struct ib_uverbs_create_comp_channel	   cmd;
 	struct ib_uverbs_create_comp_channel_resp  resp;
 	struct file				  *filp;
-	int ret;
 
 	if (out_len < sizeof resp)
 		return -ENOSPC;
@@ -731,16 +722,9 @@ ssize_t ib_uverbs_create_comp_channel(struct ib_uverbs_file *file,
 	if (copy_from_user(&cmd, buf, sizeof cmd))
 		return -EFAULT;
 
-	ret = get_unused_fd();
-	if (ret < 0)
-		return ret;
-	resp.fd = ret;
-
-	filp = ib_uverbs_alloc_event_file(file, 0);
-	if (IS_ERR(filp)) {
-		put_unused_fd(resp.fd);
+	filp = ib_uverbs_alloc_event_file(file, 0, &resp.fd);
+	if (IS_ERR(filp))
 		return PTR_ERR(filp);
-	}
 
 	if (copy_to_user((void __user *) (unsigned long) cmd.response,
 			 &resp, sizeof resp)) {

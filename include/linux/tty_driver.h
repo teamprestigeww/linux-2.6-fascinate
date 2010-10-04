@@ -45,16 +45,8 @@
  *
  * void (*shutdown)(struct tty_struct * tty);
  *
- * 	This routine is called synchronously when a particular tty device
- *	is closed for the last time freeing up the resources.
- *
- *
- * void (*cleanup)(struct tty_struct * tty);
- *
- *	This routine is called asynchronously when a particular tty device
- *	is closed for the last time freeing up the resources. This is
- *	actually the second part of shutdown for routines that might sleep.
- *
+ * 	This routine is called when a particular tty device is closed for
+ *	the last time freeing up the resources.
  *
  * int (*write)(struct tty_struct * tty,
  * 		 const unsigned char *buf, int count);
@@ -135,8 +127,7 @@
  * 	the line discipline are close to full, and it should somehow
  * 	signal that no more characters should be sent to the tty.
  *
- *	Optional: Always invoke via tty_throttle(), called under the
- *	termios lock.
+ *	Optional: Always invoke via tty_throttle();
  * 
  * void (*unthrottle)(struct tty_struct * tty);
  *
@@ -144,8 +135,7 @@
  * 	that characters can now be sent to the tty without fear of
  * 	overrunning the input buffers of the line disciplines.
  * 
- *	Optional: Always invoke via tty_unthrottle(), called under the
- *	termios lock.
+ *	Optional: Always invoke via tty_unthrottle();
  *
  * void (*stop)(struct tty_struct *tty);
  *
@@ -241,7 +231,6 @@ struct tty_operations {
 	int  (*open)(struct tty_struct * tty, struct file * filp);
 	void (*close)(struct tty_struct * tty, struct file * filp);
 	void (*shutdown)(struct tty_struct *tty);
-	void (*cleanup)(struct tty_struct *tty);
 	int  (*write)(struct tty_struct * tty,
 		      const unsigned char *buf, int count);
 	int  (*put_char)(struct tty_struct *tty, unsigned char ch);
@@ -263,6 +252,8 @@ struct tty_operations {
 	void (*set_ldisc)(struct tty_struct *tty);
 	void (*wait_until_sent)(struct tty_struct *tty, int timeout);
 	void (*send_xchar)(struct tty_struct *tty, char ch);
+	int (*read_proc)(char *page, char **start, off_t off,
+			  int count, int *eof, void *data);
 	int (*tiocmget)(struct tty_struct *tty, struct file *file);
 	int (*tiocmset)(struct tty_struct *tty, struct file *file,
 			unsigned int set, unsigned int clear);
@@ -273,7 +264,6 @@ struct tty_operations {
 	int (*poll_get_char)(struct tty_driver *driver, int line);
 	void (*poll_put_char)(struct tty_driver *driver, int line, char ch);
 #endif
-	const struct file_operations *proc_fops;
 };
 
 struct tty_driver {
@@ -320,8 +310,7 @@ extern void tty_set_operations(struct tty_driver *driver,
 extern struct tty_driver *tty_find_polling_driver(char *name, int *line);
 
 extern void tty_driver_kref_put(struct tty_driver *driver);
-
-static inline struct tty_driver *tty_driver_kref_get(struct tty_driver *d)
+extern inline struct tty_driver *tty_driver_kref_get(struct tty_driver *d)
 {
 	kref_get(&d->kref);
 	return d;

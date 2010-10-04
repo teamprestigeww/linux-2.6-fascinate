@@ -34,7 +34,7 @@ DEFINE_PER_CPU(struct tick_device, tick_cpu_device);
 ktime_t tick_next_period;
 ktime_t tick_period;
 int tick_do_timer_cpu __read_mostly = TICK_DO_TIMER_BOOT;
-static DEFINE_RAW_SPINLOCK(tick_device_lock);
+DEFINE_SPINLOCK(tick_device_lock);
 
 /*
  * Debugging: see timer_list.c
@@ -93,17 +93,7 @@ void tick_handle_periodic(struct clock_event_device *dev)
 	for (;;) {
 		if (!clockevents_program_event(dev, next, ktime_get()))
 			return;
-		/*
-		 * Have to be careful here. If we're in oneshot mode,
-		 * before we call tick_periodic() in a loop, we need
-		 * to be sure we're using a real hardware clocksource.
-		 * Otherwise we could get trapped in an infinite
-		 * loop, as the tick_periodic() increments jiffies,
-		 * when then will increment time, posibly causing
-		 * the loop to trigger again and again.
-		 */
-		if (timekeeping_valid_for_hres())
-			tick_periodic(cpu);
+		tick_periodic(cpu);
 		next = ktime_add(next, tick_period);
 	}
 }
@@ -209,7 +199,7 @@ static int tick_check_new_device(struct clock_event_device *newdev)
 	int cpu, ret = NOTIFY_OK;
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&tick_device_lock, flags);
+	spin_lock_irqsave(&tick_device_lock, flags);
 
 	cpu = smp_processor_id();
 	if (!cpumask_test_cpu(cpu, newdev->cpumask))
@@ -268,7 +258,7 @@ static int tick_check_new_device(struct clock_event_device *newdev)
 	if (newdev->features & CLOCK_EVT_FEAT_ONESHOT)
 		tick_oneshot_notify();
 
-	raw_spin_unlock_irqrestore(&tick_device_lock, flags);
+	spin_unlock_irqrestore(&tick_device_lock, flags);
 	return NOTIFY_STOP;
 
 out_bc:
@@ -278,7 +268,7 @@ out_bc:
 	if (tick_check_broadcast_device(newdev))
 		ret = NOTIFY_STOP;
 
-	raw_spin_unlock_irqrestore(&tick_device_lock, flags);
+	spin_unlock_irqrestore(&tick_device_lock, flags);
 
 	return ret;
 }
@@ -311,7 +301,7 @@ static void tick_shutdown(unsigned int *cpup)
 	struct clock_event_device *dev = td->evtdev;
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&tick_device_lock, flags);
+	spin_lock_irqsave(&tick_device_lock, flags);
 	td->mode = TICKDEV_MODE_PERIODIC;
 	if (dev) {
 		/*
@@ -322,7 +312,7 @@ static void tick_shutdown(unsigned int *cpup)
 		clockevents_exchange_device(dev, NULL);
 		td->evtdev = NULL;
 	}
-	raw_spin_unlock_irqrestore(&tick_device_lock, flags);
+	spin_unlock_irqrestore(&tick_device_lock, flags);
 }
 
 static void tick_suspend(void)
@@ -330,9 +320,9 @@ static void tick_suspend(void)
 	struct tick_device *td = &__get_cpu_var(tick_cpu_device);
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&tick_device_lock, flags);
+	spin_lock_irqsave(&tick_device_lock, flags);
 	clockevents_shutdown(td->evtdev);
-	raw_spin_unlock_irqrestore(&tick_device_lock, flags);
+	spin_unlock_irqrestore(&tick_device_lock, flags);
 }
 
 static void tick_resume(void)
@@ -341,7 +331,7 @@ static void tick_resume(void)
 	unsigned long flags;
 	int broadcast = tick_resume_broadcast();
 
-	raw_spin_lock_irqsave(&tick_device_lock, flags);
+	spin_lock_irqsave(&tick_device_lock, flags);
 	clockevents_set_mode(td->evtdev, CLOCK_EVT_MODE_RESUME);
 
 	if (!broadcast) {
@@ -350,7 +340,7 @@ static void tick_resume(void)
 		else
 			tick_resume_oneshot();
 	}
-	raw_spin_unlock_irqrestore(&tick_device_lock, flags);
+	spin_unlock_irqrestore(&tick_device_lock, flags);
 }
 
 /*

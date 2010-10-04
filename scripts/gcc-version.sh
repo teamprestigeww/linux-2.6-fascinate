@@ -18,7 +18,7 @@ compiler="$*"
 
 if [ ${#compiler} -eq 0 ]; then
 	echo "Error: No compiler specified."
-	printf "Usage:\n\t$0 <gcc-command>\n"
+	echo -e "Usage:\n\t$0 <gcc-command>"
 	exit 1
 fi
 

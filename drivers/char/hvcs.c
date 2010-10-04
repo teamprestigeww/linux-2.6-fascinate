@@ -74,7 +74,6 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/stat.h>
 #include <linux/tty.h>
@@ -348,7 +347,7 @@ static void __exit hvcs_module_exit(void);
 
 static inline struct hvcs_struct *from_vio_dev(struct vio_dev *viod)
 {
-	return dev_get_drvdata(&viod->dev);
+	return viod->dev.driver_data;
 }
 /* The sysfs interface for the driver and devices */
 
@@ -786,7 +785,7 @@ static int __devinit hvcs_probe(
 	kref_init(&hvcsd->kref);
 
 	hvcsd->vdev = dev;
-	dev_set_drvdata(&dev->dev, hvcsd);
+	dev->dev.driver_data = hvcsd;
 
 	hvcsd->index = index;
 
@@ -832,7 +831,7 @@ static int __devinit hvcs_probe(
 
 static int __devexit hvcs_remove(struct vio_dev *dev)
 {
-	struct hvcs_struct *hvcsd = dev_get_drvdata(&dev->dev);
+	struct hvcs_struct *hvcsd = dev->dev.driver_data;
 	unsigned long flags;
 	struct tty_struct *tty;
 
@@ -869,7 +868,7 @@ static int __devexit hvcs_remove(struct vio_dev *dev)
 static struct vio_driver hvcs_vio_driver = {
 	.id_table	= hvcs_driver_table,
 	.probe		= hvcs_probe,
-	.remove		= __devexit_p(hvcs_remove),
+	.remove		= hvcs_remove,
 	.driver		= {
 		.name	= hvcs_driver_name,
 		.owner	= THIS_MODULE,

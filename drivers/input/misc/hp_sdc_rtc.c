@@ -35,6 +35,7 @@
 
 #include <linux/hp_sdc.h>
 #include <linux/errno.h>
+#include <linux/smp_lock.h>
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -43,7 +44,6 @@
 #include <linux/proc_fs.h>
 #include <linux/poll.h>
 #include <linux/rtc.h>
-#include <linux/smp_lock.h>
 #include <linux/semaphore.h>
 
 MODULE_AUTHOR("Brian S. Julin <bri@calyx.com>");
@@ -65,8 +65,8 @@ static DECLARE_WAIT_QUEUE_HEAD(hp_sdc_rtc_wait);
 static ssize_t hp_sdc_rtc_read(struct file *file, char __user *buf,
 			       size_t count, loff_t *ppos);
 
-static long hp_sdc_rtc_unlocked_ioctl(struct file *file,
-				      unsigned int cmd, unsigned long arg);
+static int hp_sdc_rtc_ioctl(struct inode *inode, struct file *file,
+			    unsigned int cmd, unsigned long arg);
 
 static unsigned int hp_sdc_rtc_poll(struct file *file, poll_table *wait);
 
@@ -209,7 +209,7 @@ static inline int hp_sdc_rtc_read_rt(struct timeval *res) {
 
 /* Read the i8042 fast handshake timer */
 static inline int hp_sdc_rtc_read_fhs(struct timeval *res) {
-	int64_t raw;
+	uint64_t raw;
 	unsigned int tenms;
 
 	raw = hp_sdc_rtc_read_i8042timer(HP_SDC_CMD_LOAD_FHS, 2);
@@ -409,6 +409,7 @@ static unsigned int hp_sdc_rtc_poll(struct file *file, poll_table *wait)
 
 static int hp_sdc_rtc_open(struct inode *inode, struct file *file)
 {
+	cycle_kernel_lock();
         return 0;
 }
 
@@ -513,7 +514,7 @@ static int hp_sdc_rtc_read_proc(char *page, char **start, off_t off,
         return len;
 }
 
-static int hp_sdc_rtc_ioctl(struct file *file, 
+static int hp_sdc_rtc_ioctl(struct inode *inode, struct file *file, 
 			    unsigned int cmd, unsigned long arg)
 {
 #if 1
@@ -660,27 +661,14 @@ static int hp_sdc_rtc_ioctl(struct file *file,
 #endif
 }
 
-static long hp_sdc_rtc_unlocked_ioctl(struct file *file,
-				      unsigned int cmd, unsigned long arg)
-{
-	int ret;
-
-	lock_kernel();
-	ret = hp_sdc_rtc_ioctl(file, cmd, arg);
-	unlock_kernel();
-
-	return ret;
-}
-
-
 static const struct file_operations hp_sdc_rtc_fops = {
-        .owner =		THIS_MODULE,
-        .llseek =		no_llseek,
-        .read =			hp_sdc_rtc_read,
-        .poll =			hp_sdc_rtc_poll,
-        .unlocked_ioctl =	hp_sdc_rtc_unlocked_ioctl,
-        .open =			hp_sdc_rtc_open,
-        .fasync =		hp_sdc_rtc_fasync,
+        .owner =	THIS_MODULE,
+        .llseek =	no_llseek,
+        .read =		hp_sdc_rtc_read,
+        .poll =		hp_sdc_rtc_poll,
+        .ioctl =	hp_sdc_rtc_ioctl,
+        .open =		hp_sdc_rtc_open,
+        .fasync =	hp_sdc_rtc_fasync,
 };
 
 static struct miscdevice hp_sdc_rtc_dev = {

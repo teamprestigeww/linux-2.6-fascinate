@@ -21,9 +21,8 @@
 */
 
 #include <linux/i2c.h>
-#include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/videodev2.h>
+#include <linux/videodev.h>
 #include "tuner-i2c.h"
 #include "tda8290.h"
 #include "tda827x.h"
@@ -34,7 +33,6 @@ module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "enable verbose debug messages");
 
 static int deemphasis_50;
-module_param(deemphasis_50, int, 0644);
 MODULE_PARM_DESC(deemphasis_50, "0 - 75us deemphasis; 1 - 50us deemphasis");
 
 /* ---------------------------------------------------------------------- */
@@ -145,8 +143,7 @@ static void set_audio(struct dvb_frontend *fe,
 	}
 
 	if (params->mode == V4L2_TUNER_RADIO) {
-		/* Set TDA8295 to FM radio; Start TDA8290 with MN values */
-		priv->tda8290_easy_mode = (priv->ver & TDA8295) ? 0x80 : 0x01;
+		priv->tda8290_easy_mode = 0x01;		/* Start with MN values */
 		tuner_dbg("setting to radio FM\n");
 	} else {
 		tuner_dbg("setting tda829x to system %s\n", mode);
@@ -569,11 +566,8 @@ static int tda829x_find_tuner(struct dvb_frontend *fe)
 	u8 data;
 	struct i2c_msg msg = { .flags = I2C_M_RD, .buf = &data, .len = 1 };
 
-	if (!analog_ops->i2c_gate_ctrl) {
-		printk(KERN_ERR "tda8290: no gate control were provided!\n");
-
+	if (NULL == analog_ops->i2c_gate_ctrl)
 		return -EINVAL;
-	}
 
 	analog_ops->i2c_gate_ctrl(fe, 1);
 
@@ -621,13 +615,11 @@ static int tda829x_find_tuner(struct dvb_frontend *fe)
 
 	if (ret != 1) {
 		tuner_warn("tuner access failed!\n");
-		analog_ops->i2c_gate_ctrl(fe, 0);
 		return -EREMOTEIO;
 	}
 
 	if ((data == 0x83) || (data == 0x84)) {
 		priv->ver |= TDA18271;
-		tda829x_tda18271_config.config = priv->cfg.config;
 		dvb_attach(tda18271_attach, fe, priv->tda827x_addr,
 			   priv->i2c_props.adap, &tda829x_tda18271_config);
 	} else {
@@ -674,19 +666,16 @@ static int tda8290_probe(struct tuner_i2c_props *i2c_props)
 static int tda8295_probe(struct tuner_i2c_props *i2c_props)
 {
 #define TDA8295_ID 0x8a
-#define TDA8295C2_ID 0x8b
 	unsigned char tda8295_id[] = { 0x2f, 0x00 };
 
 	/* detect tda8295 */
 	tuner_i2c_xfer_send(i2c_props, &tda8295_id[0], 1);
 	tuner_i2c_xfer_recv(i2c_props, &tda8295_id[1], 1);
 
-	if ((tda8295_id[1] & 0xfe) == TDA8295_ID) {
+	if (tda8295_id[1] == TDA8295_ID) {
 		if (debug)
-			printk(KERN_DEBUG "%s: %s detected @ %d-%04x\n",
-			       __func__, (tda8295_id[1] == TDA8295_ID) ?
-			       "tda8295c1" : "tda8295c2",
-			       i2c_adapter_id(i2c_props->adap),
+			printk(KERN_DEBUG "%s: tda8295 detected @ %d-%04x\n",
+			       __func__, i2c_adapter_id(i2c_props->adap),
 			       i2c_props->addr);
 		return 0;
 	}

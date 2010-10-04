@@ -59,7 +59,7 @@ static int rio_open (struct net_device *dev);
 static void rio_timer (unsigned long data);
 static void rio_tx_timeout (struct net_device *dev);
 static void alloc_list (struct net_device *dev);
-static netdev_tx_t start_xmit (struct sk_buff *skb, struct net_device *dev);
+static int start_xmit (struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t rio_interrupt (int irq, void *dev_instance);
 static void rio_free_tx (struct net_device *dev, int irq);
 static void tx_error (struct net_device *dev, int tx_status);
@@ -163,8 +163,8 @@ rio_probe1 (struct pci_dev *pdev, const struct pci_device_id *ent)
 			    strcmp (media[card_idx], "4") == 0) {
 				np->speed = 100;
 				np->full_duplex = 1;
-			} else if (strcmp (media[card_idx], "100mbps_hd") == 0 ||
-				   strcmp (media[card_idx], "3") == 0) {
+			} else if (strcmp (media[card_idx], "100mbps_hd") == 0
+				   || strcmp (media[card_idx], "3") == 0) {
 				np->speed = 100;
 				np->full_duplex = 0;
 			} else if (strcmp (media[card_idx], "10mbps_fd") == 0 ||
@@ -268,9 +268,8 @@ rio_probe1 (struct pci_dev *pdev, const struct pci_device_id *ent)
 		printk(KERN_INFO "tx_coalesce:\t%d packets\n",
 				tx_coalesce);
 	if (np->coalesce)
-		printk(KERN_INFO
-		       "rx_coalesce:\t%d packets\n"
-		       "rx_timeout: \t%d ns\n",
+		printk(KERN_INFO "rx_coalesce:\t%d packets\n"
+		       KERN_INFO "rx_timeout: \t%d ns\n",
 				np->rx_coalesce, np->rx_timeout*640);
 	if (np->vlan)
 		printk(KERN_INFO "vlan(id):\t%d\n", np->vlan);
@@ -411,7 +410,7 @@ rio_open (struct net_device *dev)
 	int i;
 	u16 macctrl;
 
-	i = request_irq (dev->irq, rio_interrupt, IRQF_SHARED, dev->name, dev);
+	i = request_irq (dev->irq, &rio_interrupt, IRQF_SHARED, dev->name, dev);
 	if (i)
 		return i;
 
@@ -505,8 +504,7 @@ rio_timer (unsigned long data)
 			entry = np->old_rx % RX_RING_SIZE;
 			/* Dropped packets don't need to re-allocate */
 			if (np->rx_skbuff[entry] == NULL) {
-				skb = netdev_alloc_skb_ip_align(dev,
-								np->rx_buf_sz);
+				skb = netdev_alloc_skb (dev, np->rx_buf_sz);
 				if (skb == NULL) {
 					np->rx_ring[entry].fraginfo = 0;
 					printk (KERN_INFO
@@ -515,6 +513,8 @@ rio_timer (unsigned long data)
 					break;
 				}
 				np->rx_skbuff[entry] = skb;
+				/* 16 byte align the IP header */
+				skb_reserve (skb, 2);
 				np->rx_ring[entry].fraginfo =
 				    cpu_to_le64 (pci_map_single
 					 (np->pdev, skb->data, np->rx_buf_sz,
@@ -539,7 +539,7 @@ rio_tx_timeout (struct net_device *dev)
 		dev->name, readl (ioaddr + TxStatus));
 	rio_free_tx(dev, 0);
 	dev->if_port = 0;
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	dev->trans_start = jiffies;
 }
 
  /* allocate and initialize Tx and Rx descriptors */
@@ -575,9 +575,7 @@ alloc_list (struct net_device *dev)
 	/* Allocate the rx buffers */
 	for (i = 0; i < RX_RING_SIZE; i++) {
 		/* Allocated fixed size of skbuff */
-		struct sk_buff *skb;
-
-		skb = netdev_alloc_skb_ip_align(dev, np->rx_buf_sz);
+		struct sk_buff *skb = netdev_alloc_skb (dev, np->rx_buf_sz);
 		np->rx_skbuff[i] = skb;
 		if (skb == NULL) {
 			printk (KERN_ERR
@@ -585,6 +583,7 @@ alloc_list (struct net_device *dev)
 				dev->name);
 			break;
 		}
+		skb_reserve (skb, 2);	/* 16 byte align the IP header. */
 		/* Rubicon now supports 40 bits of addressing space. */
 		np->rx_ring[i].fraginfo =
 		    cpu_to_le64 ( pci_map_single (
@@ -596,9 +595,11 @@ alloc_list (struct net_device *dev)
 	/* Set RFDListPtr */
 	writel (np->rx_ring_dma, dev->base_addr + RFDListPtr0);
 	writel (0, dev->base_addr + RFDListPtr1);
+
+	return;
 }
 
-static netdev_tx_t
+static int
 start_xmit (struct sk_buff *skb, struct net_device *dev)
 {
 	struct netdev_private *np = netdev_priv(dev);
@@ -609,7 +610,7 @@ start_xmit (struct sk_buff *skb, struct net_device *dev)
 
 	if (np->link_status == 0) {	/* Link Down */
 		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;
+		return 0;
 	}
 	ioaddr = dev->base_addr;
 	entry = np->cur_tx % TX_RING_SIZE;
@@ -664,7 +665,9 @@ start_xmit (struct sk_buff *skb, struct net_device *dev)
 		writel (0, dev->base_addr + TFDListPtr1);
 	}
 
-	return NETDEV_TX_OK;
+	/* NETDEV WATCHDOG timer */
+	dev->trans_start = jiffies;
+	return 0;
 }
 
 static irqreturn_t
@@ -711,7 +714,7 @@ rio_interrupt (int irq, void *dev_instance)
 
 static inline dma_addr_t desc_to_dma(struct netdev_desc *desc)
 {
-	return le64_to_cpu(desc->fraginfo) & DMA_BIT_MASK(48);
+	return le64_to_cpu(desc->fraginfo) & DMA_48BIT_MASK;
 }
 
 static void
@@ -869,11 +872,13 @@ receive_packet (struct net_device *dev)
 						  PCI_DMA_FROMDEVICE);
 				skb_put (skb = np->rx_skbuff[entry], pkt_len);
 				np->rx_skbuff[entry] = NULL;
-			} else if ((skb = netdev_alloc_skb_ip_align(dev, pkt_len))) {
+			} else if ((skb = netdev_alloc_skb(dev, pkt_len + 2))) {
 				pci_dma_sync_single_for_cpu(np->pdev,
 							    desc_to_dma(desc),
 							    np->rx_buf_sz,
 							    PCI_DMA_FROMDEVICE);
+				/* 16 byte align the IP header */
+				skb_reserve (skb, 2);
 				skb_copy_to_linear_data (skb,
 						  np->rx_skbuff[entry]->data,
 						  pkt_len);
@@ -903,7 +908,7 @@ receive_packet (struct net_device *dev)
 		struct sk_buff *skb;
 		/* Dropped packets don't need to re-allocate */
 		if (np->rx_skbuff[entry] == NULL) {
-			skb = netdev_alloc_skb_ip_align(dev, np->rx_buf_sz);
+			skb = netdev_alloc_skb(dev, np->rx_buf_sz);
 			if (skb == NULL) {
 				np->rx_ring[entry].fraginfo = 0;
 				printk (KERN_INFO
@@ -913,6 +918,8 @@ receive_packet (struct net_device *dev)
 				break;
 			}
 			np->rx_skbuff[entry] = skb;
+			/* 16 byte align the IP header */
+			skb_reserve (skb, 2);
 			np->rx_ring[entry].fraginfo =
 			    cpu_to_le64 (pci_map_single
 					 (np->pdev, skb->data, np->rx_buf_sz,
@@ -1126,18 +1133,21 @@ set_multicast (struct net_device *dev)
 		/* Receive all frames promiscuously. */
 		rx_mode = ReceiveAllFrames;
 	} else if ((dev->flags & IFF_ALLMULTI) ||
-			(netdev_mc_count(dev) > multicast_filter_limit)) {
+			(dev->mc_count > multicast_filter_limit)) {
 		/* Receive broadcast and multicast frames */
 		rx_mode = ReceiveBroadcast | ReceiveMulticast | ReceiveUnicast;
-	} else if (!netdev_mc_empty(dev)) {
-		struct netdev_hw_addr *ha;
+	} else if (dev->mc_count > 0) {
+		int i;
+		struct dev_mc_list *mclist;
 		/* Receive broadcast frames and multicast frames filtering
 		   by Hashtable */
 		rx_mode =
 		    ReceiveBroadcast | ReceiveMulticastHash | ReceiveUnicast;
-		netdev_for_each_mc_addr(ha, dev) {
+		for (i=0, mclist = dev->mc_list; mclist && i < dev->mc_count;
+				i++, mclist=mclist->next)
+		{
 			int bit, index = 0;
-			int crc = ether_crc_le(ETH_ALEN, ha->addr);
+			int crc = ether_crc_le (ETH_ALEN, mclist->dmi_addr);
 			/* The inverted high significant 6 bits of CRC are
 			   used as an index to hashtable */
 			for (bit = 0; bit < 6; bit++)
@@ -1514,9 +1524,9 @@ mii_get_media (struct net_device *dev)
 			printk (KERN_INFO "Operating at 10 Mbps, ");
 		}
 		if (bmcr & MII_BMCR_DUPLEX_MODE) {
-			printk (KERN_CONT "Full duplex\n");
+			printk ("Full duplex\n");
 		} else {
-			printk (KERN_CONT "Half duplex\n");
+			printk ("Half duplex\n");
 		}
 	}
 	if (np->tx_flow)
@@ -1606,9 +1616,9 @@ mii_set_media (struct net_device *dev)
 		}
 		if (np->full_duplex) {
 			bmcr |= MII_BMCR_DUPLEX_MODE;
-			printk (KERN_CONT "Full duplex\n");
+			printk ("Full duplex\n");
 		} else {
-			printk (KERN_CONT "Half duplex\n");
+			printk ("Half duplex\n");
 		}
 #if 0
 		/* Set 1000BaseT Master/Slave setting */
@@ -1661,9 +1671,9 @@ mii_get_media_pcs (struct net_device *dev)
 		__u16 bmcr = mii_read (dev, phy_addr, PCS_BMCR);
 		printk (KERN_INFO "Operating at 1000 Mbps, ");
 		if (bmcr & MII_BMCR_DUPLEX_MODE) {
-			printk (KERN_CONT "Full duplex\n");
+			printk ("Full duplex\n");
 		} else {
-			printk (KERN_CONT "Half duplex\n");
+			printk ("Half duplex\n");
 		}
 	}
 	if (np->tx_flow)

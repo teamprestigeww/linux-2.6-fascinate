@@ -34,7 +34,6 @@
 #include <linux/namei.h>
 #include <linux/idr.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 
@@ -105,12 +104,12 @@ void v9fs_dentry_release(struct dentry *dentry)
 	}
 }
 
-const struct dentry_operations v9fs_cached_dentry_operations = {
+struct dentry_operations v9fs_cached_dentry_operations = {
 	.d_delete = v9fs_cached_dentry_delete,
 	.d_release = v9fs_dentry_release,
 };
 
-const struct dentry_operations v9fs_dentry_operations = {
+struct dentry_operations v9fs_dentry_operations = {
 	.d_delete = v9fs_dentry_delete,
 	.d_release = v9fs_dentry_release,
 };

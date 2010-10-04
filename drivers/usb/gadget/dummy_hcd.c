@@ -47,13 +47,15 @@
 #include <linux/platform_device.h>
 #include <linux/usb.h>
 #include <linux/usb/gadget.h>
-#include <linux/usb/hcd.h>
 
 #include <asm/byteorder.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/system.h>
 #include <asm/unaligned.h>
+
+
+#include "../core/hcd.h"
 
 
 #define DRIVER_DESC	"USB Host+Gadget Emulator"
@@ -1304,6 +1306,11 @@ restart:
 			setup = *(struct usb_ctrlrequest*) urb->setup_packet;
 			w_index = le16_to_cpu(setup.wIndex);
 			w_value = le16_to_cpu(setup.wValue);
+			if (le16_to_cpu(setup.wLength) !=
+					urb->transfer_buffer_length) {
+				status = -EOVERFLOW;
+				goto return_urb;
+			}
 
 			/* paranoia, in case of stale queued data */
 			list_for_each_entry (req, &ep->queue, queue) {
@@ -1430,7 +1437,7 @@ restart:
 					}
 					if (urb->transfer_buffer_length > 1)
 						buf [1] = 0;
-					urb->actual_length = min_t(u32, 2,
+					urb->actual_length = min (2,
 						urb->transfer_buffer_length);
 					value = 0;
 					status = 0;
@@ -1542,7 +1549,7 @@ static int dummy_hub_status (struct usb_hcd *hcd, char *buf)
 	dum = hcd_to_dummy (hcd);
 
 	spin_lock_irqsave (&dum->lock, flags);
-	if (!HCD_HW_ACCESSIBLE(hcd))
+	if (!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags))
 		goto done;
 
 	if (dum->resuming && time_after_eq (jiffies, dum->re_timeout)) {
@@ -1588,7 +1595,7 @@ static int dummy_hub_control (
 	int		retval = 0;
 	unsigned long	flags;
 
-	if (!HCD_HW_ACCESSIBLE(hcd))
+	if (!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags))
 		return -ETIMEDOUT;
 
 	dum = hcd_to_dummy (hcd);
@@ -1619,7 +1626,7 @@ static int dummy_hub_control (
 		hub_descriptor ((struct usb_hub_descriptor *) buf);
 		break;
 	case GetHubStatus:
-		*(__le32 *) buf = cpu_to_le32 (0);
+		*(__le32 *) buf = __constant_cpu_to_le32 (0);
 		break;
 	case GetPortStatus:
 		if (wIndex != 1)
@@ -1739,7 +1746,7 @@ static int dummy_bus_resume (struct usb_hcd *hcd)
 	dev_dbg (&hcd->self.root_hub->dev, "%s\n", __func__);
 
 	spin_lock_irq (&dum->lock);
-	if (!HCD_HW_ACCESSIBLE(hcd)) {
+	if (!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags)) {
 		rc = -ESHUTDOWN;
 	} else {
 		dum->rh_state = DUMMY_RH_RUNNING;

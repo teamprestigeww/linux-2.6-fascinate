@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -102,8 +102,9 @@ acpi_status acpi_ev_initialize_events(void)
  * RETURN:      Status
  *
  * DESCRIPTION: Completes initialization of the FADT-defined GPE blocks
- *              (0 and 1). The HW must be fully initialized at this point,
- *              including global lock support.
+ *              (0 and 1). This causes the _PRW methods to be run, so the HW
+ *              must be fully initialized at this point, including global lock
+ *              support.
  *
  ******************************************************************************/
 
@@ -182,7 +183,7 @@ acpi_status acpi_ev_install_xrupt_handlers(void)
  *
  * RETURN:      Status
  *
- * DESCRIPTION: Install the fixed event handlers and disable all fixed events.
+ * DESCRIPTION: Install the fixed event handlers and enable the fixed events.
  *
  ******************************************************************************/
 
@@ -199,13 +200,12 @@ static acpi_status acpi_ev_fixed_event_initialize(void)
 		acpi_gbl_fixed_event_handlers[i].handler = NULL;
 		acpi_gbl_fixed_event_handlers[i].context = NULL;
 
-		/* Disable the fixed event */
+		/* Enable the fixed event */
 
 		if (acpi_gbl_fixed_event_info[i].enable_register_id != 0xFF) {
 			status =
-			    acpi_write_bit_register(acpi_gbl_fixed_event_info
-						    [i].enable_register_id,
-						    ACPI_DISABLE_EVENT);
+			    acpi_set_register(acpi_gbl_fixed_event_info[i].
+					      enable_register_id, 0);
 			if (ACPI_FAILURE(status)) {
 				return (status);
 			}
@@ -288,20 +288,19 @@ static u32 acpi_ev_fixed_event_dispatch(u32 event)
 
 	/* Clear the status bit */
 
-	(void)acpi_write_bit_register(acpi_gbl_fixed_event_info[event].
-				      status_register_id, ACPI_CLEAR_STATUS);
+	(void)acpi_set_register(acpi_gbl_fixed_event_info[event].
+				status_register_id, 1);
 
 	/*
 	 * Make sure we've got a handler. If not, report an error. The event is
 	 * disabled to prevent further interrupts.
 	 */
 	if (NULL == acpi_gbl_fixed_event_handlers[event].handler) {
-		(void)acpi_write_bit_register(acpi_gbl_fixed_event_info[event].
-					      enable_register_id,
-					      ACPI_DISABLE_EVENT);
+		(void)acpi_set_register(acpi_gbl_fixed_event_info[event].
+					enable_register_id, 0);
 
 		ACPI_ERROR((AE_INFO,
-			    "No installed handler for fixed event [0x%08X]",
+			    "No installed handler for fixed event [%08X]",
 			    event));
 
 		return (ACPI_INTERRUPT_NOT_HANDLED);

@@ -6,7 +6,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -149,7 +149,7 @@ acpi_ex_resolve_object_to_value(union acpi_operand_object **stack_ptr,
 
 	/* This is a union acpi_operand_object    */
 
-	switch (stack_desc->common.type) {
+	switch (ACPI_GET_OBJECT_TYPE(stack_desc)) {
 	case ACPI_TYPE_LOCAL_REFERENCE:
 
 		ref_type = stack_desc->reference.class;
@@ -231,7 +231,7 @@ acpi_ex_resolve_object_to_value(union acpi_operand_object **stack_ptr,
 				/* Invalid reference object */
 
 				ACPI_ERROR((AE_INFO,
-					    "Unknown TargetType 0x%X in Index/Reference object %p",
+					    "Unknown TargetType %X in Index/Reference object %p",
 					    stack_desc->reference.target_type,
 					    stack_desc));
 				status = AE_AML_INTERNAL;
@@ -273,8 +273,8 @@ acpi_ex_resolve_object_to_value(union acpi_operand_object **stack_ptr,
 		default:
 
 			ACPI_ERROR((AE_INFO,
-				    "Unknown Reference type 0x%X in %p",
-				    ref_type, stack_desc));
+				    "Unknown Reference type %X in %p", ref_type,
+				    stack_desc));
 			status = AE_AML_INTERNAL;
 			break;
 		}
@@ -297,7 +297,8 @@ acpi_ex_resolve_object_to_value(union acpi_operand_object **stack_ptr,
 
 		ACPI_DEBUG_PRINT((ACPI_DB_EXEC,
 				  "FieldRead SourceDesc=%p Type=%X\n",
-				  stack_desc, stack_desc->common.type));
+				  stack_desc,
+				  ACPI_GET_OBJECT_TYPE(stack_desc)));
 
 		status =
 		    acpi_ex_read_data_from_field(walk_state, stack_desc,
@@ -385,7 +386,7 @@ acpi_ex_resolve_multiple(struct acpi_walk_state *walk_state,
 	 * specification of the object_type and size_of operators). This means
 	 * traversing the list of possibly many nested references.
 	 */
-	while (obj_desc->common.type == ACPI_TYPE_LOCAL_REFERENCE) {
+	while (ACPI_GET_OBJECT_TYPE(obj_desc) == ACPI_TYPE_LOCAL_REFERENCE) {
 		switch (obj_desc->reference.class) {
 		case ACPI_REFCLASS_REFOF:
 		case ACPI_REFCLASS_NAME:
@@ -403,8 +404,7 @@ acpi_ex_resolve_multiple(struct acpi_walk_state *walk_state,
 
 			if (ACPI_GET_DESCRIPTOR_TYPE(node) !=
 			    ACPI_DESC_TYPE_NAMED) {
-				ACPI_ERROR((AE_INFO,
-					    "Not a namespace node %p [%s]",
+				ACPI_ERROR((AE_INFO, "Not a NS node %p [%s]",
 					    node,
 					    acpi_ut_get_descriptor_name(node)));
 				return_ACPI_STATUS(AE_AML_INTERNAL);
@@ -508,7 +508,7 @@ acpi_ex_resolve_multiple(struct acpi_walk_state *walk_state,
 		default:
 
 			ACPI_ERROR((AE_INFO,
-				    "Unknown Reference Class 0x%2.2X",
+				    "Unknown Reference Class %2.2X",
 				    obj_desc->reference.class));
 			return_ACPI_STATUS(AE_AML_INTERNAL);
 		}
@@ -518,7 +518,7 @@ acpi_ex_resolve_multiple(struct acpi_walk_state *walk_state,
 	 * Now we are guaranteed to have an object that has not been created
 	 * via the ref_of or Index operators.
 	 */
-	type = obj_desc->common.type;
+	type = ACPI_GET_OBJECT_TYPE(obj_desc);
 
       exit:
 	/* Convert internal types to external types */

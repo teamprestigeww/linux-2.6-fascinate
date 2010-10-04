@@ -9,7 +9,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/netdevice.h>
@@ -23,7 +22,7 @@ struct drr_class {
 	unsigned int			refcnt;
 	unsigned int			filter_cnt;
 
-	struct gnet_stats_basic_packed		bstats;
+	struct gnet_stats_basic		bstats;
 	struct gnet_stats_queue		qstats;
 	struct gnet_stats_rate_est	rate_est;
 	struct list_head		alist;
@@ -156,11 +155,8 @@ static int drr_delete_class(struct Qdisc *sch, unsigned long arg)
 	drr_purge_queue(cl);
 	qdisc_class_hash_remove(&q->clhash, &cl->common);
 
-	BUG_ON(--cl->refcnt == 0);
-	/*
-	 * This shouldn't happen: we "hold" one cops->get() when called
-	 * from tc_ctl_tclass; the destroy method is done from cops->put().
-	 */
+	if (--cl->refcnt == 0)
+		drr_destroy_class(sch, cl);
 
 	sch_tree_unlock(sch);
 	return 0;
@@ -275,13 +271,11 @@ static int drr_dump_class_stats(struct Qdisc *sch, unsigned long arg,
 	struct tc_drr_stats xstats;
 
 	memset(&xstats, 0, sizeof(xstats));
-	if (cl->qdisc->q.qlen) {
+	if (cl->qdisc->q.qlen)
 		xstats.deficit = cl->deficit;
-		cl->qdisc->qstats.qlen = cl->qdisc->q.qlen;
-	}
 
 	if (gnet_stats_copy_basic(d, &cl->bstats) < 0 ||
-	    gnet_stats_copy_rate_est(d, &cl->bstats, &cl->rate_est) < 0 ||
+	    gnet_stats_copy_rate_est(d, &cl->rate_est) < 0 ||
 	    gnet_stats_copy_queue(d, &cl->qdisc->qstats) < 0)
 		return -1;
 

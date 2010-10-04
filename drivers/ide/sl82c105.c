@@ -10,7 +10,7 @@
  * with the timing registers setup.
  *  -- Benjamin Herrenschmidt (01/11/03) benh@kernel.crashing.org
  *
- * Copyright (C) 2006-2007,2009 MontaVista Software, Inc. <source@mvista.com>
+ * Copyright (C) 2006-2007 MontaVista Software, Inc. <source@mvista.com>
  * Copyright (C)      2007 Bartlomiej Zolnierkiewicz
  */
 
@@ -24,6 +24,13 @@
 
 #define DRV_NAME "sl82c105"
 
+#undef DEBUG
+
+#ifdef DEBUG
+#define DBG(arg) printk arg
+#else
+#define DBG(fmt,...)
+#endif
 /*
  * SL82C105 PCI config register 0x40 bits.
  */
@@ -54,7 +61,7 @@ static unsigned int get_pio_timings(ide_drive_t *drive, u8 pio)
 	if (cmd_off == 0)
 		cmd_off = 1;
 
-	if (ide_pio_need_iordy(drive, pio))
+	if (pio > 2 || ata_id_has_iordy(drive->id))
 		iordy = 0x40;
 
 	return (cmd_on - 1) << 8 | (cmd_off - 1) | iordy;
@@ -63,13 +70,11 @@ static unsigned int get_pio_timings(ide_drive_t *drive, u8 pio)
 /*
  * Configure the chipset for PIO mode.
  */
-static void sl82c105_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void sl82c105_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
-	struct pci_dev *dev	= to_pci_dev(hwif->dev);
-	unsigned long timings	= (unsigned long)ide_get_drivedata(drive);
+	struct pci_dev *dev	= to_pci_dev(drive->hwif->dev);
 	int reg			= 0x44 + drive->dn * 4;
 	u16 drv_ctrl;
-	const u8 pio		= drive->pio_mode - XFER_PIO_0;
 
 	drv_ctrl = get_pio_timings(drive, pio);
 
@@ -77,9 +82,8 @@ static void sl82c105_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	 * Store the PIO timings so that we can restore them
 	 * in case DMA will be turned off...
 	 */
-	timings &= 0xffff0000;
-	timings |= drv_ctrl;
-	ide_set_drivedata(drive, (void *)timings);
+	drive->drive_data &= 0xffff0000;
+	drive->drive_data |= drv_ctrl;
 
 	pci_write_config_word(dev, reg,  drv_ctrl);
 	pci_read_config_word (dev, reg, &drv_ctrl);
@@ -92,12 +96,13 @@ static void sl82c105_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 /*
  * Configure the chipset for DMA mode.
  */
-static void sl82c105_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void sl82c105_set_dma_mode(ide_drive_t *drive, const u8 speed)
 {
 	static u16 mwdma_timings[] = {0x0707, 0x0201, 0x0200};
-	unsigned long timings = (unsigned long)ide_get_drivedata(drive);
 	u16 drv_ctrl;
-	const u8 speed = drive->dma_mode;
+
+ 	DBG(("sl82c105_tune_chipset(drive:%s, speed:%s)\n",
+	     drive->name, ide_xfer_verbose(speed)));
 
 	drv_ctrl = mwdma_timings[speed - XFER_MW_DMA_0];
 
@@ -105,19 +110,8 @@ static void sl82c105_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	 * Store the DMA timings so that we can actually program
 	 * them when DMA will be turned on...
 	 */
-	timings &= 0x0000ffff;
-	timings |= (unsigned long)drv_ctrl << 16;
-	ide_set_drivedata(drive, (void *)timings);
-}
-
-static int sl82c105_test_irq(ide_hwif_t *hwif)
-{
-	struct pci_dev *dev	= to_pci_dev(hwif->dev);
-	u32 val, mask		= hwif->channel ? CTRL_IDE_IRQB : CTRL_IDE_IRQA;
-
-	pci_read_config_dword(dev, 0x40, &val);
-
-	return (val & mask) ? 1 : 0;
+	drive->drive_data &= 0x0000ffff;
+	drive->drive_data |= (unsigned long)drv_ctrl << 16;
 }
 
 /*
@@ -151,15 +145,14 @@ static void sl82c105_dma_lost_irq(ide_drive_t *drive)
 	u32 val, mask		= hwif->channel ? CTRL_IDE_IRQB : CTRL_IDE_IRQA;
 	u8 dma_cmd;
 
-	printk(KERN_WARNING "sl82c105: lost IRQ, resetting host\n");
+	printk("sl82c105: lost IRQ, resetting host\n");
 
 	/*
 	 * Check the raw interrupt from the drive.
 	 */
 	pci_read_config_dword(dev, 0x40, &val);
 	if (val & mask)
-		printk(KERN_INFO "sl82c105: drive was requesting IRQ, "
-		       "but host lost it\n");
+		printk("sl82c105: drive was requesting IRQ, but host lost it\n");
 
 	/*
 	 * Was DMA enabled?  If so, disable it - we're resetting the
@@ -168,7 +161,7 @@ static void sl82c105_dma_lost_irq(ide_drive_t *drive)
 	dma_cmd = inb(hwif->dma_base + ATA_DMA_CMD);
 	if (dma_cmd & 1) {
 		outb(dma_cmd & ~1, hwif->dma_base + ATA_DMA_CMD);
-		printk(KERN_INFO "sl82c105: DMA was enabled\n");
+		printk("sl82c105: DMA was enabled\n");
 	}
 
 	sl82c105_reset_host(dev);
@@ -188,28 +181,35 @@ static void sl82c105_dma_start(ide_drive_t *drive)
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	int reg 		= 0x44 + drive->dn * 4;
 
-	pci_write_config_word(dev, reg,
-			      (unsigned long)ide_get_drivedata(drive) >> 16);
+	DBG(("%s(drive:%s)\n", __func__, drive->name));
+
+	pci_write_config_word(dev, reg, drive->drive_data >> 16);
 
 	sl82c105_reset_host(dev);
 	ide_dma_start(drive);
 }
 
-static void sl82c105_dma_clear(ide_drive_t *drive)
+static void sl82c105_dma_timeout(ide_drive_t *drive)
 {
 	struct pci_dev *dev = to_pci_dev(drive->hwif->dev);
 
+	DBG(("sl82c105_dma_timeout(drive:%s)\n", drive->name));
+
 	sl82c105_reset_host(dev);
+	ide_dma_timeout(drive);
 }
 
 static int sl82c105_dma_end(ide_drive_t *drive)
 {
 	struct pci_dev *dev	= to_pci_dev(drive->hwif->dev);
 	int reg 		= 0x44 + drive->dn * 4;
-	int ret			= ide_dma_end(drive);
+	int ret;
 
-	pci_write_config_word(dev, reg,
-			      (unsigned long)ide_get_drivedata(drive));
+	DBG(("%s(drive:%s)\n", __func__, drive->name));
+
+	ret = ide_dma_end(drive);
+
+	pci_write_config_word(dev, reg, drive->drive_data);
 
 	return ret;
 }
@@ -222,6 +222,8 @@ static void sl82c105_resetproc(ide_drive_t *drive)
 {
 	struct pci_dev *dev = to_pci_dev(drive->hwif->dev);
 	u32 val;
+
+	DBG(("sl82c105_resetproc(drive:%s)\n", drive->name));
 
 	pci_read_config_dword(dev, 0x40, &val);
 	val |= (CTRL_P1F16 | CTRL_P0F16);
@@ -269,33 +271,34 @@ static u8 sl82c105_bridge_revision(struct pci_dev *dev)
  * channel 0 here at least, but channel 1 has to be enabled by
  * firmware or arch code. We still set both to 16 bits mode.
  */
-static int init_chipset_sl82c105(struct pci_dev *dev)
+static unsigned int init_chipset_sl82c105(struct pci_dev *dev)
 {
 	u32 val;
+
+	DBG(("init_chipset_sl82c105()\n"));
 
 	pci_read_config_dword(dev, 0x40, &val);
 	val |= CTRL_P0EN | CTRL_P0F16 | CTRL_P1F16;
 	pci_write_config_dword(dev, 0x40, val);
 
-	return 0;
+	return dev->irq;
 }
 
 static const struct ide_port_ops sl82c105_port_ops = {
 	.set_pio_mode		= sl82c105_set_pio_mode,
 	.set_dma_mode		= sl82c105_set_dma_mode,
 	.resetproc		= sl82c105_resetproc,
-	.test_irq		= sl82c105_test_irq,
 };
 
 static const struct ide_dma_ops sl82c105_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
+	.dma_exec_cmd		= ide_dma_exec_cmd,
 	.dma_start		= sl82c105_dma_start,
 	.dma_end		= sl82c105_dma_end,
 	.dma_test_irq		= ide_dma_test_irq,
 	.dma_lost_irq		= sl82c105_dma_lost_irq,
-	.dma_timer_expiry	= ide_dma_sff_timer_expiry,
-	.dma_clear		= sl82c105_dma_clear,
+	.dma_timeout		= sl82c105_dma_timeout,
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 

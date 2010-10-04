@@ -23,6 +23,7 @@
 #include <linux/pci.h>
 #include <linux/pm.h>
 #include <linux/string.h>
+#include <linux/slab.h>
 #include <linux/serial_core.h>
 #include <linux/serial_8250.h>
 #include <linux/mtd/physmap.h>
@@ -52,6 +53,7 @@ static void __init n2100_timer_init(void)
 
 static struct sys_timer n2100_timer = {
 	.init		= n2100_timer_init,
+	.offset		= iop_gettimeoffset,
 };
 
 
@@ -176,7 +178,7 @@ static struct plat_serial8250_port n2100_serial_port[] = {
 		.mapbase	= N2100_UART,
 		.membase	= (char *)N2100_UART,
 		.irq		= 0,
-		.flags		= UPF_SKIP_TEST | UPF_AUTO_IRQ | UPF_SHARE_IRQ,
+		.flags		= UPF_SKIP_TEST,
 		.iotype		= UPIO_MEM,
 		.regshift	= 0,
 		.uartclk	= 1843200,

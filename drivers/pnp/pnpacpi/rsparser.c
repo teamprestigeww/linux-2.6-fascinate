@@ -24,7 +24,6 @@
 #include <linux/acpi.h>
 #include <linux/pci.h>
 #include <linux/pnp.h>
-#include <linux/slab.h>
 #include "../base.h"
 #include "pnpacpi.h"
 
@@ -124,7 +123,7 @@ static void pnpacpi_parse_allocated_irqresource(struct pnp_dev *dev,
 	}
 
 	flags = irq_flags(triggering, polarity, shareable);
-	irq = acpi_register_gsi(&dev->dev, gsi, triggering, polarity);
+	irq = acpi_register_gsi(gsi, triggering, polarity);
 	if (irq >= 0)
 		pcibios_penalize_isa_irq(irq, 1);
 	else
@@ -178,8 +177,7 @@ static int dma_flags(struct pnp_dev *dev, int type, int bus_master,
 }
 
 static void pnpacpi_parse_allocated_ioresource(struct pnp_dev *dev, u64 start,
-					       u64 len, int io_decode,
-					       int window)
+					       u64 len, int io_decode)
 {
 	int flags = 0;
 	u64 end = start + len - 1;
@@ -188,8 +186,6 @@ static void pnpacpi_parse_allocated_ioresource(struct pnp_dev *dev, u64 start,
 		flags |= IORESOURCE_IO_16BIT_ADDR;
 	if (len == 0 || end >= 0x10003)
 		flags |= IORESOURCE_DISABLED;
-	if (window)
-		flags |= IORESOURCE_WINDOW;
 
 	pnp_add_io_resource(dev, start, end, flags);
 }
@@ -251,7 +247,7 @@ static void pnpacpi_parse_allocated_vendor(struct pnp_dev *dev,
 
 static void pnpacpi_parse_allocated_memresource(struct pnp_dev *dev,
 						u64 start, u64 len,
-						int write_protect, int window)
+						int write_protect)
 {
 	int flags = 0;
 	u64 end = start + len - 1;
@@ -260,18 +256,8 @@ static void pnpacpi_parse_allocated_memresource(struct pnp_dev *dev,
 		flags |= IORESOURCE_DISABLED;
 	if (write_protect == ACPI_READ_WRITE_MEMORY)
 		flags |= IORESOURCE_MEM_WRITEABLE;
-	if (window)
-		flags |= IORESOURCE_WINDOW;
 
 	pnp_add_mem_resource(dev, start, end, flags);
-}
-
-static void pnpacpi_parse_allocated_busresource(struct pnp_dev *dev,
-						u64 start, u64 len)
-{
-	u64 end = start + len - 1;
-
-	pnp_add_bus_resource(dev, start, end);
 }
 
 static void pnpacpi_parse_allocated_address_space(struct pnp_dev *dev,
@@ -279,8 +265,6 @@ static void pnpacpi_parse_allocated_address_space(struct pnp_dev *dev,
 {
 	struct acpi_resource_address64 addr, *p = &addr;
 	acpi_status status;
-	int window;
-	u64 len;
 
 	status = acpi_resource_to_address64(res, p);
 	if (!ACPI_SUCCESS(status)) {
@@ -289,41 +273,18 @@ static void pnpacpi_parse_allocated_address_space(struct pnp_dev *dev,
 		return;
 	}
 
-	/* Windows apparently computes length rather than using _LEN */
-	len = p->maximum - p->minimum + 1;
-	window = (p->producer_consumer == ACPI_PRODUCER) ? 1 : 0;
+	if (p->producer_consumer == ACPI_PRODUCER)
+		return;
 
 	if (p->resource_type == ACPI_MEMORY_RANGE)
-		pnpacpi_parse_allocated_memresource(dev, p->minimum, len,
-			p->info.mem.write_protect, window);
+		pnpacpi_parse_allocated_memresource(dev,
+			p->minimum, p->address_length,
+			p->info.mem.write_protect);
 	else if (p->resource_type == ACPI_IO_RANGE)
-		pnpacpi_parse_allocated_ioresource(dev, p->minimum, len,
+		pnpacpi_parse_allocated_ioresource(dev,
+			p->minimum, p->address_length,
 			p->granularity == 0xfff ? ACPI_DECODE_10 :
-				ACPI_DECODE_16, window);
-	else if (p->resource_type == ACPI_BUS_NUMBER_RANGE)
-		pnpacpi_parse_allocated_busresource(dev, p->minimum, len);
-}
-
-static void pnpacpi_parse_allocated_ext_address_space(struct pnp_dev *dev,
-						      struct acpi_resource *res)
-{
-	struct acpi_resource_extended_address64 *p = &res->data.ext_address64;
-	int window;
-	u64 len;
-
-	/* Windows apparently computes length rather than using _LEN */
-	len = p->maximum - p->minimum + 1;
-	window = (p->producer_consumer == ACPI_PRODUCER) ? 1 : 0;
-
-	if (p->resource_type == ACPI_MEMORY_RANGE)
-		pnpacpi_parse_allocated_memresource(dev, p->minimum, len,
-			p->info.mem.write_protect, window);
-	else if (p->resource_type == ACPI_IO_RANGE)
-		pnpacpi_parse_allocated_ioresource(dev, p->minimum, len,
-			p->granularity == 0xfff ? ACPI_DECODE_10 :
-				ACPI_DECODE_16, window);
-	else if (p->resource_type == ACPI_BUS_NUMBER_RANGE)
-		pnpacpi_parse_allocated_busresource(dev, p->minimum, len);
+				ACPI_DECODE_16);
 }
 
 static acpi_status pnpacpi_allocated_resource(struct acpi_resource *res,
@@ -388,7 +349,7 @@ static acpi_status pnpacpi_allocated_resource(struct acpi_resource *res,
 		pnpacpi_parse_allocated_ioresource(dev,
 			io->minimum,
 			io->address_length,
-			io->io_decode, 0);
+			io->io_decode);
 		break;
 
 	case ACPI_RESOURCE_TYPE_START_DEPENDENT:
@@ -400,7 +361,7 @@ static acpi_status pnpacpi_allocated_resource(struct acpi_resource *res,
 		pnpacpi_parse_allocated_ioresource(dev,
 			fixed_io->address,
 			fixed_io->address_length,
-			ACPI_DECODE_10, 0);
+			ACPI_DECODE_10);
 		break;
 
 	case ACPI_RESOURCE_TYPE_VENDOR:
@@ -416,21 +377,21 @@ static acpi_status pnpacpi_allocated_resource(struct acpi_resource *res,
 		pnpacpi_parse_allocated_memresource(dev,
 			memory24->minimum,
 			memory24->address_length,
-			memory24->write_protect, 0);
+			memory24->write_protect);
 		break;
 	case ACPI_RESOURCE_TYPE_MEMORY32:
 		memory32 = &res->data.memory32;
 		pnpacpi_parse_allocated_memresource(dev,
 			memory32->minimum,
 			memory32->address_length,
-			memory32->write_protect, 0);
+			memory32->write_protect);
 		break;
 	case ACPI_RESOURCE_TYPE_FIXED_MEMORY32:
 		fixed_memory32 = &res->data.fixed_memory32;
 		pnpacpi_parse_allocated_memresource(dev,
 			fixed_memory32->address,
 			fixed_memory32->address_length,
-			fixed_memory32->write_protect, 0);
+			fixed_memory32->write_protect);
 		break;
 	case ACPI_RESOURCE_TYPE_ADDRESS16:
 	case ACPI_RESOURCE_TYPE_ADDRESS32:
@@ -439,7 +400,8 @@ static acpi_status pnpacpi_allocated_resource(struct acpi_resource *res,
 		break;
 
 	case ACPI_RESOURCE_TYPE_EXTENDED_ADDRESS64:
-		pnpacpi_parse_allocated_ext_address_space(dev, res);
+		if (res->data.ext_address64.producer_consumer == ACPI_PRODUCER)
+			return AE_OK;
 		break;
 
 	case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
@@ -485,8 +447,7 @@ static acpi_status pnpacpi_allocated_resource(struct acpi_resource *res,
 
 int pnpacpi_parse_allocated_resource(struct pnp_dev *dev)
 {
-	struct acpi_device *acpi_dev = dev->data;
-	acpi_handle handle = acpi_dev->handle;
+	acpi_handle handle = dev->data;
 	acpi_status status;
 
 	pnp_dbg(&dev->dev, "parse allocated resources\n");
@@ -669,28 +630,6 @@ static __init void pnpacpi_parse_address_option(struct pnp_dev *dev,
 					   IORESOURCE_IO_FIXED);
 }
 
-static __init void pnpacpi_parse_ext_address_option(struct pnp_dev *dev,
-						    unsigned int option_flags,
-						    struct acpi_resource *r)
-{
-	struct acpi_resource_extended_address64 *p = &r->data.ext_address64;
-	unsigned char flags = 0;
-
-	if (p->address_length == 0)
-		return;
-
-	if (p->resource_type == ACPI_MEMORY_RANGE) {
-		if (p->info.mem.write_protect == ACPI_READ_WRITE_MEMORY)
-			flags = IORESOURCE_MEM_WRITEABLE;
-		pnp_register_mem_resource(dev, option_flags, p->minimum,
-					  p->minimum, 0, p->address_length,
-					  flags);
-	} else if (p->resource_type == ACPI_IO_RANGE)
-		pnp_register_port_resource(dev, option_flags, p->minimum,
-					   p->minimum, 0, p->address_length,
-					   IORESOURCE_IO_FIXED);
-}
-
 struct acpipnp_parse_option_s {
 	struct pnp_dev *dev;
 	unsigned int option_flags;
@@ -772,7 +711,6 @@ static __init acpi_status pnpacpi_option_resource(struct acpi_resource *res,
 		break;
 
 	case ACPI_RESOURCE_TYPE_EXTENDED_ADDRESS64:
-		pnpacpi_parse_ext_address_option(dev, option_flags, res);
 		break;
 
 	case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
@@ -794,8 +732,7 @@ static __init acpi_status pnpacpi_option_resource(struct acpi_resource *res,
 
 int __init pnpacpi_parse_resource_option_data(struct pnp_dev *dev)
 {
-	struct acpi_device *acpi_dev = dev->data;
-	acpi_handle handle = acpi_dev->handle;
+	acpi_handle handle = dev->data;
 	acpi_status status;
 	struct acpipnp_parse_option_s parse_data;
 
@@ -828,7 +765,6 @@ static int pnpacpi_supported_resource(struct acpi_resource *res)
 	case ACPI_RESOURCE_TYPE_ADDRESS16:
 	case ACPI_RESOURCE_TYPE_ADDRESS32:
 	case ACPI_RESOURCE_TYPE_ADDRESS64:
-	case ACPI_RESOURCE_TYPE_EXTENDED_ADDRESS64:
 	case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
 		return 1;
 	}
@@ -867,8 +803,7 @@ static acpi_status pnpacpi_type_resources(struct acpi_resource *res, void *data)
 int pnpacpi_build_resource_template(struct pnp_dev *dev,
 				    struct acpi_buffer *buffer)
 {
-	struct acpi_device *acpi_dev = dev->data;
-	acpi_handle handle = acpi_dev->handle;
+	acpi_handle handle = dev->data;
 	struct acpi_resource *resource;
 	int res_cnt = 0;
 	acpi_status status;

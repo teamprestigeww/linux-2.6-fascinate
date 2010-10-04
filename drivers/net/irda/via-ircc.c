@@ -45,11 +45,11 @@ F02 Oct/28/02: Add SB device ID for 3147 and 3177.
 #include <linux/netdevice.h>
 #include <linux/ioport.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/rtnetlink.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
-#include <linux/gfp.h>
 
 #include <asm/io.h>
 #include <asm/dma.h>
@@ -87,10 +87,10 @@ static int via_ircc_close(struct via_ircc_cb *self);
 static int via_ircc_dma_receive(struct via_ircc_cb *self);
 static int via_ircc_dma_receive_complete(struct via_ircc_cb *self,
 					 int iobase);
-static netdev_tx_t via_ircc_hard_xmit_sir(struct sk_buff *skb,
-						struct net_device *dev);
-static netdev_tx_t via_ircc_hard_xmit_fir(struct sk_buff *skb,
-						struct net_device *dev);
+static int via_ircc_hard_xmit_sir(struct sk_buff *skb,
+				  struct net_device *dev);
+static int via_ircc_hard_xmit_fir(struct sk_buff *skb,
+				  struct net_device *dev);
 static void via_hw_init(struct via_ircc_cb *self);
 static void via_ircc_change_speed(struct via_ircc_cb *self, __u32 baud);
 static irqreturn_t via_ircc_interrupt(int irq, void *dev_id);
@@ -121,7 +121,7 @@ static void iodelay(int udelay)
 	}
 }
 
-static DEFINE_PCI_DEVICE_TABLE(via_pci_tbl) = {
+static struct pci_device_id via_pci_tbl[] = {
 	{ PCI_VENDOR_ID_VIA, 0x8231, PCI_ANY_ID, PCI_ANY_ID,0,0,0 },
 	{ PCI_VENDOR_ID_VIA, 0x3109, PCI_ANY_ID, PCI_ANY_ID,0,0,1 },
 	{ PCI_VENDOR_ID_VIA, 0x3074, PCI_ANY_ID, PCI_ANY_ID,0,0,2 },
@@ -310,19 +310,6 @@ static void __exit via_ircc_cleanup(void)
 	pci_unregister_driver (&via_driver); 
 }
 
-static const struct net_device_ops via_ircc_sir_ops = {
-	.ndo_start_xmit = via_ircc_hard_xmit_sir,
-	.ndo_open = via_ircc_net_open,
-	.ndo_stop = via_ircc_net_close,
-	.ndo_do_ioctl = via_ircc_net_ioctl,
-};
-static const struct net_device_ops via_ircc_fir_ops = {
-	.ndo_start_xmit = via_ircc_hard_xmit_fir,
-	.ndo_open = via_ircc_net_open,
-	.ndo_stop = via_ircc_net_close,
-	.ndo_do_ioctl = via_ircc_net_ioctl,
-};
-
 /*
  * Function via_ircc_open (iobase, irq)
  *
@@ -441,7 +428,10 @@ static __devinit int via_ircc_open(int i, chipio_t * info, unsigned int id)
 	self->tx_fifo.tail = self->tx_buff.head;
 
 	/* Override the network functions we need to use */
-	dev->netdev_ops = &via_ircc_sir_ops;
+	dev->hard_start_xmit = via_ircc_hard_xmit_sir;
+	dev->open = via_ircc_net_open;
+	dev->stop = via_ircc_net_close;
+	dev->do_ioctl = via_ircc_net_ioctl;
 
 	err = register_netdev(dev);
 	if (err)
@@ -808,11 +798,11 @@ static void via_ircc_change_speed(struct via_ircc_cb *self, __u32 speed)
 
 	if (speed > 115200) {
 		/* Install FIR xmit handler */
-		dev->netdev_ops = &via_ircc_fir_ops;
+		dev->hard_start_xmit = via_ircc_hard_xmit_fir;
 		via_ircc_dma_receive(self);
 	} else {
 		/* Install SIR xmit handler */
-		dev->netdev_ops = &via_ircc_sir_ops;
+		dev->hard_start_xmit = via_ircc_hard_xmit_sir;
 	}
 	netif_wake_queue(dev);
 }
@@ -823,8 +813,8 @@ static void via_ircc_change_speed(struct via_ircc_cb *self, __u32 speed)
  *    Transmit the frame!
  *
  */
-static netdev_tx_t via_ircc_hard_xmit_sir(struct sk_buff *skb,
-						struct net_device *dev)
+static int via_ircc_hard_xmit_sir(struct sk_buff *skb,
+				  struct net_device *dev)
 {
 	struct via_ircc_cb *self;
 	unsigned long flags;
@@ -832,7 +822,7 @@ static netdev_tx_t via_ircc_hard_xmit_sir(struct sk_buff *skb,
 	__u32 speed;
 
 	self = netdev_priv(dev);
-	IRDA_ASSERT(self != NULL, return NETDEV_TX_OK;);
+	IRDA_ASSERT(self != NULL, return 0;);
 	iobase = self->io.fir_base;
 
 	netif_stop_queue(dev);
@@ -844,7 +834,7 @@ static netdev_tx_t via_ircc_hard_xmit_sir(struct sk_buff *skb,
 			via_ircc_change_speed(self, speed);
 			dev->trans_start = jiffies;
 			dev_kfree_skb(skb);
-			return NETDEV_TX_OK;
+			return 0;
 		} else
 			self->new_speed = speed;
 	}
@@ -892,11 +882,11 @@ static netdev_tx_t via_ircc_hard_xmit_sir(struct sk_buff *skb,
 	dev->trans_start = jiffies;
 	spin_unlock_irqrestore(&self->lock, flags);
 	dev_kfree_skb(skb);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
-static netdev_tx_t via_ircc_hard_xmit_fir(struct sk_buff *skb,
-						struct net_device *dev)
+static int via_ircc_hard_xmit_fir(struct sk_buff *skb,
+				  struct net_device *dev)
 {
 	struct via_ircc_cb *self;
 	u16 iobase;
@@ -907,7 +897,7 @@ static netdev_tx_t via_ircc_hard_xmit_fir(struct sk_buff *skb,
 	iobase = self->io.fir_base;
 
 	if (self->st_fifo.len)
-		return NETDEV_TX_OK;
+		return 0;
 	if (self->chip_id == 0x3076)
 		iodelay(1500);
 	else
@@ -919,7 +909,7 @@ static netdev_tx_t via_ircc_hard_xmit_fir(struct sk_buff *skb,
 			via_ircc_change_speed(self, speed);
 			dev->trans_start = jiffies;
 			dev_kfree_skb(skb);
-			return NETDEV_TX_OK;
+			return 0;
 		} else
 			self->new_speed = speed;
 	}
@@ -940,7 +930,7 @@ static netdev_tx_t via_ircc_hard_xmit_fir(struct sk_buff *skb,
 	dev->trans_start = jiffies;
 	dev_kfree_skb(skb);
 	spin_unlock_irqrestore(&self->lock, flags);
-	return NETDEV_TX_OK;
+	return 0;
 
 }
 
@@ -1185,8 +1175,8 @@ F01_E */
 		 * if frame size,data ptr,or skb ptr are wrong ,the get next
 		 * entry.
 		 */
-		if ((skb == NULL) || (skb->data == NULL) ||
-		    (self->rx_buff.data == NULL) || (len < 6)) {
+		if ((skb == NULL) || (skb->data == NULL)
+		    || (self->rx_buff.data == NULL) || (len < 6)) {
 			self->netdev->stats.rx_dropped++;
 			return TRUE;
 		}
@@ -1284,8 +1274,8 @@ static int RxTimerHandler(struct via_ircc_cb *self, int iobase)
 		self->RetryCount++;
 
 	if ((self->RetryCount >= 1) ||
-	    ((st_fifo->pending_bytes + 2048) > self->rx_buff.truesize) ||
-	    (st_fifo->len >= (MAX_RX_WINDOW))) {
+	    ((st_fifo->pending_bytes + 2048) > self->rx_buff.truesize)
+	    || (st_fifo->len >= (MAX_RX_WINDOW))) {
 		while (st_fifo->len > 0) {	//upload frame
 			// Put this entry back in fifo 
 			if (st_fifo->head > MAX_RX_WINDOW)
@@ -1300,8 +1290,8 @@ static int RxTimerHandler(struct via_ircc_cb *self, int iobase)
 			 * if frame size, data ptr, or skb ptr are wrong,
 			 * then get next entry.
 			 */
-			if ((skb == NULL) || (skb->data == NULL) ||
-			    (self->rx_buff.data == NULL) || (len < 6)) {
+			if ((skb == NULL) || (skb->data == NULL)
+			    || (self->rx_buff.data == NULL) || (len < 6)) {
 				self->netdev->stats.rx_dropped++;
 				continue;
 			}
@@ -1332,8 +1322,8 @@ static int RxTimerHandler(struct via_ircc_cb *self, int iobase)
 		 * if frame is receive complete at this routine ,then upload
 		 * frame.
 		 */
-		if ((GetRXStatus(iobase) & 0x10) &&
-		    (RxCurCount(iobase, self) != self->RxLastCount)) {
+		if ((GetRXStatus(iobase) & 0x10)
+		    && (RxCurCount(iobase, self) != self->RxLastCount)) {
 			upload_rxdata(self, iobase);
 			if (irda_device_txqueue_empty(self->netdev))
 				via_ircc_dma_receive(self);

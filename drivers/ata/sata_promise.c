@@ -33,7 +33,6 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/gfp.h>
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/blkdev.h>
@@ -57,7 +56,6 @@ enum {
 	/* host register offsets (from host->iomap[PDC_MMIO_BAR]) */
 	PDC_INT_SEQMASK		= 0x40,	/* Mask of asserted SEQ INTs */
 	PDC_FLASH_CTL		= 0x44, /* Flash control register */
-	PDC_PCI_CTL		= 0x48, /* PCI control/status reg */
 	PDC_SATA_PLUG_CSR	= 0x6C, /* SATA Plug control/status reg */
 	PDC2_SATA_PLUG_CSR	= 0x60, /* SATAII Plug control/status reg */
 	PDC_TBG_MODE		= 0x41C, /* TBG mode (not SATAII) */
@@ -77,17 +75,7 @@ enum {
 	PDC_CTLSTAT		= 0x60,	/* IDE control and status (per port) */
 
 	/* per-port SATA register offsets (from ap->ioaddr.scr_addr) */
-	PDC_SATA_ERROR		= 0x04,
 	PDC_PHYMODE4		= 0x14,
-	PDC_LINK_LAYER_ERRORS	= 0x6C,
-	PDC_FPDMA_CTLSTAT	= 0xD8,
-	PDC_INTERNAL_DEBUG_1	= 0xF8,	/* also used for PATA */
-	PDC_INTERNAL_DEBUG_2	= 0xFC,	/* also used for PATA */
-
-	/* PDC_FPDMA_CTLSTAT bit definitions */
-	PDC_FPDMA_CTLSTAT_RESET			= 1 << 3,
-	PDC_FPDMA_CTLSTAT_DMASETUP_INT_FLAG	= 1 << 10,
-	PDC_FPDMA_CTLSTAT_SETDB_INT_FLAG	= 1 << 11,
 
 	/* PDC_GLOBAL_CTL bit definitions */
 	PDC_PH_ERR		= (1 <<  8), /* PCI error while loading packet */
@@ -188,9 +176,7 @@ static const struct ata_port_operations pdc_common_ops = {
 	.check_atapi_dma	= pdc_check_atapi_dma,
 	.qc_prep		= pdc_qc_prep,
 	.qc_issue		= pdc_qc_issue,
-
 	.sff_irq_clear		= pdc_irq_clear,
-	.lost_interrupt		= ATA_OP_NULL,
 
 	.post_internal_cmd	= pdc_post_internal_cmd,
 	.error_handler		= pdc_error_handler,
@@ -207,12 +193,9 @@ static struct ata_port_operations pdc_sata_ops = {
 	.hardreset		= pdc_sata_hardreset,
 };
 
-/* First-generation chips need a more restrictive ->check_atapi_dma op,
-   and ->freeze/thaw that ignore the hotplug controls. */
+/* First-generation chips need a more restrictive ->check_atapi_dma op */
 static struct ata_port_operations pdc_old_sata_ops = {
 	.inherits		= &pdc_sata_ops,
-	.freeze			= pdc_freeze,
-	.thaw			= pdc_thaw,
 	.check_atapi_dma	= pdc_old_sata_check_atapi_dma,
 };
 
@@ -230,8 +213,8 @@ static const struct ata_port_info pdc_port_info[] = {
 	{
 		.flags		= PDC_COMMON_FLAGS | ATA_FLAG_SATA |
 				  PDC_FLAG_SATA_PATA,
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f, /* pio0-4 */
+		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &pdc_old_sata_ops,
 	},
@@ -239,8 +222,8 @@ static const struct ata_port_info pdc_port_info[] = {
 	[board_2037x_pata] =
 	{
 		.flags		= PDC_COMMON_FLAGS | ATA_FLAG_SLAVE_POSS,
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f, /* pio0-4 */
+		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &pdc_pata_ops,
 	},
@@ -249,8 +232,8 @@ static const struct ata_port_info pdc_port_info[] = {
 	{
 		.flags		= PDC_COMMON_FLAGS | ATA_FLAG_SATA |
 				  PDC_FLAG_4_PORTS,
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f, /* pio0-4 */
+		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &pdc_old_sata_ops,
 	},
@@ -259,8 +242,8 @@ static const struct ata_port_info pdc_port_info[] = {
 	{
 		.flags		= PDC_COMMON_FLAGS | ATA_FLAG_SLAVE_POSS |
 				  PDC_FLAG_4_PORTS,
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f, /* pio0-4 */
+		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &pdc_pata_ops,
 	},
@@ -269,8 +252,8 @@ static const struct ata_port_info pdc_port_info[] = {
 	{
 		.flags		= PDC_COMMON_FLAGS | ATA_FLAG_SATA |
 				  PDC_FLAG_GEN_II | PDC_FLAG_SATA_PATA,
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f, /* pio0-4 */
+		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &pdc_sata_ops,
 	},
@@ -279,8 +262,8 @@ static const struct ata_port_info pdc_port_info[] = {
 	{
 		.flags		= PDC_COMMON_FLAGS | ATA_FLAG_SLAVE_POSS |
 				  PDC_FLAG_GEN_II,
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f, /* pio0-4 */
+		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &pdc_pata_ops,
 	},
@@ -289,8 +272,8 @@ static const struct ata_port_info pdc_port_info[] = {
 	{
 		.flags		= PDC_COMMON_FLAGS | ATA_FLAG_SATA |
 				  PDC_FLAG_GEN_II | PDC_FLAG_4_PORTS,
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f, /* pio0-4 */
+		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &pdc_sata_ops,
 	},
@@ -333,8 +316,7 @@ static int pdc_common_port_start(struct ata_port *ap)
 	struct pdc_port_priv *pp;
 	int rc;
 
-	/* we use the same prd table as bmdma, allocate it */
-	rc = ata_bmdma_port_start(ap);
+	rc = ata_port_start(ap);
 	if (rc)
 		return rc;
 
@@ -372,75 +354,11 @@ static int pdc_sata_port_start(struct ata_port *ap)
 	return 0;
 }
 
-static void pdc_fpdma_clear_interrupt_flag(struct ata_port *ap)
-{
-	void __iomem *sata_mmio = ap->ioaddr.scr_addr;
-	u32 tmp;
-
-	tmp = readl(sata_mmio + PDC_FPDMA_CTLSTAT);
-	tmp |= PDC_FPDMA_CTLSTAT_DMASETUP_INT_FLAG;
-	tmp |= PDC_FPDMA_CTLSTAT_SETDB_INT_FLAG;
-
-	/* It's not allowed to write to the entire FPDMA_CTLSTAT register
-	   when NCQ is running. So do a byte-sized write to bits 10 and 11. */
-	writeb(tmp >> 8, sata_mmio + PDC_FPDMA_CTLSTAT + 1);
-	readb(sata_mmio + PDC_FPDMA_CTLSTAT + 1); /* flush */
-}
-
-static void pdc_fpdma_reset(struct ata_port *ap)
-{
-	void __iomem *sata_mmio = ap->ioaddr.scr_addr;
-	u8 tmp;
-
-	tmp = (u8)readl(sata_mmio + PDC_FPDMA_CTLSTAT);
-	tmp &= 0x7F;
-	tmp |= PDC_FPDMA_CTLSTAT_RESET;
-	writeb(tmp, sata_mmio + PDC_FPDMA_CTLSTAT);
-	readl(sata_mmio + PDC_FPDMA_CTLSTAT); /* flush */
-	udelay(100);
-	tmp &= ~PDC_FPDMA_CTLSTAT_RESET;
-	writeb(tmp, sata_mmio + PDC_FPDMA_CTLSTAT);
-	readl(sata_mmio + PDC_FPDMA_CTLSTAT); /* flush */
-
-	pdc_fpdma_clear_interrupt_flag(ap);
-}
-
-static void pdc_not_at_command_packet_phase(struct ata_port *ap)
-{
-	void __iomem *sata_mmio = ap->ioaddr.scr_addr;
-	unsigned int i;
-	u32 tmp;
-
-	/* check not at ASIC packet command phase */
-	for (i = 0; i < 100; ++i) {
-		writel(0, sata_mmio + PDC_INTERNAL_DEBUG_1);
-		tmp = readl(sata_mmio + PDC_INTERNAL_DEBUG_2);
-		if ((tmp & 0xF) != 1)
-			break;
-		udelay(100);
-	}
-}
-
-static void pdc_clear_internal_debug_record_error_register(struct ata_port *ap)
-{
-	void __iomem *sata_mmio = ap->ioaddr.scr_addr;
-
-	writel(0xffffffff, sata_mmio + PDC_SATA_ERROR);
-	writel(0xffff0000, sata_mmio + PDC_LINK_LAYER_ERRORS);
-}
-
 static void pdc_reset_port(struct ata_port *ap)
 {
 	void __iomem *ata_ctlstat_mmio = ap->ioaddr.cmd_addr + PDC_CTLSTAT;
 	unsigned int i;
 	u32 tmp;
-
-	if (ap->flags & PDC_FLAG_GEN_II)
-		pdc_not_at_command_packet_phase(ap);
-
-	tmp = readl(ata_ctlstat_mmio);
-	tmp |= PDC_RESET;
-	writel(tmp, ata_ctlstat_mmio);
 
 	for (i = 11; i > 0; i--) {
 		tmp = readl(ata_ctlstat_mmio);
@@ -456,11 +374,6 @@ static void pdc_reset_port(struct ata_port *ap)
 	tmp &= ~PDC_RESET;
 	writel(tmp, ata_ctlstat_mmio);
 	readl(ata_ctlstat_mmio);	/* flush */
-
-	if (sata_scr_valid(&ap->link) && (ap->flags & PDC_FLAG_GEN_II)) {
-		pdc_fpdma_reset(ap);
-		pdc_clear_internal_debug_record_error_register(ap);
-	}
 }
 
 static int pdc_pata_cable_detect(struct ata_port *ap)
@@ -500,7 +413,7 @@ static int pdc_sata_scr_write(struct ata_link *link,
 static void pdc_atapi_pkt(struct ata_queued_cmd *qc)
 {
 	struct ata_port *ap = qc->ap;
-	dma_addr_t sg_table = ap->bmdma_prd_dma;
+	dma_addr_t sg_table = ap->prd_dma;
 	unsigned int cdb_len = qc->dev->cdb_len;
 	u8 *cdb = qc->cdb;
 	struct pdc_port_priv *pp = ap->private_data;
@@ -588,7 +501,6 @@ static void pdc_atapi_pkt(struct ata_queued_cmd *qc)
 static void pdc_fill_sg(struct ata_queued_cmd *qc)
 {
 	struct ata_port *ap = qc->ap;
-	struct ata_bmdma_prd *prd = ap->bmdma_prd;
 	struct scatterlist *sg;
 	const u32 SG_COUNT_ASIC_BUG = 41*4;
 	unsigned int si, idx;
@@ -615,8 +527,8 @@ static void pdc_fill_sg(struct ata_queued_cmd *qc)
 			if ((offset + sg_len) > 0x10000)
 				len = 0x10000 - offset;
 
-			prd[idx].addr = cpu_to_le32(addr);
-			prd[idx].flags_len = cpu_to_le32(len & 0xffff);
+			ap->prd[idx].addr = cpu_to_le32(addr);
+			ap->prd[idx].flags_len = cpu_to_le32(len & 0xffff);
 			VPRINTK("PRD[%u] = (0x%X, 0x%X)\n", idx, addr, len);
 
 			idx++;
@@ -625,27 +537,27 @@ static void pdc_fill_sg(struct ata_queued_cmd *qc)
 		}
 	}
 
-	len = le32_to_cpu(prd[idx - 1].flags_len);
+	len = le32_to_cpu(ap->prd[idx - 1].flags_len);
 
 	if (len > SG_COUNT_ASIC_BUG) {
 		u32 addr;
 
 		VPRINTK("Splitting last PRD.\n");
 
-		addr = le32_to_cpu(prd[idx - 1].addr);
-		prd[idx - 1].flags_len = cpu_to_le32(len - SG_COUNT_ASIC_BUG);
+		addr = le32_to_cpu(ap->prd[idx - 1].addr);
+		ap->prd[idx - 1].flags_len = cpu_to_le32(len - SG_COUNT_ASIC_BUG);
 		VPRINTK("PRD[%u] = (0x%X, 0x%X)\n", idx - 1, addr, SG_COUNT_ASIC_BUG);
 
 		addr = addr + len - SG_COUNT_ASIC_BUG;
 		len = SG_COUNT_ASIC_BUG;
-		prd[idx].addr = cpu_to_le32(addr);
-		prd[idx].flags_len = cpu_to_le32(len);
+		ap->prd[idx].addr = cpu_to_le32(addr);
+		ap->prd[idx].flags_len = cpu_to_le32(len);
 		VPRINTK("PRD[%u] = (0x%X, 0x%X)\n", idx, addr, len);
 
 		idx++;
 	}
 
-	prd[idx - 1].flags_len |= cpu_to_le32(ATA_PRD_EOT);
+	ap->prd[idx - 1].flags_len |= cpu_to_le32(ATA_PRD_EOT);
 }
 
 static void pdc_qc_prep(struct ata_queued_cmd *qc)
@@ -660,7 +572,7 @@ static void pdc_qc_prep(struct ata_queued_cmd *qc)
 		pdc_fill_sg(qc);
 		/*FALLTHROUGH*/
 	case ATA_PROT_NODATA:
-		i = pdc_pkt_header(&qc->tf, qc->ap->bmdma_prd_dma,
+		i = pdc_pkt_header(&qc->tf, qc->ap->prd_dma,
 				   qc->dev->devno, pp->pkt);
 		if (qc->tf.flags & ATA_TFLAG_LBA48)
 			i = pdc_prep_lba48(&qc->tf, pp->pkt, i);
@@ -712,6 +624,11 @@ static unsigned int pdc_sata_ata_port_to_ata_no(const struct ata_port *ap)
 	return pdc_port_no_to_ata_no(i, pdc_is_sataii_tx4(ap->flags));
 }
 
+static unsigned int pdc_sata_hotplug_offset(const struct ata_port *ap)
+{
+	return (ap->flags & PDC_FLAG_GEN_II) ? PDC2_SATA_PLUG_CSR : PDC_SATA_PLUG_CSR;
+}
+
 static void pdc_freeze(struct ata_port *ap)
 {
 	void __iomem *ata_mmio = ap->ioaddr.cmd_addr;
@@ -728,7 +645,7 @@ static void pdc_sata_freeze(struct ata_port *ap)
 {
 	struct ata_host *host = ap->host;
 	void __iomem *host_mmio = host->iomap[PDC_MMIO_BAR];
-	unsigned int hotplug_offset = PDC2_SATA_PLUG_CSR;
+	unsigned int hotplug_offset = pdc_sata_hotplug_offset(ap);
 	unsigned int ata_no = pdc_sata_ata_port_to_ata_no(ap);
 	u32 hotplug_status;
 
@@ -766,7 +683,7 @@ static void pdc_sata_thaw(struct ata_port *ap)
 {
 	struct ata_host *host = ap->host;
 	void __iomem *host_mmio = host->iomap[PDC_MMIO_BAR];
-	unsigned int hotplug_offset = PDC2_SATA_PLUG_CSR;
+	unsigned int hotplug_offset = pdc_sata_hotplug_offset(ap);
 	unsigned int ata_no = pdc_sata_ata_port_to_ata_no(ap);
 	u32 hotplug_status;
 
@@ -789,50 +706,11 @@ static int pdc_pata_softreset(struct ata_link *link, unsigned int *class,
 	return ata_sff_softreset(link, class, deadline);
 }
 
-static unsigned int pdc_ata_port_to_ata_no(const struct ata_port *ap)
-{
-	void __iomem *ata_mmio = ap->ioaddr.cmd_addr;
-	void __iomem *host_mmio = ap->host->iomap[PDC_MMIO_BAR];
-
-	/* ata_mmio == host_mmio + 0x200 + ata_no * 0x80 */
-	return (ata_mmio - host_mmio - 0x200) / 0x80;
-}
-
-static void pdc_hard_reset_port(struct ata_port *ap)
-{
-	void __iomem *host_mmio = ap->host->iomap[PDC_MMIO_BAR];
-	void __iomem *pcictl_b1_mmio = host_mmio + PDC_PCI_CTL + 1;
-	unsigned int ata_no = pdc_ata_port_to_ata_no(ap);
-	u8 tmp;
-
-	spin_lock(&ap->host->lock);
-
-	tmp = readb(pcictl_b1_mmio);
-	tmp &= ~(0x10 << ata_no);
-	writeb(tmp, pcictl_b1_mmio);
-	readb(pcictl_b1_mmio); /* flush */
-	udelay(100);
-	tmp |= (0x10 << ata_no);
-	writeb(tmp, pcictl_b1_mmio);
-	readb(pcictl_b1_mmio); /* flush */
-
-	spin_unlock(&ap->host->lock);
-}
-
 static int pdc_sata_hardreset(struct ata_link *link, unsigned int *class,
 			      unsigned long deadline)
 {
-	if (link->ap->flags & PDC_FLAG_GEN_II)
-		pdc_not_at_command_packet_phase(link->ap);
-	/* hotplug IRQs should have been masked by pdc_sata_freeze() */
-	pdc_hard_reset_port(link->ap);
 	pdc_reset_port(link->ap);
-
-	/* sata_promise can't reliably acquire the first D2H Reg FIS
-	 * after hardreset.  Do non-waiting hardreset and request
-	 * follow-up SRST.
-	 */
-	return sata_std_hardreset(link, class, deadline);
+	return sata_sff_hardreset(link, class, deadline);
 }
 
 static void pdc_error_handler(struct ata_port *ap)
@@ -840,7 +718,7 @@ static void pdc_error_handler(struct ata_port *ap)
 	if (!(ap->pflags & ATA_PFLAG_FROZEN))
 		pdc_reset_port(ap);
 
-	ata_sff_error_handler(ap);
+	ata_std_error_handler(ap);
 }
 
 static void pdc_post_internal_cmd(struct ata_queued_cmd *qc)
@@ -865,7 +743,7 @@ static void pdc_error_intr(struct ata_port *ap, struct ata_queued_cmd *qc,
 	if (port_status & PDC_DRIVE_ERR)
 		ac_err_mask |= AC_ERR_DEV;
 	if (port_status & (PDC_OVERRUN_ERR | PDC_UNDERRUN_ERR))
-		ac_err_mask |= AC_ERR_OTHER;
+		ac_err_mask |= AC_ERR_HSM;
 	if (port_status & (PDC2_ATA_HBA_ERR | PDC2_ATA_DMA_CNT_ERR))
 		ac_err_mask |= AC_ERR_ATA_BUS;
 	if (port_status & (PDC_PH_ERR | PDC_SH_ERR | PDC_DH_ERR | PDC2_HTO_ERR
@@ -952,14 +830,14 @@ static irqreturn_t pdc_interrupt(int irq, void *dev_instance)
 	spin_lock(&host->lock);
 
 	/* read and clear hotplug flags for all ports */
-	if (host->ports[0]->flags & PDC_FLAG_GEN_II) {
+	if (host->ports[0]->flags & PDC_FLAG_GEN_II)
 		hotplug_offset = PDC2_SATA_PLUG_CSR;
-		hotplug_status = readl(host_mmio + hotplug_offset);
-		if (hotplug_status & 0xff)
-			writel(hotplug_status | 0xff, host_mmio + hotplug_offset);
-		hotplug_status &= 0xff;	/* clear uninteresting bits */
-	} else
-		hotplug_status = 0;
+	else
+		hotplug_offset = PDC_SATA_PLUG_CSR;
+	hotplug_status = readl(host_mmio + hotplug_offset);
+	if (hotplug_status & 0xff)
+		writel(hotplug_status | 0xff, host_mmio + hotplug_offset);
+	hotplug_status &= 0xff;	/* clear uninteresting bits */
 
 	/* reading should also clear interrupts */
 	mask = readl(host_mmio + PDC_INT_SEQMASK);
@@ -986,7 +864,8 @@ static irqreturn_t pdc_interrupt(int irq, void *dev_instance)
 		/* check for a plug or unplug event */
 		ata_no = pdc_port_no_to_ata_no(i, is_sataii_tx4);
 		tmp = hotplug_status & (0x11 << ata_no);
-		if (tmp) {
+		if (tmp && ap &&
+		    !(ap->flags & ATA_FLAG_DISABLED)) {
 			struct ata_eh_info *ehi = &ap->link.eh_info;
 			ata_ehi_clear_desc(ehi);
 			ata_ehi_hotplugged(ehi);
@@ -998,7 +877,8 @@ static irqreturn_t pdc_interrupt(int irq, void *dev_instance)
 
 		/* check for a packet interrupt */
 		tmp = mask & (1 << (i + 1));
-		if (tmp) {
+		if (tmp && ap &&
+		    !(ap->flags & ATA_FLAG_DISABLED)) {
 			struct ata_queued_cmd *qc;
 
 			qc = ata_qc_from_tag(ap, ap->link.active_tag);
@@ -1152,11 +1032,9 @@ static void pdc_host_init(struct ata_host *host)
 	tmp = readl(host_mmio + hotplug_offset);
 	writel(tmp | 0xff, host_mmio + hotplug_offset);
 
+	/* unmask plug/unplug ints */
 	tmp = readl(host_mmio + hotplug_offset);
-	if (is_gen2)	/* unmask plug/unplug ints */
-		writel(tmp & ~0xff0000, host_mmio + hotplug_offset);
-	else		/* mask plug/unplug ints */
-		writel(tmp | 0xff0000, host_mmio + hotplug_offset);
+	writel(tmp & ~0xff0000, host_mmio + hotplug_offset);
 
 	/* don't initialise TBG or SLEW on 2nd generation chips */
 	if (is_gen2)

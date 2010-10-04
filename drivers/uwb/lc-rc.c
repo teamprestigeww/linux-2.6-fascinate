@@ -35,7 +35,6 @@
 #include <linux/kdev_t.h>
 #include <linux/etherdevice.h>
 #include <linux/usb.h>
-#include <linux/slab.h>
 
 #include "uwb-internal.h"
 
@@ -289,8 +288,8 @@ error_sys_add:
 error_dev_add:
 error_rc_setup:
 	rc->stop(rc);
-error_rc_start:
 	uwbd_stop(rc);
+error_rc_start:
 	return result;
 }
 EXPORT_SYMBOL_GPL(uwb_rc_add);

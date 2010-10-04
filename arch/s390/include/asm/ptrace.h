@@ -172,8 +172,6 @@
 #define NUM_CRS		16
 #define NUM_ACRS	16
 
-#define NUM_CR_WORDS	3
-
 #define FPR_SIZE	8
 #define FPC_SIZE	4
 #define FPC_PAD_SIZE	4 /* gcc insists on aligning the fpregs */
@@ -311,12 +309,10 @@ typedef struct
 	__u32		orig_gpr2;
 } s390_compat_regs;
 
-typedef struct
-{
-	__u32		gprs_high[NUM_GPRS];
-} s390_compat_regs_high;
 
 #ifdef __KERNEL__
+#include <asm/setup.h>
+#include <asm/page.h>
 
 /*
  * The pt_regs struct defines the way the registers are stored on
@@ -328,8 +324,8 @@ struct pt_regs
 	psw_t psw;
 	unsigned long gprs[NUM_GPRS];
 	unsigned long orig_gpr2;
-	unsigned short ilc;
 	unsigned short svcnr;
+	unsigned short ilc;
 };
 #endif
 
@@ -338,7 +334,7 @@ struct pt_regs
  */
 typedef struct
 {
-	unsigned long cr[NUM_CR_WORDS];
+	unsigned long cr[3];
 } per_cr_words;
 
 #define PER_EM_MASK 0xE8000000UL
@@ -436,7 +432,6 @@ typedef struct
 #define PTRACE_PEEKDATA_AREA	      0x5003
 #define PTRACE_POKETEXT_AREA	      0x5004
 #define PTRACE_POKEDATA_AREA 	      0x5005
-#define PTRACE_GET_LAST_BREAK	      0x5006
 
 /*
  * PT_PROT definition is loosely based on hppa bsd definition in
@@ -490,24 +485,16 @@ struct user_regs_struct
  * These are defined as per linux/ptrace.h, which see.
  */
 #define arch_has_single_step()	(1)
-extern void show_regs(struct pt_regs * regs);
+struct task_struct;
+extern void user_enable_single_step(struct task_struct *);
+extern void user_disable_single_step(struct task_struct *);
 
 #define user_mode(regs) (((regs)->psw.mask & PSW_MASK_PSTATE) != 0)
 #define instruction_pointer(regs) ((regs)->psw.addr & PSW_ADDR_INSN)
 #define user_stack_pointer(regs)((regs)->gprs[15])
 #define regs_return_value(regs)((regs)->gprs[2])
 #define profile_pc(regs) instruction_pointer(regs)
-
-int regs_query_register_offset(const char *name);
-const char *regs_query_register_name(unsigned int offset);
-unsigned long regs_get_register(struct pt_regs *regs, unsigned int offset);
-unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs, unsigned int n);
-
-static inline unsigned long kernel_stack_pointer(struct pt_regs *regs)
-{
-	return regs->gprs[15] & PSW_ADDR_INSN;
-}
-
+extern void show_regs(struct pt_regs * regs);
 #endif /* __KERNEL__ */
 #endif /* __ASSEMBLY__ */
 

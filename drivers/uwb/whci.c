@@ -9,7 +9,6 @@
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
-#include <linux/slab.h>
 #include <linux/uwb/whci.h>
 #include <linux/uwb/umc.h>
 
@@ -161,10 +160,10 @@ static int whci_probe(struct pci_dev *pci, const struct pci_device_id *id)
 	pci_enable_msi(pci);
 	pci_set_master(pci);
 	err = -ENXIO;
-	if (!pci_set_dma_mask(pci, DMA_BIT_MASK(64)))
-		pci_set_consistent_dma_mask(pci, DMA_BIT_MASK(64));
-	else if (!pci_set_dma_mask(pci, DMA_BIT_MASK(32)))
-		pci_set_consistent_dma_mask(pci, DMA_BIT_MASK(32));
+	if (!pci_set_dma_mask(pci, DMA_64BIT_MASK))
+		pci_set_consistent_dma_mask(pci, DMA_64BIT_MASK);
+	else if (!pci_set_dma_mask(pci, DMA_32BIT_MASK))
+		pci_set_consistent_dma_mask(pci, DMA_32BIT_MASK);
 	else
 		goto error_dma;
 

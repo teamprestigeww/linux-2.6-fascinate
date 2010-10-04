@@ -25,6 +25,9 @@
 #include <net/netfilter/nf_conntrack_l4proto.h>
 #include <net/netfilter/nf_conntrack_ecache.h>
 
+/* Protects ct->proto.sctp */
+static DEFINE_RWLOCK(sctp_lock);
+
 /* FIXME: Examine ipfilter's timeouts and conntrack transitions more
    closely.  They're more complex. --RR
 
@@ -161,13 +164,13 @@ static int sctp_print_tuple(struct seq_file *s,
 }
 
 /* Print out the private part of the conntrack. */
-static int sctp_print_conntrack(struct seq_file *s, struct nf_conn *ct)
+static int sctp_print_conntrack(struct seq_file *s, const struct nf_conn *ct)
 {
 	enum sctp_conntrack state;
 
-	spin_lock_bh(&ct->lock);
+	read_lock_bh(&sctp_lock);
 	state = ct->proto.sctp.state;
-	spin_unlock_bh(&ct->lock);
+	read_unlock_bh(&sctp_lock);
 
 	return seq_printf(s, "%s ", sctp_conntrack_names[state]);
 }
@@ -315,7 +318,7 @@ static int sctp_packet(struct nf_conn *ct,
 	}
 
 	old_state = new_state = SCTP_CONNTRACK_NONE;
-	spin_lock_bh(&ct->lock);
+	write_lock_bh(&sctp_lock);
 	for_each_sctp_chunk (skb, sch, _sch, offset, dataoff, count) {
 		/* Special cases of Verification tag check (Sec 8.5.1) */
 		if (sch->type == SCTP_CID_INIT) {
@@ -368,7 +371,7 @@ static int sctp_packet(struct nf_conn *ct,
 		if (old_state != new_state)
 			nf_conntrack_event_cache(IPCT_PROTOINFO, ct);
 	}
-	spin_unlock_bh(&ct->lock);
+	write_unlock_bh(&sctp_lock);
 
 	nf_ct_refresh_acct(ct, ctinfo, skb, sctp_timeouts[new_state]);
 
@@ -377,13 +380,13 @@ static int sctp_packet(struct nf_conn *ct,
 	    new_state == SCTP_CONNTRACK_ESTABLISHED) {
 		pr_debug("Setting assured bit\n");
 		set_bit(IPS_ASSURED_BIT, &ct->status);
-		nf_conntrack_event_cache(IPCT_ASSURED, ct);
+		nf_conntrack_event_cache(IPCT_STATUS, ct);
 	}
 
 	return NF_ACCEPT;
 
 out_unlock:
-	spin_unlock_bh(&ct->lock);
+	write_unlock_bh(&sctp_lock);
 out:
 	return -NF_ACCEPT;
 }
@@ -466,11 +469,11 @@ static bool sctp_new(struct nf_conn *ct, const struct sk_buff *skb,
 #include <linux/netfilter/nfnetlink_conntrack.h>
 
 static int sctp_to_nlattr(struct sk_buff *skb, struct nlattr *nla,
-			  struct nf_conn *ct)
+			  const struct nf_conn *ct)
 {
 	struct nlattr *nest_parms;
 
-	spin_lock_bh(&ct->lock);
+	read_lock_bh(&sctp_lock);
 	nest_parms = nla_nest_start(skb, CTA_PROTOINFO_SCTP | NLA_F_NESTED);
 	if (!nest_parms)
 		goto nla_put_failure;
@@ -485,14 +488,14 @@ static int sctp_to_nlattr(struct sk_buff *skb, struct nlattr *nla,
 		     CTA_PROTOINFO_SCTP_VTAG_REPLY,
 		     ct->proto.sctp.vtag[IP_CT_DIR_REPLY]);
 
-	spin_unlock_bh(&ct->lock);
+	read_unlock_bh(&sctp_lock);
 
 	nla_nest_end(skb, nest_parms);
 
 	return 0;
 
 nla_put_failure:
-	spin_unlock_bh(&ct->lock);
+	read_unlock_bh(&sctp_lock);
 	return -1;
 }
 
@@ -524,21 +527,15 @@ static int nlattr_to_sctp(struct nlattr *cda[], struct nf_conn *ct)
 	    !tb[CTA_PROTOINFO_SCTP_VTAG_REPLY])
 		return -EINVAL;
 
-	spin_lock_bh(&ct->lock);
+	write_lock_bh(&sctp_lock);
 	ct->proto.sctp.state = nla_get_u8(tb[CTA_PROTOINFO_SCTP_STATE]);
 	ct->proto.sctp.vtag[IP_CT_DIR_ORIGINAL] =
 		nla_get_be32(tb[CTA_PROTOINFO_SCTP_VTAG_ORIGINAL]);
 	ct->proto.sctp.vtag[IP_CT_DIR_REPLY] =
 		nla_get_be32(tb[CTA_PROTOINFO_SCTP_VTAG_REPLY]);
-	spin_unlock_bh(&ct->lock);
+	write_unlock_bh(&sctp_lock);
 
 	return 0;
-}
-
-static int sctp_nlattr_size(void)
-{
-	return nla_total_size(0)	/* CTA_PROTOINFO_SCTP */
-		+ nla_policy_len(sctp_nla_policy, CTA_PROTOINFO_SCTP_MAX + 1);
 }
 #endif
 
@@ -595,7 +592,9 @@ static struct ctl_table sctp_sysctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_jiffies,
 	},
-	{ }
+	{
+		.ctl_name = 0
+	}
 };
 
 #ifdef CONFIG_NF_CONNTRACK_PROC_COMPAT
@@ -649,7 +648,9 @@ static struct ctl_table sctp_compat_sysctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_jiffies,
 	},
-	{ }
+	{
+		.ctl_name = 0
+	}
 };
 #endif /* CONFIG_NF_CONNTRACK_PROC_COMPAT */
 #endif
@@ -667,10 +668,8 @@ static struct nf_conntrack_l4proto nf_conntrack_l4proto_sctp4 __read_mostly = {
 	.me 			= THIS_MODULE,
 #if defined(CONFIG_NF_CT_NETLINK) || defined(CONFIG_NF_CT_NETLINK_MODULE)
 	.to_nlattr		= sctp_to_nlattr,
-	.nlattr_size		= sctp_nlattr_size,
 	.from_nlattr		= nlattr_to_sctp,
 	.tuple_to_nlattr	= nf_ct_port_tuple_to_nlattr,
-	.nlattr_tuple_size	= nf_ct_port_nlattr_tuple_size,
 	.nlattr_to_tuple	= nf_ct_port_nlattr_to_tuple,
 	.nla_policy		= nf_ct_port_nla_policy,
 #endif
@@ -697,10 +696,8 @@ static struct nf_conntrack_l4proto nf_conntrack_l4proto_sctp6 __read_mostly = {
 	.me 			= THIS_MODULE,
 #if defined(CONFIG_NF_CT_NETLINK) || defined(CONFIG_NF_CT_NETLINK_MODULE)
 	.to_nlattr		= sctp_to_nlattr,
-	.nlattr_size		= sctp_nlattr_size,
 	.from_nlattr		= nlattr_to_sctp,
 	.tuple_to_nlattr	= nf_ct_port_tuple_to_nlattr,
-	.nlattr_tuple_size	= nf_ct_port_nlattr_tuple_size,
 	.nlattr_to_tuple	= nf_ct_port_nlattr_to_tuple,
 	.nla_policy		= nf_ct_port_nla_policy,
 #endif
@@ -717,12 +714,12 @@ static int __init nf_conntrack_proto_sctp_init(void)
 
 	ret = nf_conntrack_l4proto_register(&nf_conntrack_l4proto_sctp4);
 	if (ret) {
-		pr_err("nf_conntrack_l4proto_sctp4: protocol register failed\n");
+		printk("nf_conntrack_l4proto_sctp4: protocol register failed\n");
 		goto out;
 	}
 	ret = nf_conntrack_l4proto_register(&nf_conntrack_l4proto_sctp6);
 	if (ret) {
-		pr_err("nf_conntrack_l4proto_sctp6: protocol register failed\n");
+		printk("nf_conntrack_l4proto_sctp6: protocol register failed\n");
 		goto cleanup_sctp4;
 	}
 

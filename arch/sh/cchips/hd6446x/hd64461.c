@@ -53,31 +53,33 @@ static struct irq_chip hd64461_irq_chip = {
 	.unmask		= hd64461_unmask_irq,
 };
 
-static void hd64461_irq_demux(unsigned int irq, struct irq_desc *desc)
+int hd64461_irq_demux(int irq)
 {
-	unsigned short intv = __raw_readw(HD64461_NIRR);
-	unsigned int ext_irq = HD64461_IRQBASE;
+	if (irq == CONFIG_HD64461_IRQ) {
+		unsigned short bit;
+		unsigned short nirr = inw(HD64461_NIRR);
+		unsigned short nimr = inw(HD64461_NIMR);
+		int i;
 
-	intv &= (1 << HD64461_IRQ_NUM) - 1;
-
-	for (; intv; intv >>= 1, ext_irq++) {
-		if (!(intv & 1))
-			continue;
-
-		generic_handle_irq(ext_irq);
+		nirr &= ~nimr;
+		for (bit = 1, i = 0; i < 16; bit <<= 1, i++)
+			if (nirr & bit)
+				break;
+		irq = HD64461_IRQBASE + i;
 	}
+	return irq;
 }
 
 int __init setup_hd64461(void)
 {
-	int i, nid = cpu_to_node(boot_cpu_data);
+	int i;
 
 	if (!MACH_HD64461)
 		return 0;
 
 	printk(KERN_INFO
 	       "HD64461 configured at 0x%x on irq %d(mapped into %d to %d)\n",
-	       HD64461_IOBASE, CONFIG_HD64461_IRQ, HD64461_IRQBASE,
+	       CONFIG_HD64461_IOBASE, CONFIG_HD64461_IRQ, HD64461_IRQBASE,
 	       HD64461_IRQBASE + 15);
 
 /* Should be at processor specific part.. */
@@ -87,29 +89,9 @@ int __init setup_hd64461(void)
 	__raw_writew(0xffff, HD64461_NIMR);
 
 	/*  IRQ 80 -> 95 belongs to HD64461  */
-	for (i = HD64461_IRQBASE; i < HD64461_IRQBASE + 16; i++) {
-		unsigned int irq;
-
-		irq = create_irq_nr(i, nid);
-		if (unlikely(irq == 0)) {
-			pr_err("%s: failed hooking irq %d for HD64461\n",
-			       __func__, i);
-			return -EBUSY;
-		}
-
-		if (unlikely(irq != i)) {
-			pr_err("%s: got irq %d but wanted %d, bailing.\n",
-			       __func__, irq, i);
-			destroy_irq(irq);
-			return -EINVAL;
-		}
-
+	for (i = HD64461_IRQBASE; i < HD64461_IRQBASE + 16; i++)
 		set_irq_chip_and_handler(i, &hd64461_irq_chip,
 					 handle_level_irq);
-	}
-
-	set_irq_chained_handler(CONFIG_HD64461_IRQ, hd64461_irq_demux);
-	set_irq_type(CONFIG_HD64461_IRQ, IRQ_TYPE_LEVEL_LOW);
 
 #ifdef CONFIG_HD64461_ENABLER
 	printk(KERN_INFO "HD64461: enabling PCMCIA devices\n");

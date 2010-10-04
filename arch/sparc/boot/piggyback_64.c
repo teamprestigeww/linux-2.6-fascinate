@@ -32,7 +32,7 @@
 /* Note: run this on an a.out kernel (use elftoaout for it), as PROM looks for a.out image onlly
    usage: piggyback vmlinux System.map tail, where tail is gzipped fs of the initial ramdisk */
 
-static void die(char *str)
+void die(char *str)
 {
 	perror (str);
 	exit(1);
@@ -46,7 +46,6 @@ int main(int argc,char **argv)
 	struct stat s;
 	int image, tail;
 	
-	start = end = 0;
 	if (stat (argv[3], &s) < 0) die (argv[3]);
 	map = fopen (argv[2], "r");
 	if (!map) die(argv[2]);

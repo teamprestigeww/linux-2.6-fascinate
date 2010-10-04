@@ -29,7 +29,6 @@
 
 #include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
@@ -91,7 +90,7 @@ static int arm_lock(struct hpsb_host *host, int nodeid, quadlet_t * store,
 static int arm_lock64(struct hpsb_host *host, int nodeid, octlet_t * store,
 		      u64 addr, octlet_t data, octlet_t arg, int ext_tcode,
 		      u16 flags);
-static const struct hpsb_address_ops arm_ops = {
+const static struct hpsb_address_ops arm_ops = {
 	.read = arm_read,
 	.write = arm_write,
 	.lock = arm_lock,
@@ -370,7 +369,6 @@ static const char __user *raw1394_compat_write(const char __user *buf)
 {
 	struct compat_raw1394_req __user *cr = (typeof(cr)) buf;
 	struct raw1394_request __user *r;
-
 	r = compat_alloc_user_space(sizeof(struct raw1394_request));
 
 #define C(x) __copy_in_user(&r->x, &cr->x, sizeof(r->x))
@@ -380,8 +378,7 @@ static const char __user *raw1394_compat_write(const char __user *buf)
 	    C(tag) ||
 	    C(sendb) ||
 	    C(recvb))
-		return (__force const char __user *)ERR_PTR(-EFAULT);
-
+		return ERR_PTR(-EFAULT);
 	return (const char __user *)r;
 }
 #undef C
@@ -392,7 +389,6 @@ static int
 raw1394_compat_read(const char __user *buf, struct raw1394_request *r)
 {
 	struct compat_raw1394_req __user *cr = (typeof(cr)) buf;
-
 	if (!access_ok(VERIFY_WRITE, cr, sizeof(struct compat_raw1394_req)) ||
 	    P(type) ||
 	    P(error) ||
@@ -404,7 +400,6 @@ raw1394_compat_read(const char __user *buf, struct raw1394_request *r)
 	    P(sendb) ||
 	    P(recvb))
 		return -EFAULT;
-
 	return sizeof(struct compat_raw1394_req);
 }
 #undef P
@@ -440,7 +435,7 @@ static struct pending_request *next_complete_req(struct file_info *fi)
 static ssize_t raw1394_read(struct file *file, char __user * buffer,
 			    size_t count, loff_t * offset_is_ignored)
 {
-	struct file_info *fi = file->private_data;
+	struct file_info *fi = (struct file_info *)file->private_data;
 	struct pending_request *req;
 	ssize_t ret;
 
@@ -1015,7 +1010,7 @@ static int arm_write(struct hpsb_host *host, int nodeid, int destid,
 	struct arm_addr *arm_addr = NULL;
 	struct arm_request *arm_req = NULL;
 	struct arm_response *arm_resp = NULL;
-	int found = 0, size = 0, rcode = -1;
+	int found = 0, size = 0, rcode = -1, length_conflict = 0;
 	struct arm_request_response *arm_req_resp = NULL;
 
 	DBGMSG("arm_write called by node: %X "
@@ -1054,6 +1049,7 @@ static int arm_write(struct hpsb_host *host, int nodeid, int destid,
 	}
 	if (arm_addr->rec_length < length) {
 		DBGMSG("arm_write blocklength too big -> rcode_data_error");
+		length_conflict = 1;
 		rcode = RCODE_DATA_ERROR;	/* hardware error, data is unavailable */
 	}
 	if (rcode == -1) {
@@ -2244,7 +2240,7 @@ static int state_connected(struct file_info *fi, struct pending_request *req)
 static ssize_t raw1394_write(struct file *file, const char __user * buffer,
 			     size_t count, loff_t * offset_is_ignored)
 {
-	struct file_info *fi = file->private_data;
+	struct file_info *fi = (struct file_info *)file->private_data;
 	struct pending_request *req;
 	ssize_t retval = -EBADFD;
 
@@ -2253,8 +2249,8 @@ static ssize_t raw1394_write(struct file *file, const char __user * buffer,
    	    sizeof(struct compat_raw1394_req) !=
 			sizeof(struct raw1394_request)) {
 		buffer = raw1394_compat_write(buffer);
-		if (IS_ERR((__force void *)buffer))
-			return PTR_ERR((__force void *)buffer);
+		if (IS_ERR(buffer))
+			return PTR_ERR(buffer);
 	} else
 #endif
 	if (count != sizeof(struct raw1394_request)) {
@@ -2272,10 +2268,8 @@ static ssize_t raw1394_write(struct file *file, const char __user * buffer,
 		return -EFAULT;
 	}
 
-	if (!mutex_trylock(&fi->state_mutex)) {
-		free_pending_request(req);
+	if (!mutex_trylock(&fi->state_mutex))
 		return -EAGAIN;
-	}
 
 	switch (fi->state) {
 	case opened:
@@ -2833,7 +2827,7 @@ static int raw1394_open(struct inode *inode, struct file *file)
 
 	file->private_data = fi;
 
-	return nonseekable_open(inode, file);
+	return 0;
 }
 
 static int raw1394_release(struct inode *inode, struct file *file)
@@ -2984,7 +2978,7 @@ static int raw1394_release(struct inode *inode, struct file *file)
  * Export information about protocols/devices supported by this driver.
  */
 #ifdef MODULE
-static const struct ieee1394_device_id raw1394_id_table[] = {
+static struct ieee1394_device_id raw1394_id_table[] = {
 	{
 	 .match_flags = IEEE1394_MATCH_SPECIFIER_ID | IEEE1394_MATCH_VERSION,
 	 .specifier_id = AVC_UNIT_SPEC_ID_ENTRY & 0xffffff,
@@ -3034,7 +3028,6 @@ static const struct file_operations raw1394_fops = {
 	.poll = raw1394_poll,
 	.open = raw1394_open,
 	.release = raw1394_release,
-	.llseek = no_llseek,
 };
 
 static int __init init_raw1394(void)

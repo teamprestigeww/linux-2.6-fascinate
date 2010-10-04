@@ -9,7 +9,6 @@
 
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/smp.h>
 #include <asm/sn/types.h>
 #include <asm/sn/klconfig.h>
 #include <asm/sn/hub.h>

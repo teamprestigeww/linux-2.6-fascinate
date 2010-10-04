@@ -24,15 +24,14 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/physmap.h>
-
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
-
-#include <mach/pxa25x.h>
 #include <mach/h5000.h>
+#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-regs.h>
+#include <mach/mfp-pxa25x.h>
 #include <mach/udc.h>
-
 #include "generic.h"
 
 /*
@@ -154,13 +153,6 @@ static unsigned long h5000_pin_config[] __initdata = {
 	GPIO23_SSP1_SCLK,
 	GPIO25_SSP1_TXD,
 	GPIO26_SSP1_RXD,
-
-	/* I2S */
-	GPIO28_I2S_BITCLK_OUT,
-	GPIO29_I2S_SDATA_IN,
-	GPIO30_I2S_SDATA_OUT,
-	GPIO31_I2S_SYNC,
-	GPIO32_I2S_SYSCLK,
 };
 
 /*
@@ -193,9 +185,6 @@ static void __init h5000_init(void)
 	fix_msc();
 
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(h5000_pin_config));
-	pxa_set_ffuart_info(NULL);
-	pxa_set_btuart_info(NULL);
-	pxa_set_stuart_info(NULL);
 	pxa_set_udc_info(&h5000_udc_mach_info);
 	platform_add_devices(ARRAY_AND_SIZE(devices));
 }

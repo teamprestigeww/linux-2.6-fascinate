@@ -7,13 +7,6 @@
 #include <linux/if_addr.h>
 #include <linux/neighbour.h>
 
-/* rtnetlink families. Values up to 127 are reserved for real address
- * families, values above 128 may be used arbitrarily.
- */
-#define RTNL_FAMILY_IPMR		128
-#define RTNL_FAMILY_IP6MR		129
-#define RTNL_FAMILY_MAX			129
-
 /****
  *		Routing/neighbour discovery messages.
  ****/
@@ -111,7 +104,7 @@ enum {
 	RTM_NEWADDRLABEL = 72,
 #define RTM_NEWADDRLABEL RTM_NEWADDRLABEL
 	RTM_DELADDRLABEL,
-#define RTM_DELADDRLABEL RTM_DELADDRLABEL
+#define RTM_NEWADDRLABEL RTM_NEWADDRLABEL
 	RTM_GETADDRLABEL,
 #define RTM_GETADDRLABEL RTM_GETADDRLABEL
 
@@ -134,7 +127,8 @@ enum {
    with attribute type.
  */
 
-struct rtattr {
+struct rtattr
+{
 	unsigned short	rta_len;
 	unsigned short	rta_type;
 };
@@ -160,7 +154,8 @@ struct rtattr {
  *		Definitions used in routing table administration.
  ****/
 
-struct rtmsg {
+struct rtmsg
+{
 	unsigned char		rtm_family;
 	unsigned char		rtm_dst_len;
 	unsigned char		rtm_src_len;
@@ -176,7 +171,8 @@ struct rtmsg {
 
 /* rtm_type */
 
-enum {
+enum
+{
 	RTN_UNSPEC,
 	RTN_UNICAST,		/* Gateway or direct route	*/
 	RTN_LOCAL,		/* Accept locally		*/
@@ -221,7 +217,6 @@ enum {
 #define RTPROT_DNROUTED	13	/* DECnet routing daemon */
 #define RTPROT_XORP	14	/* XORP */
 #define RTPROT_NTK	15	/* Netsukuku */
-#define RTPROT_DHCP	16      /* DHCP client */
 
 /* rtm_scope
 
@@ -234,7 +229,8 @@ enum {
    could be assigned a value between UNIVERSE and LINK.
 */
 
-enum rt_scope_t {
+enum rt_scope_t
+{
 	RT_SCOPE_UNIVERSE=0,
 /* User defined values  */
 	RT_SCOPE_SITE=200,
@@ -252,7 +248,8 @@ enum rt_scope_t {
 
 /* Reserved table identifiers */
 
-enum rt_class_t {
+enum rt_class_t
+{
 	RT_TABLE_UNSPEC=0,
 /* User defined values */
 	RT_TABLE_COMPAT=252,
@@ -265,7 +262,8 @@ enum rt_class_t {
 
 /* Routing message attributes */
 
-enum rtattr_type_t {
+enum rtattr_type_t
+{
 	RTA_UNSPEC,
 	RTA_DST,
 	RTA_SRC,
@@ -282,7 +280,6 @@ enum rtattr_type_t {
 	RTA_SESSION, /* no longer used */
 	RTA_MP_ALGO, /* no longer used */
 	RTA_TABLE,
-	RTA_MARK,
 	__RTA_MAX
 };
 
@@ -300,7 +297,8 @@ enum rtattr_type_t {
  * and rtt for different paths from multipath.
  */
 
-struct rtnexthop {
+struct rtnexthop
+{
 	unsigned short		rtnh_len;
 	unsigned char		rtnh_flags;
 	unsigned char		rtnh_hops;
@@ -326,7 +324,8 @@ struct rtnexthop {
 
 /* RTM_CACHEINFO */
 
-struct rta_cacheinfo {
+struct rta_cacheinfo
+{
 	__u32	rta_clntref;
 	__u32	rta_lastuse;
 	__s32	rta_expires;
@@ -341,7 +340,8 @@ struct rta_cacheinfo {
 
 /* RTM_METRICS --- array of struct rtattr with types of RTAX_* */
 
-enum {
+enum
+{
 	RTAX_UNSPEC,
 #define RTAX_UNSPEC RTAX_UNSPEC
 	RTAX_LOCK,
@@ -370,8 +370,6 @@ enum {
 #define RTAX_FEATURES RTAX_FEATURES
 	RTAX_RTO_MIN,
 #define RTAX_RTO_MIN RTAX_RTO_MIN
-	RTAX_INITRWND,
-#define RTAX_INITRWND RTAX_INITRWND
 	__RTAX_MAX
 };
 
@@ -382,7 +380,8 @@ enum {
 #define RTAX_FEATURE_TIMESTAMP	0x00000004
 #define RTAX_FEATURE_ALLFRAG	0x00000008
 
-struct rta_session {
+struct rta_session
+{
 	__u8	proto;
 	__u8	pad1;
 	__u16	pad2;
@@ -407,7 +406,8 @@ struct rta_session {
  *		General form of address family dependent message.
  ****/
 
-struct rtgenmsg {
+struct rtgenmsg
+{
 	unsigned char		rtgen_family;
 };
 
@@ -420,7 +420,8 @@ struct rtgenmsg {
  * on network protocol.
  */
 
-struct ifinfomsg {
+struct ifinfomsg
+{
 	unsigned char	ifi_family;
 	unsigned char	__ifi_pad;
 	unsigned short	ifi_type;		/* ARPHRD_* */
@@ -433,7 +434,8 @@ struct ifinfomsg {
  *		prefix information 
  ****/
 
-struct prefixmsg {
+struct prefixmsg
+{
 	unsigned char	prefix_family;
 	unsigned char	prefix_pad1;
 	unsigned short	prefix_pad2;
@@ -454,7 +456,8 @@ enum
 
 #define PREFIX_MAX	(__PREFIX_MAX - 1)
 
-struct prefix_cacheinfo {
+struct prefix_cacheinfo
+{
 	__u32	preferred_time;
 	__u32	valid_time;
 };
@@ -464,7 +467,8 @@ struct prefix_cacheinfo {
  *		Traffic control messages.
  ****/
 
-struct tcmsg {
+struct tcmsg
+{
 	unsigned char	tcm_family;
 	unsigned char	tcm__pad1;
 	unsigned short	tcm__pad2;
@@ -474,7 +478,8 @@ struct tcmsg {
 	__u32		tcm_info;
 };
 
-enum {
+enum
+{
 	TCA_UNSPEC,
 	TCA_KIND,
 	TCA_OPTIONS,
@@ -496,7 +501,8 @@ enum {
  *		Neighbor Discovery userland options
  ****/
 
-struct nduseroptmsg {
+struct nduseroptmsg
+{
 	unsigned char	nduseropt_family;
 	unsigned char	nduseropt_pad1;
 	unsigned short	nduseropt_opts_len;	/* Total length of options */
@@ -508,7 +514,8 @@ struct nduseroptmsg {
 	/* Followed by one or more ND options */
 };
 
-enum {
+enum
+{
 	NDUSEROPT_UNSPEC,
 	NDUSEROPT_SRCADDR,
 	__NDUSEROPT_MAX
@@ -590,7 +597,8 @@ enum rtnetlink_groups {
 #define RTNLGRP_MAX	(__RTNLGRP_MAX - 1)
 
 /* TC action piece */
-struct tcamsg {
+struct tcamsg
+{
 	unsigned char	tca_family;
 	unsigned char	tca__pad1;
 	unsigned short	tca__pad2;
@@ -614,8 +622,8 @@ static __inline__ int rtattr_strcmp(const struct rtattr *rta, const char *str)
 
 extern int rtnetlink_send(struct sk_buff *skb, struct net *net, u32 pid, u32 group, int echo);
 extern int rtnl_unicast(struct sk_buff *skb, struct net *net, u32 pid);
-extern void rtnl_notify(struct sk_buff *skb, struct net *net, u32 pid,
-			u32 group, struct nlmsghdr *nlh, gfp_t flags);
+extern int rtnl_notify(struct sk_buff *skb, struct net *net, u32 pid, u32 group,
+		       struct nlmsghdr *nlh, gfp_t flags);
 extern void rtnl_set_sk_err(struct net *net, u32 group, int error);
 extern int rtnetlink_put_metrics(struct sk_buff *skb, u32 *metrics);
 extern int rtnl_put_cacheinfo(struct sk_buff *skb, struct dst_entry *dst,
@@ -745,9 +753,6 @@ extern void rtnl_lock(void);
 extern void rtnl_unlock(void);
 extern int rtnl_trylock(void);
 extern int rtnl_is_locked(void);
-#ifdef CONFIG_PROVE_LOCKING
-extern int lockdep_rtnl_is_held(void);
-#endif /* #ifdef CONFIG_PROVE_LOCKING */
 
 extern void rtnetlink_init(void);
 extern void __rtnl_unlock(void);

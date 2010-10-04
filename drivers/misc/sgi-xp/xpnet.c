@@ -20,7 +20,6 @@
  *
  */
 
-#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -236,11 +235,12 @@ xpnet_receive(short partid, int channel, struct xpnet_message *msg)
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 
 	dev_dbg(xpnet, "passing skb to network layer\n"
-		"\tskb->head=0x%p skb->data=0x%p skb->tail=0x%p "
+		KERN_DEBUG "\tskb->head=0x%p skb->data=0x%p skb->tail=0x%p "
 		"skb->end=0x%p skb->len=%d\n",
 		(void *)skb->head, (void *)skb->data, skb_tail_pointer(skb),
 		skb_end_pointer(skb), skb->len);
 
+	xpnet_device->last_rx = jiffies;
 	xpnet_device->stats.rx_packets++;
 	xpnet_device->stats.rx_bytes += skb->len + ETH_HLEN;
 
@@ -399,7 +399,7 @@ xpnet_send(struct sk_buff *skb, struct xpnet_pending_msg *queued_msg,
 	msg->buf_pa = xp_pa((void *)start_addr);
 
 	dev_dbg(xpnet, "sending XPC message to %d:%d\n"
-		"msg->buf_pa=0x%lx, msg->size=%u, "
+		KERN_DEBUG "msg->buf_pa=0x%lx, msg->size=%u, "
 		"msg->leadin_ignore=%u, msg->tailout_ignore=%u\n",
 		dest_partid, XPC_NET_CHANNEL, msg->buf_pa, msg->size,
 		msg->leadin_ignore, msg->tailout_ignore);
@@ -436,7 +436,7 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	if (skb->data[0] == 0x33) {
 		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;	/* nothing needed to be done */
+		return 0;	/* nothing needed to be done */
 	}
 
 	/*
@@ -450,8 +450,7 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 			 "packet\n", sizeof(struct xpnet_pending_msg));
 
 		dev->stats.tx_errors++;
-		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;
+		return -ENOMEM;
 	}
 
 	/* get the beginning of the first cacheline and end of last */
@@ -476,7 +475,7 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	if (skb->data[0] == 0xff) {
 		/* we are being asked to broadcast to all partitions */
-		for_each_set_bit(dest_partid, xpnet_broadcast_partitions,
+		for_each_bit(dest_partid, xpnet_broadcast_partitions,
 			     xp_max_npartitions) {
 
 			xpnet_send(skb, queued_msg, start_addr, end_addr,
@@ -503,7 +502,7 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	dev->stats.tx_packets++;
 	dev->stats.tx_bytes += skb->len;
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*

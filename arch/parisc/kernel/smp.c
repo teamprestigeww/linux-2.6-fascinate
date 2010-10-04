@@ -18,6 +18,7 @@
 */
 #include <linux/types.h>
 #include <linux/spinlock.h>
+#include <linux/slab.h>
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -30,7 +31,6 @@
 #include <linux/err.h>
 #include <linux/delay.h>
 #include <linux/bitops.h>
-#include <linux/ftrace.h>
 
 #include <asm/system.h>
 #include <asm/atomic.h>
@@ -59,6 +59,8 @@ static int smp_debug_lvl = 0;
 #define smp_debug(lvl, ...)	do { } while(0)
 #endif /* DEBUG_SMP */
 
+DEFINE_SPINLOCK(smp_lock);
+
 volatile struct task_struct *smp_init_current_idle_task;
 
 /* track which CPU is booting */
@@ -66,7 +68,7 @@ static volatile int cpu_now_booting __cpuinitdata;
 
 static int parisc_max_cpus __cpuinitdata = 1;
 
-static DEFINE_PER_CPU(spinlock_t, ipi_lock);
+DEFINE_PER_CPU(spinlock_t, ipi_lock) = SPIN_LOCK_UNLOCKED;
 
 enum ipi_message_type {
 	IPI_NOP=0,
@@ -111,14 +113,14 @@ halt_processor(void)
 {
 	/* REVISIT : redirect I/O Interrupts to another CPU? */
 	/* REVISIT : does PM *know* this CPU isn't available? */
-	set_cpu_online(smp_processor_id(), false);
+	cpu_clear(smp_processor_id(), cpu_online_map);
 	local_irq_disable();
 	for (;;)
 		;
 }
 
 
-irqreturn_t __irq_entry
+irqreturn_t
 ipi_interrupt(int irq, void *dev_id) 
 {
 	int this_cpu = smp_processor_id();
@@ -212,11 +214,11 @@ ipi_send(int cpu, enum ipi_message_type op)
 }
 
 static void
-send_IPI_mask(const struct cpumask *mask, enum ipi_message_type op)
+send_IPI_mask(cpumask_t mask, enum ipi_message_type op)
 {
 	int cpu;
 
-	for_each_cpu(cpu, mask)
+	for_each_cpu_mask(cpu, mask)
 		ipi_send(cpu, op);
 }
 
@@ -255,7 +257,7 @@ smp_send_all_nop(void)
 	send_IPI_allbutself(IPI_NOP);
 }
 
-void arch_send_call_function_ipi_mask(const struct cpumask *mask)
+void arch_send_call_function_ipi(cpumask_t mask)
 {
 	send_IPI_mask(mask, IPI_CALL_FUNC);
 }
@@ -294,14 +296,13 @@ smp_cpu_init(int cpunum)
 	mb();
 
 	/* Well, support 2.4 linux scheme as well. */
-	if (cpu_isset(cpunum, cpu_online_map))
+	if (cpu_test_and_set(cpunum, cpu_online_map))
 	{
 		extern void machine_halt(void); /* arch/parisc.../process.c */
 
 		printk(KERN_CRIT "CPU#%d already initialized!\n", cpunum);
 		machine_halt();
 	}  
-	set_cpu_online(cpunum, true);
 
 	/* Initialise the idle task for this CPU */
 	atomic_inc(&init_mm.mm_count);
@@ -423,8 +424,8 @@ void __init smp_prepare_boot_cpu(void)
 	/* Setup BSP mappings */
 	printk(KERN_INFO "SMP: bootstrap CPU ID is %d\n", bootstrap_processor);
 
-	set_cpu_online(bootstrap_processor, true);
-	set_cpu_present(bootstrap_processor, true);
+	cpu_set(bootstrap_processor, cpu_online_map);
+	cpu_set(bootstrap_processor, cpu_present_map);
 }
 
 
@@ -435,12 +436,8 @@ void __init smp_prepare_boot_cpu(void)
 */
 void __init smp_prepare_cpus(unsigned int max_cpus)
 {
-	int cpu;
-
-	for_each_possible_cpu(cpu)
-		spin_lock_init(&per_cpu(ipi_lock, cpu));
-
-	init_cpu_present(cpumask_of(0));
+	cpus_clear(cpu_present_map);
+	cpu_set(0, cpu_present_map);
 
 	parisc_max_cpus = max_cpus;
 	if (!max_cpus)

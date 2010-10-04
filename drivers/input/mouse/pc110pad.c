@@ -108,10 +108,14 @@ static int pc110pad_open(struct input_dev *dev)
  */
 static int __init pc110pad_init(void)
 {
+	struct pci_dev *dev;
 	int err;
 
-	if (!no_pci_devices())
+	dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, NULL);
+	if (dev) {
+		pci_dev_put(dev);
 		return -ENODEV;
+	}
 
 	if (!request_region(pc110pad_io, 4, "pc110pad")) {
 		printk(KERN_ERR "pc110pad: I/O area %#x-%#x in use.\n",
@@ -145,8 +149,8 @@ static int __init pc110pad_init(void)
 	pc110pad_dev->absbit[0] = BIT_MASK(ABS_X) | BIT_MASK(ABS_Y);
 	pc110pad_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
 
-	input_abs_set_max(pc110pad_dev, ABS_X, 0x1ff);
-	input_abs_set_max(pc110pad_dev, ABS_Y, 0x0ff);
+	pc110pad_dev->absmax[ABS_X] = 0x1ff;
+	pc110pad_dev->absmax[ABS_Y] = 0x0ff;
 
 	pc110pad_dev->open = pc110pad_open;
 	pc110pad_dev->close = pc110pad_close;

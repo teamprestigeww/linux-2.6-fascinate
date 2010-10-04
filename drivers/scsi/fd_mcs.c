@@ -88,7 +88,6 @@
 #include <linux/delay.h>
 #include <linux/mca.h>
 #include <linux/spinlock.h>
-#include <linux/slab.h>
 #include <scsi/scsicam.h>
 #include <linux/mca-legacy.h>
 

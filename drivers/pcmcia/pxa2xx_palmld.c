@@ -45,7 +45,7 @@ static int palmld_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 	if (ret)
 		goto err4;
 
-	skt->socket.pci_irq = IRQ_GPIO(GPIO_NR_PALMLD_PCMCIA_READY);
+	skt->irq = IRQ_GPIO(GPIO_NR_PALMLD_PCMCIA_READY);
 	return 0;
 
 err4:
@@ -98,8 +98,8 @@ static void palmld_pcmcia_socket_suspend(struct soc_pcmcia_socket *skt)
 static struct pcmcia_low_level palmld_pcmcia_ops = {
 	.owner			= THIS_MODULE,
 
-	.first			= 1,
-	.nr			= 1,
+	.first			= 0,
+	.nr			= 2,
 
 	.hw_init		= palmld_pcmcia_hw_init,
 	.hw_shutdown		= palmld_pcmcia_hw_shutdown,

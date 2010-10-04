@@ -59,6 +59,7 @@ static const char version[] =
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/errno.h>
@@ -202,7 +203,7 @@ static void smc911x_reset(struct net_device *dev)
 		SMC_SET_HW_CFG(lp, HW_CFG_SRST_);
 		timeout=10;
 		do {
-			udelay(10);
+			udelay(30);
 			reg = SMC_GET_HW_CFG(lp);
 			/* If chip indicates reset timeout then try again */
 			if (reg & HW_CFG_SRST_TO_) {
@@ -219,9 +220,9 @@ static void smc911x_reset(struct net_device *dev)
 
 	/* make sure EEPROM has finished loading before setting GPIO_CFG */
 	timeout=1000;
-	while (--timeout && (SMC_GET_E2P_CMD(lp) & E2P_CMD_EPC_BUSY_))
+	while ( timeout-- && (SMC_GET_E2P_CMD(lp) & E2P_CMD_EPC_BUSY_)) {
 		udelay(10);
-
+	}
 	if (timeout == 0){
 		PRINTK("%s: smc911x_reset timeout waiting for EEPROM busy\n", dev->name);
 		return;
@@ -382,7 +383,7 @@ static inline void	 smc911x_rcv(struct net_device *dev)
 	DBG(SMC_DEBUG_FUNC | SMC_DEBUG_RX, "%s: --> %s\n",
 		dev->name, __func__);
 	status = SMC_GET_RX_STS_FIFO(lp);
-	DBG(SMC_DEBUG_RX, "%s: Rx pkt len %d status 0x%08x\n",
+	DBG(SMC_DEBUG_RX, "%s: Rx pkt len %d status 0x%08x \n",
 		dev->name, (status & 0x3fff0000) >> 16, status & 0xc000ffff);
 	pkt_len = (status & RX_STS_PKT_LEN_) >> 16;
 	if (status & RX_STS_ES_) {
@@ -438,6 +439,7 @@ static inline void	 smc911x_rcv(struct net_device *dev)
 
 		DBG(SMC_DEBUG_PKTS, "%s: Received packet\n", dev->name);
 		PRINT_PKT(data, ((pkt_len - 4) <= 64) ? pkt_len - 4 : 64);
+		dev->last_rx = jiffies;
 		skb->protocol = eth_type_trans(skb, dev);
 		netif_rx(skb);
 		dev->stats.rx_packets++;
@@ -552,7 +554,7 @@ static int smc911x_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		dev->stats.tx_dropped++;
 		spin_unlock_irqrestore(&lp->lock, flags);
 		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;
+		return 0;
 	}
 
 #ifdef SMC_USE_DMA
@@ -565,7 +567,7 @@ static int smc911x_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 			lp->pending_tx_skb = skb;
 			netif_stop_queue(dev);
 			spin_unlock_irqrestore(&lp->lock, flags);
-			return NETDEV_TX_OK;
+			return 0;
 		} else {
 			DBG(SMC_DEBUG_TX | SMC_DEBUG_DMA, "%s: Activating Tx DMA\n", dev->name);
 			lp->txdma_active = 1;
@@ -576,7 +578,7 @@ static int smc911x_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	smc911x_hardware_send_pkt(dev);
 	spin_unlock_irqrestore(&lp->lock, flags);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -859,14 +861,13 @@ static void smc911x_phy_check_media(struct net_device *dev, int init)
 		SMC_GET_MAC_CR(lp, cr);
 		if (lp->mii.full_duplex) {
 			DBG(SMC_DEBUG_MISC, "%s: Configuring for full-duplex mode\n", dev->name);
-			bmcr |= BMCR_FULLDPLX;
-			cr |= MAC_CR_RCVOWN_;
+			cr &= ~MAC_CR_RCVOWN_;
+			cr |= MAC_CR_FDPX_;
 		} else {
 			DBG(SMC_DEBUG_MISC, "%s: Configuring for half-duplex mode\n", dev->name);
-			bmcr &= ~BMCR_FULLDPLX;
 			cr &= ~MAC_CR_RCVOWN_;
+			cr &= ~MAC_CR_FDPX_;
 		}
-		SMC_SET_PHY_BMCR(lp, phyaddr, bmcr);
 		SMC_SET_MAC_CR(lp, cr);
 	}
 }
@@ -1135,7 +1136,7 @@ static irqreturn_t smc911x_interrupt(int irq, void *dev_id)
 		}
 #else
 		if (status & INT_STS_TSFL_) {
-			DBG(SMC_DEBUG_TX, "%s: TX status FIFO limit (%d) irq\n", dev->name, );
+			DBG(SMC_DEBUG_TX, "%s: TX status FIFO limit (%d) irq \n", dev->name, );
 			smc911x_tx(dev);
 			SMC_ACK_INT(lp, INT_STS_TSFL_);
 		}
@@ -1229,6 +1230,7 @@ smc911x_rx_dma_irq(int dma, void *data)
 	BUG_ON(skb == NULL);
 	lp->current_rx_skb = NULL;
 	PRINT_PKT(skb->data, skb->len);
+	dev->last_rx = jiffies;
 	skb->protocol = eth_type_trans(skb, dev);
 	dev->stats.rx_packets++;
 	dev->stats.rx_bytes += skb->len;
@@ -1274,7 +1276,7 @@ static void smc911x_timeout(struct net_device *dev)
 	status = SMC_GET_INT(lp);
 	mask = SMC_GET_INT_EN(lp);
 	spin_unlock_irqrestore(&lp->lock, flags);
-	DBG(SMC_DEBUG_MISC, "%s: INT 0x%02x MASK 0x%02x\n",
+	DBG(SMC_DEBUG_MISC, "%s: INT 0x%02x MASK 0x%02x \n",
 		dev->name, status, mask);
 
 	/* Dump the current TX FIFO contents and restart */
@@ -1289,7 +1291,7 @@ static void smc911x_timeout(struct net_device *dev)
 		schedule_work(&lp->phy_configure);
 
 	/* We can accept TX packets again */
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	dev->trans_start = jiffies;
 	netif_wake_queue(dev);
 }
 
@@ -1322,7 +1324,7 @@ static void smc911x_set_multicast_list(struct net_device *dev)
 	 * I don't need to zero the multicast table, because the flag is
 	 * checked before the table is
 	 */
-	else if (dev->flags & IFF_ALLMULTI || netdev_mc_count(dev) > 16) {
+	else if (dev->flags & IFF_ALLMULTI || dev->mc_count > 16) {
 		DBG(SMC_DEBUG_MISC, "%s: RCR_ALMUL\n", dev->name);
 		mcr |= MAC_CR_MCPAS_;
 	}
@@ -1339,8 +1341,9 @@ static void smc911x_set_multicast_list(struct net_device *dev)
 	 * the number of the 32 bit register, while the low 5 bits are the bit
 	 * within that register.
 	 */
-	else if (!netdev_mc_empty(dev)) {
-		struct netdev_hw_addr *ha;
+	else if (dev->mc_count)  {
+		int i;
+		struct dev_mc_list *cur_addr;
 
 		/* Set the Hash perfec mode */
 		mcr |= MAC_CR_HPFILT_;
@@ -1348,16 +1351,20 @@ static void smc911x_set_multicast_list(struct net_device *dev)
 		/* start with a table of all zeros: reject all */
 		memset(multicast_table, 0, sizeof(multicast_table));
 
-		netdev_for_each_mc_addr(ha, dev) {
+		cur_addr = dev->mc_list;
+		for (i = 0; i < dev->mc_count; i++, cur_addr = cur_addr->next) {
 			u32 position;
 
+			/* do we have a pointer here? */
+			if (!cur_addr)
+				break;
 			/* make sure this is a multicast address -
 				shouldn't this be a given if we have it here ? */
-			if (!(*ha->addr & 1))
-				continue;
+			if (!(*cur_addr->dmi_addr & 1))
+				 continue;
 
 			/* upper 6 bits are used as hash index */
-			position = ether_crc(ETH_ALEN, ha->addr)>>26;
+			position = ether_crc(ETH_ALEN, cur_addr->dmi_addr)>>26;
 
 			multicast_table[position>>5] |= 1 << (position&0x1f);
 		}
@@ -1402,8 +1409,15 @@ static int
 smc911x_open(struct net_device *dev)
 {
 	struct smc911x_local *lp = netdev_priv(dev);
+	unsigned int bmcr; 
+	int phy = lp->mii.phy_id;
 
 	DBG(SMC_DEBUG_FUNC, "%s: --> %s\n", dev->name, __func__);
+
+	/* Re-Configure the Phy Control register */
+        SMC_GET_PHY_BMCR(lp, phy, bmcr);
+        bmcr &= ~BMCR_PDOWN;
+        SMC_SET_PHY_BMCR(lp, phy, bmcr);
 
 	/*
 	 * Check that the address is valid.  If its not, refuse
@@ -1539,7 +1553,7 @@ smc911x_ethtool_getdrvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
 	strncpy(info->driver, CARDNAME, sizeof(info->driver));
 	strncpy(info->version, version, sizeof(info->version));
-	strncpy(info->bus_info, dev_name(dev->dev.parent), sizeof(info->bus_info));
+	strncpy(info->bus_info, dev->dev.parent->bus_id, sizeof(info->bus_info));
 }
 
 static int smc911x_ethtool_nwayreset(struct net_device *dev)
@@ -1768,20 +1782,6 @@ static int __devinit smc911x_findirq(struct net_device *dev)
 	return probe_irq_off(cookie);
 }
 
-static const struct net_device_ops smc911x_netdev_ops = {
-	.ndo_open		= smc911x_open,
-	.ndo_stop		= smc911x_close,
-	.ndo_start_xmit		= smc911x_hard_start_xmit,
-	.ndo_tx_timeout		= smc911x_timeout,
-	.ndo_set_multicast_list	= smc911x_set_multicast_list,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_mac_address	= eth_mac_addr,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= smc911x_poll_controller,
-#endif
-};
-
 /*
  * Function: smc911x_probe(unsigned long ioaddr)
  *
@@ -1912,6 +1912,17 @@ static int __devinit smc911x_probe(struct net_device *dev)
 
 	spin_lock_init(&lp->lock);
 
+#if defined(CONFIG_MACH_SMDK6410)||defined(CONFIG_MACH_SMDK2450)||defined(CONFIG_MACH_SMDKC100)
+	dev->dev_addr[0] = 0x00;
+	dev->dev_addr[1] = 0x09;
+	dev->dev_addr[2] = 0xc0;
+	dev->dev_addr[3] = 0xff;
+	dev->dev_addr[4] = 0xec;
+	dev->dev_addr[5] = 0x48;
+
+	SMC_SET_MAC_ADDR(lp, dev->dev_addr);
+#endif
+
 	/* Get the MAC address */
 	SMC_GET_MAC_ADDR(lp, dev->dev_addr);
 
@@ -1948,9 +1959,16 @@ static int __devinit smc911x_probe(struct net_device *dev)
 	/* Fill in the fields of the device structure with ethernet values. */
 	ether_setup(dev);
 
-	dev->netdev_ops = &smc911x_netdev_ops;
+	dev->open = smc911x_open;
+	dev->stop = smc911x_close;
+	dev->hard_start_xmit = smc911x_hard_start_xmit;
+	dev->tx_timeout = smc911x_timeout;
 	dev->watchdog_timeo = msecs_to_jiffies(watchdog);
+	dev->set_multicast_list = smc911x_set_multicast_list;
 	dev->ethtool_ops = &smc911x_ethtool_ops;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = smc911x_poll_controller;
+#endif
 
 	INIT_WORK(&lp->phy_configure, smc911x_phy_configure);
 	lp->mii.phy_id_mask = 0x1f;
@@ -1968,7 +1986,7 @@ static int __devinit smc911x_probe(struct net_device *dev)
 
 	/* Set default parameters */
 	lp->msg_enable = NETIF_MSG_LINK;
-	lp->ctl_rfduplx = 1;
+	lp->ctl_rfduplx = 0;
 	lp->ctl_rspeed = 100;
 
 #ifdef SMC_DYNAMIC_BUS_CONFIG
@@ -1978,7 +1996,7 @@ static int __devinit smc911x_probe(struct net_device *dev)
 #endif
 
 	/* Grab the IRQ */
-	retval = request_irq(dev->irq, smc911x_interrupt,
+	retval = request_irq(dev->irq, &smc911x_interrupt,
 			     irq_flags, dev->name, dev);
 	if (retval)
 		goto err_out;
@@ -2011,8 +2029,10 @@ static int __devinit smc911x_probe(struct net_device *dev)
 					"set using ifconfig\n", dev->name);
 		} else {
 			/* Print the Ethernet address */
-			printk("%s: Ethernet addr: %pM\n",
-				dev->name, dev->dev_addr);
+			printk("%s: Ethernet addr: ", dev->name);
+			for (i = 0; i < 5; i++)
+				printk("%2.2x:", dev->dev_addr[i]);
+			printk("%2.2x\n", dev->dev_addr[5]);
 		}
 
 		if (lp->phy_type == 0) {
@@ -2047,6 +2067,9 @@ err_out:
  */
 static int __devinit smc911x_drv_probe(struct platform_device *pdev)
 {
+#ifdef SMC_DYNAMIC_BUS_CONFIG
+	struct smc911x_platdata *pd = pdev->dev.platform_data;
+#endif
 	struct net_device *ndev;
 	struct resource *res;
 	struct smc911x_local *lp;
@@ -2081,14 +2104,11 @@ static int __devinit smc911x_drv_probe(struct platform_device *pdev)
 	lp = netdev_priv(ndev);
 	lp->netdev = ndev;
 #ifdef SMC_DYNAMIC_BUS_CONFIG
-	{
-		struct smc911x_platdata *pd = pdev->dev.platform_data;
-		if (!pd) {
-			ret = -EINVAL;
-			goto release_both;
-		}
-		memcpy(&lp->cfg, pd, sizeof(lp->cfg));
+	if (!pd) {
+		ret = -EINVAL;
+		goto release_both;
 	}
+	memcpy(&lp->cfg, pd, sizeof(lp->cfg));
 #endif
 
 	addr = ioremap(res->start, SMC911X_IO_EXTENT);

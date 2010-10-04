@@ -3,9 +3,6 @@
 #include <linux/init.h>
 #include <linux/pm.h>
 #include <linux/efi.h>
-#include <linux/dmi.h>
-#include <linux/sched.h>
-#include <linux/tboot.h>
 #include <acpi/reboot.h>
 #include <asm/io.h>
 #include <asm/apic.h>
@@ -17,14 +14,16 @@
 #include <asm/reboot.h>
 #include <asm/pci_x86.h>
 #include <asm/virtext.h>
-#include <asm/cpu.h>
 
 #ifdef CONFIG_X86_32
+# include <linux/dmi.h>
 # include <linux/ctype.h>
 # include <linux/mc146818rtc.h>
 #else
-# include <asm/x86_init.h>
+# include <asm/iommu.h>
 #endif
+
+#include <mach_ipi.h>
 
 /*
  * Power off function, if any
@@ -194,24 +193,6 @@ static struct dmi_system_id __initdata reboot_dmi_table[] = {
 			DMI_MATCH(DMI_BOARD_NAME, "0KP561"),
 		},
 	},
-	{   /* Handle problems with rebooting on Dell Optiplex 360 with 0T656F */
-		.callback = set_bios_reboot,
-		.ident = "Dell OptiPlex 360",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "OptiPlex 360"),
-			DMI_MATCH(DMI_BOARD_NAME, "0T656F"),
-		},
-	},
-	{	/* Handle problems with rebooting on Dell OptiPlex 760 with 0G919G*/
-		.callback = set_bios_reboot,
-		.ident = "Dell OptiPlex 760",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "OptiPlex 760"),
-			DMI_MATCH(DMI_BOARD_NAME, "0G919G"),
-		},
-	},
 	{	/* Handle problems with rebooting on Dell 2400's */
 		.callback = set_bios_reboot,
 		.ident = "Dell PowerEdge 2400",
@@ -228,14 +209,6 @@ static struct dmi_system_id __initdata reboot_dmi_table[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "Precision WorkStation T5400"),
 		},
 	},
-	{	/* Handle problems with rebooting on Dell T7400's */
-		.callback = set_bios_reboot,
-		.ident = "Dell Precision T7400",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Precision WorkStation T7400"),
-		},
-	},
 	{	/* Handle problems with rebooting on HP laptops */
 		.callback = set_bios_reboot,
 		.ident = "HP Compaq Laptop",
@@ -250,38 +223,6 @@ static struct dmi_system_id __initdata reboot_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Dell XPS710"),
-		},
-	},
-	{	/* Handle problems with rebooting on Dell DXP061 */
-		.callback = set_bios_reboot,
-		.ident = "Dell DXP061",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Dell DXP061"),
-		},
-	},
-	{	/* Handle problems with rebooting on Sony VGN-Z540N */
-		.callback = set_bios_reboot,
-		.ident = "Sony VGN-Z540N",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Sony Corporation"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "VGN-Z540N"),
-		},
-	},
-	{	/* Handle problems with rebooting on CompuLab SBC-FITPC2 */
-		.callback = set_bios_reboot,
-		.ident = "CompuLab SBC-FITPC2",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "CompuLab"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "SBC-FITPC2"),
-		},
-	},
-	{       /* Handle problems with rebooting on ASUS P4S800 */
-		.callback = set_bios_reboot,
-		.ident = "ASUS P4S800",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
-			DMI_MATCH(DMI_BOARD_NAME, "P4S800"),
 		},
 	},
 	{ }
@@ -431,62 +372,6 @@ EXPORT_SYMBOL(machine_real_restart);
 
 #endif /* CONFIG_X86_32 */
 
-/*
- * Some Apple MacBook and MacBookPro's needs reboot=p to be able to reboot
- */
-static int __init set_pci_reboot(const struct dmi_system_id *d)
-{
-	if (reboot_type != BOOT_CF9) {
-		reboot_type = BOOT_CF9;
-		printk(KERN_INFO "%s series board detected. "
-		       "Selecting PCI-method for reboots.\n", d->ident);
-	}
-	return 0;
-}
-
-static struct dmi_system_id __initdata pci_reboot_dmi_table[] = {
-	{	/* Handle problems with rebooting on Apple MacBook5 */
-		.callback = set_pci_reboot,
-		.ident = "Apple MacBook5",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "MacBook5"),
-		},
-	},
-	{	/* Handle problems with rebooting on Apple MacBookPro5 */
-		.callback = set_pci_reboot,
-		.ident = "Apple MacBookPro5",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "MacBookPro5"),
-		},
-	},
-	{	/* Handle problems with rebooting on Apple Macmini3,1 */
-		.callback = set_pci_reboot,
-		.ident = "Apple Macmini3,1",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Macmini3,1"),
-		},
-	},
-	{	/* Handle problems with rebooting on the iMac9,1. */
-		.callback = set_pci_reboot,
-		.ident = "Apple iMac9,1",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "iMac9,1"),
-		},
-	},
-	{ }
-};
-
-static int __init pci_reboot_init(void)
-{
-	dmi_check_system(pci_reboot_dmi_table);
-	return 0;
-}
-core_initcall(pci_reboot_init);
-
 static inline void kb_wait(void)
 {
 	int i;
@@ -550,8 +435,6 @@ static void native_machine_emergency_restart(void)
 
 	if (reboot_emergency)
 		emergency_vmx_disable_all();
-
-	tboot_shutdown(TB_SHUTDOWN_REBOOT);
 
 	/* Tell the BIOS if we want cold or warm reboot */
 	*((unsigned short *)__va(0x472)) = reboot_mode;
@@ -655,7 +538,7 @@ void native_machine_shutdown(void)
 #endif
 
 #ifdef CONFIG_X86_64
-	x86_platform.iommu_shutdown();
+	pci_iommu_shutdown();
 #endif
 }
 
@@ -679,8 +562,6 @@ static void native_machine_halt(void)
 	/* stop other cpus and apics */
 	machine_shutdown();
 
-	tboot_shutdown(TB_SHUTDOWN_HALT);
-
 	/* stop this cpu */
 	stop_this_cpu(NULL);
 }
@@ -692,8 +573,6 @@ static void native_machine_power_off(void)
 			machine_shutdown();
 		pm_power_off();
 	}
-	/* a fallback in case there is no PM info available */
-	tboot_shutdown(TB_SHUTDOWN_HALT);
 }
 
 struct machine_ops machine_ops = {
@@ -779,7 +658,7 @@ static int crash_nmi_callback(struct notifier_block *self,
 
 static void smp_send_nmi_allbutself(void)
 {
-	apic->send_IPI_allbutself(NMI_VECTOR);
+	send_IPI_allbutself(NMI_VECTOR);
 }
 
 static struct notifier_block crash_nmi_nb = {

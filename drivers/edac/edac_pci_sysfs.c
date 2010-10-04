@@ -8,7 +8,6 @@
  */
 #include <linux/module.h>
 #include <linux/sysdev.h>
-#include <linux/slab.h>
 #include <linux/ctype.h>
 
 #include "edac_core.h"
@@ -122,7 +121,7 @@ static ssize_t edac_pci_instance_store(struct kobject *kobj,
 }
 
 /* fs_ops table */
-static const struct sysfs_ops pci_instance_ops = {
+static struct sysfs_ops pci_instance_ops = {
 	.show = edac_pci_instance_show,
 	.store = edac_pci_instance_store
 };
@@ -262,7 +261,7 @@ static ssize_t edac_pci_dev_store(struct kobject *kobj,
 	return -EIO;
 }
 
-static const struct sysfs_ops edac_pci_sysfs_ops = {
+static struct sysfs_ops edac_pci_sysfs_ops = {
 	.show = edac_pci_dev_show,
 	.store = edac_pci_dev_store
 };
@@ -534,6 +533,8 @@ static u16 get_pci_parity_status(struct pci_dev *dev, int secondary)
 static void edac_pci_dev_parity_clear(struct pci_dev *dev)
 {
 	u8 header_type;
+
+	debugf0("%s()\n", __func__);
 
 	get_pci_parity_status(dev, 0);
 

@@ -51,6 +51,7 @@
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
+#include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -187,17 +188,6 @@ static void __init trigger_irq(int ioaddr)
 		udelay(50);			/* FIXME: Necessary? */
 		outb(MM_EN_XMT|MM_MUX, IE_MMODE); /* Start transmission */
 }
-
-static const struct net_device_ops ni5010_netdev_ops = {
-	.ndo_open		= ni5010_open,
-	.ndo_stop		= ni5010_close,
-	.ndo_start_xmit		= ni5010_send_packet,
-	.ndo_set_multicast_list	= ni5010_set_multicast_list,
-	.ndo_tx_timeout		= ni5010_timeout,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_mac_address	= eth_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-};
 
 /*
  *      This is the real probe routine.  Linux has a history of friendly device
@@ -338,8 +328,13 @@ static int __init ni5010_probe1(struct net_device *dev, int ioaddr)
         	outb(0, IE_RBUF);	/* set buffer byte 0 to 0 again */
 	}
         printk("-> bufsize rcv/xmt=%d/%d\n", bufsize_rcv, NI5010_BUFSIZE);
+	memset(netdev_priv(dev), 0, sizeof(struct ni5010_local));
 
-	dev->netdev_ops		= &ni5010_netdev_ops;
+	dev->open		= ni5010_open;
+	dev->stop		= ni5010_close;
+	dev->hard_start_xmit	= ni5010_send_packet;
+	dev->set_multicast_list = ni5010_set_multicast_list;
+	dev->tx_timeout		= ni5010_timeout;
 	dev->watchdog_timeo	= HZ/20;
 
 	dev->flags &= ~IFF_MULTICAST;	/* Multicast doesn't work */
@@ -376,7 +371,7 @@ static int ni5010_open(struct net_device *dev)
 
 	PRINTK2((KERN_DEBUG "%s: entering ni5010_open()\n", dev->name));
 
-	if (request_irq(dev->irq, ni5010_interrupt, 0, boardname, dev)) {
+	if (request_irq(dev->irq, &ni5010_interrupt, 0, boardname, dev)) {
 		printk(KERN_WARNING "%s: Cannot get irq %#2x\n", dev->name, dev->irq);
 		return -EAGAIN;
 	}
@@ -444,7 +439,7 @@ static void ni5010_timeout(struct net_device *dev)
 	/* Try to restart the adaptor. */
 	/* FIXME: Give it a real kick here */
 	chipset_init(dev, 1);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	dev->trans_start = jiffies;
 	netif_wake_queue(dev);
 }
 
@@ -460,8 +455,9 @@ static int ni5010_send_packet(struct sk_buff *skb, struct net_device *dev)
 
 	netif_stop_queue(dev);
 	hardware_send_packet(dev, (unsigned char *)skb->data, skb->len, length-skb->len);
+	dev->trans_start = jiffies;
 	dev_kfree_skb (skb);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -514,6 +510,8 @@ static void dump_packet(void *buf, int len)
 		if (i % 16 == 15) printk("\n");
 	}
 	printk("\n");
+
+	return;
 }
 
 /* We have a good packet, get it out of the buffer. */
@@ -647,8 +645,7 @@ static void ni5010_set_multicast_list(struct net_device *dev)
 
 	PRINTK2((KERN_DEBUG "%s: entering set_multicast_list\n", dev->name));
 
-	if (dev->flags & IFF_PROMISC || dev->flags & IFF_ALLMULTI ||
-	    !netdev_mc_empty(dev)) {
+	if (dev->flags&IFF_PROMISC || dev->flags&IFF_ALLMULTI || dev->mc_list) {
 		outb(RMD_PROMISC, EDLC_RMODE); /* Enable promiscuous mode */
 		PRINTK((KERN_DEBUG "%s: Entering promiscuous mode\n", dev->name));
 	} else {

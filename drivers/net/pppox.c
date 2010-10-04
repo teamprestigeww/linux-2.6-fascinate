@@ -22,6 +22,7 @@
 #include <linux/string.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/netdevice.h>
 #include <linux/net.h>
@@ -103,10 +104,12 @@ int pppox_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 
 EXPORT_SYMBOL(pppox_ioctl);
 
-static int pppox_create(struct net *net, struct socket *sock, int protocol,
-			int kern)
+static int pppox_create(struct net *net, struct socket *sock, int protocol)
 {
 	int rc = -EPROTOTYPE;
+
+	if (net != &init_net)
+		return -EAFNOSUPPORT;
 
 	if (protocol < 0 || protocol > PX_MAX_PROTO)
 		goto out;
@@ -125,7 +128,7 @@ out:
 	return rc;
 }
 
-static const struct net_proto_family pppox_proto_family = {
+static struct net_proto_family pppox_proto_family = {
 	.family	= PF_PPPOX,
 	.create	= pppox_create,
 	.owner	= THIS_MODULE,

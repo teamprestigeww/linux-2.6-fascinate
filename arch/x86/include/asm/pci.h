@@ -27,9 +27,6 @@ extern struct pci_bus *pci_scan_bus_on_node(int busno, struct pci_ops *ops,
 					    int node);
 extern struct pci_bus *pci_scan_bus_with_sysdata(int busno);
 
-#ifdef CONFIG_PCI
-
-#ifdef CONFIG_PCI_DOMAINS
 static inline int pci_domain_nr(struct pci_bus *bus)
 {
 	struct pci_sysdata *sd = bus->sysdata;
@@ -40,23 +37,18 @@ static inline int pci_proc_domain(struct pci_bus *bus)
 {
 	return pci_domain_nr(bus);
 }
-#endif
+
 
 /* Can be used to override the logic in pci_scan_bus for skipping
    already-configured bus numbers - to be used for buggy BIOSes
    or architectures with incomplete PCI setup by the loader */
 
+#ifdef CONFIG_PCI
 extern unsigned int pcibios_assign_all_busses(void);
-extern int pci_legacy_init(void);
-# ifdef CONFIG_ACPI
-#  define x86_default_pci_init pci_acpi_init
-# else
-#  define x86_default_pci_init pci_legacy_init
-# endif
 #else
-# define pcibios_assign_all_busses()	0
-# define x86_default_pci_init		NULL
+#define pcibios_assign_all_busses()	0
 #endif
+#define pcibios_scan_all_fns(a, b)	0
 
 extern unsigned long pci_mem_start;
 #define PCIBIOS_MIN_IO		0x1000
@@ -94,25 +86,19 @@ static inline void early_quirks(void) { }
 
 extern void pci_iommu_alloc(void);
 
-/* MSI arch hook */
-#define arch_setup_msi_irqs arch_setup_msi_irqs
-
-#define PCI_DMA_BUS_IS_PHYS (dma_ops->is_phys)
-
 #endif  /* __KERNEL__ */
 
-#ifdef CONFIG_X86_64
-#include "pci_64.h"
+#ifdef CONFIG_X86_32
+# include "pci_32.h"
+#else
+# include "pci_64.h"
 #endif
-
-void dma32_reserve_bootmem(void);
 
 /* implement the pci_ DMA API in terms of the generic device dma_ one */
 #include <asm-generic/pci-dma-compat.h>
 
 /* generic pci stuff */
 #include <asm-generic/pci.h>
-#define PCIBIOS_MAX_MEM_32 0xffffffff
 
 #ifdef CONFIG_NUMA
 /* Returns the node based on pci bus */
@@ -123,14 +109,15 @@ static inline int __pcibus_to_node(const struct pci_bus *bus)
 	return sd->node;
 }
 
+static inline cpumask_t __pcibus_to_cpumask(struct pci_bus *bus)
+{
+	return node_to_cpumask(__pcibus_to_node(bus));
+}
+
 static inline const struct cpumask *
 cpumask_of_pcibus(const struct pci_bus *bus)
 {
-	int node;
-
-	node = __pcibus_to_node(bus);
-	return (node == -1) ? cpu_online_mask :
-			      cpumask_of_node(node);
+	return cpumask_of_node(__pcibus_to_node(bus));
 }
 #endif
 

@@ -204,13 +204,13 @@ void ncp_update_inode2(struct inode *, struct ncp_entry_info *);
 /* linux/fs/ncpfs/dir.c */
 extern const struct inode_operations ncp_dir_inode_operations;
 extern const struct file_operations ncp_dir_operations;
-extern const struct dentry_operations ncp_root_dentry_operations;
+extern struct dentry_operations ncp_root_dentry_operations;
 int ncp_conn_logged_in(struct super_block *);
 int ncp_date_dos2unix(__le16 time, __le16 date);
 void ncp_date_unix2dos(int unix_date, __le16 * time, __le16 * date);
 
 /* linux/fs/ncpfs/ioctl.c */
-long ncp_ioctl(struct file *, unsigned int, unsigned long);
+int ncp_ioctl(struct inode *, struct file *, unsigned int, unsigned long);
 long ncp_compat_ioctl(struct file *, unsigned int, unsigned long);
 
 /* linux/fs/ncpfs/sock.c */

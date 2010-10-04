@@ -19,7 +19,6 @@
  * See also Documentation/block/ioprio.txt
  *
  */
-#include <linux/gfp.h>
 #include <linux/kernel.h>
 #include <linux/ioprio.h>
 #include <linux/blkdev.h>

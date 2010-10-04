@@ -622,8 +622,7 @@ u16_t zfTxGenWlanHeader(zdev_t* dev, zbuf_t* buf, u16_t* header, u16_t seq,
             phyCtrl = 0xc0001;   //PHY control L
 
             /* WDS port checking */
-            wdsPort = port - 0x20;
-            if (wdsPort >= ZM_MAX_WDS_SUPPORT)
+            if ((wdsPort = (port - 0x20)) >= ZM_MAX_WDS_SUPPORT)
             {
                 wdsPort = 0;
             }

@@ -25,37 +25,26 @@
 #include <linux/interrupt.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
-#include <linux/mtd/physmap.h>
 
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
+#include <asm/mach/flash.h>
 
 #include <mach/gpio.h>
-#include <plat/flash.h>
-#include <plat/mux.h>
-#include <plat/usb.h>
-#include <plat/dma.h>
-#include <plat/tc.h>
-#include <plat/board.h>
-#include <plat/irda.h>
-#include <plat/keypad.h>
-#include <plat/common.h>
-#include <plat/omap-alsa.h>
+#include <mach/mux.h>
+#include <mach/usb.h>
+#include <mach/dma.h>
+#include <mach/tc.h>
+#include <mach/board.h>
+#include <mach/irda.h>
+#include <mach/keypad.h>
+#include <mach/common.h>
+#include <mach/omap-alsa.h>
 
 #include <linux/spi/spi.h>
 #include <linux/spi/ads7846.h>
-
-#define PALMZ71_USBDETECT_GPIO	0
-#define PALMZ71_PENIRQ_GPIO	6
-#define PALMZ71_MMC_WP_GPIO	8
-#define PALMZ71_HDQ_GPIO 	11
-
-#define PALMZ71_HOTSYNC_GPIO	OMAP_MPUIO(1)
-#define PALMZ71_CABLE_GPIO	OMAP_MPUIO(2)
-#define PALMZ71_SLIDER_GPIO	OMAP_MPUIO(3)
-#define PALMZ71_MMC_IN_GPIO	OMAP_MPUIO(4)
 
 static void __init
 omap_palmz71_init_irq(void)
@@ -127,9 +116,10 @@ static struct mtd_partition palmz71_rom_partitions[] = {
 	},
 };
 
-static struct physmap_flash_data palmz71_rom_data = {
+static struct flash_platform_data palmz71_rom_data = {
+	.map_name	= "map_rom",
+	.name		= "onboardrom",
 	.width		= 2,
-	.set_vpp	= omap1_set_vpp,
 	.parts		= palmz71_rom_partitions,
 	.nr_parts	= ARRAY_SIZE(palmz71_rom_partitions),
 };
@@ -141,7 +131,7 @@ static struct resource palmz71_rom_resource = {
 };
 
 static struct platform_device palmz71_rom_device = {
-	.name	= "physmap-flash",
+	.name	= "omapflash",
 	.id	= -1,
 	.dev = {
 		.platform_data = &palmz71_rom_data,
@@ -244,8 +234,14 @@ static struct omap_lcd_config palmz71_lcd_config __initdata = {
 	.ctrl_name = "internal",
 };
 
+static struct omap_uart_config palmz71_uart_config __initdata = {
+	.enabled_uarts = (1 << 0) | (1 << 1) | (0 << 2),
+};
+
 static struct omap_board_config_kernel palmz71_config[] __initdata = {
+	{OMAP_TAG_USB,	&palmz71_usb_config},
 	{OMAP_TAG_LCD,	&palmz71_lcd_config},
+	{OMAP_TAG_UART,	&palmz71_uart_config},
 };
 
 static irqreturn_t
@@ -307,14 +303,6 @@ palmz71_gpio_setup(int early)
 static void __init
 omap_palmz71_init(void)
 {
-	/* mux pins for uarts */
-	omap_cfg_reg(UART1_TX);
-	omap_cfg_reg(UART1_RTS);
-	omap_cfg_reg(UART2_TX);
-	omap_cfg_reg(UART2_RTS);
-	omap_cfg_reg(UART3_TX);
-	omap_cfg_reg(UART3_RX);
-
 	palmz71_gpio_setup(1);
 	omap_mpu_wdt_mode(0);
 
@@ -325,7 +313,6 @@ omap_palmz71_init(void)
 
 	spi_register_board_info(palmz71_boardinfo,
 				ARRAY_SIZE(palmz71_boardinfo));
-	omap1_usb_init(&palmz71_usb_config);
 	omap_serial_init();
 	omap_register_i2c_bus(1, 100, NULL, 0);
 	palmz71_gpio_setup(0);
@@ -338,12 +325,10 @@ omap_palmz71_map_io(void)
 }
 
 MACHINE_START(OMAP_PALMZ71, "OMAP310 based Palm Zire71")
-	.phys_io	= 0xfff00000,
-	.io_pg_offst	= ((0xfef00000) >> 18) & 0xfffc,
-	.boot_params	= 0x10000100,
-	.map_io		= omap_palmz71_map_io,
-	.reserve	= omap_reserve,
-	.init_irq	= omap_palmz71_init_irq,
-	.init_machine	= omap_palmz71_init,
-	.timer		= &omap_timer,
+	.phys_io = 0xfff00000,
+	.io_pg_offst = ((0xfef00000) >> 18) & 0xfffc,
+	.boot_params = 0x10000100,.map_io = omap_palmz71_map_io,
+	.init_irq = omap_palmz71_init_irq,
+	.init_machine = omap_palmz71_init,
+	.timer = &omap_timer,
 MACHINE_END

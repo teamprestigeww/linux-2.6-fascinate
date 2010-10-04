@@ -75,8 +75,6 @@ struct musb_ep {
 	/* later things are modified based on usage */
 	struct list_head		req_list;
 
-	u8				wedged;
-
 	/* true if lock must be dropped but req_list may not be advanced */
 	u8				busy;
 };
@@ -105,6 +103,6 @@ extern void musb_gadget_cleanup(struct musb *);
 
 extern void musb_g_giveback(struct musb_ep *, struct usb_request *, int);
 
-extern void musb_ep_restart(struct musb *, struct musb_request *);
+extern int musb_gadget_set_halt(struct usb_ep *ep, int value);
 
 #endif		/* __MUSB_GADGET_H */

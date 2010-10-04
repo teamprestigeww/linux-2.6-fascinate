@@ -19,12 +19,8 @@
 #define MAX_ILO_DEV	1
 /* max number of files */
 #define MAX_OPEN	(MAX_CCB * MAX_ILO_DEV)
-/* total wait time in usec */
-#define MAX_WAIT_TIME	10000
-/* per spin wait time in usec */
-#define WAIT_TIME	10
 /* spin counter for open/close delay */
-#define MAX_WAIT	(MAX_WAIT_TIME / WAIT_TIME)
+#define MAX_WAIT	10000
 
 /*
  * Per device, used to track global memory allocations.
@@ -44,27 +40,13 @@ struct ilo_hwinfo {
 
 	struct pci_dev *ilo_dev;
 
-	/*
-	 * open_lock      serializes ccb_cnt during open and close
-	 * [ irq disabled ]
-	 * -> alloc_lock  used when adding/removing/searching ccb_alloc,
-	 *                which represents all ccbs open on the device
-	 * --> fifo_lock  controls access to fifo queues shared with hw
-	 *
-	 * Locks must be taken in this order, but open_lock and alloc_lock
-	 * are optional, they do not need to be held in order to take a
-	 * lower level lock.
-	 */
-	spinlock_t open_lock;
 	spinlock_t alloc_lock;
 	spinlock_t fifo_lock;
 
 	struct cdev cdev;
 };
 
-/* offset from mmio_vaddr for enabling doorbell interrupts */
-#define DB_IRQ		0xB2
-/* offset from mmio_vaddr for outbound communications */
+/* offset from mmio_vaddr */
 #define DB_OUT		0xD4
 /* DB_OUT reset bit */
 #define DB_RESET	26
@@ -79,21 +61,21 @@ struct ilo_hwinfo {
 struct ccb {
 	union {
 		char *send_fifobar;
-		u64 send_fifobar_pa;
+		u64 padding1;
 	} ccb_u1;
 	union {
 		char *send_desc;
-		u64 send_desc_pa;
+		u64 padding2;
 	} ccb_u2;
 	u64 send_ctrl;
 
 	union {
 		char *recv_fifobar;
-		u64 recv_fifobar_pa;
+		u64 padding3;
 	} ccb_u3;
 	union {
 		char *recv_desc;
-		u64 recv_desc_pa;
+		u64 padding4;
 	} ccb_u4;
 	u64 recv_ctrl;
 
@@ -144,9 +126,6 @@ struct ccb_data {
 
 	/* pointer to hardware device info */
 	struct ilo_hwinfo *ilo_hw;
-
-	/* queue for this ccb to wait for recv data */
-	wait_queue_head_t ccb_waitq;
 
 	/* usage count, to allow for shared ccb's */
 	int	    ccb_cnt;

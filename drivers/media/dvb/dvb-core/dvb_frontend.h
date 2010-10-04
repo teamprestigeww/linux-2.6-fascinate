@@ -36,7 +36,6 @@
 #include <linux/errno.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
-#include <linux/slab.h>
 
 #include <linux/dvb/frontend.h>
 
@@ -161,7 +160,7 @@ struct tuner_state {
  * search callback possible return status
  *
  * DVBFE_ALGO_SEARCH_SUCCESS
- * The frontend search algorithm completed and returned successfully
+ * The frontend search algorithm completed and returned succesfully
  *
  * DVBFE_ALGO_SEARCH_ASLEEP
  * The frontend search algorithm is sleeping
@@ -215,14 +214,14 @@ struct dvb_tuner_ops {
 	int (*get_status)(struct dvb_frontend *fe, u32 *status);
 	int (*get_rf_strength)(struct dvb_frontend *fe, u16 *strength);
 
-	/** These are provided separately from set_params in order to facilitate silicon
-	 * tuners which require sophisticated tuning loops, controlling each parameter separately. */
+	/** These are provided seperately from set_params in order to facilitate silicon
+	 * tuners which require sophisticated tuning loops, controlling each parameter seperately. */
 	int (*set_frequency)(struct dvb_frontend *fe, u32 frequency);
 	int (*set_bandwidth)(struct dvb_frontend *fe, u32 bandwidth);
 
 	/*
-	 * These are provided separately from set_params in order to facilitate silicon
-	 * tuners which require sophisticated tuning loops, controlling each parameter separately.
+	 * These are provided seperately from set_params in order to facilitate silicon
+	 * tuners which require sophisticated tuning loops, controlling each parameter seperately.
 	 */
 	int (*set_state)(struct dvb_frontend *fe, enum tuner_param param, struct tuner_state *state);
 	int (*get_state)(struct dvb_frontend *fe, enum tuner_param param, struct tuner_state *state);
@@ -342,23 +341,6 @@ struct dtv_frontend_properties {
 	fe_rolloff_t		rolloff;
 
 	fe_delivery_system_t	delivery_system;
-
-	/* ISDB-T specifics */
-	u8			isdbt_partial_reception;
-	u8			isdbt_sb_mode;
-	u8			isdbt_sb_subchannel;
-	u32			isdbt_sb_segment_idx;
-	u32			isdbt_sb_segment_count;
-	u8			isdbt_layer_enabled;
-	struct {
-	    u8			segment_count;
-	    fe_code_rate_t	fec;
-	    fe_modulation_t	modulation;
-	    u8			interleaving;
-	} layer[3];
-
-	/* ISDB-T specifics */
-	u32			isdbs_ts_id;
 };
 
 struct dvb_frontend {

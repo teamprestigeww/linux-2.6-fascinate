@@ -18,7 +18,6 @@
 #include <linux/string.h>
 #include <linux/mm.h>
 #include <linux/rtc.h>
-#include <linux/platform_device.h>
 
 #include <asm/machdep.h>
 #include <asm/io.h>
@@ -73,44 +72,90 @@ static irqreturn_t timer_interrupt(int irq, void *dummy)
 	return IRQ_HANDLED;
 }
 
-void read_persistent_clock(struct timespec *ts)
+void __init time_init(void)
 {
 	struct rtc_time time;
-	ts->tv_sec = 0;
-	ts->tv_nsec = 0;
 
 	if (mach_hwclk) {
 		mach_hwclk(0, &time);
 
 		if ((time.tm_year += 1900) < 1970)
 			time.tm_year += 100;
-		ts->tv_sec = mktime(time.tm_year, time.tm_mon, time.tm_mday,
+		xtime.tv_sec = mktime(time.tm_year, time.tm_mon, time.tm_mday,
 				      time.tm_hour, time.tm_min, time.tm_sec);
+		xtime.tv_nsec = 0;
 	}
-}
+	wall_to_monotonic.tv_sec = -xtime.tv_sec;
 
-void __init time_init(void)
-{
 	mach_sched_init(timer_interrupt);
 }
 
-u32 arch_gettimeoffset(void)
+/*
+ * This version of gettimeofday has near microsecond resolution.
+ */
+void do_gettimeofday(struct timeval *tv)
 {
-	return mach_gettimeoffset() * 1000;
+	unsigned long flags;
+	unsigned long seq;
+	unsigned long usec, sec;
+	unsigned long max_ntp_tick = tick_usec - tickadj;
+
+	do {
+		seq = read_seqbegin_irqsave(&xtime_lock, flags);
+
+		usec = mach_gettimeoffset();
+
+		/*
+		 * If time_adjust is negative then NTP is slowing the clock
+		 * so make sure not to go into next possible interval.
+		 * Better to lose some accuracy than have time go backwards..
+		 */
+		if (unlikely(time_adjust < 0))
+			usec = min(usec, max_ntp_tick);
+
+		sec = xtime.tv_sec;
+		usec += xtime.tv_nsec/1000;
+	} while (read_seqretry_irqrestore(&xtime_lock, seq, flags));
+
+
+	while (usec >= 1000000) {
+		usec -= 1000000;
+		sec++;
+	}
+
+	tv->tv_sec = sec;
+	tv->tv_usec = usec;
 }
 
-static int __init rtc_init(void)
+EXPORT_SYMBOL(do_gettimeofday);
+
+int do_settimeofday(struct timespec *tv)
 {
-	struct platform_device *pdev;
+	time_t wtm_sec, sec = tv->tv_sec;
+	long wtm_nsec, nsec = tv->tv_nsec;
 
-	if (!mach_hwclk)
-		return -ENODEV;
+	if ((unsigned long)tv->tv_nsec >= NSEC_PER_SEC)
+		return -EINVAL;
 
-	pdev = platform_device_register_simple("rtc-generic", -1, NULL, 0);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
+	write_seqlock_irq(&xtime_lock);
+	/* This is revolting. We need to set the xtime.tv_nsec
+	 * correctly. However, the value in this location is
+	 * is value at the last tick.
+	 * Discover what correction gettimeofday
+	 * would have done, and then undo it!
+	 */
+	nsec -= 1000 * mach_gettimeoffset();
 
+	wtm_sec  = wall_to_monotonic.tv_sec + (xtime.tv_sec - sec);
+	wtm_nsec = wall_to_monotonic.tv_nsec + (xtime.tv_nsec - nsec);
+
+	set_normalized_timespec(&xtime, sec, nsec);
+	set_normalized_timespec(&wall_to_monotonic, wtm_sec, wtm_nsec);
+
+	ntp_clear();
+	write_sequnlock_irq(&xtime_lock);
+	clock_was_set();
 	return 0;
 }
 
-module_init(rtc_init);
+EXPORT_SYMBOL(do_settimeofday);

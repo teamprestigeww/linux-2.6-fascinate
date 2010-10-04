@@ -12,15 +12,13 @@
 #include <linux/bitops.h>
 #include <linux/input.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
-#include <linux/workqueue.h>
 
 #include "firedtv.h"
 
 /* fixed table with older keycodes, geared towards MythTV */
-static const u16 oldtable[] = {
+const static u16 oldtable[] = {
 
 	/* code from device: 0x4501...0x451f */
 
@@ -64,7 +62,7 @@ static const u16 oldtable[] = {
 };
 
 /* user-modifiable table for a remote as sold in 2008 */
-static const u16 keytable[] = {
+const static u16 keytable[] = {
 
 	/* code from device: 0x0300...0x031f */
 
@@ -165,7 +163,6 @@ fail:
 
 void fdtv_unregister_rc(struct firedtv *fdtv)
 {
-	cancel_work_sync(&fdtv->remote_ctrl_work);
 	kfree(fdtv->remote_ctrl_dev->keycode);
 	input_unregister_device(fdtv->remote_ctrl_dev);
 }

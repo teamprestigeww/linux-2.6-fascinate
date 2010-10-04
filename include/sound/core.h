@@ -93,6 +93,15 @@ struct snd_device {
 
 #define snd_device(n) list_entry(n, struct snd_device, list)
 
+/* monitor files for graceful shutdown (hotplug) */
+
+struct snd_monitor_file {
+	struct file *file;
+	struct snd_monitor_file *next;
+	const struct file_operations *disconnected_f_op;
+	struct list_head shutdown_list;
+};
+
 /* main structure for soundcard */
 
 struct snd_card {
@@ -125,7 +134,7 @@ struct snd_card {
 	struct snd_info_entry *proc_id;	/* the card id */
 	struct proc_dir_entry *proc_root_link;	/* number link to real id */
 
-	struct list_head files_list;	/* all files associated to this card */
+	struct snd_monitor_file *files; /* all files associated to this card */
 	struct snd_shutdown_f_ops *s_f_ops; /* file operations in the shutdown
 								state */
 	spinlock_t files_lock;		/* lock the files for this card */
@@ -287,14 +296,11 @@ int snd_card_locked(int card);
 extern int (*snd_mixer_oss_notify_callback)(struct snd_card *card, int cmd);
 #endif
 
-int snd_card_create(int idx, const char *id,
-		    struct module *module, int extra_size,
-		    struct snd_card **card_ret);
-
+struct snd_card *snd_card_new(int idx, const char *id,
+			 struct module *module, int extra_size);
 int snd_card_disconnect(struct snd_card *card);
 int snd_card_free(struct snd_card *card);
 int snd_card_free_when_closed(struct snd_card *card);
-void snd_card_set_id(struct snd_card *card, const char *id);
 int snd_card_register(struct snd_card *card);
 int snd_card_info_init(void);
 int snd_card_info_done(void);
@@ -302,7 +308,9 @@ int snd_component_add(struct snd_card *card, const char *component);
 int snd_card_file_add(struct snd_card *card, struct file *file);
 int snd_card_file_remove(struct snd_card *card, struct file *file);
 
+#ifndef snd_card_set_dev
 #define snd_card_set_dev(card, devptr) ((card)->dev = (devptr))
+#endif
 
 /* device.c */
 
@@ -329,17 +337,18 @@ unsigned int snd_dma_pointer(unsigned long dma, unsigned int size);
 struct resource;
 void release_and_free_resource(struct resource *res);
 
-/* --- */
-
-#if defined(CONFIG_SND_DEBUG) || defined(CONFIG_SND_VERBOSE_PRINTK)
-void __snd_printk(unsigned int level, const char *file, int line,
-		  const char *format, ...)
-     __attribute__ ((format (printf, 4, 5)));
-#else
-#define __snd_printk(level, file, line, format, args...) \
-	printk(format, ##args)
+#ifdef CONFIG_SND_VERBOSE_PRINTK
+void snd_verbose_printk(const char *file, int line, const char *format, ...)
+     __attribute__ ((format (printf, 3, 4)));
+#endif
+#if defined(CONFIG_SND_DEBUG) && defined(CONFIG_SND_VERBOSE_PRINTK)
+void snd_verbose_printd(const char *file, int line, const char *format, ...)
+     __attribute__ ((format (printf, 3, 4)));
 #endif
 
+/* --- */
+
+#ifdef CONFIG_SND_VERBOSE_PRINTK
 /**
  * snd_printk - printk wrapper
  * @fmt: format string
@@ -348,9 +357,15 @@ void __snd_printk(unsigned int level, const char *file, int line,
  * when configured with CONFIG_SND_VERBOSE_PRINTK.
  */
 #define snd_printk(fmt, args...) \
-	__snd_printk(0, __FILE__, __LINE__, fmt, ##args)
+	snd_verbose_printk(__FILE__, __LINE__, fmt ,##args)
+#else
+#define snd_printk(fmt, args...) \
+	printk(fmt ,##args)
+#endif
 
 #ifdef CONFIG_SND_DEBUG
+
+#ifdef CONFIG_SND_VERBOSE_PRINTK
 /**
  * snd_printd - debug printk
  * @fmt: format string
@@ -359,7 +374,11 @@ void __snd_printk(unsigned int level, const char *file, int line,
  * Ignored when CONFIG_SND_DEBUG is not set.
  */
 #define snd_printd(fmt, args...) \
-	__snd_printk(1, __FILE__, __LINE__, fmt, ##args)
+	snd_verbose_printd(__FILE__, __LINE__, fmt ,##args)
+#else
+#define snd_printd(fmt, args...) \
+	printk(fmt ,##args)
+#endif
 
 /**
  * snd_BUG - give a BUG warning message and stack trace
@@ -406,10 +425,9 @@ static inline int __snd_bug_on(int cond)
  * Works like snd_printk() for debugging purposes.
  * Ignored when CONFIG_SND_DEBUG_VERBOSE is not set.
  */
-#define snd_printdd(format, args...) \
-	__snd_printk(2, __FILE__, __LINE__, format, ##args)
+#define snd_printdd(format, args...) snd_printk(format, ##args)
 #else
-#define snd_printdd(format, args...)	do { } while (0)
+#define snd_printdd(format, args...) /* nothing */
 #endif
 
 
@@ -417,49 +435,36 @@ static inline int __snd_bug_on(int cond)
 
 /* for easier backward-porting */
 #if defined(CONFIG_GAMEPORT) || defined(CONFIG_GAMEPORT_MODULE)
+#ifndef gameport_set_dev_parent
 #define gameport_set_dev_parent(gp,xdev) ((gp)->dev.parent = (xdev))
 #define gameport_set_port_data(gp,r) ((gp)->port_data = (r))
 #define gameport_get_port_data(gp) (gp)->port_data
+#endif
 #endif
 
 /* PCI quirk list helper */
 struct snd_pci_quirk {
 	unsigned short subvendor;	/* PCI subvendor ID */
 	unsigned short subdevice;	/* PCI subdevice ID */
-	unsigned short subdevice_mask;	/* bitmask to match */
 	int value;			/* value */
 #ifdef CONFIG_SND_DEBUG_VERBOSE
 	const char *name;		/* name of the device (optional) */
 #endif
 };
 
-#define _SND_PCI_QUIRK_ID_MASK(vend, mask, dev)	\
-	.subvendor = (vend), .subdevice = (dev), .subdevice_mask = (mask)
-#define _SND_PCI_QUIRK_ID(vend, dev) \
-	_SND_PCI_QUIRK_ID_MASK(vend, 0xffff, dev)
+#define _SND_PCI_QUIRK_ID(vend,dev) \
+	.subvendor = (vend), .subdevice = (dev)
 #define SND_PCI_QUIRK_ID(vend,dev) {_SND_PCI_QUIRK_ID(vend, dev)}
 #ifdef CONFIG_SND_DEBUG_VERBOSE
 #define SND_PCI_QUIRK(vend,dev,xname,val) \
 	{_SND_PCI_QUIRK_ID(vend, dev), .value = (val), .name = (xname)}
-#define SND_PCI_QUIRK_VENDOR(vend, xname, val)			\
-	{_SND_PCI_QUIRK_ID_MASK(vend, 0, 0), .value = (val), .name = (xname)}
-#define SND_PCI_QUIRK_MASK(vend, mask, dev, xname, val)			\
-	{_SND_PCI_QUIRK_ID_MASK(vend, mask, dev),			\
-			.value = (val), .name = (xname)}
 #else
 #define SND_PCI_QUIRK(vend,dev,xname,val) \
 	{_SND_PCI_QUIRK_ID(vend, dev), .value = (val)}
-#define SND_PCI_QUIRK_MASK(vend, mask, dev, xname, val)			\
-	{_SND_PCI_QUIRK_ID_MASK(vend, mask, dev), .value = (val)}
-#define SND_PCI_QUIRK_VENDOR(vend, xname, val)			\
-	{_SND_PCI_QUIRK_ID_MASK(vend, 0, 0), .value = (val)}
 #endif
 
 const struct snd_pci_quirk *
 snd_pci_quirk_lookup(struct pci_dev *pci, const struct snd_pci_quirk *list);
 
-const struct snd_pci_quirk *
-snd_pci_quirk_lookup_id(u16 vendor, u16 device,
-			const struct snd_pci_quirk *list);
 
 #endif /* __SOUND_CORE_H */

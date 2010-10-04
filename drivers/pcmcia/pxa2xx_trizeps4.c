@@ -22,7 +22,8 @@
 #include <asm/mach-types.h>
 #include <asm/irq.h>
 
-#include <mach/pxa2xx-regs.h>
+#include <mach/hardware.h>
+#include <mach/pxa-regs.h>
 #include <mach/trizeps4.h>
 
 #include "soc_common.h"
@@ -53,7 +54,7 @@ static int trizeps_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 			gpio_free(GPIO_PRDY);
 			return -EINVAL;
 		}
-		skt->socket.pci_irq = IRQ_GPIO(GPIO_PRDY);
+		skt->irq = IRQ_GPIO(GPIO_PRDY);
 		break;
 
 #ifndef CONFIG_MACH_TRIZEPS_CONXS
@@ -63,7 +64,7 @@ static int trizeps_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 		break;
 	}
 	/* release the reset of this card */
-	pr_debug("%s: sock %d irq %d\n", __func__, skt->nr, skt->socket.pci_irq);
+	pr_debug("%s: sock %d irq %d\n", __func__, skt->nr, skt->irq);
 
 	/* supplementory irqs for the socket */
 	for (i = 0; i < ARRAY_SIZE(irqs); i++) {

@@ -32,9 +32,9 @@
 #include <linux/list.h>
 #include <linux/usb.h>
 #include <linux/usb/otg.h>
-#include <linux/usb/hcd.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
+#include <linux/reboot.h>
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
 
@@ -44,6 +44,7 @@
 #include <asm/unaligned.h>
 #include <asm/byteorder.h>
 
+#include "../core/hcd.h"
 
 #define DRIVER_AUTHOR "Roman Weissgaerber, David Brownell"
 #define DRIVER_DESC "USB 1.1 'Open' Host Controller (OHCI) Driver"
@@ -87,17 +88,12 @@ static int ohci_restart (struct ohci_hcd *ohci);
 #ifdef CONFIG_PCI
 static void quirk_amd_pll(int state);
 static void amd_iso_dev_put(void);
-static void sb800_prefetch(struct ohci_hcd *ohci, int on);
 #else
 static inline void quirk_amd_pll(int state)
 {
 	return;
 }
 static inline void amd_iso_dev_put(void)
-{
-	return;
-}
-static inline void sb800_prefetch(struct ohci_hcd *ohci, int on)
 {
 	return;
 }
@@ -212,7 +208,7 @@ static int ohci_urb_enqueue (
 	spin_lock_irqsave (&ohci->lock, flags);
 
 	/* don't submit to a dead HC */
-	if (!HCD_HW_ACCESSIBLE(hcd)) {
+	if (!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags)) {
 		retval = -ENODEV;
 		goto fail;
 	}
@@ -575,7 +571,7 @@ static int ohci_init (struct ohci_hcd *ohci)
  */
 static int ohci_run (struct ohci_hcd *ohci)
 {
-	u32			mask, val;
+	u32			mask, temp;
 	int			first = ohci->fminterval == 0;
 	struct usb_hcd		*hcd = ohci_to_hcd(ohci);
 
@@ -584,8 +580,8 @@ static int ohci_run (struct ohci_hcd *ohci)
 	/* boot firmware should have set this up (5.1.1.3.1) */
 	if (first) {
 
-		val = ohci_readl (ohci, &ohci->regs->fminterval);
-		ohci->fminterval = val & 0x3fff;
+		temp = ohci_readl (ohci, &ohci->regs->fminterval);
+		ohci->fminterval = temp & 0x3fff;
 		if (ohci->fminterval != FI)
 			ohci_dbg (ohci, "fminterval delta %d\n",
 				ohci->fminterval - FI);
@@ -604,25 +600,25 @@ static int ohci_run (struct ohci_hcd *ohci)
 
 	switch (ohci->hc_control & OHCI_CTRL_HCFS) {
 	case OHCI_USB_OPER:
-		val = 0;
+		temp = 0;
 		break;
 	case OHCI_USB_SUSPEND:
 	case OHCI_USB_RESUME:
 		ohci->hc_control &= OHCI_CTRL_RWC;
 		ohci->hc_control |= OHCI_USB_RESUME;
-		val = 10 /* msec wait */;
+		temp = 10 /* msec wait */;
 		break;
 	// case OHCI_USB_RESET:
 	default:
 		ohci->hc_control &= OHCI_CTRL_RWC;
 		ohci->hc_control |= OHCI_USB_RESET;
-		val = 50 /* msec wait */;
+		temp = 50 /* msec wait */;
 		break;
 	}
 	ohci_writel (ohci, ohci->hc_control, &ohci->regs->control);
 	// flush the writes
 	(void) ohci_readl (ohci, &ohci->regs->control);
-	msleep(val);
+	msleep(temp);
 
 	memset (ohci->hcca, 0, sizeof (struct ohci_hcca));
 
@@ -632,9 +628,9 @@ static int ohci_run (struct ohci_hcd *ohci)
 retry:
 	/* HC Reset requires max 10 us delay */
 	ohci_writel (ohci, OHCI_HCR,  &ohci->regs->cmdstatus);
-	val = 30;	/* ... allow extra time */
+	temp = 30;	/* ... allow extra time */
 	while ((ohci_readl (ohci, &ohci->regs->cmdstatus) & OHCI_HCR) != 0) {
-		if (--val == 0) {
+		if (--temp == 0) {
 			spin_unlock_irq (&ohci->lock);
 			ohci_err (ohci, "USB HC reset timed out!\n");
 			return -1;
@@ -685,7 +681,7 @@ retry:
 	}
 
 	/* use rhsc irqs after khubd is fully initialized */
-	set_bit(HCD_FLAG_POLL_RH, &hcd->flags);
+	hcd->poll_rh = 1;
 	hcd->uses_new_polling = 1;
 
 	/* start controller operations */
@@ -703,23 +699,23 @@ retry:
 	ohci_writel (ohci, mask, &ohci->regs->intrenable);
 
 	/* handle root hub init quirks ... */
-	val = roothub_a (ohci);
-	val &= ~(RH_A_PSM | RH_A_OCPM);
+	temp = roothub_a (ohci);
+	temp &= ~(RH_A_PSM | RH_A_OCPM);
 	if (ohci->flags & OHCI_QUIRK_SUPERIO) {
 		/* NSC 87560 and maybe others */
-		val |= RH_A_NOCP;
-		val &= ~(RH_A_POTPGT | RH_A_NPS);
-		ohci_writel (ohci, val, &ohci->regs->roothub.a);
+		temp |= RH_A_NOCP;
+		temp &= ~(RH_A_POTPGT | RH_A_NPS);
+		ohci_writel (ohci, temp, &ohci->regs->roothub.a);
 	} else if ((ohci->flags & OHCI_QUIRK_AMD756) ||
 			(ohci->flags & OHCI_QUIRK_HUB_POWER)) {
 		/* hub power always on; required for AMD-756 and some
 		 * Mac platforms.  ganged overcurrent reporting, if any.
 		 */
-		val |= RH_A_NPS;
-		ohci_writel (ohci, val, &ohci->regs->roothub.a);
+		temp |= RH_A_NPS;
+		ohci_writel (ohci, temp, &ohci->regs->roothub.a);
 	}
 	ohci_writel (ohci, RH_HS_LPSC, &ohci->regs->roothub.status);
-	ohci_writel (ohci, (val & RH_A_NPS) ? 0 : RH_B_PPCM,
+	ohci_writel (ohci, (temp & RH_A_NPS) ? 0 : RH_B_PPCM,
 						&ohci->regs->roothub.b);
 	// flush those writes
 	(void) ohci_readl (ohci, &ohci->regs->control);
@@ -728,7 +724,7 @@ retry:
 	spin_unlock_irq (&ohci->lock);
 
 	// POTPGT delay is bits 24-31, in 2 ms units.
-	mdelay ((val >> 23) & 0x1fe);
+	mdelay ((temp >> 23) & 0x1fe);
 	hcd->state = HC_STATE_RUNNING;
 
 	if (quirk_zfmicro(ohci)) {
@@ -822,7 +818,7 @@ static irqreturn_t ohci_irq (struct usb_hcd *hcd)
 	else if (ints & OHCI_INTR_RD) {
 		ohci_vdbg(ohci, "resume detect\n");
 		ohci_writel(ohci, OHCI_INTR_RD, &regs->intrstatus);
-		set_bit(HCD_FLAG_POLL_RH, &hcd->flags);
+		hcd->poll_rh = 1;
 		if (ohci->autostop) {
 			spin_lock (&ohci->lock);
 			ohci_rh_resume (ohci);
@@ -1001,19 +997,14 @@ MODULE_LICENSE ("GPL");
 #define SA1111_DRIVER		ohci_hcd_sa1111_driver
 #endif
 
-#if defined(CONFIG_ARCH_S3C2410) || defined(CONFIG_ARCH_S3C64XX)
+#ifdef CONFIG_ARCH_S3C2410
 #include "ohci-s3c2410.c"
 #define PLATFORM_DRIVER		ohci_hcd_s3c2410_driver
 #endif
 
-#ifdef CONFIG_USB_OHCI_HCD_OMAP1
+#ifdef CONFIG_ARCH_OMAP
 #include "ohci-omap.c"
-#define OMAP1_PLATFORM_DRIVER	ohci_hcd_omap_driver
-#endif
-
-#ifdef CONFIG_USB_OHCI_HCD_OMAP3
-#include "ohci-omap3.c"
-#define OMAP3_PLATFORM_DRIVER	ohci_hcd_omap3_driver
+#define PLATFORM_DRIVER		ohci_hcd_omap_driver
 #endif
 
 #ifdef CONFIG_ARCH_LH7A404
@@ -1031,7 +1022,7 @@ MODULE_LICENSE ("GPL");
 #define PLATFORM_DRIVER		ohci_hcd_ep93xx_driver
 #endif
 
-#ifdef CONFIG_MIPS_ALCHEMY
+#ifdef CONFIG_SOC_AU1X00
 #include "ohci-au1xxx.c"
 #define PLATFORM_DRIVER		ohci_hcd_au1xxx_driver
 #endif
@@ -1056,15 +1047,9 @@ MODULE_LICENSE ("GPL");
 #define PLATFORM_DRIVER		usb_hcd_pnx4008_driver
 #endif
 
-#ifdef CONFIG_ARCH_DAVINCI_DA8XX
-#include "ohci-da8xx.c"
-#define PLATFORM_DRIVER		ohci_hcd_da8xx_driver
-#endif
-
 #if defined(CONFIG_CPU_SUBTYPE_SH7720) || \
     defined(CONFIG_CPU_SUBTYPE_SH7721) || \
-    defined(CONFIG_CPU_SUBTYPE_SH7763) || \
-    defined(CONFIG_CPU_SUBTYPE_SH7786)
+    defined(CONFIG_CPU_SUBTYPE_SH7763)
 #include "ohci-sh.c"
 #define PLATFORM_DRIVER		ohci_hcd_sh_driver
 #endif
@@ -1095,15 +1080,8 @@ MODULE_LICENSE ("GPL");
 #define TMIO_OHCI_DRIVER	ohci_hcd_tmio_driver
 #endif
 
-#ifdef CONFIG_MACH_JZ4740
-#include "ohci-jz4740.c"
-#define PLATFORM_DRIVER	ohci_hcd_jz4740_driver
-#endif
-
 #if	!defined(PCI_DRIVER) &&		\
 	!defined(PLATFORM_DRIVER) &&	\
-	!defined(OMAP1_PLATFORM_DRIVER) &&	\
-	!defined(OMAP3_PLATFORM_DRIVER) &&	\
 	!defined(OF_PLATFORM_DRIVER) &&	\
 	!defined(SA1111_DRIVER) &&	\
 	!defined(PS3_SYSTEM_BUS_DRIVER) && \
@@ -1126,7 +1104,7 @@ static int __init ohci_hcd_mod_init(void)
 	set_bit(USB_OHCI_LOADED, &usb_hcds_loaded);
 
 #ifdef DEBUG
-	ohci_debug_root = debugfs_create_dir("ohci", usb_debug_root);
+	ohci_debug_root = debugfs_create_dir("ohci", NULL);
 	if (!ohci_debug_root) {
 		retval = -ENOENT;
 		goto error_debug;
@@ -1143,18 +1121,6 @@ static int __init ohci_hcd_mod_init(void)
 	retval = platform_driver_register(&PLATFORM_DRIVER);
 	if (retval < 0)
 		goto error_platform;
-#endif
-
-#ifdef OMAP1_PLATFORM_DRIVER
-	retval = platform_driver_register(&OMAP1_PLATFORM_DRIVER);
-	if (retval < 0)
-		goto error_omap1_platform;
-#endif
-
-#ifdef OMAP3_PLATFORM_DRIVER
-	retval = platform_driver_register(&OMAP3_PLATFORM_DRIVER);
-	if (retval < 0)
-		goto error_omap3_platform;
 #endif
 
 #ifdef OF_PLATFORM_DRIVER
@@ -1223,14 +1189,6 @@ static int __init ohci_hcd_mod_init(void)
 #ifdef PLATFORM_DRIVER
 	platform_driver_unregister(&PLATFORM_DRIVER);
  error_platform:
-#endif
-#ifdef OMAP1_PLATFORM_DRIVER
-	platform_driver_unregister(&OMAP1_PLATFORM_DRIVER);
- error_omap1_platform:
-#endif
-#ifdef OMAP3_PLATFORM_DRIVER
-	platform_driver_unregister(&OMAP3_PLATFORM_DRIVER);
- error_omap3_platform:
 #endif
 #ifdef PS3_SYSTEM_BUS_DRIVER
 	ps3_ohci_driver_unregister(&PS3_SYSTEM_BUS_DRIVER);

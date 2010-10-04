@@ -17,16 +17,14 @@
 #include <linux/mount.h>
 #include <linux/sched.h>
 #include <linux/xattr.h>
-#include <linux/smp_lock.h>
 #include <asm/uaccess.h>
 #include "hfsplus_fs.h"
 
-long hfsplus_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+int hfsplus_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
+		  unsigned long arg)
 {
-	struct inode *inode = filp->f_path.dentry->d_inode;
 	unsigned int flags;
 
-	lock_kernel();
 	switch (cmd) {
 	case HFSPLUS_IOC_EXT2_GETFLAGS:
 		flags = 0;
@@ -40,10 +38,8 @@ long hfsplus_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case HFSPLUS_IOC_EXT2_SETFLAGS: {
 		int err = 0;
 		err = mnt_want_write(filp->f_path.mnt);
-		if (err) {
-			unlock_kernel();
+		if (err)
 			return err;
-		}
 
 		if (!is_owner_or_cap(inode)) {
 			err = -EACCES;
@@ -89,11 +85,9 @@ long hfsplus_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		mark_inode_dirty(inode);
 setflags_out:
 		mnt_drop_write(filp->f_path.mnt);
-		unlock_kernel();
 		return err;
 	}
 	default:
-		unlock_kernel();
 		return -ENOTTY;
 	}
 }

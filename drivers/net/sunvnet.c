@@ -717,6 +717,7 @@ static int vnet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	dev_kfree_skb(skb);
 
+	dev->trans_start = jiffies;
 	return NETDEV_TX_OK;
 
 out_dropped_unlock:
@@ -762,12 +763,12 @@ static struct vnet_mcast_entry *__vnet_mc_find(struct vnet *vp, u8 *addr)
 
 static void __update_mc_list(struct vnet *vp, struct net_device *dev)
 {
-	struct netdev_hw_addr *ha;
+	struct dev_addr_list *p;
 
-	netdev_for_each_mc_addr(ha, dev) {
+	for (p = dev->mc_list; p; p = p->next) {
 		struct vnet_mcast_entry *m;
 
-		m = __vnet_mc_find(vp, ha->addr);
+		m = __vnet_mc_find(vp, p->dmi_addr);
 		if (m) {
 			m->hit = 1;
 			continue;
@@ -777,7 +778,7 @@ static void __update_mc_list(struct vnet *vp, struct net_device *dev)
 			m = kzalloc(sizeof(*m), GFP_ATOMIC);
 			if (!m)
 				continue;
-			memcpy(m->addr, ha->addr, ETH_ALEN);
+			memcpy(m->addr, p->dmi_addr, ETH_ALEN);
 			m->hit = 1;
 
 			m->next = vp->mcast_list;
@@ -1011,17 +1012,6 @@ err_out:
 static LIST_HEAD(vnet_list);
 static DEFINE_MUTEX(vnet_list_mutex);
 
-static const struct net_device_ops vnet_ops = {
-	.ndo_open		= vnet_open,
-	.ndo_stop		= vnet_close,
-	.ndo_set_multicast_list	= vnet_set_rx_mode,
-	.ndo_set_mac_address	= vnet_set_mac_addr,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_tx_timeout		= vnet_tx_timeout,
-	.ndo_change_mtu		= vnet_change_mtu,
-	.ndo_start_xmit		= vnet_start_xmit,
-};
-
 static struct vnet * __devinit vnet_new(const u64 *local_mac)
 {
 	struct net_device *dev;
@@ -1050,9 +1040,15 @@ static struct vnet * __devinit vnet_new(const u64 *local_mac)
 	INIT_LIST_HEAD(&vp->list);
 	vp->local_mac = *local_mac;
 
-	dev->netdev_ops = &vnet_ops;
+	dev->open = vnet_open;
+	dev->stop = vnet_close;
+	dev->set_multicast_list = vnet_set_rx_mode;
+	dev->set_mac_address = vnet_set_mac_addr;
+	dev->tx_timeout = vnet_tx_timeout;
 	dev->ethtool_ops = &vnet_ethtool_ops;
 	dev->watchdog_timeo = VNET_TX_TIMEOUT;
+	dev->change_mtu = vnet_change_mtu;
+	dev->hard_start_xmit = vnet_start_xmit;
 
 	err = register_netdev(dev);
 	if (err) {
@@ -1061,7 +1057,10 @@ static struct vnet * __devinit vnet_new(const u64 *local_mac)
 		goto err_out_free_dev;
 	}
 
-	printk(KERN_INFO "%s: Sun LDOM vnet %pM\n", dev->name, dev->dev_addr);
+	printk(KERN_INFO "%s: Sun LDOM vnet ", dev->name);
+
+	for (i = 0; i < 6; i++)
+		printk("%2.2x%c", dev->dev_addr[i], i == 5 ? '\n' : ':');
 
 	list_add(&vp->list, &vnet_list);
 

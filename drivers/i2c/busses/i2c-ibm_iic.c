@@ -39,7 +39,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <asm/irq.h>
-#include <linux/io.h>
+#include <asm/io.h>
 #include <linux/i2c.h>
 #include <linux/i2c-id.h>
 #include <linux/of_platform.h>
@@ -85,11 +85,10 @@ static void dump_iic_regs(const char* header, struct ibm_iic_private* dev)
 {
 	volatile struct iic_regs __iomem *iic = dev->vaddr;
 	printk(KERN_DEBUG "ibm-iic%d: %s\n", dev->idx, header);
-	printk(KERN_DEBUG
-	       "  cntl     = 0x%02x, mdcntl = 0x%02x\n"
-	       "  sts      = 0x%02x, extsts = 0x%02x\n"
-	       "  clkdiv   = 0x%02x, xfrcnt = 0x%02x\n"
-	       "  xtcntlss = 0x%02x, directcntl = 0x%02x\n",
+	printk(KERN_DEBUG "  cntl     = 0x%02x, mdcntl = 0x%02x\n"
+	       KERN_DEBUG "  sts      = 0x%02x, extsts = 0x%02x\n"
+	       KERN_DEBUG "  clkdiv   = 0x%02x, xfrcnt = 0x%02x\n"
+	       KERN_DEBUG "  xtcntlss = 0x%02x, directcntl = 0x%02x\n",
 		in_8(&iic->cntl), in_8(&iic->mdcntl), in_8(&iic->sts),
 		in_8(&iic->extsts), in_8(&iic->clkdiv), in_8(&iic->xfrcnt),
 		in_8(&iic->xtcntlss), in_8(&iic->directcntl));
@@ -416,7 +415,7 @@ static int iic_wait_for_tc(struct ibm_iic_private* dev){
 	if (dev->irq >= 0){
 		/* Interrupt mode */
 		ret = wait_event_interruptible_timeout(dev->wq,
-			!(in_8(&iic->sts) & STS_PT), dev->adap.timeout);
+			!(in_8(&iic->sts) & STS_PT), dev->adap.timeout * HZ);
 
 		if (unlikely(ret < 0))
 			DBG("%d: wait interrupted\n", dev->idx);
@@ -427,7 +426,7 @@ static int iic_wait_for_tc(struct ibm_iic_private* dev){
 	}
 	else {
 		/* Polling mode */
-		unsigned long x = jiffies + dev->adap.timeout;
+		unsigned long x = jiffies + dev->adap.timeout * HZ;
 
 		while (in_8(&iic->sts) & STS_PT){
 			if (unlikely(time_after(jiffies, x))){
@@ -661,19 +660,19 @@ static inline u8 iic_clckdiv(unsigned int opb)
 	return (u8)((opb + 9) / 10 - 1);
 }
 
-static int __devinit iic_request_irq(struct platform_device *ofdev,
+static int __devinit iic_request_irq(struct of_device *ofdev,
 				     struct ibm_iic_private *dev)
 {
-	struct device_node *np = ofdev->dev.of_node;
+	struct device_node *np = ofdev->node;
 	int irq;
 
 	if (iic_force_poll)
-		return 0;
+		return NO_IRQ;
 
 	irq = irq_of_parse_and_map(np, 0);
-	if (!irq) {
+	if (irq == NO_IRQ) {
 		dev_err(&ofdev->dev, "irq_of_parse_and_map failed\n");
-		return 0;
+		return NO_IRQ;
 	}
 
 	/* Disable interrupts until we finish initialization, assumes
@@ -683,7 +682,7 @@ static int __devinit iic_request_irq(struct platform_device *ofdev,
 	if (request_irq(irq, iic_handler, 0, "IBM IIC", dev)) {
 		dev_err(&ofdev->dev, "request_irq %d failed\n", irq);
 		/* Fallback to the polling mode */
-		return 0;
+		return NO_IRQ;
 	}
 
 	return irq;
@@ -692,10 +691,10 @@ static int __devinit iic_request_irq(struct platform_device *ofdev,
 /*
  * Register single IIC interface
  */
-static int __devinit iic_probe(struct platform_device *ofdev,
+static int __devinit iic_probe(struct of_device *ofdev,
 			       const struct of_device_id *match)
 {
-	struct device_node *np = ofdev->dev.of_node;
+	struct device_node *np = ofdev->node;
 	struct ibm_iic_private *dev;
 	struct i2c_adapter *adap;
 	const u32 *freq;
@@ -719,7 +718,7 @@ static int __devinit iic_probe(struct platform_device *ofdev,
 	init_waitqueue_head(&dev->wq);
 
 	dev->irq = iic_request_irq(ofdev, dev);
-	if (!dev->irq)
+	if (dev->irq == NO_IRQ)
 		dev_warn(&ofdev->dev, "using polling mode\n");
 
 	/* Board specific settings */
@@ -745,12 +744,11 @@ static int __devinit iic_probe(struct platform_device *ofdev,
 	/* Register it with i2c layer */
 	adap = &dev->adap;
 	adap->dev.parent = &ofdev->dev;
-	adap->dev.of_node = of_node_get(np);
 	strlcpy(adap->name, "IBM IIC", sizeof(adap->name));
 	i2c_set_adapdata(adap, dev);
 	adap->class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
 	adap->algo = &iic_algo;
-	adap->timeout = HZ;
+	adap->timeout = 1;
 
 	ret = i2c_add_adapter(adap);
 	if (ret  < 0) {
@@ -758,13 +756,16 @@ static int __devinit iic_probe(struct platform_device *ofdev,
 		goto error_cleanup;
 	}
 
+	/* Now register all the child nodes */
+	of_register_i2c_devices(adap, np);
+
 	dev_info(&ofdev->dev, "using %s mode\n",
 		 dev->fast_mode ? "fast (400 kHz)" : "standard (100 kHz)");
 
 	return 0;
 
 error_cleanup:
-	if (dev->irq) {
+	if (dev->irq != NO_IRQ) {
 		iic_interrupt_mode(dev, 0);
 		free_irq(dev->irq, dev);
 	}
@@ -780,7 +781,7 @@ error_cleanup:
 /*
  * Cleanup initialized IIC interface
  */
-static int __devexit iic_remove(struct platform_device *ofdev)
+static int __devexit iic_remove(struct of_device *ofdev)
 {
 	struct ibm_iic_private *dev = dev_get_drvdata(&ofdev->dev);
 
@@ -788,7 +789,7 @@ static int __devexit iic_remove(struct platform_device *ofdev)
 
 	i2c_del_adapter(&dev->adap);
 
-	if (dev->irq) {
+	if (dev->irq != NO_IRQ) {
 		iic_interrupt_mode(dev, 0);
 		free_irq(dev->irq, dev);
 	}
@@ -805,11 +806,8 @@ static const struct of_device_id ibm_iic_match[] = {
 };
 
 static struct of_platform_driver ibm_iic_driver = {
-	.driver = {
-		.name = "ibm-iic",
-		.owner = THIS_MODULE,
-		.of_match_table = ibm_iic_match,
-	},
+	.name	= "ibm-iic",
+	.match_table = ibm_iic_match,
 	.probe	= iic_probe,
 	.remove	= __devexit_p(iic_remove),
 };

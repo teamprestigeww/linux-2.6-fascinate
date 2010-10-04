@@ -16,144 +16,222 @@
 #include <acpi/acpi_bus.h>
 
 #include <linux/pci-acpi.h>
-#include <linux/pm_runtime.h>
 #include "pci.h"
 
-static DEFINE_MUTEX(pci_acpi_pm_notify_mtx);
+struct acpi_osc_data {
+	acpi_handle handle;
+	u32 support_set;
+	u32 control_set;
+	u32 control_query;
+	int is_queried;
+	struct list_head sibiling;
+};
+static LIST_HEAD(acpi_osc_data_list);
 
-/**
- * pci_acpi_wake_bus - Wake-up notification handler for root buses.
- * @handle: ACPI handle of a device the notification is for.
- * @event: Type of the signaled event.
- * @context: PCI root bus to wake up devices on.
- */
-static void pci_acpi_wake_bus(acpi_handle handle, u32 event, void *context)
+struct acpi_osc_args {
+	u32 capbuf[3];
+};
+
+static DEFINE_MUTEX(pci_acpi_lock);
+
+static struct acpi_osc_data *acpi_get_osc_data(acpi_handle handle)
 {
-	struct pci_bus *pci_bus = context;
+	struct acpi_osc_data *data;
 
-	if (event == ACPI_NOTIFY_DEVICE_WAKE && pci_bus)
-		pci_pme_wakeup_bus(pci_bus);
-}
-
-/**
- * pci_acpi_wake_dev - Wake-up notification handler for PCI devices.
- * @handle: ACPI handle of a device the notification is for.
- * @event: Type of the signaled event.
- * @context: PCI device object to wake up.
- */
-static void pci_acpi_wake_dev(acpi_handle handle, u32 event, void *context)
-{
-	struct pci_dev *pci_dev = context;
-
-	if (event == ACPI_NOTIFY_DEVICE_WAKE && pci_dev) {
-		pci_check_pme_status(pci_dev);
-		pm_runtime_resume(&pci_dev->dev);
-		pci_wakeup_event(pci_dev);
-		if (pci_dev->subordinate)
-			pci_pme_wakeup_bus(pci_dev->subordinate);
+	list_for_each_entry(data, &acpi_osc_data_list, sibiling) {
+		if (data->handle == handle)
+			return data;
 	}
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return NULL;
+	INIT_LIST_HEAD(&data->sibiling);
+	data->handle = handle;
+	list_add_tail(&data->sibiling, &acpi_osc_data_list);
+	return data;
 }
 
-/**
- * add_pm_notifier - Register PM notifier for given ACPI device.
- * @dev: ACPI device to add the notifier for.
- * @context: PCI device or bus to check for PME status if an event is signaled.
+static u8 OSC_UUID[16] = {0x5B, 0x4D, 0xDB, 0x33, 0xF7, 0x1F, 0x1C, 0x40,
+			  0x96, 0x57, 0x74, 0x41, 0xC0, 0x3D, 0xD7, 0x66};
+
+static acpi_status acpi_run_osc(acpi_handle handle,
+				struct acpi_osc_args *osc_args, u32 *retval)
+{
+	acpi_status status;
+	struct acpi_object_list input;
+	union acpi_object in_params[4];
+	struct acpi_buffer output = {ACPI_ALLOCATE_BUFFER, NULL};
+	union acpi_object *out_obj;
+	u32 errors, flags = osc_args->capbuf[OSC_QUERY_TYPE];
+
+	/* Setting up input parameters */
+	input.count = 4;
+	input.pointer = in_params;
+	in_params[0].type 		= ACPI_TYPE_BUFFER;
+	in_params[0].buffer.length 	= 16;
+	in_params[0].buffer.pointer	= OSC_UUID;
+	in_params[1].type 		= ACPI_TYPE_INTEGER;
+	in_params[1].integer.value 	= 1;
+	in_params[2].type 		= ACPI_TYPE_INTEGER;
+	in_params[2].integer.value	= 3;
+	in_params[3].type		= ACPI_TYPE_BUFFER;
+	in_params[3].buffer.length 	= 12;
+	in_params[3].buffer.pointer 	= (u8 *)osc_args->capbuf;
+
+	status = acpi_evaluate_object(handle, "_OSC", &input, &output);
+	if (ACPI_FAILURE(status))
+		return status;
+
+	if (!output.length)
+		return AE_NULL_OBJECT;
+
+	out_obj = output.pointer;
+	if (out_obj->type != ACPI_TYPE_BUFFER) {
+		printk(KERN_DEBUG "Evaluate _OSC returns wrong type\n");
+		status = AE_TYPE;
+		goto out_kfree;
+	}
+	/* Need to ignore the bit0 in result code */
+	errors = *((u32 *)out_obj->buffer.pointer) & ~(1 << 0);
+	if (errors) {
+		if (errors & OSC_REQUEST_ERROR)
+			printk(KERN_DEBUG "_OSC request fails\n"); 
+		if (errors & OSC_INVALID_UUID_ERROR)
+			printk(KERN_DEBUG "_OSC invalid UUID\n"); 
+		if (errors & OSC_INVALID_REVISION_ERROR)
+			printk(KERN_DEBUG "_OSC invalid revision\n"); 
+		if (errors & OSC_CAPABILITIES_MASK_ERROR) {
+			if (flags & OSC_QUERY_ENABLE)
+				goto out_success;
+			printk(KERN_DEBUG "_OSC FW not grant req. control\n");
+			status = AE_SUPPORT;
+			goto out_kfree;
+		}
+		status = AE_ERROR;
+		goto out_kfree;
+	}
+out_success:
+	*retval = *((u32 *)(out_obj->buffer.pointer + 8));
+	status = AE_OK;
+
+out_kfree:
+	kfree(output.pointer);
+	return status;
+}
+
+static acpi_status __acpi_query_osc(u32 flags, struct acpi_osc_data *osc_data)
+{
+	acpi_status status;
+	u32 support_set, result;
+	struct acpi_osc_args osc_args;
+
+	/* do _OSC query for all possible controls */
+	support_set = osc_data->support_set | (flags & OSC_SUPPORT_MASKS);
+	osc_args.capbuf[OSC_QUERY_TYPE] = OSC_QUERY_ENABLE;
+	osc_args.capbuf[OSC_SUPPORT_TYPE] = support_set;
+	osc_args.capbuf[OSC_CONTROL_TYPE] = OSC_CONTROL_MASKS;
+
+	status = acpi_run_osc(osc_data->handle, &osc_args, &result);
+	if (ACPI_SUCCESS(status)) {
+		osc_data->support_set = support_set;
+		osc_data->control_query = result;
+		osc_data->is_queried = 1;
+	}
+
+	return status;
+}
+
+/*
+ * pci_acpi_osc_support: Invoke _OSC indicating support for the given feature
+ * @flags: Bitmask of flags to support
  *
- * NOTE: @dev need not be a run-wake or wake-up device to be a valid source of
- * PM wake-up events.  For example, wake-up events may be generated for bridges
- * if one of the devices below the bridge is signaling PME, even if the bridge
- * itself doesn't have a wake-up GPE associated with it.
+ * See the ACPI spec for the definition of the flags
  */
-static acpi_status add_pm_notifier(struct acpi_device *dev,
-				   acpi_notify_handler handler,
-				   void *context)
+int pci_acpi_osc_support(acpi_handle handle, u32 flags)
 {
-	acpi_status status = AE_ALREADY_EXISTS;
+	acpi_status status;
+	acpi_handle tmp;
+	struct acpi_osc_data *osc_data;
+	int rc = 0;
 
-	mutex_lock(&pci_acpi_pm_notify_mtx);
-
-	if (dev->wakeup.flags.notifier_present)
-		goto out;
-
-	status = acpi_install_notify_handler(dev->handle,
-					     ACPI_SYSTEM_NOTIFY,
-					     handler, context);
+	status = acpi_get_handle(handle, "_OSC", &tmp);
 	if (ACPI_FAILURE(status))
+		return -ENOTTY;
+
+	mutex_lock(&pci_acpi_lock);
+	osc_data = acpi_get_osc_data(handle);
+	if (!osc_data) {
+		printk(KERN_ERR "acpi osc data array is full\n");
+		rc = -ENOMEM;
+		goto out;
+	}
+
+	__acpi_query_osc(flags, osc_data);
+out:
+	mutex_unlock(&pci_acpi_lock);
+	return rc;
+}
+
+/**
+ * pci_osc_control_set - commit requested control to Firmware
+ * @handle: acpi_handle for the target ACPI object
+ * @flags: driver's requested control bits
+ *
+ * Attempt to take control from Firmware on requested control bits.
+ **/
+acpi_status pci_osc_control_set(acpi_handle handle, u32 flags)
+{
+	acpi_status status;
+	u32 control_req, control_set, result;
+	acpi_handle tmp;
+	struct acpi_osc_data *osc_data;
+	struct acpi_osc_args osc_args;
+
+	status = acpi_get_handle(handle, "_OSC", &tmp);
+	if (ACPI_FAILURE(status))
+		return status;
+
+	mutex_lock(&pci_acpi_lock);
+	osc_data = acpi_get_osc_data(handle);
+	if (!osc_data) {
+		printk(KERN_ERR "acpi osc data array is full\n");
+		status = AE_ERROR;
+		goto out;
+	}
+
+	control_req = (flags & OSC_CONTROL_MASKS);
+	if (!control_req) {
+		status = AE_TYPE;
+		goto out;
+	}
+
+	/* No need to evaluate _OSC if the control was already granted. */
+	if ((osc_data->control_set & control_req) == control_req)
 		goto out;
 
-	dev->wakeup.flags.notifier_present = true;
+	if (!osc_data->is_queried) {
+		status = __acpi_query_osc(osc_data->support_set, osc_data);
+		if (ACPI_FAILURE(status))
+			goto out;
+	}
 
- out:
-	mutex_unlock(&pci_acpi_pm_notify_mtx);
+	if ((osc_data->control_query & control_req) != control_req) {
+		status = AE_SUPPORT;
+		goto out;
+	}
+
+	control_set = osc_data->control_set | control_req;
+	osc_args.capbuf[OSC_QUERY_TYPE] = 0;
+	osc_args.capbuf[OSC_SUPPORT_TYPE] = osc_data->support_set;
+	osc_args.capbuf[OSC_CONTROL_TYPE] = control_set;
+	status = acpi_run_osc(handle, &osc_args, &result);
+	if (ACPI_SUCCESS(status))
+		osc_data->control_set = result;
+out:
+	mutex_unlock(&pci_acpi_lock);
 	return status;
 }
-
-/**
- * remove_pm_notifier - Unregister PM notifier from given ACPI device.
- * @dev: ACPI device to remove the notifier from.
- */
-static acpi_status remove_pm_notifier(struct acpi_device *dev,
-				      acpi_notify_handler handler)
-{
-	acpi_status status = AE_BAD_PARAMETER;
-
-	mutex_lock(&pci_acpi_pm_notify_mtx);
-
-	if (!dev->wakeup.flags.notifier_present)
-		goto out;
-
-	status = acpi_remove_notify_handler(dev->handle,
-					    ACPI_SYSTEM_NOTIFY,
-					    handler);
-	if (ACPI_FAILURE(status))
-		goto out;
-
-	dev->wakeup.flags.notifier_present = false;
-
- out:
-	mutex_unlock(&pci_acpi_pm_notify_mtx);
-	return status;
-}
-
-/**
- * pci_acpi_add_bus_pm_notifier - Register PM notifier for given PCI bus.
- * @dev: ACPI device to add the notifier for.
- * @pci_bus: PCI bus to walk checking for PME status if an event is signaled.
- */
-acpi_status pci_acpi_add_bus_pm_notifier(struct acpi_device *dev,
-					 struct pci_bus *pci_bus)
-{
-	return add_pm_notifier(dev, pci_acpi_wake_bus, pci_bus);
-}
-
-/**
- * pci_acpi_remove_bus_pm_notifier - Unregister PCI bus PM notifier.
- * @dev: ACPI device to remove the notifier from.
- */
-acpi_status pci_acpi_remove_bus_pm_notifier(struct acpi_device *dev)
-{
-	return remove_pm_notifier(dev, pci_acpi_wake_bus);
-}
-
-/**
- * pci_acpi_add_pm_notifier - Register PM notifier for given PCI device.
- * @dev: ACPI device to add the notifier for.
- * @pci_dev: PCI device to check for the PME status if an event is signaled.
- */
-acpi_status pci_acpi_add_pm_notifier(struct acpi_device *dev,
-				     struct pci_dev *pci_dev)
-{
-	return add_pm_notifier(dev, pci_acpi_wake_dev, pci_dev);
-}
-
-/**
- * pci_acpi_remove_pm_notifier - Unregister PCI device PM notifier.
- * @dev: ACPI device to remove the notifier from.
- */
-acpi_status pci_acpi_remove_pm_notifier(struct acpi_device *dev)
-{
-	return remove_pm_notifier(dev, pci_acpi_wake_dev);
-}
+EXPORT_SYMBOL(pci_osc_control_set);
 
 /*
  * _SxD returns the D-state with the highest power
@@ -246,98 +324,15 @@ static bool acpi_pci_can_wakeup(struct pci_dev *dev)
 	return handle ? acpi_bus_can_wakeup(handle) : false;
 }
 
-static void acpi_pci_propagate_wakeup_enable(struct pci_bus *bus, bool enable)
-{
-	while (bus->parent) {
-		if (!acpi_pm_device_sleep_wake(&bus->self->dev, enable))
-			return;
-		bus = bus->parent;
-	}
-
-	/* We have reached the root bus. */
-	if (bus->bridge)
-		acpi_pm_device_sleep_wake(bus->bridge, enable);
-}
-
 static int acpi_pci_sleep_wake(struct pci_dev *dev, bool enable)
 {
-	if (acpi_pci_can_wakeup(dev))
-		return acpi_pm_device_sleep_wake(&dev->dev, enable);
+	int error = acpi_pm_device_sleep_wake(&dev->dev, enable);
 
-	acpi_pci_propagate_wakeup_enable(dev->bus, enable);
-	return 0;
-}
-
-/**
- * acpi_dev_run_wake - Enable/disable wake-up for given device.
- * @phys_dev: Device to enable/disable the platform to wake-up the system for.
- * @enable: Whether enable or disable the wake-up functionality.
- *
- * Find the ACPI device object corresponding to @pci_dev and try to
- * enable/disable the GPE associated with it.
- */
-static int acpi_dev_run_wake(struct device *phys_dev, bool enable)
-{
-	struct acpi_device *dev;
-	acpi_handle handle;
-	int error = -ENODEV;
-
-	if (!device_run_wake(phys_dev))
-		return -EINVAL;
-
-	handle = DEVICE_ACPI_HANDLE(phys_dev);
-	if (!handle || ACPI_FAILURE(acpi_bus_get_device(handle, &dev))) {
-		dev_dbg(phys_dev, "ACPI handle has no context in %s!\n",
-			__func__);
-		return -ENODEV;
-	}
-
-	if (enable) {
-		if (!dev->wakeup.run_wake_count++) {
-			acpi_enable_wakeup_device_power(dev, ACPI_STATE_S0);
-			acpi_enable_gpe(dev->wakeup.gpe_device,
-					dev->wakeup.gpe_number);
-		}
-	} else if (dev->wakeup.run_wake_count > 0) {
-		if (!--dev->wakeup.run_wake_count) {
-			acpi_disable_gpe(dev->wakeup.gpe_device,
-					 dev->wakeup.gpe_number);
-			acpi_disable_wakeup_device_power(dev);
-		}
-	} else {
-		error = -EALREADY;
-	}
-
+	if (!error)
+		dev_printk(KERN_INFO, &dev->dev,
+				"wake-up capability %s by ACPI\n",
+				enable ? "enabled" : "disabled");
 	return error;
-}
-
-static void acpi_pci_propagate_run_wake(struct pci_bus *bus, bool enable)
-{
-	while (bus->parent) {
-		struct pci_dev *bridge = bus->self;
-
-		if (bridge->pme_interrupt)
-			return;
-		if (!acpi_dev_run_wake(&bridge->dev, enable))
-			return;
-		bus = bus->parent;
-	}
-
-	/* We have reached the root bus. */
-	if (bus->bridge)
-		acpi_dev_run_wake(bus->bridge, enable);
-}
-
-static int acpi_pci_run_wake(struct pci_dev *dev, bool enable)
-{
-	if (dev->pme_interrupt)
-		return 0;
-
-	if (!acpi_dev_run_wake(&dev->dev, enable))
-		return 0;
-
-	acpi_pci_propagate_run_wake(dev->bus, enable);
-	return 0;
 }
 
 static struct pci_platform_pm_ops acpi_pci_platform_pm = {
@@ -346,14 +341,13 @@ static struct pci_platform_pm_ops acpi_pci_platform_pm = {
 	.choose_state = acpi_pci_choose_state,
 	.can_wakeup = acpi_pci_can_wakeup,
 	.sleep_wake = acpi_pci_sleep_wake,
-	.run_wake = acpi_pci_run_wake,
 };
 
 /* ACPI bus type */
 static int acpi_pci_find_device(struct device *dev, acpi_handle *handle)
 {
 	struct pci_dev * pci_dev;
-	u64	addr;
+	acpi_integer	addr;
 
 	pci_dev = to_pci_dev(dev);
 	/* Please ref to ACPI spec for the syntax of _ADR */
@@ -392,12 +386,12 @@ static int __init acpi_pci_init(void)
 {
 	int ret;
 
-	if (acpi_gbl_FADT.boot_flags & ACPI_FADT_NO_MSI) {
+	if (acpi_gbl_FADT.boot_flags & BAF_MSI_NOT_SUPPORTED) {
 		printk(KERN_INFO"ACPI FADT declares the system doesn't support MSI, so disable it\n");
 		pci_no_msi();
 	}
 
-	if (acpi_gbl_FADT.boot_flags & ACPI_FADT_NO_ASPM) {
+	if (acpi_gbl_FADT.boot_flags & BAF_PCIE_ASPM_CONTROL) {
 		printk(KERN_INFO"ACPI FADT declares the system doesn't support PCIe ASPM, so disable it\n");
 		pcie_no_aspm();
 	}

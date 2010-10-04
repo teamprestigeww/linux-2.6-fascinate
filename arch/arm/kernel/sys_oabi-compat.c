@@ -83,7 +83,6 @@
 #include <linux/net.h>
 #include <linux/ipc.h>
 #include <linux/uaccess.h>
-#include <linux/slab.h>
 
 struct oldabi_stat64 {
 	unsigned long long st_dev;
@@ -141,7 +140,7 @@ static long cp_oldabi_stat64(struct kstat *stat,
 	return copy_to_user(statbuf,&tmp,sizeof(tmp)) ? -EFAULT : 0;
 }
 
-asmlinkage long sys_oabi_stat64(const char __user * filename,
+asmlinkage long sys_oabi_stat64(char __user * filename,
 				struct oldabi_stat64 __user * statbuf)
 {
 	struct kstat stat;
@@ -151,7 +150,7 @@ asmlinkage long sys_oabi_stat64(const char __user * filename,
 	return error;
 }
 
-asmlinkage long sys_oabi_lstat64(const char __user * filename,
+asmlinkage long sys_oabi_lstat64(char __user * filename,
 				 struct oldabi_stat64 __user * statbuf)
 {
 	struct kstat stat;
@@ -172,17 +171,26 @@ asmlinkage long sys_oabi_fstat64(unsigned long fd,
 }
 
 asmlinkage long sys_oabi_fstatat64(int dfd,
-				   const char __user *filename,
+				   char __user *filename,
 				   struct oldabi_stat64  __user *statbuf,
 				   int flag)
 {
 	struct kstat stat;
-	int error;
+	int error = -EINVAL;
 
-	error = vfs_fstatat(dfd, filename, &stat, flag);
-	if (error)
-		return error;
-	return cp_oldabi_stat64(&stat, statbuf);
+	if ((flag & ~AT_SYMLINK_NOFOLLOW) != 0)
+		goto out;
+
+	if (flag & AT_SYMLINK_NOFOLLOW)
+		error = vfs_lstat_fd(dfd, filename, &stat);
+	else
+		error = vfs_stat_fd(dfd, filename, &stat);
+
+	if (!error)
+	error = cp_oldabi_stat64(&stat, statbuf);
+
+out:
+	return error;
 }
 
 struct oabi_flock64 {
@@ -345,6 +353,9 @@ asmlinkage long sys_oabi_semop(int semid, struct oabi_sembuf __user *tsops,
 {
 	return sys_oabi_semtimedop(semid, tsops, nsops, NULL);
 }
+
+extern asmlinkage int sys_ipc(uint call, int first, int second, int third,
+			      void __user *ptr, long fifth);
 
 asmlinkage int sys_oabi_ipc(uint call, int first, int second, int third,
 			    void __user *ptr, long fifth)

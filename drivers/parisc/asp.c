@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 #include <asm/io.h>
 #include <asm/led.h>
@@ -80,7 +81,7 @@ static int __init asp_init_chip(struct parisc_device *dev)
 	asp.hpa = ASP_INTERRUPT_ADDR;
 
 	printk(KERN_INFO "%s version %d at 0x%lx found.\n", 
-		asp.name, asp.version, (unsigned long)dev->hpa.start);
+		asp.name, asp.version, dev->hpa.start);
 
 	/* the IRQ ASP should use */
 	ret = -EBUSY;

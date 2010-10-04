@@ -23,12 +23,14 @@
 #include "bond_3ad.h"
 #include "bond_alb.h"
 
-#define DRV_VERSION	"3.7.0"
-#define DRV_RELDATE	"June 2, 2010"
+#define DRV_VERSION	"3.5.0"
+#define DRV_RELDATE	"November 4, 2008"
 #define DRV_NAME	"bonding"
 #define DRV_DESCRIPTION	"Ethernet Channel Bonding Driver"
 
 #define BOND_MAX_ARP_TARGETS	16
+
+extern struct list_head bond_dev_list;
 
 #define IS_UP(dev)					   \
 	      ((((dev)->flags & IFF_UP) == IFF_UP)	&& \
@@ -60,9 +62,6 @@
 		 ((mode) == BOND_MODE_TLB)          ||	\
 		 ((mode) == BOND_MODE_ALB))
 
-#define TX_QUEUE_OVERRIDE(mode)				\
-			(((mode) == BOND_MODE_ACTIVEBACKUP) ||	\
-			 ((mode) == BOND_MODE_ROUNDROBIN))
 /*
  * Less bad way to call ioctl from within the kernel; this needs to be
  * done some other way to get the call out of interrupt context.
@@ -132,10 +131,7 @@ struct bond_params {
 	int lacp_fast;
 	int ad_select;
 	char primary[IFNAMSIZ];
-	int primary_reselect;
 	__be32 arp_targets[BOND_MAX_ARP_TARGETS];
-	int tx_queues;
-	int all_slaves_active;
 };
 
 struct bond_parm_tbl {
@@ -164,12 +160,12 @@ struct slave {
 	s8     link;    /* one of BOND_LINK_XXXX */
 	s8     new_link;
 	s8     state;   /* one of BOND_STATE_XXXX */
+	u32    original_flags;
 	u32    original_mtu;
 	u32    link_failure_count;
-	u8     perm_hwaddr[ETH_ALEN];
 	u16    speed;
 	u8     duplex;
-	u16    queue_id;
+	u8     perm_hwaddr[ETH_ALEN];
 	struct ad_slave_info ad_info; /* HUGE - better to dynamically alloc */
 	struct tlb_slave_info tlb_info;
 };
@@ -194,7 +190,6 @@ struct bonding {
 	struct   slave *curr_active_slave;
 	struct   slave *current_arp_slave;
 	struct   slave *primary_slave;
-	bool     force_primary;
 	s32      slave_cnt; /* never change this value outside the attach/detach wrappers */
 	rwlock_t lock;
 	rwlock_t curr_slave_lock;
@@ -202,13 +197,14 @@ struct bonding {
 	s8	 send_grat_arp;
 	s8	 send_unsol_na;
 	s8	 setup_by_slave;
+	struct   net_device_stats stats;
 #ifdef CONFIG_PROC_FS
 	struct   proc_dir_entry *proc_entry;
 	char     proc_file_name[IFNAMSIZ];
 #endif /* CONFIG_PROC_FS */
 	struct   list_head bond_list;
-	struct   netdev_hw_addr_list mc_list;
-	int      (*xmit_hash_policy)(struct sk_buff *, int);
+	struct   dev_mc_list *mc_list;
+	int      (*xmit_hash_policy)(struct sk_buff *, struct net_device *, int);
 	__be32   master_ip;
 	u16      flags;
 	u16      rr_tx_counter;
@@ -258,13 +254,9 @@ static inline struct bonding *bond_get_bond_by_slave(struct slave *slave)
 
 static inline bool bond_is_lb(const struct bonding *bond)
 {
-	return (bond->params.mode == BOND_MODE_TLB ||
-		bond->params.mode == BOND_MODE_ALB);
+	return bond->params.mode == BOND_MODE_TLB
+		|| bond->params.mode == BOND_MODE_ALB;
 }
-
-#define BOND_PRI_RESELECT_ALWAYS	0
-#define BOND_PRI_RESELECT_BETTER	1
-#define BOND_PRI_RESELECT_FAILURE	2
 
 #define BOND_FOM_NONE			0
 #define BOND_FOM_ACTIVE			1
@@ -294,10 +286,10 @@ static inline unsigned long slave_last_rx(struct bonding *bond,
 static inline void bond_set_slave_inactive_flags(struct slave *slave)
 {
 	struct bonding *bond = netdev_priv(slave->dev->master);
-	if (!bond_is_lb(bond))
+	if (bond->params.mode != BOND_MODE_TLB &&
+	    bond->params.mode != BOND_MODE_ALB)
 		slave->state = BOND_STATE_BACKUP;
-	if (!bond->params.all_slaves_active)
-		slave->dev->priv_flags |= IFF_SLAVE_INACTIVE;
+	slave->dev->priv_flags |= IFF_SLAVE_INACTIVE;
 	if (slave_do_arp_validate(bond, slave))
 		slave->dev->priv_flags |= IFF_SLAVE_NEEDARP;
 }
@@ -330,11 +322,13 @@ static inline void bond_unset_master_alb_flags(struct bonding *bond)
 
 struct vlan_entry *bond_next_vlan(struct bonding *bond, struct vlan_entry *curr);
 int bond_dev_queue_xmit(struct bonding *bond, struct sk_buff *skb, struct net_device *slave_dev);
-int bond_create(struct net *net, const char *name);
+int bond_create(char *name, struct bond_params *params);
+void bond_destroy(struct bonding *bond);
 int  bond_release_and_destroy(struct net_device *bond_dev, struct net_device *slave_dev);
 int bond_create_sysfs(void);
 void bond_destroy_sysfs(void);
-void bond_prepare_sysfs_group(struct bonding *bond);
+void bond_destroy_sysfs_entry(struct bonding *bond);
+int bond_create_sysfs_entry(struct bonding *bond);
 int bond_create_slave_symlinks(struct net_device *master, struct net_device *slave);
 void bond_destroy_slave_symlinks(struct net_device *master, struct net_device *slave);
 int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev);
@@ -349,23 +343,18 @@ void bond_change_active_slave(struct bonding *bond, struct slave *new_active);
 void bond_register_arp(struct bonding *);
 void bond_unregister_arp(struct bonding *);
 
-struct bond_net {
-	struct net *		net;	/* Associated network namespace */
-	struct list_head	dev_list;
-#ifdef CONFIG_PROC_FS
-	struct proc_dir_entry *	proc_dir;
-#endif
-};
-
 /* exported from bond_main.c */
-extern int bond_net_id;
+extern struct list_head bond_dev_list;
 extern const struct bond_parm_tbl bond_lacp_tbl[];
 extern const struct bond_parm_tbl bond_mode_tbl[];
 extern const struct bond_parm_tbl xmit_hashtype_tbl[];
 extern const struct bond_parm_tbl arp_validate_tbl[];
 extern const struct bond_parm_tbl fail_over_mac_tbl[];
-extern const struct bond_parm_tbl pri_reselect_tbl[];
+extern struct bond_params bonding_defaults;
 extern struct bond_parm_tbl ad_select_tbl[];
+
+/* exported from bond_sysfs.c */
+extern struct rw_semaphore bonding_rwsem;
 
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 void bond_send_unsolicited_na(struct bonding *bond);
@@ -387,3 +376,4 @@ static inline void bond_unregister_ipv6_notifier(void)
 #endif
 
 #endif /* _LINUX_BONDING_H */
+

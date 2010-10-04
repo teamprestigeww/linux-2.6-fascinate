@@ -23,12 +23,10 @@
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
-#include <linux/slab.h>
 
 #include <asm/udbg.h>
 #include <asm/lv1call.h>
 #include <asm/firmware.h>
-#include <asm/cell-regs.h>
 
 #include "platform.h"
 
@@ -285,6 +283,7 @@ static int ps3_sb_free_mmio_region(struct ps3_mmio_region *r)
 	int result;
 
 	dump_mmio_region(r);
+;
 	result = lv1_unmap_device_mmio_region(r->dev->bus_id, r->dev->dev_id,
 		r->lpar_addr);
 
@@ -377,7 +376,7 @@ static int ps3_system_bus_probe(struct device *_dev)
 	struct ps3_system_bus_driver *drv;
 
 	BUG_ON(!dev);
-	dev_dbg(_dev, "%s:%d\n", __func__, __LINE__);
+	pr_debug(" -> %s:%d: %s\n", __func__, __LINE__, _dev->bus_id);
 
 	drv = ps3_system_bus_dev_to_system_bus_drv(dev);
 	BUG_ON(!drv);
@@ -399,7 +398,7 @@ static int ps3_system_bus_remove(struct device *_dev)
 	struct ps3_system_bus_driver *drv;
 
 	BUG_ON(!dev);
-	dev_dbg(_dev, "%s:%d\n", __func__, __LINE__);
+	pr_debug(" -> %s:%d: %s\n", __func__, __LINE__, _dev->bus_id);
 
 	drv = ps3_system_bus_dev_to_system_bus_drv(dev);
 	BUG_ON(!drv);
@@ -532,8 +531,7 @@ static void * ps3_alloc_coherent(struct device *_dev, size_t size,
 	}
 
 	result = ps3_dma_map(dev->d_region, virt_addr, size, dma_handle,
-			     CBE_IOPTE_PP_W | CBE_IOPTE_PP_R |
-			     CBE_IOPTE_SO_RW | CBE_IOPTE_M);
+			     IOPTE_PP_W | IOPTE_PP_R | IOPTE_SO_RW | IOPTE_M);
 
 	if (result) {
 		pr_debug("%s:%d: ps3_dma_map failed (%d)\n",
@@ -577,8 +575,7 @@ static dma_addr_t ps3_sb_map_page(struct device *_dev, struct page *page,
 
 	result = ps3_dma_map(dev->d_region, (unsigned long)ptr, size,
 			     &bus_addr,
-			     CBE_IOPTE_PP_R | CBE_IOPTE_PP_W |
-			     CBE_IOPTE_SO_RW | CBE_IOPTE_M);
+			     IOPTE_PP_R | IOPTE_PP_W | IOPTE_SO_RW | IOPTE_M);
 
 	if (result) {
 		pr_debug("%s:%d: ps3_dma_map failed (%d)\n",
@@ -599,16 +596,16 @@ static dma_addr_t ps3_ioc0_map_page(struct device *_dev, struct page *page,
 	u64 iopte_flag;
 	void *ptr = page_address(page) + offset;
 
-	iopte_flag = CBE_IOPTE_M;
+	iopte_flag = IOPTE_M;
 	switch (direction) {
 	case DMA_BIDIRECTIONAL:
-		iopte_flag |= CBE_IOPTE_PP_R | CBE_IOPTE_PP_W | CBE_IOPTE_SO_RW;
+		iopte_flag |= IOPTE_PP_R | IOPTE_PP_W | IOPTE_SO_RW;
 		break;
 	case DMA_TO_DEVICE:
-		iopte_flag |= CBE_IOPTE_PP_R | CBE_IOPTE_SO_R;
+		iopte_flag |= IOPTE_PP_R | IOPTE_SO_R;
 		break;
 	case DMA_FROM_DEVICE:
-		iopte_flag |= CBE_IOPTE_PP_W | CBE_IOPTE_SO_RW;
+		iopte_flag |= IOPTE_PP_W | IOPTE_SO_RW;
 		break;
 	default:
 		/* not happned */
@@ -692,10 +689,10 @@ static void ps3_ioc0_unmap_sg(struct device *_dev, struct scatterlist *sg,
 
 static int ps3_dma_supported(struct device *_dev, u64 mask)
 {
-	return mask >= DMA_BIT_MASK(32);
+	return mask >= DMA_32BIT_MASK;
 }
 
-static struct dma_map_ops ps3_sb_dma_ops = {
+static struct dma_mapping_ops ps3_sb_dma_ops = {
 	.alloc_coherent = ps3_alloc_coherent,
 	.free_coherent = ps3_free_coherent,
 	.map_sg = ps3_sb_map_sg,
@@ -705,7 +702,7 @@ static struct dma_map_ops ps3_sb_dma_ops = {
 	.unmap_page = ps3_unmap_page,
 };
 
-static struct dma_map_ops ps3_ioc0_dma_ops = {
+static struct dma_mapping_ops ps3_ioc0_dma_ops = {
 	.alloc_coherent = ps3_alloc_coherent,
 	.free_coherent = ps3_free_coherent,
 	.map_sg = ps3_ioc0_map_sg,
@@ -766,7 +763,7 @@ int ps3_system_bus_device_register(struct ps3_system_bus_device *dev)
 		BUG();
 	};
 
-	dev->core.of_node = NULL;
+	dev->core.archdata.of_node = NULL;
 	set_dev_node(&dev->core, 0);
 
 	pr_debug("%s:%d add %s\n", __func__, __LINE__, dev_name(&dev->core));

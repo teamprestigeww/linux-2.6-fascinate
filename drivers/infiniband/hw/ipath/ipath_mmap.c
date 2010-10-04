@@ -32,7 +32,6 @@
 
 #include <linux/module.h>
 #include <linux/vmalloc.h>
-#include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/errno.h>
 #include <asm/pgtable.h>
@@ -75,7 +74,7 @@ static void ipath_vma_close(struct vm_area_struct *vma)
 	kref_put(&ip->ref, ipath_release_mmap_info);
 }
 
-static const struct vm_operations_struct ipath_vm_ops = {
+static struct vm_operations_struct ipath_vm_ops = {
 	.open =     ipath_vma_open,
 	.close =    ipath_vma_close,
 };

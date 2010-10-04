@@ -4,8 +4,6 @@
 struct task_struct;
 
 #ifdef CONFIG_STACKTRACE
-struct task_struct;
-
 struct stack_trace {
 	unsigned int nr_entries, max_entries;
 	unsigned long *entries;
@@ -13,7 +11,6 @@ struct stack_trace {
 };
 
 extern void save_stack_trace(struct stack_trace *trace);
-extern void save_stack_trace_bp(struct stack_trace *trace, unsigned long bp);
 extern void save_stack_trace_tsk(struct task_struct *tsk,
 				struct stack_trace *trace);
 

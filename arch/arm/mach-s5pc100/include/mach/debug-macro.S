@@ -1,10 +1,9 @@
 /* arch/arm/mach-s5pc100/include/mach/debug-macro.S
  *
- * Copyright 2009 Samsung Electronics Co.
- *	Byungho Min <bhmin@samsung.com>
- *
- *
- * Based on mach-s3c6400/include/mach/debug-macro.S
+ * Copyright 2008 Openmoko, Inc.
+ * Copyright 2008 Simtec Electronics
+ *	http://armlinux.simtec.co.uk/
+ *	Ben Dooks <ben@simtec.co.uk>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -22,11 +21,11 @@
 	 * aligned and add in the offset when we load the value here.
 	 */
 
-	.macro addruart, rx, rtmp
+	.macro addruart, rx
 		mrc	p15, 0, \rx, c1, c0
 		tst	\rx, #1
 		ldreq	\rx, = S3C_PA_UART
-		ldrne	\rx, = S3C_VA_UART
+		ldrne	\rx, = (S3C_VA_UART + S3C_PA_UART & 0xfffff)
 #if CONFIG_DEBUG_S3C_UART != 0
 		add	\rx, \rx, #(0x400 * CONFIG_DEBUG_S3C_UART)
 #endif

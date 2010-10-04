@@ -1,17 +1,35 @@
 /*
  * Blackfin CPLB initialization
  *
- * Copyright 2008-2009 Analog Devices Inc.
+ *               Copyright 2004-2007 Analog Devices Inc.
  *
- * Licensed under the GPL-2 or later.
+ * Bugs:         Enter bugs at http://blackfin.uclinux.org/
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see the file COPYING, or write
+ * to the Free Software Foundation, Inc.,
+ * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
-
 #include <linux/module.h>
 
 #include <asm/blackfin.h>
 #include <asm/cplb.h>
 #include <asm/cplbinit.h>
 #include <asm/mem_map.h>
+
+#if ANOMALY_05000263
+# error the MPU will not function safely while Anomaly 05000263 applies
+#endif
 
 struct cplb_entry icplb_tbl[NR_CPUS][MAX_CPLBS];
 struct cplb_entry dcplb_tbl[NR_CPUS][MAX_CPLBS];
@@ -28,13 +46,13 @@ void __init generate_cplb_tables_cpu(unsigned int cpu)
 
 	printk(KERN_INFO "MPU: setting up cplb tables with memory protection\n");
 
-#ifdef CONFIG_BFIN_EXTMEM_ICACHEABLE
+#ifdef CONFIG_BFIN_ICACHE
 	i_cache = CPLB_L1_CHBL | ANOMALY_05000158_WORKAROUND;
 #endif
 
-#ifdef CONFIG_BFIN_EXTMEM_DCACHEABLE
+#ifdef CONFIG_BFIN_DCACHE
 	d_cache = CPLB_L1_CHBL;
-#ifdef CONFIG_BFIN_EXTMEM_WRITETHROUGH
+#ifdef CONFIG_BFIN_WT
 	d_cache |= CPLB_L1_AOW | CPLB_WT;
 #endif
 #endif
@@ -46,7 +64,7 @@ void __init generate_cplb_tables_cpu(unsigned int cpu)
 	dcplb_tbl[cpu][i_d++].data = SDRAM_OOPS | PAGE_SIZE_1KB;
 
 	icplb_tbl[cpu][i_i].addr = 0;
-	icplb_tbl[cpu][i_i++].data = CPLB_VALID | i_cache | CPLB_USER_RD | PAGE_SIZE_1KB;
+	icplb_tbl[cpu][i_i++].data = i_cache | CPLB_USER_RD | PAGE_SIZE_1KB;
 
 	/* Cover kernel memory with 4M pages.  */
 	addr = 0;
@@ -59,15 +77,6 @@ void __init generate_cplb_tables_cpu(unsigned int cpu)
 		icplb_tbl[cpu][i_i].addr = addr;
 		icplb_tbl[cpu][i_i++].data = i_data | (addr == 0 ? CPLB_USER_RD : 0);
 	}
-
-#ifdef CONFIG_ROMKERNEL
-	/* Cover kernel XIP flash area */
-	addr = CONFIG_ROM_BASE & ~(4 * 1024 * 1024 - 1);
-	dcplb_tbl[cpu][i_d].addr = addr;
-	dcplb_tbl[cpu][i_d++].data = d_data | CPLB_USER_RD;
-	icplb_tbl[cpu][i_i].addr = addr;
-	icplb_tbl[cpu][i_i++].data = i_data | CPLB_USER_RD;
-#endif
 
 	/* Cover L1 memory.  One 4M area for code and data each is enough.  */
 #if L1_DATA_A_LENGTH > 0 || L1_DATA_B_LENGTH > 0
@@ -82,9 +91,9 @@ void __init generate_cplb_tables_cpu(unsigned int cpu)
 	/* Cover L2 memory */
 #if L2_LENGTH > 0
 	dcplb_tbl[cpu][i_d].addr = L2_START;
-	dcplb_tbl[cpu][i_d++].data = L2_DMEMORY;
+	dcplb_tbl[cpu][i_d++].data = L2_DMEMORY | PAGE_SIZE_1MB;
 	icplb_tbl[cpu][i_i].addr = L2_START;
-	icplb_tbl[cpu][i_i++].data = L2_IMEMORY;
+	icplb_tbl[cpu][i_i++].data = L2_IMEMORY | PAGE_SIZE_1MB;
 #endif
 
 	first_mask_dcplb = i_d;
@@ -97,6 +106,6 @@ void __init generate_cplb_tables_cpu(unsigned int cpu)
 		icplb_tbl[cpu][i_i++].data = 0;
 }
 
-void __init generate_cplb_tables_all(void)
+void generate_cplb_tables_all(void)
 {
 }

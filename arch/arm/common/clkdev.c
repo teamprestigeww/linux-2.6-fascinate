@@ -17,8 +17,6 @@
 #include <linux/err.h>
 #include <linux/string.h>
 #include <linux/mutex.h>
-#include <linux/clk.h>
-#include <linux/slab.h>
 
 #include <asm/clkdev.h>
 #include <mach/clkdev.h>
@@ -33,7 +31,7 @@ static DEFINE_MUTEX(clocks_mutex);
  *  If an entry has a device ID, it must match
  *  If an entry has a connection ID, it must match
  * Then we take the most specific entry - with the following
- * order of precedence: dev+con > dev only > con only.
+ * order of precidence: dev+con > dev only > con only.
  */
 static struct clk *clk_find(const char *dev_id, const char *con_id)
 {
@@ -53,20 +51,20 @@ static struct clk *clk_find(const char *dev_id, const char *con_id)
 				continue;
 			match += 1;
 		}
+		if (match == 0)
+			continue;
 
 		if (match > best) {
 			clk = p->clk;
-			if (match != 3)
-				best = match;
-			else
-				break;
+			best = match;
 		}
 	}
 	return clk;
 }
 
-struct clk *clk_get_sys(const char *dev_id, const char *con_id)
+struct clk *clk_get(struct device *dev, const char *con_id)
 {
+	const char *dev_id = dev ? dev_name(dev) : NULL;
 	struct clk *clk;
 
 	mutex_lock(&clocks_mutex);
@@ -76,14 +74,6 @@ struct clk *clk_get_sys(const char *dev_id, const char *con_id)
 	mutex_unlock(&clocks_mutex);
 
 	return clk ? clk : ERR_PTR(-ENOENT);
-}
-EXPORT_SYMBOL(clk_get_sys);
-
-struct clk *clk_get(struct device *dev, const char *con_id)
-{
-	const char *dev_id = dev ? dev_name(dev) : NULL;
-
-	return clk_get_sys(dev_id, con_id);
 }
 EXPORT_SYMBOL(clk_get);
 
@@ -100,16 +90,6 @@ void clkdev_add(struct clk_lookup *cl)
 	mutex_unlock(&clocks_mutex);
 }
 EXPORT_SYMBOL(clkdev_add);
-
-void __init clkdev_add_table(struct clk_lookup *cl, size_t num)
-{
-	mutex_lock(&clocks_mutex);
-	while (num--) {
-		list_add_tail(&cl->node, &clocks);
-		cl++;
-	}
-	mutex_unlock(&clocks_mutex);
-}
 
 #define MAX_DEV_ID	20
 #define MAX_CON_ID	16
@@ -147,24 +127,6 @@ struct clk_lookup *clkdev_alloc(struct clk *clk, const char *con_id,
 	return &cla->cl;
 }
 EXPORT_SYMBOL(clkdev_alloc);
-
-int clk_add_alias(const char *alias, const char *alias_dev_name, char *id,
-	struct device *dev)
-{
-	struct clk *r = clk_get(dev, id);
-	struct clk_lookup *l;
-
-	if (IS_ERR(r))
-		return PTR_ERR(r);
-
-	l = clkdev_alloc(r, alias, alias_dev_name);
-	clk_put(r);
-	if (!l)
-		return -ENODEV;
-	clkdev_add(l);
-	return 0;
-}
-EXPORT_SYMBOL(clk_add_alias);
 
 /*
  * clkdev_drop - remove a clock dynamically allocated

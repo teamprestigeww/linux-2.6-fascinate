@@ -37,12 +37,10 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/delay.h>
-#include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/smp_lock.h>
 #include <linux/interrupt.h>
 #include <linux/kdev_t.h>
 #include "bttvp.h"
@@ -82,7 +80,6 @@ static int video_nr[BTTV_MAX] = { [0 ... (BTTV_MAX-1)] = -1 };
 static int radio_nr[BTTV_MAX] = { [0 ... (BTTV_MAX-1)] = -1 };
 static int vbi_nr[BTTV_MAX] = { [0 ... (BTTV_MAX-1)] = -1 };
 static int debug_latency;
-static int disable_ir;
 
 static unsigned int fdsr;
 
@@ -109,7 +106,6 @@ module_param(bttv_gpio,         int, 0644);
 module_param(bttv_debug,        int, 0644);
 module_param(irq_debug,         int, 0644);
 module_param(debug_latency,     int, 0644);
-module_param(disable_ir,        int, 0444);
 
 module_param(fdsr,              int, 0444);
 module_param(gbuffers,          int, 0444);
@@ -142,7 +138,6 @@ MODULE_PARM_DESC(bttv_verbose,"verbose startup messages, default is 1 (yes)");
 MODULE_PARM_DESC(bttv_gpio,"log gpio changes, default is 0 (no)");
 MODULE_PARM_DESC(bttv_debug,"debug messages, default is 0 (no)");
 MODULE_PARM_DESC(irq_debug,"irq handler debug messages, default is 0 (no)");
-MODULE_PARM_DESC(disable_ir, "disable infrared remote support");
 MODULE_PARM_DESC(gbuffers,"number of capture buffers. range 2-32, default 8");
 MODULE_PARM_DESC(gbufsize,"size of the capture buffers, default is 0x208000");
 MODULE_PARM_DESC(reset_crop,"reset cropping parameters at open(), default "
@@ -1303,7 +1298,7 @@ set_tvnorm(struct bttv *btv, unsigned int norm)
 
 	tvnorm = &bttv_tvnorms[norm];
 
-	if (memcmp(&bttv_tvnorms[btv->tvnorm].cropcap, &tvnorm->cropcap,
+	if (!memcmp(&bttv_tvnorms[btv->tvnorm].cropcap, &tvnorm->cropcap,
 		    sizeof (tvnorm->cropcap))) {
 		bttv_crop_reset(&btv->crop[0], norm);
 		btv->crop[1] = btv->crop[0]; /* current = default */
@@ -1525,7 +1520,7 @@ static int bttv_s_ctrl(struct file *file, void *f,
 	struct bttv_fh *fh = f;
 	struct bttv *btv = fh->btv;
 
-	err = v4l2_prio_check(&btv->prio, fh->prio);
+	err = v4l2_prio_check(&btv->prio, &fh->prio);
 	if (0 != err)
 		return err;
 
@@ -1806,8 +1801,8 @@ buffer_setup(struct videobuf_queue *q, unsigned int *count, unsigned int *size)
 	*size = fh->fmt->depth*fh->width*fh->height >> 3;
 	if (0 == *count)
 		*count = gbuffers;
-	if (*size * *count > gbuffers * gbufsize)
-		*count = (gbuffers * gbufsize) / *size;
+	while (*size * *count > gbuffers * gbufsize)
+		(*count)--;
 	return 0;
 }
 
@@ -1859,7 +1854,7 @@ static int bttv_s_std(struct file *file, void *priv, v4l2_std_id *id)
 	unsigned int i;
 	int err;
 
-	err = v4l2_prio_check(&btv->prio, fh->prio);
+	err = v4l2_prio_check(&btv->prio, &fh->prio);
 	if (0 != err)
 		return err;
 
@@ -1941,7 +1936,7 @@ static int bttv_s_input(struct file *file, void *priv, unsigned int i)
 
 	int err;
 
-	err = v4l2_prio_check(&btv->prio, fh->prio);
+	err = v4l2_prio_check(&btv->prio, &fh->prio);
 	if (0 != err)
 		return err;
 
@@ -1961,7 +1956,7 @@ static int bttv_s_tuner(struct file *file, void *priv,
 	struct bttv *btv = fh->btv;
 	int err;
 
-	err = v4l2_prio_check(&btv->prio, fh->prio);
+	err = v4l2_prio_check(&btv->prio, &fh->prio);
 	if (0 != err)
 		return err;
 
@@ -1987,6 +1982,11 @@ static int bttv_g_frequency(struct file *file, void *priv,
 {
 	struct bttv_fh *fh  = priv;
 	struct bttv *btv = fh->btv;
+	int err;
+
+	err = v4l2_prio_check(&btv->prio, &fh->prio);
+	if (0 != err)
+		return err;
 
 	f->type = btv->radio_user ? V4L2_TUNER_RADIO : V4L2_TUNER_ANALOG_TV;
 	f->frequency = btv->freq;
@@ -2001,7 +2001,7 @@ static int bttv_s_frequency(struct file *file, void *priv,
 	struct bttv *btv = fh->btv;
 	int err;
 
-	err = v4l2_prio_check(&btv->prio, fh->prio);
+	err = v4l2_prio_check(&btv->prio, &fh->prio);
 	if (0 != err)
 		return err;
 
@@ -2651,8 +2651,6 @@ static int bttv_querycap(struct file *file, void  *priv,
 		V4L2_CAP_VBI_CAPTURE |
 		V4L2_CAP_READWRITE |
 		V4L2_CAP_STREAMING;
-	if (btv->has_saa6588)
-		cap->capabilities |= V4L2_CAP_RDS_CAPTURE;
 	if (no_overlay <= 0)
 		cap->capabilities |= V4L2_CAP_VIDEO_OVERLAY;
 
@@ -3024,7 +3022,7 @@ static int bttv_s_crop(struct file *file, void *f, struct v4l2_crop *crop)
 	    crop->type != V4L2_BUF_TYPE_VIDEO_OVERLAY)
 		return -EINVAL;
 
-	retval = v4l2_prio_check(&btv->prio, fh->prio);
+	retval = v4l2_prio_check(&btv->prio, &fh->prio);
 	if (0 != retval)
 		return retval;
 
@@ -3205,23 +3203,23 @@ err:
 
 static int bttv_open(struct file *file)
 {
-	struct video_device *vdev = video_devdata(file);
+	int minor = video_devdata(file)->minor;
 	struct bttv *btv = video_drvdata(file);
 	struct bttv_fh *fh;
 	enum v4l2_buf_type type = 0;
 
-	dprintk(KERN_DEBUG "bttv: open dev=%s\n", video_device_node_name(vdev));
+	dprintk(KERN_DEBUG "bttv: open minor=%d\n",minor);
 
-	if (vdev->vfl_type == VFL_TYPE_GRABBER) {
+	lock_kernel();
+	if (btv->video_dev->minor == minor) {
 		type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	} else if (vdev->vfl_type == VFL_TYPE_VBI) {
+	} else if (btv->vbi_dev->minor == minor) {
 		type = V4L2_BUF_TYPE_VBI_CAPTURE;
 	} else {
 		WARN_ON(1);
+		unlock_kernel();
 		return -ENODEV;
 	}
-
-	lock_kernel();
 
 	dprintk(KERN_DEBUG "bttv%d: open called (type=%s)\n",
 		btv->c.nr,v4l2_type_names[type]);
@@ -3236,7 +3234,7 @@ static int bttv_open(struct file *file)
 	*fh = btv->init;
 	fh->type = type;
 	fh->ov.setup_ok = 0;
-	v4l2_prio_open(&btv->prio, &fh->prio);
+	v4l2_prio_open(&btv->prio,&fh->prio);
 
 	videobuf_queue_sg_init(&fh->cap, &bttv_video_qops,
 			    &btv->c.pci->dev, &btv->s_lock,
@@ -3307,7 +3305,7 @@ static int bttv_release(struct file *file)
 	/* free stuff */
 	videobuf_mmap_free(&fh->cap);
 	videobuf_mmap_free(&fh->vbi);
-	v4l2_prio_close(&btv->prio, fh->prio);
+	v4l2_prio_close(&btv->prio,&fh->prio);
 	file->private_data = NULL;
 	kfree(fh);
 
@@ -3396,6 +3394,7 @@ static const struct v4l2_ioctl_ops bttv_ioctl_ops = {
 
 static struct video_device bttv_video_template = {
 	.fops         = &bttv_fops,
+	.minor        = -1,
 	.ioctl_ops    = &bttv_ioctl_ops,
 	.tvnorms      = BTTV_NORMS,
 	.current_norm = V4L2_STD_PAL,
@@ -3406,13 +3405,18 @@ static struct video_device bttv_video_template = {
 
 static int radio_open(struct file *file)
 {
-	struct video_device *vdev = video_devdata(file);
+	int minor = video_devdata(file)->minor;
 	struct bttv *btv = video_drvdata(file);
 	struct bttv_fh *fh;
 
-	dprintk("bttv: open dev=%s\n", video_device_node_name(vdev));
+	dprintk("bttv: open minor=%d\n",minor);
 
 	lock_kernel();
+	WARN_ON(btv->radio_dev && btv->radio_dev->minor != minor);
+	if (!btv->radio_dev || btv->radio_dev->minor != minor) {
+		unlock_kernel();
+		return -ENODEV;
+	}
 
 	dprintk("bttv%d: open called (radio)\n",btv->c.nr);
 
@@ -3444,7 +3448,7 @@ static int radio_release(struct file *file)
 	struct bttv *btv = fh->btv;
 	struct rds_command cmd;
 
-	v4l2_prio_close(&btv->prio, fh->prio);
+	v4l2_prio_close(&btv->prio,&fh->prio);
 	file->private_data = NULL;
 	kfree(fh);
 
@@ -3633,6 +3637,7 @@ static const struct v4l2_ioctl_ops radio_ioctl_ops = {
 
 static struct video_device radio_template = {
 	.fops      = &radio_fops,
+	.minor     = -1,
 	.ioctl_ops = &radio_ioctl_ops,
 };
 
@@ -3792,34 +3797,11 @@ bttv_irq_next_video(struct bttv *btv, struct bttv_buffer_set *set)
 		if (!V4L2_FIELD_HAS_BOTH(item->vb.field) &&
 		    (item->vb.queue.next != &btv->capture)) {
 			item = list_entry(item->vb.queue.next, struct bttv_buffer, vb.queue);
-			/* Mike Isely <isely@pobox.com> - Only check
-			 * and set up the bottom field in the logic
-			 * below.  Don't ever do the top field.  This
-			 * of course means that if we set up the
-			 * bottom field in the above code that we'll
-			 * actually skip a field.  But that's OK.
-			 * Having processed only a single buffer this
-			 * time, then the next time around the first
-			 * available buffer should be for a top field.
-			 * That will then cause us here to set up a
-			 * top then a bottom field in the normal way.
-			 * The alternative to this understanding is
-			 * that we set up the second available buffer
-			 * as a top field, but that's out of order
-			 * since this driver always processes the top
-			 * field first - the effect will be the two
-			 * buffers being returned in the wrong order,
-			 * with the second buffer also being delayed
-			 * by one field time (owing to the fifo nature
-			 * of videobuf).  Worse still, we'll be stuck
-			 * doing fields out of order now every time
-			 * until something else causes a field to be
-			 * dropped.  By effectively forcing a field to
-			 * drop this way then we always get back into
-			 * sync within a single frame time.  (Out of
-			 * order fields can screw up deinterlacing
-			 * algorithms.) */
 			if (!V4L2_FIELD_HAS_BOTH(item->vb.field)) {
+				if (NULL == set->top &&
+				    V4L2_FIELD_TOP == item->vb.field) {
+					set->top = item;
+				}
 				if (NULL == set->bottom &&
 				    V4L2_FIELD_BOTTOM == item->vb.field) {
 					set->bottom = item;
@@ -4200,21 +4182,21 @@ static struct video_device *vdev_init(struct bttv *btv,
 static void bttv_unregister_video(struct bttv *btv)
 {
 	if (btv->video_dev) {
-		if (video_is_registered(btv->video_dev))
+		if (-1 != btv->video_dev->minor)
 			video_unregister_device(btv->video_dev);
 		else
 			video_device_release(btv->video_dev);
 		btv->video_dev = NULL;
 	}
 	if (btv->vbi_dev) {
-		if (video_is_registered(btv->vbi_dev))
+		if (-1 != btv->vbi_dev->minor)
 			video_unregister_device(btv->vbi_dev);
 		else
 			video_device_release(btv->vbi_dev);
 		btv->vbi_dev = NULL;
 	}
 	if (btv->radio_dev) {
-		if (video_is_registered(btv->radio_dev))
+		if (-1 != btv->radio_dev->minor)
 			video_unregister_device(btv->radio_dev);
 		else
 			video_device_release(btv->radio_dev);
@@ -4236,8 +4218,8 @@ static int __devinit bttv_register_video(struct bttv *btv)
 	if (video_register_device(btv->video_dev, VFL_TYPE_GRABBER,
 				  video_nr[btv->c.nr]) < 0)
 		goto err;
-	printk(KERN_INFO "bttv%d: registered device %s\n",
-	       btv->c.nr, video_device_node_name(btv->video_dev));
+	printk(KERN_INFO "bttv%d: registered device video%d\n",
+	       btv->c.nr, btv->video_dev->num);
 	if (device_create_file(&btv->video_dev->dev,
 				     &dev_attr_card)<0) {
 		printk(KERN_ERR "bttv%d: device_create_file 'card' "
@@ -4253,8 +4235,8 @@ static int __devinit bttv_register_video(struct bttv *btv)
 	if (video_register_device(btv->vbi_dev, VFL_TYPE_VBI,
 				  vbi_nr[btv->c.nr]) < 0)
 		goto err;
-	printk(KERN_INFO "bttv%d: registered device %s\n",
-	       btv->c.nr, video_device_node_name(btv->vbi_dev));
+	printk(KERN_INFO "bttv%d: registered device vbi%d\n",
+	       btv->c.nr, btv->vbi_dev->num);
 
 	if (!btv->has_radio)
 		return 0;
@@ -4265,8 +4247,8 @@ static int __devinit bttv_register_video(struct bttv *btv)
 	if (video_register_device(btv->radio_dev, VFL_TYPE_RADIO,
 				  radio_nr[btv->c.nr]) < 0)
 		goto err;
-	printk(KERN_INFO "bttv%d: registered device %s\n",
-	       btv->c.nr, video_device_node_name(btv->radio_dev));
+	printk(KERN_INFO "bttv%d: registered device radio%d\n",
+	       btv->c.nr, btv->radio_dev->num);
 
 	/* all done */
 	return 0;
@@ -4436,7 +4418,6 @@ static int __devinit bttv_probe(struct pci_dev *dev,
 
 	/* some card-specific stuff (needs working i2c) */
 	bttv_init_card2(btv);
-	bttv_init_tuner(btv);
 	init_irqreg(btv);
 
 	/* register video4linux + input */
@@ -4460,10 +4441,7 @@ static int __devinit bttv_probe(struct pci_dev *dev,
 		request_modules(btv);
 	}
 
-	if (!disable_ir) {
-		init_bttv_i2c_ir(btv);
-		bttv_input_init(btv);
-	}
+	bttv_input_init(btv);
 
 	/* everything is fine */
 	bttv_num++;
@@ -4613,10 +4591,14 @@ static int bttv_resume(struct pci_dev *pci_dev)
 #endif
 
 static struct pci_device_id bttv_pci_tbl[] = {
-	{PCI_VDEVICE(BROOKTREE, PCI_DEVICE_ID_BT848), 0},
-	{PCI_VDEVICE(BROOKTREE, PCI_DEVICE_ID_BT849), 0},
-	{PCI_VDEVICE(BROOKTREE, PCI_DEVICE_ID_BT878), 0},
-	{PCI_VDEVICE(BROOKTREE, PCI_DEVICE_ID_BT879), 0},
+	{PCI_VENDOR_ID_BROOKTREE, PCI_DEVICE_ID_BT848,
+	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
+	{PCI_VENDOR_ID_BROOKTREE, PCI_DEVICE_ID_BT849,
+	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
+	{PCI_VENDOR_ID_BROOKTREE, PCI_DEVICE_ID_BT878,
+	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
+	{PCI_VENDOR_ID_BROOKTREE, PCI_DEVICE_ID_BT879,
+	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{0,}
 };
 

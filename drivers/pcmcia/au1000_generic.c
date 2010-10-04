@@ -43,7 +43,6 @@
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
-#include <linux/slab.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -406,16 +405,18 @@ int au1x00_pcmcia_socket_probe(struct device *dev, struct pcmcia_low_level *ops,
 			skt->virt_io = (void *)
 				(ioremap((phys_t)AU1X_SOCK0_IO, 0x1000) -
 				(u32)mips_io_port_base);
-			skt->phys_attr = AU1X_SOCK0_PHYS_ATTR;
-			skt->phys_mem = AU1X_SOCK0_PHYS_MEM;
+			skt->phys_attr = AU1X_SOCK0_PSEUDO_PHYS_ATTR;
+			skt->phys_mem = AU1X_SOCK0_PSEUDO_PHYS_MEM;
 		}
+#ifndef CONFIG_MIPS_XXS1500
 		else  {
 			skt->virt_io = (void *)
 				(ioremap((phys_t)AU1X_SOCK1_IO, 0x1000) -
 				(u32)mips_io_port_base);
-			skt->phys_attr = AU1X_SOCK1_PHYS_ATTR;
-			skt->phys_mem = AU1X_SOCK1_PHYS_MEM;
+			skt->phys_attr = AU1X_SOCK1_PSEUDO_PHYS_ATTR;
+			skt->phys_mem = AU1X_SOCK1_PSEUDO_PHYS_MEM;
 		}
+#endif
 		pcmcia_base_vaddrs[i] = (u32 *)skt->virt_io;
 		ret = ops->hw_init(skt);
 
@@ -467,13 +468,13 @@ out:
 	return ret;
 }
 
-int au1x00_drv_pcmcia_remove(struct platform_device *dev)
+int au1x00_drv_pcmcia_remove(struct device *dev)
 {
-	struct skt_dev_info *sinfo = platform_get_drvdata(dev);
+	struct skt_dev_info *sinfo = dev_get_drvdata(dev);
 	int i;
 
 	mutex_lock(&pcmcia_sockets_lock);
-	platform_set_drvdata(dev, NULL);
+	dev_set_drvdata(dev, NULL);
 
 	for (i = 0; i < sinfo->nskt; i++) {
 		struct au1000_pcmcia_socket *skt = PCMCIA_SOCKET(i);
@@ -497,13 +498,13 @@ int au1x00_drv_pcmcia_remove(struct platform_device *dev)
  * PCMCIA "Driver" API
  */
 
-static int au1x00_drv_pcmcia_probe(struct platform_device *dev)
+static int au1x00_drv_pcmcia_probe(struct device *dev)
 {
 	int i, ret = -ENODEV;
 
 	mutex_lock(&pcmcia_sockets_lock);
 	for (i=0; i < ARRAY_SIZE(au1x00_pcmcia_hw_init); i++) {
-		ret = au1x00_pcmcia_hw_init[i](&dev->dev);
+		ret = au1x00_pcmcia_hw_init[i](dev);
 		if (ret == 0)
 			break;
 	}
@@ -511,13 +512,14 @@ static int au1x00_drv_pcmcia_probe(struct platform_device *dev)
 	return ret;
 }
 
-static struct platform_driver au1x00_pcmcia_driver = {
-	.driver = {
-		.name		= "au1x00-pcmcia",
-		.owner		= THIS_MODULE,
-	},
+
+static struct device_driver au1x00_pcmcia_driver = {
 	.probe		= au1x00_drv_pcmcia_probe,
 	.remove		= au1x00_drv_pcmcia_remove,
+	.name		= "au1x00-pcmcia",
+	.bus		= &platform_bus_type,
+	.suspend	= pcmcia_socket_dev_suspend,
+	.resume		= pcmcia_socket_dev_resume,
 };
 
 
@@ -531,7 +533,8 @@ static struct platform_driver au1x00_pcmcia_driver = {
 static int __init au1x00_pcmcia_init(void)
 {
 	int error = 0;
-	error = platform_driver_register(&au1x00_pcmcia_driver);
+	if ((error = driver_register(&au1x00_pcmcia_driver)))
+		return error;
 	return error;
 }
 
@@ -541,7 +544,7 @@ static int __init au1x00_pcmcia_init(void)
  */
 static void __exit au1x00_pcmcia_exit(void)
 {
-	platform_driver_unregister(&au1x00_pcmcia_driver);
+	driver_unregister(&au1x00_pcmcia_driver);
 }
 
 module_init(au1x00_pcmcia_init);

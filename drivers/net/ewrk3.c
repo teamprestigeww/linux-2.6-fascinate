@@ -145,7 +145,6 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
@@ -299,7 +298,7 @@ struct ewrk3_private {
    ** Public Functions
  */
 static int ewrk3_open(struct net_device *dev);
-static netdev_tx_t ewrk3_queue_pkt(struct sk_buff *skb, struct net_device *dev);
+static int ewrk3_queue_pkt(struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t ewrk3_interrupt(int irq, void *dev_id);
 static int ewrk3_close(struct net_device *dev);
 static void set_multicast_list(struct net_device *dev);
@@ -388,18 +387,6 @@ static int __init ewrk3_probe1(struct net_device *dev, u_long iobase, int irq)
 
 	return err;
 }
-
-static const struct net_device_ops ewrk3_netdev_ops = {
-	.ndo_open		= ewrk3_open,
-	.ndo_start_xmit		= ewrk3_queue_pkt,
-	.ndo_stop		= ewrk3_close,
-	.ndo_set_multicast_list = set_multicast_list,
-	.ndo_do_ioctl		= ewrk3_ioctl,
-	.ndo_tx_timeout		= ewrk3_timeout,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_mac_address 	= eth_mac_addr,
-	.ndo_validate_addr	= eth_validate_addr,
-};
 
 static int __init
 ewrk3_hw_init(struct net_device *dev, u_long iobase)
@@ -616,11 +603,16 @@ ewrk3_hw_init(struct net_device *dev, u_long iobase)
 		printk(version);
 	}
 	/* The EWRK3-specific entries in the device structure. */
-	dev->netdev_ops = &ewrk3_netdev_ops;
+	dev->open = ewrk3_open;
+	dev->hard_start_xmit = ewrk3_queue_pkt;
+	dev->stop = ewrk3_close;
+	dev->set_multicast_list = set_multicast_list;
+	dev->do_ioctl = ewrk3_ioctl;
 	if (lp->adapter_name[4] == '3')
 		SET_ETHTOOL_OPS(dev, &ethtool_ops_203);
 	else
 		SET_ETHTOOL_OPS(dev, &ethtool_ops);
+	dev->tx_timeout = ewrk3_timeout;
 	dev->watchdog_timeo = QUEUE_PKT_TIMEOUT;
 
 	dev->mem_start = 0;
@@ -757,7 +749,7 @@ static void ewrk3_timeout(struct net_device *dev)
 		 */
 		ENABLE_IRQs;
 
-		dev->trans_start = jiffies; /* prevent tx timeout */
+		dev->trans_start = jiffies;
 		netif_wake_queue(dev);
 	}
 }
@@ -765,7 +757,7 @@ static void ewrk3_timeout(struct net_device *dev)
 /*
    ** Writes a socket buffer to the free page queue
  */
-static netdev_tx_t ewrk3_queue_pkt(struct sk_buff *skb, struct net_device *dev)
+static int ewrk3_queue_pkt (struct sk_buff *skb, struct net_device *dev)
 {
 	struct ewrk3_private *lp = netdev_priv(dev);
 	u_long iobase = dev->base_addr;
@@ -862,18 +854,19 @@ static netdev_tx_t ewrk3_queue_pkt(struct sk_buff *skb, struct net_device *dev)
 	spin_unlock_irq (&lp->hw_lock);
 
 	dev->stats.tx_bytes += skb->len;
+	dev->trans_start = jiffies;
 	dev_kfree_skb (skb);
 
 	/* Check for free resources: stop Tx queue if there are none */
 	if (inb (EWRK3_FMQC) == 0)
 		netif_stop_queue (dev);
 
-	return NETDEV_TX_OK;
+	return 0;
 
 err_out:
 	ENABLE_IRQs;
 	spin_unlock_irq (&lp->hw_lock);
-	return NETDEV_TX_BUSY;
+	return 1;
 }
 
 /*
@@ -1168,7 +1161,7 @@ static void set_multicast_list(struct net_device *dev)
 static void SetMulticastFilter(struct net_device *dev)
 {
 	struct ewrk3_private *lp = netdev_priv(dev);
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *dmi = dev->mc_list;
 	u_long iobase = dev->base_addr;
 	int i;
 	char *addrs, bit, byte;
@@ -1212,8 +1205,9 @@ static void SetMulticastFilter(struct net_device *dev)
 		}
 
 		/* Update table */
-		netdev_for_each_mc_addr(ha, dev) {
-			addrs = ha->addr;
+		for (i = 0; i < dev->mc_count; i++) {	/* for each address in the list */
+			addrs = dmi->dmi_addr;
+			dmi = dmi->next;
 			if ((*addrs & 0x01) == 1) {	/* multicast address? */
 				crc = ether_crc_le(ETH_ALEN, addrs);
 				hashcode = crc & ((1 << 9) - 1);	/* hashcode is 9 LSb of CRC */
@@ -1369,6 +1363,8 @@ static void __init EthwrkSignature(char *name, char *eeprom_image)
 		name[EWRK3_STRLEN] = '\0';
 	} else
 		name[0] = '\0';
+
+	return;
 }
 
 /*
@@ -1773,7 +1769,8 @@ static int ewrk3_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 		break;
 	case EWRK3_SET_MCA:	/* Set a multicast address */
 		if (capable(CAP_NET_ADMIN)) {
-			if (ioc->len > HASH_TABLE_LEN) {
+			if (ioc->len > 1024)
+			{
 				status = -EINVAL;
 				break;
 			}

@@ -1,7 +1,7 @@
 #ifndef __ASM_ARCH_MFP_PXA2XX_H
 #define __ASM_ARCH_MFP_PXA2XX_H
 
-#include <plat/mfp.h>
+#include <mach/mfp.h>
 
 /*
  * the following MFP_xxx bit definitions in mfp.h are re-used for pxa2xx:
@@ -25,8 +25,6 @@
 #define MFP_DIR(x)		(((x) >> 23) & 0x1)
 
 #define MFP_LPM_CAN_WAKEUP	(0x1 << 24)
-#define MFP_LPM_KEEP_OUTPUT	(0x1 << 25)
-
 #define WAKEUP_ON_EDGE_RISE	(MFP_LPM_CAN_WAKEUP | MFP_LPM_EDGE_RISE)
 #define WAKEUP_ON_EDGE_FALL	(MFP_LPM_CAN_WAKEUP | MFP_LPM_EDGE_FALL)
 #define WAKEUP_ON_EDGE_BOTH	(MFP_LPM_CAN_WAKEUP | MFP_LPM_EDGE_BOTH)

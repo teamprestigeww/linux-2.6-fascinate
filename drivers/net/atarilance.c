@@ -53,6 +53,7 @@ static char version[] = "atarilance.c: v1.3 04/04/96 "
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/bitops.h>
@@ -452,16 +453,6 @@ static noinline int __init addr_accessible(volatile void *regp, int wordflag,
 	return( ret );
 }
 
-static const struct net_device_ops lance_netdev_ops = {
-	.ndo_open		= lance_open,
-	.ndo_stop		= lance_close,
-	.ndo_start_xmit		= lance_start_xmit,
-	.ndo_set_multicast_list	= set_multicast_list,
-	.ndo_set_mac_address	= lance_set_mac_address,
-	.ndo_tx_timeout		= lance_tx_timeout,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-};
 
 static unsigned long __init lance_probe1( struct net_device *dev,
 					   struct lance_addr *init_rec )
@@ -632,9 +623,15 @@ static unsigned long __init lance_probe1( struct net_device *dev,
 	if (did_version++ == 0)
 		DPRINTK( 1, ( version ));
 
-	dev->netdev_ops = &lance_netdev_ops;
+	/* The LANCE-specific entries in the device structure. */
+	dev->open = &lance_open;
+	dev->hard_start_xmit = &lance_start_xmit;
+	dev->stop = &lance_close;
+	dev->set_multicast_list = &set_multicast_list;
+	dev->set_mac_address = &lance_set_mac_address;
 
 	/* XXX MSch */
+	dev->tx_timeout = lance_tx_timeout;
 	dev->watchdog_timeo = TX_TIMEOUT;
 
 	return( 1 );
@@ -662,7 +659,7 @@ static int lance_open( struct net_device *dev )
 	while (--i > 0)
 		if (DREG & CSR0_IDON)
 			break;
-	if (i <= 0 || (DREG & CSR0_ERR)) {
+	if (i < 0 || (DREG & CSR0_ERR)) {
 		DPRINTK( 2, ( "lance_open(): opening %s failed, i=%d, csr0=%04x\n",
 					  dev->name, i, DREG ));
 		DREG = CSR0_STOP;
@@ -767,8 +764,8 @@ static void lance_tx_timeout (struct net_device *dev)
 	/* lance_restart, essentially */
 	lance_init_ring(dev);
 	REGA( CSR0 ) = CSR0_INEA | CSR0_INIT | CSR0_STRT;
-	dev->trans_start = jiffies; /* prevent tx timeout */
-	netif_wake_queue(dev);
+	dev->trans_start = jiffies;
+	netif_wake_queue (dev);
 }
 
 /* XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX */
@@ -795,7 +792,7 @@ static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev )
 
 	if (len > skb->len) {
 		if (skb_padto(skb, len))
-			return NETDEV_TX_OK;
+			return 0;
 	}
 
 	netif_stop_queue (dev);
@@ -836,6 +833,7 @@ static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev )
 
 	/* Trigger an immediate send poll. */
 	DREG = CSR0_INEA | CSR0_TDMD;
+	dev->trans_start = jiffies;
 
 	if ((MEM->tx_head[(entry+1) & TX_RING_MOD_MASK].flag & TMD1_OWN) ==
 		TMD1_OWN_HOST)
@@ -844,7 +842,7 @@ static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev )
 		lp->tx_full = 1;
 	spin_unlock_irqrestore (&lp->devlock, flags);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /* The LANCE interrupt handler. */
@@ -928,8 +926,8 @@ static irqreturn_t lance_interrupt( int irq, void *dev_id )
 			}
 #endif
 
-			if (lp->tx_full && (netif_queue_stopped(dev)) &&
-				dirty_tx > lp->cur_tx - TX_RING_SIZE + 2) {
+			if (lp->tx_full && (netif_queue_stopped(dev))
+				&& dirty_tx > lp->cur_tx - TX_RING_SIZE + 2) {
 				/* The ring is no longer full, clear tbusy. */
 				lp->tx_full = 0;
 				netif_wake_queue (dev);
@@ -1095,7 +1093,7 @@ static void set_multicast_list( struct net_device *dev )
 		REGA( CSR15 ) = 0x8000; /* Set promiscuous mode */
 	} else {
 		short multicast_table[4];
-		int num_addrs = netdev_mc_count(dev);
+		int num_addrs = dev->mc_count;
 		int i;
 		/* We don't use the multicast table, but rely on upper-layer
 		 * filtering. */

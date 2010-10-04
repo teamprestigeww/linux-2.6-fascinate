@@ -39,7 +39,7 @@
 
 static void __iomem *tcaddr;
 
-static cycle_t tc_get_cycles(struct clocksource *cs)
+static cycle_t tc_get_cycles(void)
 {
 	unsigned long	flags;
 	u32		lower, upper;

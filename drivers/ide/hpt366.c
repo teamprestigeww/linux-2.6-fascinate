@@ -3,7 +3,7 @@
  * Portions Copyright (C) 2001	        Sun Microsystems, Inc.
  * Portions Copyright (C) 2003		Red Hat Inc
  * Portions Copyright (C) 2007		Bartlomiej Zolnierkiewicz
- * Portions Copyright (C) 2005-2009	MontaVista Software, Inc.
+ * Portions Copyright (C) 2005-2008	MontaVista Software, Inc.
  *
  * Thanks to HighPoint Technologies for their assistance, and hardware.
  * Special Thanks to Jon Burchmore in SanDiego for the deep pockets, his
@@ -114,8 +114,6 @@
  *   the register setting lists into the table indexed by the clock selected
  * - set the correct hwif->ultra_mask for each individual chip
  * - add Ultra and MW DMA mode filtering for the HPT37[24] based SATA cards
- * - stop resetting HPT370's state machine before each DMA transfer as that has
- *   caused more harm than good
  *	Sergei Shtylyov, <sshtylyov@ru.mvista.com> or <source@mvista.com>
  */
 
@@ -128,7 +126,6 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/ide.h>
-#include <linux/slab.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -136,8 +133,16 @@
 #define DRV_NAME "hpt366"
 
 /* various tuning parameters */
-#undef	HPT_RESET_STATE_ENGINE
+#define HPT_RESET_STATE_ENGINE
 #undef	HPT_DELAY_INTERRUPT
+
+static const char *quirk_drives[] = {
+	"QUANTUM FIREBALLlct08 08",
+	"QUANTUM FIREBALLP KA6.4",
+	"QUANTUM FIREBALLP LM20.4",
+	"QUANTUM FIREBALLP LM20.5",
+	NULL
+};
 
 static const char *bad_ata100_5[] = {
 	"IBM-DTLA-307075",
@@ -298,6 +303,68 @@ static u32 twenty_five_base_hpt36x[] = {
 	/* XFER_PIO_0 */	0xc0d08585
 };
 
+#if 0
+/* These are the timing tables from the HighPoint open source drivers... */
+static u32 thirty_three_base_hpt37x[] = {
+	/* XFER_UDMA_6 */	0x12446231,	/* 0x12646231 ?? */
+	/* XFER_UDMA_5 */	0x12446231,
+	/* XFER_UDMA_4 */	0x12446231,
+	/* XFER_UDMA_3 */	0x126c6231,
+	/* XFER_UDMA_2 */	0x12486231,
+	/* XFER_UDMA_1 */	0x124c6233,
+	/* XFER_UDMA_0 */	0x12506297,
+
+	/* XFER_MW_DMA_2 */	0x22406c31,
+	/* XFER_MW_DMA_1 */	0x22406c33,
+	/* XFER_MW_DMA_0 */	0x22406c97,
+
+	/* XFER_PIO_4 */	0x06414e31,
+	/* XFER_PIO_3 */	0x06414e42,
+	/* XFER_PIO_2 */	0x06414e53,
+	/* XFER_PIO_1 */	0x06814e93,
+	/* XFER_PIO_0 */	0x06814ea7
+};
+
+static u32 fifty_base_hpt37x[] = {
+	/* XFER_UDMA_6 */	0x12848242,
+	/* XFER_UDMA_5 */	0x12848242,
+	/* XFER_UDMA_4 */	0x12ac8242,
+	/* XFER_UDMA_3 */	0x128c8242,
+	/* XFER_UDMA_2 */	0x120c8242,
+	/* XFER_UDMA_1 */	0x12148254,
+	/* XFER_UDMA_0 */	0x121882ea,
+
+	/* XFER_MW_DMA_2 */	0x22808242,
+	/* XFER_MW_DMA_1 */	0x22808254,
+	/* XFER_MW_DMA_0 */	0x228082ea,
+
+	/* XFER_PIO_4 */	0x0a81f442,
+	/* XFER_PIO_3 */	0x0a81f443,
+	/* XFER_PIO_2 */	0x0a81f454,
+	/* XFER_PIO_1 */	0x0ac1f465,
+	/* XFER_PIO_0 */	0x0ac1f48a
+};
+
+static u32 sixty_six_base_hpt37x[] = {
+	/* XFER_UDMA_6 */	0x1c869c62,
+	/* XFER_UDMA_5 */	0x1cae9c62,	/* 0x1c8a9c62 */
+	/* XFER_UDMA_4 */	0x1c8a9c62,
+	/* XFER_UDMA_3 */	0x1c8e9c62,
+	/* XFER_UDMA_2 */	0x1c929c62,
+	/* XFER_UDMA_1 */	0x1c9a9c62,
+	/* XFER_UDMA_0 */	0x1c829c62,
+
+	/* XFER_MW_DMA_2 */	0x2c829c62,
+	/* XFER_MW_DMA_1 */	0x2c829c66,
+	/* XFER_MW_DMA_0 */	0x2c829d2e,
+
+	/* XFER_PIO_4 */	0x0c829c62,
+	/* XFER_PIO_3 */	0x0c829c84,
+	/* XFER_PIO_2 */	0x0c829ca6,
+	/* XFER_PIO_1 */	0x0d029d26,
+	/* XFER_PIO_0 */	0x0d029d5e
+};
+#else
 /*
  * The following are the new timing tables with PIO mode data/taskfile transfer
  * overclocking fixed...
@@ -363,13 +430,16 @@ static u32 sixty_six_base_hpt37x[] = {
 	/* XFER_PIO_1 */	0x0d02ff26,
 	/* XFER_PIO_0 */	0x0d42ff7f
 };
+#endif
 
+#define HPT366_DEBUG_DRIVE_INFO		0
 #define HPT371_ALLOW_ATA133_6		1
 #define HPT302_ALLOW_ATA133_6		1
 #define HPT372_ALLOW_ATA133_6		1
 #define HPT370_ALLOW_ATA100_5		0
 #define HPT366_ALLOW_ATA66_4		1
 #define HPT366_ALLOW_ATA66_3		1
+#define HPT366_MAX_DEVS			8
 
 /* Supported ATA clock frequencies */
 enum ata_clock {
@@ -628,14 +698,14 @@ static u32 get_speed_setting(u8 speed, struct hpt_info *info)
 	return info->timings->clock_table[info->clock][i];
 }
 
-static void hpt3xx_set_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void hpt3xx_set_mode(ide_drive_t *drive, const u8 speed)
 {
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	struct hpt_info *info	= hpt3xx_get_info(hwif->dev);
 	struct hpt_timings *t	= info->timings;
 	u8  itr_addr		= 0x40 + (drive->dn * 4);
 	u32 old_itr		= 0;
-	const u8 speed		= drive->dma_mode;
 	u32 new_itr		= get_speed_setting(speed, info);
 	u32 itr_mask		= speed < XFER_MW_DMA_0 ? t->pio_mask :
 				 (speed < XFER_UDMA_0   ? t->dma_mask :
@@ -652,10 +722,23 @@ static void hpt3xx_set_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	pci_write_config_dword(dev, itr_addr, new_itr);
 }
 
-static void hpt3xx_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void hpt3xx_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
-	drive->dma_mode = drive->pio_mode;
-	hpt3xx_set_mode(hwif, drive);
+	hpt3xx_set_mode(drive, XFER_PIO_0 + pio);
+}
+
+static void hpt3xx_quirkproc(ide_drive_t *drive)
+{
+	char *m			= (char *)&drive->id[ATA_ID_PROD];
+	const  char **list	= quirk_drives;
+
+	while (*list)
+		if (strstr(m, *list++)) {
+			drive->quirk_list = 1;
+			return;
+		}
+
+	drive->quirk_list = 0;
 }
 
 static void hpt3xx_maskproc(ide_drive_t *drive, int mask)
@@ -664,7 +747,7 @@ static void hpt3xx_maskproc(ide_drive_t *drive, int mask)
 	struct pci_dev	*dev	= to_pci_dev(hwif->dev);
 	struct hpt_info *info	= hpt3xx_get_info(hwif->dev);
 
-	if ((drive->dev_flags & IDE_DFLAG_NIEN_QUIRK) == 0)
+	if (drive->quirk_list == 0)
 		return;
 
 	if (info->chip_type >= HPT370) {
@@ -725,7 +808,7 @@ static void hpt370_irq_timeout(ide_drive_t *drive)
 	/* get DMA command mode */
 	dma_cmd = inb(hwif->dma_base + ATA_DMA_CMD);
 	/* stop DMA */
-	outb(dma_cmd & ~ATA_DMA_START, hwif->dma_base + ATA_DMA_CMD);
+	outb(dma_cmd & ~0x1, hwif->dma_base + ATA_DMA_CMD);
 	hpt370_clear_engine(drive);
 }
 
@@ -742,14 +825,20 @@ static int hpt370_dma_end(ide_drive_t *drive)
 	ide_hwif_t *hwif	= drive->hwif;
 	u8  dma_stat		= inb(hwif->dma_base + ATA_DMA_STATUS);
 
-	if (dma_stat & ATA_DMA_ACTIVE) {
+	if (dma_stat & 0x01) {
 		/* wait a little */
 		udelay(20);
 		dma_stat = inb(hwif->dma_base + ATA_DMA_STATUS);
-		if (dma_stat & ATA_DMA_ACTIVE)
+		if (dma_stat & 0x01)
 			hpt370_irq_timeout(drive);
 	}
 	return ide_dma_end(drive);
+}
+
+static void hpt370_dma_timeout(ide_drive_t *drive)
+{
+	hpt370_irq_timeout(drive);
+	ide_dma_timeout(drive);
 }
 
 /* returns 1 if DMA IRQ issued, 0 otherwise */
@@ -768,7 +857,7 @@ static int hpt374_dma_test_irq(ide_drive_t *drive)
 
 	dma_stat = inb(hwif->dma_base + ATA_DMA_STATUS);
 	/* return 1 if INTR asserted */
-	if (dma_stat & ATA_DMA_INTR)
+	if (dma_stat & 4)
 		return 1;
 
 	return 0;
@@ -906,7 +995,7 @@ static void hpt3xx_disable_fast_irq(struct pci_dev *dev, u8 mcr_addr)
 		pci_write_config_byte(dev, mcr_addr + 1, new_mcr);
 }
 
-static int init_chipset_hpt366(struct pci_dev *dev)
+static unsigned int init_chipset_hpt366(struct pci_dev *dev)
 {
 	unsigned long io_base	= pci_resource_start(dev, 4);
 	struct hpt_info *info	= hpt3xx_get_info(&dev->dev);
@@ -1148,7 +1237,7 @@ static int init_chipset_hpt366(struct pci_dev *dev)
 	hpt3xx_disable_fast_irq(dev, 0x50);
 	hpt3xx_disable_fast_irq(dev, 0x54);
 
-	return 0;
+	return dev->irq;
 }
 
 static u8 hpt3xx_cable_detect(ide_hwif_t *hwif)
@@ -1319,6 +1408,7 @@ static int __devinit hpt36x_init(struct pci_dev *dev, struct pci_dev *dev2)
 static const struct ide_port_ops hpt3xx_port_ops = {
 	.set_pio_mode		= hpt3xx_set_pio_mode,
 	.set_dma_mode		= hpt3xx_set_mode,
+	.quirkproc		= hpt3xx_quirkproc,
 	.maskproc		= hpt3xx_maskproc,
 	.mdma_filter		= hpt3xx_mdma_filter,
 	.udma_filter		= hpt3xx_udma_filter,
@@ -1328,34 +1418,36 @@ static const struct ide_port_ops hpt3xx_port_ops = {
 static const struct ide_dma_ops hpt37x_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
+	.dma_exec_cmd		= ide_dma_exec_cmd,
 	.dma_start		= ide_dma_start,
 	.dma_end		= hpt374_dma_end,
 	.dma_test_irq		= hpt374_dma_test_irq,
 	.dma_lost_irq		= ide_dma_lost_irq,
-	.dma_timer_expiry	= ide_dma_sff_timer_expiry,
+	.dma_timeout		= ide_dma_timeout,
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 
 static const struct ide_dma_ops hpt370_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
+	.dma_exec_cmd		= ide_dma_exec_cmd,
 	.dma_start		= hpt370_dma_start,
 	.dma_end		= hpt370_dma_end,
 	.dma_test_irq		= ide_dma_test_irq,
 	.dma_lost_irq		= ide_dma_lost_irq,
-	.dma_timer_expiry	= ide_dma_sff_timer_expiry,
-	.dma_clear		= hpt370_irq_timeout,
+	.dma_timeout		= hpt370_dma_timeout,
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 
 static const struct ide_dma_ops hpt36x_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
+	.dma_exec_cmd		= ide_dma_exec_cmd,
 	.dma_start		= ide_dma_start,
 	.dma_end		= ide_dma_end,
 	.dma_test_irq		= ide_dma_test_irq,
 	.dma_lost_irq		= hpt366_dma_lost_irq,
-	.dma_timer_expiry	= ide_dma_sff_timer_expiry,
+	.dma_timeout		= ide_dma_timeout,
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 

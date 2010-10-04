@@ -3,14 +3,13 @@
   */
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
-#include <linux/sched.h>
-#include <net/cfg80211.h>
 
-#include "host.h"
+#include "hostcmd.h"
 #include "radiotap.h"
 #include "decl.h"
 #include "defs.h"
 #include "dev.h"
+#include "wext.h"
 
 /**
  *  @brief This function converts Tx/Rx rates from IEEE80211_RADIOTAP_RATE
@@ -58,16 +57,18 @@ static u32 convert_radiotap_rate_to_mv(u8 rate)
  *  @param skb     A pointer to skb which includes TX packet
  *  @return 	   0 or -1
  */
-netdev_tx_t lbs_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
+int lbs_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	unsigned long flags;
 	struct lbs_private *priv = dev->ml_priv;
 	struct txpd *txpd;
 	char *p802x_hdr;
 	uint16_t pkt_len;
-	netdev_tx_t ret = NETDEV_TX_OK;
+	int ret;
 
 	lbs_deb_enter(LBS_DEB_TX);
+
+	ret = NETDEV_TX_OK;
 
 	/* We need to protect against the queues being restarted before
 	   we get round to stopping them */
@@ -81,8 +82,8 @@ netdev_tx_t lbs_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		       skb->len, MRVDRV_ETH_TX_PACKET_BUFFER_SIZE);
 		/* We'll never manage to send this one; drop it and return 'OK' */
 
-		dev->stats.tx_dropped++;
-		dev->stats.tx_errors++;
+		priv->stats.tx_dropped++;
+		priv->stats.tx_errors++;
 		goto free;
 	}
 
@@ -111,7 +112,7 @@ netdev_tx_t lbs_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	p802x_hdr = skb->data;
 	pkt_len = skb->len;
 
-	if (priv->wdev->iftype == NL80211_IFTYPE_MONITOR) {
+	if (dev == priv->rtap_net_dev) {
 		struct tx_radiotap_hdr *rtap_hdr = (void *)skb->data;
 
 		/* set txpd fields from the radiotap header */
@@ -131,7 +132,8 @@ netdev_tx_t lbs_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	txpd->tx_packet_length = cpu_to_le16(pkt_len);
 	txpd->tx_packet_location = cpu_to_le32(sizeof(struct txpd));
 
-	lbs_mesh_set_txpd(priv, dev, txpd);
+	if (dev == priv->mesh_dev)
+		txpd->tx_control |= cpu_to_le32(TxPD_MESH_FRAME);
 
 	lbs_deb_hex(LBS_DEB_TX, "txpd", (u8 *) &txpd, sizeof(struct txpd));
 
@@ -144,10 +146,12 @@ netdev_tx_t lbs_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	lbs_deb_tx("%s lined up packet\n", __func__);
 
-	dev->stats.tx_packets++;
-	dev->stats.tx_bytes += skb->len;
+	priv->stats.tx_packets++;
+	priv->stats.tx_bytes += skb->len;
 
-	if (priv->wdev->iftype == NL80211_IFTYPE_MONITOR) {
+	dev->trans_start = jiffies;
+
+	if (priv->monitormode) {
 		/* Keep the skb to echo it back once Tx feedback is
 		   received from FW */
 		skb_orphan(skb);
@@ -158,7 +162,6 @@ netdev_tx_t lbs_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
  free:
 		dev_kfree_skb_any(skb);
 	}
-
  unlock:
 	spin_unlock_irqrestore(&priv->driver_lock, flags);
 	wake_up(&priv->waitq);
@@ -180,8 +183,7 @@ void lbs_send_tx_feedback(struct lbs_private *priv, u32 try_count)
 {
 	struct tx_radiotap_hdr *radiotap_hdr;
 
-	if (priv->wdev->iftype != NL80211_IFTYPE_MONITOR ||
-	    priv->currenttxskb == NULL)
+	if (!priv->monitormode || priv->currenttxskb == NULL)
 		return;
 
 	radiotap_hdr = (struct tx_radiotap_hdr *)priv->currenttxskb->data;
@@ -190,7 +192,7 @@ void lbs_send_tx_feedback(struct lbs_private *priv, u32 try_count)
 		(1 + priv->txretrycount - try_count) : 0;
 
 	priv->currenttxskb->protocol = eth_type_trans(priv->currenttxskb,
-						      priv->dev);
+						      priv->rtap_net_dev);
 	netif_rx(priv->currenttxskb);
 
 	priv->currenttxskb = NULL;
@@ -198,7 +200,7 @@ void lbs_send_tx_feedback(struct lbs_private *priv, u32 try_count)
 	if (priv->connect_status == LBS_CONNECTED)
 		netif_wake_queue(priv->dev);
 
-	if (priv->mesh_dev && lbs_mesh_connected(priv))
+	if (priv->mesh_dev && (priv->mesh_connect_status == LBS_CONNECTED))
 		netif_wake_queue(priv->mesh_dev);
 }
 EXPORT_SYMBOL_GPL(lbs_send_tx_feedback);

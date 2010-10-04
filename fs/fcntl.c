@@ -14,12 +14,12 @@
 #include <linux/dnotify.h>
 #include <linux/slab.h>
 #include <linux/module.h>
-#include <linux/pipe_fs_i.h>
 #include <linux/security.h>
 #include <linux/ptrace.h>
 #include <linux/signal.h>
 #include <linux/rcupdate.h>
 #include <linux/pid_namespace.h>
+#include <linux/smp_lock.h>
 
 #include <asm/poll.h>
 #include <asm/siginfo.h>
@@ -117,13 +117,11 @@ SYSCALL_DEFINE2(dup2, unsigned int, oldfd, unsigned int, newfd)
 {
 	if (unlikely(newfd == oldfd)) { /* corner case */
 		struct files_struct *files = current->files;
-		int retval = oldfd;
-
 		rcu_read_lock();
 		if (!fcheck_files(files, oldfd))
-			retval = -EBADF;
+			oldfd = -EBADF;
 		rcu_read_unlock();
-		return retval;
+		return oldfd;
 	}
 	return sys_dup3(oldfd, newfd, 0);
 }
@@ -143,7 +141,7 @@ SYSCALL_DEFINE1(dup, unsigned int, fildes)
 	return ret;
 }
 
-#define SETFL_MASK (O_APPEND | O_NONBLOCK | O_NDELAY | O_DIRECT | O_NOATIME)
+#define SETFL_MASK (O_APPEND | O_NONBLOCK | O_NDELAY | FASYNC | O_DIRECT | O_NOATIME)
 
 static int setfl(int fd, struct file * filp, unsigned long arg)
 {
@@ -179,38 +177,34 @@ static int setfl(int fd, struct file * filp, unsigned long arg)
 		return error;
 
 	/*
-	 * ->fasync() is responsible for setting the FASYNC bit.
+	 * We still need a lock here for now to keep multiple FASYNC calls
+	 * from racing with each other.
 	 */
-	if (((arg ^ filp->f_flags) & FASYNC) && filp->f_op &&
-			filp->f_op->fasync) {
-		error = filp->f_op->fasync(fd, filp, (arg & FASYNC) != 0);
-		if (error < 0)
-			goto out;
-		if (error > 0)
-			error = 0;
+	lock_kernel();
+	if ((arg ^ filp->f_flags) & FASYNC) {
+		if (filp->f_op && filp->f_op->fasync) {
+			error = filp->f_op->fasync(fd, filp, (arg & FASYNC) != 0);
+			if (error < 0)
+				goto out;
+		}
 	}
-	spin_lock(&filp->f_lock);
-	filp->f_flags = (arg & SETFL_MASK) | (filp->f_flags & ~SETFL_MASK);
-	spin_unlock(&filp->f_lock);
 
+	filp->f_flags = (arg & SETFL_MASK) | (filp->f_flags & ~SETFL_MASK);
  out:
+	unlock_kernel();
 	return error;
 }
 
 static void f_modown(struct file *filp, struct pid *pid, enum pid_type type,
-                     int force)
+                     uid_t uid, uid_t euid, int force)
 {
 	write_lock_irq(&filp->f_owner.lock);
 	if (force || !filp->f_owner.pid) {
 		put_pid(filp->f_owner.pid);
 		filp->f_owner.pid = get_pid(pid);
 		filp->f_owner.pid_type = type;
-
-		if (pid) {
-			const struct cred *cred = current_cred();
-			filp->f_owner.uid = cred->uid;
-			filp->f_owner.euid = cred->euid;
-		}
+		filp->f_owner.uid = uid;
+		filp->f_owner.euid = euid;
 	}
 	write_unlock_irq(&filp->f_owner.lock);
 }
@@ -218,13 +212,14 @@ static void f_modown(struct file *filp, struct pid *pid, enum pid_type type,
 int __f_setown(struct file *filp, struct pid *pid, enum pid_type type,
 		int force)
 {
+	const struct cred *cred = current_cred();
 	int err;
-
+	
 	err = security_file_set_fowner(filp);
 	if (err)
 		return err;
 
-	f_modown(filp, pid, type, force);
+	f_modown(filp, pid, type, cred->uid, cred->euid, force);
 	return 0;
 }
 EXPORT_SYMBOL(__f_setown);
@@ -250,7 +245,7 @@ EXPORT_SYMBOL(f_setown);
 
 void f_delown(struct file *filp)
 {
-	f_modown(filp, NULL, PIDTYPE_PID, 1);
+	f_modown(filp, NULL, PIDTYPE_PID, 0, 0, 1);
 }
 
 pid_t f_getown(struct file *filp)
@@ -264,82 +259,6 @@ pid_t f_getown(struct file *filp)
 	return pid;
 }
 
-static int f_setown_ex(struct file *filp, unsigned long arg)
-{
-	struct f_owner_ex * __user owner_p = (void * __user)arg;
-	struct f_owner_ex owner;
-	struct pid *pid;
-	int type;
-	int ret;
-
-	ret = copy_from_user(&owner, owner_p, sizeof(owner));
-	if (ret)
-		return -EFAULT;
-
-	switch (owner.type) {
-	case F_OWNER_TID:
-		type = PIDTYPE_MAX;
-		break;
-
-	case F_OWNER_PID:
-		type = PIDTYPE_PID;
-		break;
-
-	case F_OWNER_PGRP:
-		type = PIDTYPE_PGID;
-		break;
-
-	default:
-		return -EINVAL;
-	}
-
-	rcu_read_lock();
-	pid = find_vpid(owner.pid);
-	if (owner.pid && !pid)
-		ret = -ESRCH;
-	else
-		ret = __f_setown(filp, pid, type, 1);
-	rcu_read_unlock();
-
-	return ret;
-}
-
-static int f_getown_ex(struct file *filp, unsigned long arg)
-{
-	struct f_owner_ex * __user owner_p = (void * __user)arg;
-	struct f_owner_ex owner;
-	int ret = 0;
-
-	read_lock(&filp->f_owner.lock);
-	owner.pid = pid_vnr(filp->f_owner.pid);
-	switch (filp->f_owner.pid_type) {
-	case PIDTYPE_MAX:
-		owner.type = F_OWNER_TID;
-		break;
-
-	case PIDTYPE_PID:
-		owner.type = F_OWNER_PID;
-		break;
-
-	case PIDTYPE_PGID:
-		owner.type = F_OWNER_PGRP;
-		break;
-
-	default:
-		WARN_ON(1);
-		ret = -EINVAL;
-		break;
-	}
-	read_unlock(&filp->f_owner.lock);
-
-	if (!ret) {
-		ret = copy_to_user(owner_p, &owner, sizeof(owner));
-		if (ret)
-			ret = -EFAULT;
-	}
-	return ret;
-}
-
 static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 		struct file *filp)
 {
@@ -348,7 +267,7 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	switch (cmd) {
 	case F_DUPFD:
 	case F_DUPFD_CLOEXEC:
-		if (arg >= rlimit(RLIMIT_NOFILE))
+		if (arg >= current->signal->rlim[RLIMIT_NOFILE].rlim_cur)
 			break;
 		err = alloc_fd(arg, cmd == F_DUPFD_CLOEXEC ? O_CLOEXEC : 0);
 		if (err >= 0) {
@@ -390,12 +309,6 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	case F_SETOWN:
 		err = f_setown(filp, arg, 1);
 		break;
-	case F_GETOWN_EX:
-		err = f_getown_ex(filp, arg);
-		break;
-	case F_SETOWN_EX:
-		err = f_setown_ex(filp, arg);
-		break;
 	case F_GETSIG:
 		err = filp->f_owner.signum;
 		break;
@@ -415,10 +328,6 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 		break;
 	case F_NOTIFY:
 		err = fcntl_dirnotify(fd, filp, arg);
-		break;
-	case F_SETPIPE_SZ:
-	case F_GETPIPE_SZ:
-		err = pipe_fcntl(filp, cmd, arg);
 		break;
 	default:
 		break;
@@ -514,19 +423,14 @@ static inline int sigio_perm(struct task_struct *p,
 }
 
 static void send_sigio_to_task(struct task_struct *p,
-			       struct fown_struct *fown,
-			       int fd, int reason, int group)
+			       struct fown_struct *fown, 
+			       int fd,
+			       int reason)
 {
-	/*
-	 * F_SETSIG can change ->signum lockless in parallel, make
-	 * sure we read it once and use the same value throughout.
-	 */
-	int signum = ACCESS_ONCE(fown->signum);
-
-	if (!sigio_perm(p, fown, signum))
+	if (!sigio_perm(p, fown, fown->signum))
 		return;
 
-	switch (signum) {
+	switch (fown->signum) {
 		siginfo_t si;
 		default:
 			/* Queue a rt signal with the appropriate fd as its
@@ -535,7 +439,7 @@ static void send_sigio_to_task(struct task_struct *p,
 			   delivered even if we can't queue.  Failure to
 			   queue in this case _should_ be reported; we fall
 			   back to SIGIO in that case. --sct */
-			si.si_signo = signum;
+			si.si_signo = fown->signum;
 			si.si_errno = 0;
 		        si.si_code  = reason;
 			/* Make sure we are called with one of the POLL_*
@@ -547,11 +451,11 @@ static void send_sigio_to_task(struct task_struct *p,
 			else
 				si.si_band = band_table[reason - POLL_IN];
 			si.si_fd    = fd;
-			if (!do_send_sig_info(signum, &si, p, group))
+			if (!group_send_sig_info(fown->signum, &si, p))
 				break;
 		/* fall-through: fall back on the old plain SIGIO signal */
 		case 0:
-			do_send_sig_info(SIGIO, SEND_SIG_PRIV, p, group);
+			group_send_sig_info(SIGIO, SEND_SIG_PRIV, p);
 	}
 }
 
@@ -560,23 +464,16 @@ void send_sigio(struct fown_struct *fown, int fd, int band)
 	struct task_struct *p;
 	enum pid_type type;
 	struct pid *pid;
-	int group = 1;
 	
 	read_lock(&fown->lock);
-
 	type = fown->pid_type;
-	if (type == PIDTYPE_MAX) {
-		group = 0;
-		type = PIDTYPE_PID;
-	}
-
 	pid = fown->pid;
 	if (!pid)
 		goto out_unlock_fown;
 	
 	read_lock(&tasklist_lock);
 	do_each_pid_task(pid, type, p) {
-		send_sigio_to_task(p, fown, fd, band, group);
+		send_sigio_to_task(p, fown, fd, band);
 	} while_each_pid_task(pid, type, p);
 	read_unlock(&tasklist_lock);
  out_unlock_fown:
@@ -584,10 +481,10 @@ void send_sigio(struct fown_struct *fown, int fd, int band)
 }
 
 static void send_sigurg_to_task(struct task_struct *p,
-				struct fown_struct *fown, int group)
+                                struct fown_struct *fown)
 {
 	if (sigio_perm(p, fown, SIGURG))
-		do_send_sig_info(SIGURG, SEND_SIG_PRIV, p, group);
+		group_send_sig_info(SIGURG, SEND_SIG_PRIV, p);
 }
 
 int send_sigurg(struct fown_struct *fown)
@@ -595,17 +492,10 @@ int send_sigurg(struct fown_struct *fown)
 	struct task_struct *p;
 	enum pid_type type;
 	struct pid *pid;
-	int group = 1;
 	int ret = 0;
 	
 	read_lock(&fown->lock);
-
 	type = fown->pid_type;
-	if (type == PIDTYPE_MAX) {
-		group = 0;
-		type = PIDTYPE_PID;
-	}
-
 	pid = fown->pid;
 	if (!pid)
 		goto out_unlock_fown;
@@ -614,7 +504,7 @@ int send_sigurg(struct fown_struct *fown)
 	
 	read_lock(&tasklist_lock);
 	do_each_pid_task(pid, type, p) {
-		send_sigurg_to_task(p, fown, group);
+		send_sigurg_to_task(p, fown);
 	} while_each_pid_task(pid, type, p);
 	read_unlock(&tasklist_lock);
  out_unlock_fown:
@@ -622,137 +512,75 @@ int send_sigurg(struct fown_struct *fown)
 	return ret;
 }
 
-static DEFINE_SPINLOCK(fasync_lock);
+static DEFINE_RWLOCK(fasync_lock);
 static struct kmem_cache *fasync_cache __read_mostly;
 
-static void fasync_free_rcu(struct rcu_head *head)
-{
-	kmem_cache_free(fasync_cache,
-			container_of(head, struct fasync_struct, fa_rcu));
-}
-
 /*
- * Remove a fasync entry. If successfully removed, return
- * positive and clear the FASYNC flag. If no entry exists,
- * do nothing and return 0.
- *
- * NOTE! It is very important that the FASYNC flag always
- * match the state "is the filp on a fasync list".
- *
- */
-static int fasync_remove_entry(struct file *filp, struct fasync_struct **fapp)
-{
-	struct fasync_struct *fa, **fp;
-	int result = 0;
-
-	spin_lock(&filp->f_lock);
-	spin_lock(&fasync_lock);
-	for (fp = fapp; (fa = *fp) != NULL; fp = &fa->fa_next) {
-		if (fa->fa_file != filp)
-			continue;
-
-		spin_lock_irq(&fa->fa_lock);
-		fa->fa_file = NULL;
-		spin_unlock_irq(&fa->fa_lock);
-
-		*fp = fa->fa_next;
-		call_rcu(&fa->fa_rcu, fasync_free_rcu);
-		filp->f_flags &= ~FASYNC;
-		result = 1;
-		break;
-	}
-	spin_unlock(&fasync_lock);
-	spin_unlock(&filp->f_lock);
-	return result;
-}
-
-/*
- * Add a fasync entry. Return negative on error, positive if
- * added, and zero if did nothing but change an existing one.
- *
- * NOTE! It is very important that the FASYNC flag always
- * match the state "is the filp on a fasync list".
- */
-static int fasync_add_entry(int fd, struct file *filp, struct fasync_struct **fapp)
-{
-	struct fasync_struct *new, *fa, **fp;
-	int result = 0;
-
-	new = kmem_cache_alloc(fasync_cache, GFP_KERNEL);
-	if (!new)
-		return -ENOMEM;
-
-	spin_lock(&filp->f_lock);
-	spin_lock(&fasync_lock);
-	for (fp = fapp; (fa = *fp) != NULL; fp = &fa->fa_next) {
-		if (fa->fa_file != filp)
-			continue;
-
-		spin_lock_irq(&fa->fa_lock);
-		fa->fa_fd = fd;
-		spin_unlock_irq(&fa->fa_lock);
-
-		kmem_cache_free(fasync_cache, new);
-		goto out;
-	}
-
-	spin_lock_init(&new->fa_lock);
-	new->magic = FASYNC_MAGIC;
-	new->fa_file = filp;
-	new->fa_fd = fd;
-	new->fa_next = *fapp;
-	rcu_assign_pointer(*fapp, new);
-	result = 1;
-	filp->f_flags |= FASYNC;
-
-out:
-	spin_unlock(&fasync_lock);
-	spin_unlock(&filp->f_lock);
-	return result;
-}
-
-/*
- * fasync_helper() is used by almost all character device drivers
- * to set up the fasync queue, and for regular files by the file
- * lease code. It returns negative on error, 0 if it did no changes
- * and positive if it added/deleted the entry.
+ * fasync_helper() is used by some character device drivers (mainly mice)
+ * to set up the fasync queue. It returns negative on error, 0 if it did
+ * no changes and positive if it added/deleted the entry.
  */
 int fasync_helper(int fd, struct file * filp, int on, struct fasync_struct **fapp)
 {
-	if (!on)
-		return fasync_remove_entry(filp, fapp);
-	return fasync_add_entry(fd, filp, fapp);
+	struct fasync_struct *fa, **fp;
+	struct fasync_struct *new = NULL;
+	int result = 0;
+
+	if (on) {
+		new = kmem_cache_alloc(fasync_cache, GFP_KERNEL);
+		if (!new)
+			return -ENOMEM;
+	}
+	write_lock_irq(&fasync_lock);
+	for (fp = fapp; (fa = *fp) != NULL; fp = &fa->fa_next) {
+		if (fa->fa_file == filp) {
+			if(on) {
+				fa->fa_fd = fd;
+				kmem_cache_free(fasync_cache, new);
+			} else {
+				*fp = fa->fa_next;
+				kmem_cache_free(fasync_cache, fa);
+				result = 1;
+			}
+			goto out;
+		}
+	}
+
+	if (on) {
+		new->magic = FASYNC_MAGIC;
+		new->fa_file = filp;
+		new->fa_fd = fd;
+		new->fa_next = *fapp;
+		*fapp = new;
+		result = 1;
+	}
+out:
+	write_unlock_irq(&fasync_lock);
+	return result;
 }
 
 EXPORT_SYMBOL(fasync_helper);
 
-/*
- * rcu_read_lock() is held
- */
-static void kill_fasync_rcu(struct fasync_struct *fa, int sig, int band)
+void __kill_fasync(struct fasync_struct *fa, int sig, int band)
 {
 	while (fa) {
-		struct fown_struct *fown;
-		unsigned long flags;
-
+		struct fown_struct * fown;
 		if (fa->magic != FASYNC_MAGIC) {
 			printk(KERN_ERR "kill_fasync: bad magic number in "
 			       "fasync_struct!\n");
 			return;
 		}
-		spin_lock_irqsave(&fa->fa_lock, flags);
-		if (fa->fa_file) {
-			fown = &fa->fa_file->f_owner;
-			/* Don't send SIGURG to processes which have not set a
-			   queued signum: SIGURG has its own default signalling
-			   mechanism. */
-			if (!(sig == SIGURG && fown->signum == 0))
-				send_sigio(fown, fa->fa_fd, band);
-		}
-		spin_unlock_irqrestore(&fa->fa_lock, flags);
-		fa = rcu_dereference(fa->fa_next);
+		fown = &fa->fa_file->f_owner;
+		/* Don't send SIGURG to processes which have not set a
+		   queued signum: SIGURG has its own default signalling
+		   mechanism. */
+		if (!(sig == SIGURG && fown->signum == 0))
+			send_sigio(fown, fa->fa_fd, band);
+		fa = fa->fa_next;
 	}
 }
+
+EXPORT_SYMBOL(__kill_fasync);
 
 void kill_fasync(struct fasync_struct **fp, int sig, int band)
 {
@@ -760,33 +588,19 @@ void kill_fasync(struct fasync_struct **fp, int sig, int band)
 	 * the list is empty.
 	 */
 	if (*fp) {
-		rcu_read_lock();
-		kill_fasync_rcu(rcu_dereference(*fp), sig, band);
-		rcu_read_unlock();
+		read_lock(&fasync_lock);
+		/* reread *fp after obtaining the lock */
+		__kill_fasync(*fp, sig, band);
+		read_unlock(&fasync_lock);
 	}
 }
 EXPORT_SYMBOL(kill_fasync);
 
-static int __init fcntl_init(void)
+static int __init fasync_init(void)
 {
-	/*
-	 * Please add new bits here to ensure allocation uniqueness.
-	 * Exceptions: O_NONBLOCK is a two bit define on parisc; O_NDELAY
-	 * is defined as O_NONBLOCK on some platforms and not on others.
-	 */
-	BUILD_BUG_ON(18 - 1 /* for O_RDONLY being 0 */ != HWEIGHT32(
-		O_RDONLY	| O_WRONLY	| O_RDWR	|
-		O_CREAT		| O_EXCL	| O_NOCTTY	|
-		O_TRUNC		| O_APPEND	| /* O_NONBLOCK	| */
-		__O_SYNC	| O_DSYNC	| FASYNC	|
-		O_DIRECT	| O_LARGEFILE	| O_DIRECTORY	|
-		O_NOFOLLOW	| O_NOATIME	| O_CLOEXEC	|
-		FMODE_EXEC
-		));
-
 	fasync_cache = kmem_cache_create("fasync_cache",
 		sizeof(struct fasync_struct), 0, SLAB_PANIC, NULL);
 	return 0;
 }
 
-module_init(fcntl_init)
+module_init(fasync_init)

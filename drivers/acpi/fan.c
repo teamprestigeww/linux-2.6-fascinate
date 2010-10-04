@@ -34,8 +34,6 @@
 #include <acpi/acpi_bus.h>
 #include <acpi/acpi_drivers.h>
 
-#define PREFIX "ACPI: "
-
 #define ACPI_FAN_CLASS			"fan"
 #define ACPI_FAN_FILE_STATE		"state"
 
@@ -70,35 +68,31 @@ static struct acpi_driver acpi_fan_driver = {
 };
 
 /* thermal cooling device callbacks */
-static int fan_get_max_state(struct thermal_cooling_device *cdev, unsigned long
-			     *state)
+static int fan_get_max_state(struct thermal_cooling_device *cdev, char *buf)
 {
 	/* ACPI fan device only support two states: ON/OFF */
-	*state = 1;
-	return 0;
+	return sprintf(buf, "1\n");
 }
 
-static int fan_get_cur_state(struct thermal_cooling_device *cdev, unsigned long
-			     *state)
+static int fan_get_cur_state(struct thermal_cooling_device *cdev, char *buf)
 {
 	struct acpi_device *device = cdev->devdata;
+	int state;
 	int result;
-	int acpi_state;
 
 	if (!device)
 		return -EINVAL;
 
-	result = acpi_bus_get_power(device->handle, &acpi_state);
+	result = acpi_bus_get_power(device->handle, &state);
 	if (result)
 		return result;
 
-	*state = (acpi_state == ACPI_STATE_D3 ? 0 :
-		 (acpi_state == ACPI_STATE_D0 ? 1 : -1));
-	return 0;
+	return sprintf(buf, "%s\n", state == ACPI_STATE_D3 ? "0" :
+			 (state == ACPI_STATE_D0 ? "1" : "unknown"));
 }
 
 static int
-fan_set_cur_state(struct thermal_cooling_device *cdev, unsigned long state)
+fan_set_cur_state(struct thermal_cooling_device *cdev, unsigned int state)
 {
 	struct acpi_device *device = cdev->devdata;
 	int result;
@@ -199,6 +193,7 @@ static int acpi_fan_add_fs(struct acpi_device *device)
 						     acpi_fan_dir);
 		if (!acpi_device_dir(device))
 			return -ENODEV;
+		acpi_device_dir(device)->owner = THIS_MODULE;
 	}
 
 	/* 'status' [R/W] */
@@ -267,7 +262,7 @@ static int acpi_fan_add(struct acpi_device *device)
 		goto end;
 	}
 
-	dev_dbg(&device->dev, "registered as cooling_device%d\n", cdev->id);
+	dev_info(&device->dev, "registered as cooling_device%d\n", cdev->id);
 
 	device->driver_data = cdev;
 	result = sysfs_create_link(&device->dev.kobj,
@@ -347,17 +342,17 @@ static int __init acpi_fan_init(void)
 {
 	int result = 0;
 
+
 #ifdef CONFIG_ACPI_PROCFS
 	acpi_fan_dir = proc_mkdir(ACPI_FAN_CLASS, acpi_root_dir);
 	if (!acpi_fan_dir)
 		return -ENODEV;
+	acpi_fan_dir->owner = THIS_MODULE;
 #endif
 
 	result = acpi_bus_register_driver(&acpi_fan_driver);
 	if (result < 0) {
-#ifdef CONFIG_ACPI_PROCFS
 		remove_proc_entry(ACPI_FAN_CLASS, acpi_root_dir);
-#endif
 		return -ENODEV;
 	}
 
@@ -369,9 +364,7 @@ static void __exit acpi_fan_exit(void)
 
 	acpi_bus_unregister_driver(&acpi_fan_driver);
 
-#ifdef CONFIG_ACPI_PROCFS
 	remove_proc_entry(ACPI_FAN_CLASS, acpi_root_dir);
-#endif
 
 	return;
 }

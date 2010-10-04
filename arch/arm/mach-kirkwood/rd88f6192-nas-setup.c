@@ -11,14 +11,19 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
+#include <linux/pci.h>
+#include <linux/irq.h>
+#include <linux/mtd/physmap.h>
+#include <linux/mtd/nand.h>
+#include <linux/timer.h>
 #include <linux/ata_platform.h>
 #include <linux/mv643xx_eth.h>
-#include <linux/gpio.h>
 #include <linux/spi/flash.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/orion_spi.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
+#include <asm/mach/pci.h>
 #include <mach/kirkwood.h>
 #include "common.h"
 
@@ -54,24 +59,22 @@ static void __init rd88f6192_init(void)
 	 */
 	kirkwood_init();
 
-	orion_gpio_set_valid(RD88F6192_GPIO_USB_VBUS, 1);
-	if (gpio_request(RD88F6192_GPIO_USB_VBUS, "USB VBUS") != 0 ||
-	    gpio_direction_output(RD88F6192_GPIO_USB_VBUS, 1) != 0)
-		pr_err("RD-88F6192-NAS: failed to setup USB VBUS GPIO\n");
-
 	kirkwood_ehci_init();
 	kirkwood_ge00_init(&rd88f6192_ge00_data);
+	kirkwood_rtc_init();
 	kirkwood_sata_init(&rd88f6192_sata_data);
 	spi_register_board_info(rd88F6192_spi_slave_info,
 				ARRAY_SIZE(rd88F6192_spi_slave_info));
 	kirkwood_spi_init();
 	kirkwood_uart0_init();
+	kirkwood_xor0_init();
+	kirkwood_xor1_init();
 }
 
 static int __init rd88f6192_pci_init(void)
 {
 	if (machine_is_rd88f6192_nas())
-		kirkwood_pcie_init(KW_PCIE0);
+		kirkwood_pcie_init();
 
 	return 0;
 }

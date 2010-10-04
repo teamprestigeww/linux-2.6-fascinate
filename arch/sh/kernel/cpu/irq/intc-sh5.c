@@ -84,8 +84,8 @@ static void disable_intc_irq(unsigned int irq);
 static void mask_and_ack_intc(unsigned int);
 static void end_intc_irq(unsigned int irq);
 
-static struct irq_chip intc_irq_type = {
-	.name = "INTC",
+static struct hw_interrupt_type intc_irq_type = {
+	.typename = "INTC",
 	.startup = startup_intc_irq,
 	.shutdown = shutdown_intc_irq,
 	.enable = enable_intc_irq,
@@ -123,7 +123,7 @@ static void enable_intc_irq(unsigned int irq)
 		bitmask = 1 << (irq - 32);
 	}
 
-	__raw_writel(bitmask, reg);
+	ctrl_outl(bitmask, reg);
 }
 
 static void disable_intc_irq(unsigned int irq)
@@ -139,7 +139,7 @@ static void disable_intc_irq(unsigned int irq)
 		bitmask = 1 << (irq - 32);
 	}
 
-	__raw_writel(bitmask, reg);
+	ctrl_outl(bitmask, reg);
 }
 
 static void mask_and_ack_intc(unsigned int irq)
@@ -152,13 +152,43 @@ static void end_intc_irq(unsigned int irq)
 	enable_intc_irq(irq);
 }
 
+/* For future use, if we ever support IRLM=0) */
+void make_intc_irq(unsigned int irq)
+{
+	disable_irq_nosync(irq);
+	irq_desc[irq].chip = &intc_irq_type;
+	disable_intc_irq(irq);
+}
+
+#if defined(CONFIG_PROC_FS) && defined(CONFIG_SYSCTL)
+static int IRQ_to_vectorN[NR_INTC_IRQS] = {
+	0x12, 0x15, 0x18, 0x1B, 0x40, 0x41, 0x42, 0x43, /*  0- 7 */
+	  -1,   -1,   -1,   -1, 0x50, 0x51, 0x52, 0x53,	/*  8-15 */
+	0x54, 0x55, 0x32, 0x33, 0x34, 0x35, 0x36,   -1, /* 16-23 */
+	  -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1, /* 24-31 */
+	0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x38,	/* 32-39 */
+        0x39, 0x3A, 0x3B,   -1,   -1,   -1,   -1,   -1, /* 40-47 */
+	  -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1, /* 48-55 */
+	  -1,   -1,   -1,   -1,   -1,   -1,   -1, 0x2B, /* 56-63 */
+
+};
+
+int intc_irq_describe(char* p, int irq)
+{
+	if (irq < NR_INTC_IRQS)
+		return sprintf(p, "(0x%3x)", IRQ_to_vectorN[irq]*0x20);
+	else
+		return 0;
+}
+#endif
+
 void __init plat_irq_setup(void)
 {
 	unsigned long long __dummy0, __dummy1=~0x00000000100000f0;
 	unsigned long reg;
 	int i;
 
-	intc_virt = (unsigned long)ioremap_nocache(INTC_BASE, 1024);
+	intc_virt = onchip_remap(INTC_BASE, 1024, "INTC");
 	if (!intc_virt) {
 		panic("Unable to remap INTC\n");
 	}
@@ -166,15 +196,15 @@ void __init plat_irq_setup(void)
 
 	/* Set default: per-line enable/disable, priority driven ack/eoi */
 	for (i = 0; i < NR_INTC_IRQS; i++)
-		set_irq_chip_and_handler(i, &intc_irq_type, handle_level_irq);
+		irq_desc[i].chip = &intc_irq_type;
 
 
 	/* Disable all interrupts and set all priorities to 0 to avoid trouble */
-	__raw_writel(-1, INTC_INTDSB_0);
-	__raw_writel(-1, INTC_INTDSB_1);
+	ctrl_outl(-1, INTC_INTDSB_0);
+	ctrl_outl(-1, INTC_INTDSB_1);
 
 	for (reg = INTC_INTPRI_0, i = 0; i < INTC_INTPRI_PREGS; i++, reg += 8)
-		__raw_writel( NO_PRIORITY, reg);
+		ctrl_outl( NO_PRIORITY, reg);
 
 
 #ifdef CONFIG_SH_CAYMAN
@@ -199,7 +229,7 @@ void __init plat_irq_setup(void)
 			reg = INTC_ICR_SET;
 			i = IRQ_IRL0;
 		}
-		__raw_writel(INTC_ICR_IRLM, reg);
+		ctrl_outl(INTC_ICR_IRLM, reg);
 
 		/* Set interrupt priorities according to platform description */
 		for (data = 0, reg = INTC_INTPRI_0; i < NR_INTC_IRQS; i++) {
@@ -207,7 +237,7 @@ void __init plat_irq_setup(void)
 				((i % INTC_INTPRI_PPREG) * 4);
 			if ((i % INTC_INTPRI_PPREG) == (INTC_INTPRI_PPREG - 1)) {
 				/* Upon the 7th, set Priority Register */
-				__raw_writel(data, reg);
+				ctrl_outl(data, reg);
 				data = 0;
 				reg += 8;
 			}

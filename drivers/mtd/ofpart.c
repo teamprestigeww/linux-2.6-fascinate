@@ -1,11 +1,11 @@
 /*
  * Flash partitions described by the OF (or flattened) device tree
  *
- * Copyright © 2006 MontaVista Software Inc.
+ * Copyright (C) 2006 MontaVista Software Inc.
  * Author: Vitaly Wool <vwool@ru.mvista.com>
  *
  * Revised to handle newer style flash binding by:
- *   Copyright © 2007 David Gibson, IBM Corporation.
+ *   Copyright (C) 2007 David Gibson, IBM Corporation.
  *
  * This program is free software; you can redistribute  it and/or modify it
  * under  the terms of  the GNU General  Public License as published by the
@@ -17,7 +17,6 @@
 #include <linux/init.h>
 #include <linux/of.h>
 #include <linux/mtd/mtd.h>
-#include <linux/slab.h>
 #include <linux/mtd/partitions.h>
 
 int __devinit of_mtd_parse_partitions(struct device *dev,
@@ -48,11 +47,13 @@ int __devinit of_mtd_parse_partitions(struct device *dev,
 		int len;
 
 		reg = of_get_property(pp, "reg", &len);
-		if (!reg) {
-			nr_parts--;
-			continue;
+		if (!reg || (len != 2 * sizeof(u32))) {
+			of_node_put(pp);
+			dev_err(dev, "Invalid 'reg' on %s\n", node->full_name);
+			kfree(*pparts);
+			*pparts = NULL;
+			return -EINVAL;
 		}
-
 		(*pparts)[i].offset = reg[0];
 		(*pparts)[i].size = reg[1];
 
@@ -65,14 +66,6 @@ int __devinit of_mtd_parse_partitions(struct device *dev,
 			(*pparts)[i].mask_flags = MTD_WRITEABLE;
 
 		i++;
-	}
-
-	if (!i) {
-		of_node_put(pp);
-		dev_err(dev, "No valid partition found on %s\n", node->full_name);
-		kfree(*pparts);
-		*pparts = NULL;
-		return -EINVAL;
 	}
 
 	return nr_parts;

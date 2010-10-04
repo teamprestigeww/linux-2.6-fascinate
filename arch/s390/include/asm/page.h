@@ -107,6 +107,9 @@ typedef pte_t *pgtable_t;
 #define __pgd(x)        ((pgd_t) { (x) } )
 #define __pgprot(x)     ((pgprot_t) { (x) } )
 
+/* default storage key used for all pages */
+extern unsigned int default_storage_key;
+
 static inline void
 page_set_storage_key(unsigned long addr, unsigned int skey)
 {
@@ -122,12 +125,16 @@ page_get_storage_key(unsigned long addr)
 	return skey;
 }
 
+#ifdef CONFIG_PAGE_STATES
+
 struct page;
 void arch_free_page(struct page *page, int order);
 void arch_alloc_page(struct page *page, int order);
 
 #define HAVE_ARCH_FREE_PAGE
 #define HAVE_ARCH_ALLOC_PAGE
+
+#endif
 
 #endif /* !__ASSEMBLY__ */
 
@@ -143,7 +150,7 @@ void arch_alloc_page(struct page *page, int order);
 				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
 
 #include <asm-generic/memory_model.h>
-#include <asm-generic/getorder.h>
+#include <asm-generic/page.h>
 
 #define __HAVE_ARCH_GATE_AREA 1
 

@@ -19,6 +19,7 @@
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/unistd.h>
+#include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/delay.h>
@@ -253,12 +254,12 @@ int phy_ethtool_sset(struct phy_device *phydev, struct ethtool_cmd *cmd)
 	if (cmd->autoneg == AUTONEG_ENABLE && cmd->advertising == 0)
 		return -EINVAL;
 
-	if (cmd->autoneg == AUTONEG_DISABLE &&
-	    ((cmd->speed != SPEED_1000 &&
-	      cmd->speed != SPEED_100 &&
-	      cmd->speed != SPEED_10) ||
-	     (cmd->duplex != DUPLEX_HALF &&
-	      cmd->duplex != DUPLEX_FULL)))
+	if (cmd->autoneg == AUTONEG_DISABLE
+			&& ((cmd->speed != SPEED_1000
+					&& cmd->speed != SPEED_100
+					&& cmd->speed != SPEED_10)
+				|| (cmd->duplex != DUPLEX_HALF
+					&& cmd->duplex != DUPLEX_FULL)))
 		return -EINVAL;
 
 	phydev->autoneg = cmd->autoneg;
@@ -301,7 +302,7 @@ EXPORT_SYMBOL(phy_ethtool_gset);
 /**
  * phy_mii_ioctl - generic PHY MII ioctl interface
  * @phydev: the phy_device struct
- * @ifr: &struct ifreq for socket ioctl's
+ * @mii_data: MII ioctl data
  * @cmd: ioctl cmd to execute
  *
  * Note that this function is currently incompatible with the
@@ -309,9 +310,8 @@ EXPORT_SYMBOL(phy_ethtool_gset);
  * current state.  Use at own risk.
  */
 int phy_mii_ioctl(struct phy_device *phydev,
-		struct ifreq *ifr, int cmd)
+		struct mii_ioctl_data *mii_data, int cmd)
 {
-	struct mii_ioctl_data *mii_data = if_mii(ifr);
 	u16 val = mii_data->val_in;
 
 	switch (cmd) {
@@ -324,6 +324,9 @@ int phy_mii_ioctl(struct phy_device *phydev,
 		break;
 
 	case SIOCSMIIREG:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
+
 		if (mii_data->phy_id == phydev->addr) {
 			switch(mii_data->reg_num) {
 			case MII_BMCR:
@@ -353,18 +356,13 @@ int phy_mii_ioctl(struct phy_device *phydev,
 
 		phy_write(phydev, mii_data->reg_num, val);
 		
-		if (mii_data->reg_num == MII_BMCR &&
-		    val & BMCR_RESET &&
-		    phydev->drv->config_init) {
+		if (mii_data->reg_num == MII_BMCR 
+				&& val & BMCR_RESET
+				&& phydev->drv->config_init) {
 			phy_scan_fixups(phydev);
 			phydev->drv->config_init(phydev);
 		}
 		break;
-
-	case SIOCSHWTSTAMP:
-		if (phydev->drv->hwtstamp)
-			return phydev->drv->hwtstamp(phydev, ifr);
-		/* fall through */
 
 	default:
 		return -EOPNOTSUPP;
@@ -415,6 +413,8 @@ EXPORT_SYMBOL(phy_start_aneg);
 
 
 static void phy_change(struct work_struct *work);
+static void phy_state_machine(struct work_struct *work);
+static void phy_timer(unsigned long data);
 
 /**
  * phy_start_machine - start PHY state machine tracking
@@ -434,7 +434,11 @@ void phy_start_machine(struct phy_device *phydev,
 {
 	phydev->adjust_state = handler;
 
-	schedule_delayed_work(&phydev->state_queue, HZ);
+	INIT_WORK(&phydev->state_queue, phy_state_machine);
+	init_timer(&phydev->phy_timer);
+	phydev->phy_timer.function = &phy_timer;
+	phydev->phy_timer.data = (unsigned long) phydev;
+	mod_timer(&phydev->phy_timer, jiffies + HZ);
 }
 
 /**
@@ -447,7 +451,8 @@ void phy_start_machine(struct phy_device *phydev,
  */
 void phy_stop_machine(struct phy_device *phydev)
 {
-	cancel_delayed_work_sync(&phydev->state_queue);
+	del_timer_sync(&phydev->phy_timer);
+	cancel_work_sync(&phydev->state_queue);
 
 	mutex_lock(&phydev->lock);
 	if (phydev->state > PHY_UP)
@@ -655,10 +660,6 @@ static void phy_change(struct work_struct *work)
 	struct phy_device *phydev =
 		container_of(work, struct phy_device, phy_queue);
 
-	if (phydev->drv->did_interrupt &&
-	    !phydev->drv->did_interrupt(phydev))
-		goto ignore;
-
 	err = phy_disable_interrupts(phydev);
 
 	if (err)
@@ -679,15 +680,12 @@ static void phy_change(struct work_struct *work)
 	if (err)
 		goto irq_enable_err;
 
-	/* reschedule state queue work to run as soon as possible */
-	cancel_delayed_work_sync(&phydev->state_queue);
-	schedule_delayed_work(&phydev->state_queue, 0);
+	/* Stop timer and run the state queue now.  The work function for
+	 * state_queue will start the timer up again.
+	 */
+	del_timer(&phydev->phy_timer);
+	schedule_work(&phydev->state_queue);
 
-	return;
-
-ignore:
-	atomic_dec(&phydev->irq_disable);
-	enable_irq(phydev->irq);
 	return;
 
 irq_enable_err:
@@ -763,12 +761,14 @@ EXPORT_SYMBOL(phy_start);
 /**
  * phy_state_machine - Handle the state machine
  * @work: work_struct that describes the work to be done
+ *
+ * Description: Scheduled by the state_queue workqueue each time
+ *   phy_timer is triggered.
  */
-void phy_state_machine(struct work_struct *work)
+static void phy_state_machine(struct work_struct *work)
 {
-	struct delayed_work *dwork = to_delayed_work(work);
 	struct phy_device *phydev =
-			container_of(dwork, struct phy_device, state_queue);
+			container_of(work, struct phy_device, state_queue);
 	int needs_aneg = 0;
 	int err = 0;
 
@@ -928,32 +928,13 @@ void phy_state_machine(struct work_struct *work)
 				 * Otherwise, it's 0, and we're
 				 * still waiting for AN */
 				if (err > 0) {
-					err = phy_read_status(phydev);
-					if (err)
-						break;
-
-					if (phydev->link) {
-						phydev->state = PHY_RUNNING;
-						netif_carrier_on(phydev->attached_dev);
-					} else
-						phydev->state = PHY_NOLINK;
-					phydev->adjust_link(phydev->attached_dev);
+					phydev->state = PHY_RUNNING;
 				} else {
 					phydev->state = PHY_AN;
 					phydev->link_timeout = PHY_AN_TIMEOUT;
 				}
-			} else {
-				err = phy_read_status(phydev);
-				if (err)
-					break;
-
-				if (phydev->link) {
-					phydev->state = PHY_RUNNING;
-					netif_carrier_on(phydev->attached_dev);
-				} else
-					phydev->state = PHY_NOLINK;
-				phydev->adjust_link(phydev->attached_dev);
-			}
+			} else
+				phydev->state = PHY_RUNNING;
 			break;
 	}
 
@@ -965,5 +946,17 @@ void phy_state_machine(struct work_struct *work)
 	if (err < 0)
 		phy_error(phydev);
 
-	schedule_delayed_work(&phydev->state_queue, PHY_STATE_TIME * HZ);
+	mod_timer(&phydev->phy_timer, jiffies + PHY_STATE_TIME * HZ);
+}
+
+/* PHY timer which schedules the state machine work */
+static void phy_timer(unsigned long data)
+{
+	struct phy_device *phydev = (struct phy_device *)data;
+
+	/*
+	 * PHY I/O operations can potentially sleep so we ensure that
+	 * it's done from a process context
+	 */
+	schedule_work(&phydev->state_queue);
 }

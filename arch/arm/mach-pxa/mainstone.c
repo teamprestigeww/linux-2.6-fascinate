@@ -41,12 +41,13 @@
 #include <asm/mach/irq.h>
 #include <asm/mach/flash.h>
 
-#include <mach/pxa27x.h>
-#include <mach/gpio.h>
+#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-regs.h>
+#include <mach/mfp-pxa27x.h>
 #include <mach/mainstone.h>
 #include <mach/audio.h>
 #include <mach/pxafb.h>
-#include <plat/i2c.h>
+#include <mach/i2c.h>
 #include <mach/mmc.h>
 #include <mach/irda.h>
 #include <mach/ohci.h>
@@ -60,7 +61,26 @@ static unsigned long mainstone_pin_config[] = {
 	GPIO15_nCS_1,
 
 	/* LCD - 16bpp Active TFT */
-	GPIOxx_LCD_TFT_16BPP,
+	GPIO58_LCD_LDD_0,
+	GPIO59_LCD_LDD_1,
+	GPIO60_LCD_LDD_2,
+	GPIO61_LCD_LDD_3,
+	GPIO62_LCD_LDD_4,
+	GPIO63_LCD_LDD_5,
+	GPIO64_LCD_LDD_6,
+	GPIO65_LCD_LDD_7,
+	GPIO66_LCD_LDD_8,
+	GPIO67_LCD_LDD_9,
+	GPIO68_LCD_LDD_10,
+	GPIO69_LCD_LDD_11,
+	GPIO70_LCD_LDD_12,
+	GPIO71_LCD_LDD_13,
+	GPIO72_LCD_LDD_14,
+	GPIO73_LCD_LDD_15,
+	GPIO74_LCD_FCLK,
+	GPIO75_LCD_LCLK,
+	GPIO76_LCD_PCLK,
+	GPIO77_LCD_BIAS,
 	GPIO16_PWM0_OUT,	/* Backlight */
 
 	/* MMC */
@@ -88,10 +108,6 @@ static unsigned long mainstone_pin_config[] = {
 	GPIO57_nIOIS16,
 
 	/* AC97 */
-	GPIO28_AC97_BITCLK,
-	GPIO29_AC97_SDATA_IN_0,
-	GPIO30_AC97_SDATA_OUT,
-	GPIO31_AC97_SYNC,
 	GPIO45_AC97_SYSCLK,
 
 	/* Keypad */
@@ -147,7 +163,7 @@ static void mainstone_irq_handler(unsigned int irq, struct irq_desc *desc)
 {
 	unsigned long pending = MST_INTSETCLR & mainstone_irq_enabled;
 	do {
-		desc->chip->ack(irq);	/* clear useless edge notification */
+		GEDR(0) = GPIO_bit(0);  /* clear useless edge notification */
 		if (likely(pending)) {
 			irq = MAINSTONE_IRQ(0) + __ffs(pending);
 			generic_handle_irq(irq);
@@ -435,13 +451,10 @@ static void mainstone_mci_exit(struct device *dev, void *data)
 }
 
 static struct pxamci_platform_data mainstone_mci_platform_data = {
-	.ocr_mask		= MMC_VDD_32_33|MMC_VDD_33_34,
-	.init 			= mainstone_mci_init,
-	.setpower 		= mainstone_mci_setpower,
-	.exit			= mainstone_mci_exit,
-	.gpio_card_detect	= -1,
-	.gpio_card_ro		= -1,
-	.gpio_power		= -1,
+	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
+	.init 		= mainstone_mci_init,
+	.setpower 	= mainstone_mci_setpower,
+	.exit		= mainstone_mci_exit,
 };
 
 static void mainstone_irda_transceiver_mode(struct device *dev, int mode)
@@ -464,9 +477,8 @@ static void mainstone_irda_transceiver_mode(struct device *dev, int mode)
 }
 
 static struct pxaficp_platform_data mainstone_ficp_platform_data = {
-	.gpio_pwdown		= -1,
-	.transceiver_cap	= IR_SIRMODE | IR_FIRMODE | IR_OFF,
-	.transceiver_mode	= mainstone_irda_transceiver_mode,
+	.transceiver_cap  = IR_SIRMODE | IR_FIRMODE | IR_OFF,
+	.transceiver_mode = mainstone_irda_transceiver_mode,
 };
 
 static struct gpio_keys_button gpio_keys_button[] = {
@@ -560,10 +572,6 @@ static void __init mainstone_init(void)
 	int SW7 = 0;  /* FIXME: get from SCR (Mst doc section 3.2.1.1) */
 
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(mainstone_pin_config));
-
-	pxa_set_ffuart_info(NULL);
-	pxa_set_btuart_info(NULL);
-	pxa_set_stuart_info(NULL);
 
 	mst_flash_data[0].width = (BOOT_DEF & 1) ? 2 : 4;
 	mst_flash_data[1].width = 4;

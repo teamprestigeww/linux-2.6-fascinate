@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -50,6 +50,8 @@
 ACPI_MODULE_NAME("evrgnini")
 
 /* Local prototypes */
+static u8 acpi_ev_match_pci_root_bridge(char *id);
+
 static u8 acpi_ev_is_pci_root_bridge(struct acpi_namespace_node *node);
 
 /*******************************************************************************
@@ -168,7 +170,7 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 				void *handler_context, void **region_context)
 {
 	acpi_status status = AE_OK;
-	u64 pci_value;
+	acpi_integer pci_value;
 	struct acpi_pci_id *pci_id = *region_context;
 	union acpi_operand_object *handler_obj;
 	struct acpi_namespace_node *parent_node;
@@ -199,7 +201,7 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 		return_ACPI_STATUS(status);
 	}
 
-	parent_node = region_obj->region.node->parent;
+	parent_node = acpi_ns_get_parent_node(region_obj->region.node);
 
 	/*
 	 * Get the _SEG and _BBN values from the device upon which the handler
@@ -239,8 +241,7 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 						status = AE_OK;
 					} else {
 						ACPI_EXCEPTION((AE_INFO, status,
-								"Could not install PciConfig handler "
-								"for Root Bridge %4.4s",
+								"Could not install PciConfig handler for Root Bridge %4.4s",
 								acpi_ut_get_node_name
 								(pci_root_node)));
 					}
@@ -248,7 +249,7 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 				break;
 			}
 
-			pci_root_node = pci_root_node->parent;
+			pci_root_node = acpi_ns_get_parent_node(pci_root_node);
 		}
 
 		/* PCI root bridge not found, use namespace root node */
@@ -280,7 +281,7 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 	 */
 	pci_device_node = region_obj->region.node;
 	while (pci_device_node && (pci_device_node->type != ACPI_TYPE_DEVICE)) {
-		pci_device_node = pci_device_node->parent;
+		pci_device_node = acpi_ns_get_parent_node(pci_device_node);
 	}
 
 	if (!pci_device_node) {
@@ -292,8 +293,9 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 	 * Get the PCI device and function numbers from the _ADR object contained
 	 * in the parent's scope.
 	 */
-	status = acpi_ut_evaluate_numeric_object(METHOD_NAME__ADR,
-						 pci_device_node, &pci_value);
+	status =
+	    acpi_ut_evaluate_numeric_object(METHOD_NAME__ADR, pci_device_node,
+					    &pci_value);
 
 	/*
 	 * The default is zero, and since the allocation above zeroed the data,
@@ -306,16 +308,18 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 
 	/* The PCI segment number comes from the _SEG method */
 
-	status = acpi_ut_evaluate_numeric_object(METHOD_NAME__SEG,
-						 pci_root_node, &pci_value);
+	status =
+	    acpi_ut_evaluate_numeric_object(METHOD_NAME__SEG, pci_root_node,
+					    &pci_value);
 	if (ACPI_SUCCESS(status)) {
 		pci_id->segment = ACPI_LOWORD(pci_value);
 	}
 
 	/* The PCI bus number comes from the _BBN method */
 
-	status = acpi_ut_evaluate_numeric_object(METHOD_NAME__BBN,
-						 pci_root_node, &pci_value);
+	status =
+	    acpi_ut_evaluate_numeric_object(METHOD_NAME__BBN, pci_root_node,
+					    &pci_value);
 	if (ACPI_SUCCESS(status)) {
 		pci_id->bus = ACPI_LOWORD(pci_value);
 	}
@@ -326,6 +330,37 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 
 	*region_context = pci_id;
 	return_ACPI_STATUS(AE_OK);
+}
+
+/*******************************************************************************
+ *
+ * FUNCTION:    acpi_ev_match_pci_root_bridge
+ *
+ * PARAMETERS:  Id              - The HID/CID in string format
+ *
+ * RETURN:      TRUE if the Id is a match for a PCI/PCI-Express Root Bridge
+ *
+ * DESCRIPTION: Determine if the input ID is a PCI Root Bridge ID.
+ *
+ ******************************************************************************/
+
+static u8 acpi_ev_match_pci_root_bridge(char *id)
+{
+
+	/*
+	 * Check if this is a PCI root.
+	 * ACPI 3.0+: check for a PCI Express root also.
+	 */
+	if (!(ACPI_STRNCMP(id,
+			   PCI_ROOT_HID_STRING,
+			   sizeof(PCI_ROOT_HID_STRING))) ||
+	    !(ACPI_STRNCMP(id,
+			   PCI_EXPRESS_ROOT_HID_STRING,
+			   sizeof(PCI_EXPRESS_ROOT_HID_STRING)))) {
+		return (TRUE);
+	}
+
+	return (FALSE);
 }
 
 /*******************************************************************************
@@ -344,10 +379,9 @@ acpi_ev_pci_config_region_setup(acpi_handle handle,
 static u8 acpi_ev_is_pci_root_bridge(struct acpi_namespace_node *node)
 {
 	acpi_status status;
-	struct acpica_device_id *hid;
-	struct acpica_device_id_list *cid;
+	struct acpica_device_id hid;
+	struct acpi_compatible_id_list *cid;
 	u32 i;
-	u8 match;
 
 	/* Get the _HID and check for a PCI Root Bridge */
 
@@ -356,10 +390,7 @@ static u8 acpi_ev_is_pci_root_bridge(struct acpi_namespace_node *node)
 		return (FALSE);
 	}
 
-	match = acpi_ut_is_pci_root_bridge(hid->string);
-	ACPI_FREE(hid);
-
-	if (match) {
+	if (acpi_ev_match_pci_root_bridge(hid.value)) {
 		return (TRUE);
 	}
 
@@ -373,7 +404,7 @@ static u8 acpi_ev_is_pci_root_bridge(struct acpi_namespace_node *node)
 	/* Check all _CIDs in the returned list */
 
 	for (i = 0; i < cid->count; i++) {
-		if (acpi_ut_is_pci_root_bridge(cid->ids[i].string)) {
+		if (acpi_ev_match_pci_root_bridge(cid->id[i].value)) {
 			ACPI_FREE(cid);
 			return (TRUE);
 		}
@@ -521,7 +552,7 @@ acpi_ev_initialize_region(union acpi_operand_object *region_obj,
 		return_ACPI_STATUS(AE_NOT_EXIST);
 	}
 
-	node = region_obj->region.node->parent;
+	node = acpi_ns_get_parent_node(region_obj->region.node);
 	space_id = region_obj->region.space_id;
 
 	/* Setup defaults */
@@ -575,21 +606,6 @@ acpi_ev_initialize_region(union acpi_operand_object *region_obj,
 				handler_obj = obj_desc->thermal_zone.handler;
 				break;
 
-			case ACPI_TYPE_METHOD:
-				/*
-				 * If we are executing module level code, the original
-				 * Node's object was replaced by this Method object and we
-				 * saved the handler in the method object.
-				 *
-				 * See acpi_ns_exec_module_code
-				 */
-				if (obj_desc->method.
-				    flags & AOPOBJ_MODULE_LEVEL) {
-					handler_obj =
-					    obj_desc->method.extra.handler;
-				}
-				break;
-
 			default:
 				/* Ignore other objects */
 				break;
@@ -616,8 +632,8 @@ acpi_ev_initialize_region(union acpi_operand_object *region_obj,
 								  acpi_ns_locked);
 
 					/*
-					 * Tell all users that this region is usable by
-					 * running the _REG method
+					 * Tell all users that this region is usable by running the _REG
+					 * method
 					 */
 					if (acpi_ns_locked) {
 						status =
@@ -654,7 +670,7 @@ acpi_ev_initialize_region(union acpi_operand_object *region_obj,
 
 		/* This node does not have the handler we need; Pop up one level */
 
-		node = node->parent;
+		node = acpi_ns_get_parent_node(node);
 	}
 
 	/* If we get here, there is no handler for this region */

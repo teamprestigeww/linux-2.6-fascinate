@@ -38,7 +38,6 @@ static const char * osst_version = "0.99.4";
 #include <linux/sched.h>
 #include <linux/proc_fs.h>
 #include <linux/mm.h>
-#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/string.h>
 #include <linux/errno.h>
@@ -281,8 +280,8 @@ static int osst_chk_result(struct osst_tape * STp, struct osst_request * SRpnt)
 			static	int	notyetprinted = 1;
 
 			printk(KERN_WARNING
-			     "%s:W: Warning %x (driver bt 0x%x, host bt 0x%x).\n",
-			     name, result, driver_byte(result),
+			     "%s:W: Warning %x (sugg. bt 0x%x, driver bt 0x%x, host bt 0x%x).\n",
+			     name, result, suggestion(result), driver_byte(result) & DRIVER_MASK,
 			     host_byte(result));
 			if (notyetprinted) {
 				notyetprinted = 0;
@@ -318,25 +317,18 @@ static int osst_chk_result(struct osst_tape * STp, struct osst_request * SRpnt)
 
 
 /* Wakeup from interrupt */
-static void osst_end_async(struct request *req, int update)
+static void osst_sleep_done(void *data, char *sense, int result, int resid)
 {
-	struct osst_request *SRpnt = req->end_io_data;
+	struct osst_request *SRpnt = data;
 	struct osst_tape *STp = SRpnt->stp;
-	struct rq_map_data *mdata = &SRpnt->stp->buffer->map_data;
 
-	STp->buffer->cmdstat.midlevel_result = SRpnt->result = req->errors;
+	memcpy(SRpnt->sense, sense, SCSI_SENSE_BUFFERSIZE);
+	STp->buffer->cmdstat.midlevel_result = SRpnt->result = result;
 #if DEBUG
 	STp->write_pending = 0;
 #endif
 	if (SRpnt->waiting)
 		complete(SRpnt->waiting);
-
-	if (SRpnt->bio) {
-		kfree(mdata->pages);
-		blk_rq_unmap_user(SRpnt->bio);
-	}
-
-	__blk_put_request(req->q, req);
 }
 
 /* osst_request memory management */
@@ -348,74 +340,6 @@ static struct osst_request *osst_allocate_request(void)
 static void osst_release_request(struct osst_request *streq)
 {
 	kfree(streq);
-}
-
-static int osst_execute(struct osst_request *SRpnt, const unsigned char *cmd,
-			int cmd_len, int data_direction, void *buffer, unsigned bufflen,
-			int use_sg, int timeout, int retries)
-{
-	struct request *req;
-	struct page **pages = NULL;
-	struct rq_map_data *mdata = &SRpnt->stp->buffer->map_data;
-
-	int err = 0;
-	int write = (data_direction == DMA_TO_DEVICE);
-
-	req = blk_get_request(SRpnt->stp->device->request_queue, write, GFP_KERNEL);
-	if (!req)
-		return DRIVER_ERROR << 24;
-
-	req->cmd_type = REQ_TYPE_BLOCK_PC;
-	req->cmd_flags |= REQ_QUIET;
-
-	SRpnt->bio = NULL;
-
-	if (use_sg) {
-		struct scatterlist *sg, *sgl = (struct scatterlist *)buffer;
-		int i;
-
-		pages = kzalloc(use_sg * sizeof(struct page *), GFP_KERNEL);
-		if (!pages)
-			goto free_req;
-
-		for_each_sg(sgl, sg, use_sg, i)
-			pages[i] = sg_page(sg);
-
-		mdata->null_mapped = 1;
-
-		mdata->page_order = get_order(sgl[0].length);
-		mdata->nr_entries =
-			DIV_ROUND_UP(bufflen, PAGE_SIZE << mdata->page_order);
-		mdata->offset = 0;
-
-		err = blk_rq_map_user(req->q, req, mdata, NULL, bufflen, GFP_KERNEL);
-		if (err) {
-			kfree(pages);
-			goto free_req;
-		}
-		SRpnt->bio = req->bio;
-		mdata->pages = pages;
-
-	} else if (bufflen) {
-		err = blk_rq_map_kern(req->q, req, buffer, bufflen, GFP_KERNEL);
-		if (err)
-			goto free_req;
-	}
-
-	req->cmd_len = cmd_len;
-	memset(req->cmd, 0, BLK_MAX_CDB); /* ATAPI hates garbage after CDB */
-	memcpy(req->cmd, cmd, req->cmd_len);
-	req->sense = SRpnt->sense;
-	req->sense_len = 0;
-	req->timeout = timeout;
-	req->retries = retries;
-	req->end_io_data = SRpnt;
-
-	blk_execute_rq_nowait(req->q, NULL, req, 1, osst_end_async);
-	return 0;
-free_req:
-	blk_put_request(req);
-	return DRIVER_ERROR << 24;
 }
 
 /* Do the scsi command. Waits until command performed if do_wait is true.
@@ -479,8 +403,8 @@ static	struct osst_request * osst_do_scsi(struct osst_request *SRpnt, struct oss
 	STp->buffer->cmdstat.have_sense = 0;
 	STp->buffer->syscall_result = 0;
 
-	if (osst_execute(SRpnt, cmd, COMMAND_SIZE(cmd[0]), direction, bp, bytes,
-			 use_sg, timeout, retries))
+	if (scsi_execute_async(STp->device, cmd, COMMAND_SIZE(cmd[0]), direction, bp, bytes,
+			use_sg, timeout, retries, SRpnt, osst_sleep_done, GFP_KERNEL))
 		/* could not allocate the buffer or request was too large */
 		(STp->buffer)->syscall_result = (-EBUSY);
 	else if (do_wait) {
@@ -3587,7 +3511,7 @@ if (SRpnt) printk(KERN_ERR "%s:A: Not supposed to have SRpnt at line %d\n", name
 		if (i == (-ENOSPC)) {
 			transfer = STp->buffer->writing;	/* FIXME -- check this logic */
 			if (transfer <= do_count) {
-				*ppos += do_count - transfer;
+				filp->f_pos += do_count - transfer;
 				count -= do_count - transfer;
 				if (STps->drv_block >= 0) {
 					STps->drv_block += (do_count - transfer) / STp->block_size;
@@ -3625,7 +3549,7 @@ if (SRpnt) printk(KERN_ERR "%s:A: Not supposed to have SRpnt at line %d\n", name
 			goto out;
 		}
 
-		*ppos += do_count;
+		filp->f_pos += do_count;
 		b_point += do_count;
 		count -= do_count;
 		if (STps->drv_block >= 0) {
@@ -3647,7 +3571,7 @@ if (SRpnt) printk(KERN_ERR "%s:A: Not supposed to have SRpnt at line %d\n", name
 		if (STps->drv_block >= 0) {
 			STps->drv_block += blks;
 		}
-		*ppos += count;
+		filp->f_pos += count;
 		count = 0;
 	}
 
@@ -3823,7 +3747,7 @@ static ssize_t osst_read(struct file * filp, char __user * buf, size_t count, lo
 			}
 			STp->logical_blk_num += transfer / STp->block_size;
 			STps->drv_block      += transfer / STp->block_size;
-			*ppos          += transfer;
+			filp->f_pos          += transfer;
 			buf                  += transfer;
 			total                += transfer;
 		}
@@ -4932,7 +4856,7 @@ static int os_scsi_tape_close(struct inode * inode, struct file * filp)
 
 
 /* The ioctl command */
-static long osst_ioctl(struct file * file,
+static int osst_ioctl(struct inode * inode,struct file * file,
 	 unsigned int cmd_in, unsigned long arg)
 {
 	int		      i, cmd_nr, cmd_type, blk, retval = 0;
@@ -4943,11 +4867,8 @@ static long osst_ioctl(struct file * file,
 	char		    * name  = tape_name(STp);
 	void	    __user  * p     = (void __user *)arg;
 
-	lock_kernel();
-	if (mutex_lock_interruptible(&STp->lock)) {
-		unlock_kernel();
+	if (mutex_lock_interruptible(&STp->lock))
 		return -ERESTARTSYS;
-	}
 
 #if DEBUG
 	if (debugging && !STp->in_use) {
@@ -5259,15 +5180,12 @@ static long osst_ioctl(struct file * file,
 
 	mutex_unlock(&STp->lock);
 
-	retval = scsi_ioctl(STp->device, cmd_in, p);
-	unlock_kernel();
-	return retval;
+	return scsi_ioctl(STp->device, cmd_in, p);
 
 out:
 	if (SRpnt) osst_release_request(SRpnt);
 
 	mutex_unlock(&STp->lock);
-	unlock_kernel();
 
 	return retval;
 }
@@ -5368,6 +5286,11 @@ static int enlarge_buffer(struct osst_buffer *STbuffer, int need_dma)
 		struct page *page = alloc_pages(priority, (OS_FRAME_SIZE - got <= PAGE_SIZE) ? 0 : order);
 		STbuffer->sg[segs].offset = 0;
 		if (page == NULL) {
+			if (OS_FRAME_SIZE - got <= (max_segs - segs) * b_size / 2 && order) {
+				b_size /= 2;  /* Large enough for the rest of the buffers */
+				order--;
+				continue;
+			}
 			printk(KERN_WARNING "osst :W: Failed to enlarge buffer to %d bytes.\n",
 						OS_FRAME_SIZE);
 #if DEBUG
@@ -5619,14 +5542,13 @@ static const struct file_operations osst_fops = {
 	.owner =        THIS_MODULE,
 	.read =         osst_read,
 	.write =        osst_write,
-	.unlocked_ioctl = osst_ioctl,
+	.ioctl =        osst_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = osst_compat_ioctl,
 #endif
 	.open =         os_scsi_tape_open,
 	.flush =        os_scsi_tape_flush,
 	.release =      os_scsi_tape_close,
-	.llseek =	noop_llseek,
 };
 
 static int osst_supports(struct scsi_device * SDp)
@@ -5868,8 +5790,7 @@ static int osst_probe(struct device *dev)
 	}
 
 	/* find a free minor number */
-	for (i = 0; i < osst_max_dev && os_scsi_tapes[i]; i++)
-		;
+	for (i=0; os_scsi_tapes[i] && i<osst_max_dev; i++);
 	if(i >= osst_max_dev) panic ("Scsi_devices corrupt (osst)");
 	dev_num = i;
 

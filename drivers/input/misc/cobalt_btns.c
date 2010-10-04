@@ -1,7 +1,7 @@
 /*
  *  Cobalt button interface driver.
  *
- *  Copyright (C) 2007-2008  Yoichi Yuasa <yuasa@linux-mips.org>
+ *  Copyright (C) 2007-2008  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -22,7 +22,6 @@
 #include <linux/ioport.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/slab.h>
 
 #define BUTTONS_POLL_INTERVAL	30	/* msec */
 #define BUTTONS_COUNT_THRESHOLD	3
@@ -117,7 +116,7 @@ static int __devinit cobalt_buttons_probe(struct platform_device *pdev)
 	}
 
 	bdev->poll_dev = poll_dev;
-	bdev->reg = ioremap(res->start, resource_size(res));
+	bdev->reg = ioremap(res->start, res->end - res->start + 1);
 	dev_set_drvdata(&pdev->dev, bdev);
 
 	error = input_register_polled_device(poll_dev);
@@ -149,7 +148,7 @@ static int __devexit cobalt_buttons_remove(struct platform_device *pdev)
 	return 0;
 }
 
-MODULE_AUTHOR("Yoichi Yuasa <yuasa@linux-mips.org>");
+MODULE_AUTHOR("Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>");
 MODULE_DESCRIPTION("Cobalt button interface driver");
 MODULE_LICENSE("GPL");
 /* work with hotplug and coldplug */

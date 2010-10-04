@@ -5,7 +5,7 @@
  *
  * Developed with the assistance of:
  *   (c) 2000 David L. Brown, Jr. (usb-storage@davidb.org)
- *   (c) 2003-2009 Alan Stern (stern@rowland.harvard.edu)
+ *   (c) 2003 Alan Stern (stern@rowland.harvard.edu)
  *
  * Initial work by:
  *   (c) 1999 Michael Gee (michael@linuxspecific.com)
@@ -45,10 +45,6 @@
  * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#ifdef CONFIG_USB_STORAGE_DEBUG
-#define DEBUG
-#endif
-
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/freezer.h>
@@ -70,6 +66,39 @@
 #include "debug.h"
 #include "initializers.h"
 
+#ifdef CONFIG_USB_STORAGE_USBAT
+#include "shuttle_usbat.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_SDDR09
+#include "sddr09.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_SDDR55
+#include "sddr55.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_FREECOM
+#include "freecom.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_ISD200
+#include "isd200.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_DATAFAB
+#include "datafab.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_JUMPSHOT
+#include "jumpshot.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_ONETOUCH
+#include "onetouch.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_ALAUDA
+#include "alauda.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_KARMA
+#include "karma.h"
+#endif
+#ifdef CONFIG_USB_STORAGE_CYPRESS_ATACB
+#include "cypress_atacb.h"
+#endif
 #include "sierra_ms.h"
 #include "option_ms.h"
 
@@ -78,7 +107,7 @@ MODULE_AUTHOR("Matthew Dharm <mdharm-usb@one-eyed-alien.net>");
 MODULE_DESCRIPTION("USB Mass Storage driver for Linux");
 MODULE_LICENSE("GPL");
 
-static unsigned int delay_use = 1;
+static unsigned int delay_use = 5;
 module_param(delay_use, uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(delay_use, "seconds to delay before using a new device");
 
@@ -89,8 +118,36 @@ MODULE_PARM_DESC(quirks, "supplemental list of device IDs and their quirks");
 
 /*
  * The entries in this table correspond, line for line,
- * with the entries in usb_storage_usb_ids[], defined in usual-tables.c.
+ * with the entries of us_unusual_dev_list[].
  */
+#ifndef CONFIG_USB_LIBUSUAL
+
+#define UNUSUAL_DEV(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax, \
+		    vendorName, productName,useProtocol, useTransport, \
+		    initFunction, flags) \
+{ USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin,bcdDeviceMax), \
+  .driver_info = (flags)|(USB_US_TYPE_STOR<<24) }
+
+#define COMPLIANT_DEV	UNUSUAL_DEV
+
+#define USUAL_DEV(useProto, useTrans, useType) \
+{ USB_INTERFACE_INFO(USB_CLASS_MASS_STORAGE, useProto, useTrans), \
+  .driver_info = (USB_US_TYPE_STOR<<24) }
+
+static struct usb_device_id storage_usb_ids [] = {
+
+#	include "unusual_devs.h"
+#undef UNUSUAL_DEV
+#undef COMPLIANT_DEV
+#undef USUAL_DEV
+	/* Terminating entry */
+	{ }
+};
+
+MODULE_DEVICE_TABLE (usb, storage_usb_ids);
+#endif /* CONFIG_USB_LIBUSUAL */
+
+/* This is the list of devices we recognize, along with their flag data */
 
 /* The vendor name should be kept at eight characters or less, and
  * the product name should be kept at 16 characters or less. If a device
@@ -122,17 +179,18 @@ MODULE_PARM_DESC(quirks, "supplemental list of device IDs and their quirks");
 
 static struct us_unusual_dev us_unusual_dev_list[] = {
 #	include "unusual_devs.h" 
-	{ }		/* Terminating entry */
-};
+#	undef UNUSUAL_DEV
+#	undef COMPLIANT_DEV
+#	undef USUAL_DEV
 
-#undef UNUSUAL_DEV
-#undef COMPLIANT_DEV
-#undef USUAL_DEV
+	/* Terminating entry */
+	{ NULL }
+};
 
 
 #ifdef CONFIG_PM	/* Minimal support for suspend and resume */
 
-int usb_stor_suspend(struct usb_interface *iface, pm_message_t message)
+static int storage_suspend(struct usb_interface *iface, pm_message_t message)
 {
 	struct us_data *us = usb_get_intfdata(iface);
 
@@ -149,9 +207,8 @@ int usb_stor_suspend(struct usb_interface *iface, pm_message_t message)
 	mutex_unlock(&us->dev_mutex);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(usb_stor_suspend);
 
-int usb_stor_resume(struct usb_interface *iface)
+static int storage_resume(struct usb_interface *iface)
 {
 	struct us_data *us = usb_get_intfdata(iface);
 
@@ -164,9 +221,8 @@ int usb_stor_resume(struct usb_interface *iface)
 	mutex_unlock(&us->dev_mutex);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(usb_stor_resume);
 
-int usb_stor_reset_resume(struct usb_interface *iface)
+static int storage_reset_resume(struct usb_interface *iface)
 {
 	struct us_data *us = usb_get_intfdata(iface);
 
@@ -179,7 +235,6 @@ int usb_stor_reset_resume(struct usb_interface *iface)
 	 * the device */
 	return 0;
 }
-EXPORT_SYMBOL_GPL(usb_stor_reset_resume);
 
 #endif /* CONFIG_PM */
 
@@ -188,7 +243,7 @@ EXPORT_SYMBOL_GPL(usb_stor_reset_resume);
  * a USB port reset, whether from this driver or a different one.
  */
 
-int usb_stor_pre_reset(struct usb_interface *iface)
+static int storage_pre_reset(struct usb_interface *iface)
 {
 	struct us_data *us = usb_get_intfdata(iface);
 
@@ -198,9 +253,8 @@ int usb_stor_pre_reset(struct usb_interface *iface)
 	mutex_lock(&us->dev_mutex);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(usb_stor_pre_reset);
 
-int usb_stor_post_reset(struct usb_interface *iface)
+static int storage_post_reset(struct usb_interface *iface)
 {
 	struct us_data *us = usb_get_intfdata(iface);
 
@@ -215,7 +269,6 @@ int usb_stor_post_reset(struct usb_interface *iface)
 	mutex_unlock(&us->dev_mutex);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(usb_stor_post_reset);
 
 /*
  * fill_inquiry_response takes an unsigned char array (which must
@@ -232,7 +285,6 @@ void fill_inquiry_response(struct us_data *us, unsigned char *data,
 	if (data_len<36) // You lose.
 		return;
 
-	memset(data+8, ' ', 28);
 	if(data[0]&0x20) { /* USB device currently not connected. Return
 			      peripheral qualifier 001b ("...however, the
 			      physical device is not currently connected
@@ -242,15 +294,15 @@ void fill_inquiry_response(struct us_data *us, unsigned char *data,
 			      device, it may return zeros or ASCII spaces 
 			      (20h) in those fields until the data is
 			      available from the device."). */
+		memset(data+8,0,28);
 	} else {
 		u16 bcdDevice = le16_to_cpu(us->pusb_dev->descriptor.bcdDevice);
-		int n;
-
-		n = strlen(us->unusual_dev->vendorName);
-		memcpy(data+8, us->unusual_dev->vendorName, min(8, n));
-		n = strlen(us->unusual_dev->productName);
-		memcpy(data+16, us->unusual_dev->productName, min(16, n));
-
+		memcpy(data+8, us->unusual_dev->vendorName, 
+			strlen(us->unusual_dev->vendorName) > 8 ? 8 :
+			strlen(us->unusual_dev->vendorName));
+		memcpy(data+16, us->unusual_dev->productName, 
+			strlen(us->unusual_dev->productName) > 16 ? 16 :
+			strlen(us->unusual_dev->productName));
 		data[32] = 0x30 + ((bcdDevice>>12) & 0x0F);
 		data[33] = 0x30 + ((bcdDevice>>8) & 0x0F);
 		data[34] = 0x30 + ((bcdDevice>>4) & 0x0F);
@@ -259,7 +311,6 @@ void fill_inquiry_response(struct us_data *us, unsigned char *data,
 
 	usb_stor_set_xfer_buf(data, data_len, us->srb);
 }
-EXPORT_SYMBOL_GPL(fill_inquiry_response);
 
 static int usb_stor_control_thread(void * __us)
 {
@@ -336,7 +387,6 @@ static int usb_stor_control_thread(void * __us)
 		else {
 			US_DEBUG(usb_stor_show_command(us->srb));
 			us->proto_handler(us->srb, us);
-			usb_mark_last_busy(us->pusb_dev);
 		}
 
 		/* lock access to the state */
@@ -408,14 +458,15 @@ static int associate_dev(struct us_data *us, struct usb_interface *intf)
 	/* Store our private data in the interface */
 	usb_set_intfdata(intf, us);
 
-	/* Allocate the control/setup and DMA-mapped buffers */
-	us->cr = kmalloc(sizeof(*us->cr), GFP_KERNEL);
+	/* Allocate the device-related DMA-mapped buffers */
+	us->cr = usb_buffer_alloc(us->pusb_dev, sizeof(*us->cr),
+			GFP_KERNEL, &us->cr_dma);
 	if (!us->cr) {
 		US_DEBUGP("usb_ctrlrequest allocation failed\n");
 		return -ENOMEM;
 	}
 
-	us->iobuf = usb_alloc_coherent(us->pusb_dev, US_IOBUF_SIZE,
+	us->iobuf = usb_buffer_alloc(us->pusb_dev, US_IOBUF_SIZE,
 			GFP_KERNEL, &us->iobuf_dma);
 	if (!us->iobuf) {
 		US_DEBUGP("I/O buffer allocation failed\n");
@@ -434,8 +485,7 @@ static void adjust_quirks(struct us_data *us)
 	u16 vid = le16_to_cpu(us->pusb_dev->descriptor.idVendor);
 	u16 pid = le16_to_cpu(us->pusb_dev->descriptor.idProduct);
 	unsigned f = 0;
-	unsigned int mask = (US_FL_SANE_SENSE | US_FL_BAD_SENSE |
-			US_FL_FIX_CAPACITY |
+	unsigned int mask = (US_FL_SANE_SENSE | US_FL_FIX_CAPACITY |
 			US_FL_CAPACITY_HEURISTICS | US_FL_IGNORE_DEVICE |
 			US_FL_NOT_LOCKABLE | US_FL_MAX_SECTORS_64 |
 			US_FL_CAPACITY_OK | US_FL_IGNORE_RESIDUE |
@@ -464,9 +514,6 @@ static void adjust_quirks(struct us_data *us)
 		switch (TOLOWER(*p)) {
 		case 'a':
 			f |= US_FL_SANE_SENSE;
-			break;
-		case 'b':
-			f |= US_FL_BAD_SENSE;
 			break;
 		case 'c':
 			f |= US_FL_FIX_CAPACITY;
@@ -499,16 +546,25 @@ static void adjust_quirks(struct us_data *us)
 		}
 	}
 	us->fflags = (us->fflags & ~mask) | f;
+	dev_info(&us->pusb_intf->dev, "Quirks match for "
+			"vid %04x pid %04x: %x\n",
+			vid, pid, f);
+}
+
+/* Find an unusual_dev descriptor (always succeeds in the current code) */
+static struct us_unusual_dev *find_unusual(const struct usb_device_id *id)
+{
+	const int id_index = id - storage_usb_ids;
+	return &us_unusual_dev_list[id_index];
 }
 
 /* Get the unusual_devs entries and the string descriptors */
-static int get_device_info(struct us_data *us, const struct usb_device_id *id,
-		struct us_unusual_dev *unusual_dev)
+static int get_device_info(struct us_data *us, const struct usb_device_id *id)
 {
 	struct usb_device *dev = us->pusb_dev;
 	struct usb_interface_descriptor *idesc =
 		&us->pusb_intf->cur_altsetting->desc;
-	struct device *pdev = &us->pusb_intf->dev;
+	struct us_unusual_dev *unusual_dev = find_unusual(id);
 
 	/* Store the entries */
 	us->unusual_dev = unusual_dev;
@@ -522,7 +578,7 @@ static int get_device_info(struct us_data *us, const struct usb_device_id *id,
 	adjust_quirks(us);
 
 	if (us->fflags & US_FL_IGNORE_DEVICE) {
-		dev_info(pdev, "device ignored\n");
+		printk(KERN_INFO USB_STORAGE "device ignored\n");
 		return -ENODEV;
 	}
 
@@ -532,12 +588,6 @@ static int get_device_info(struct us_data *us, const struct usb_device_id *id,
 	 */
 	if (dev->speed != USB_SPEED_HIGH)
 		us->fflags &= ~US_FL_GO_SLOW;
-
-	if (us->fflags)
-		dev_info(pdev, "Quirks match for vid %04x pid %04x: %lx\n",
-				le16_to_cpu(dev->descriptor.idVendor),
-				le16_to_cpu(dev->descriptor.idProduct),
-				us->fflags);
 
 	/* Log a message if a non-generic unusual_dev entry contains an
 	 * unnecessary subclass or protocol override.  This may stimulate
@@ -559,27 +609,27 @@ static int get_device_info(struct us_data *us, const struct usb_device_id *id,
 			us->protocol == idesc->bInterfaceProtocol)
 			msg += 2;
 		if (msg >= 0 && !(us->fflags & US_FL_NEED_OVERRIDE))
-			dev_notice(pdev, "This device "
-					"(%04x,%04x,%04x S %02x P %02x)"
-					" has %s in unusual_devs.h (kernel"
-					" %s)\n"
-					"   Please send a copy of this message to "
-					"<linux-usb@vger.kernel.org> and "
-					"<usb-storage@lists.one-eyed-alien.net>\n",
-					le16_to_cpu(ddesc->idVendor),
-					le16_to_cpu(ddesc->idProduct),
-					le16_to_cpu(ddesc->bcdDevice),
-					idesc->bInterfaceSubClass,
-					idesc->bInterfaceProtocol,
-					msgs[msg],
-					utsname()->release);
+			printk(KERN_NOTICE USB_STORAGE "This device "
+				"(%04x,%04x,%04x S %02x P %02x)"
+				" has %s in unusual_devs.h (kernel"
+				" %s)\n"
+				"   Please send a copy of this message to "
+				"<linux-usb@vger.kernel.org> and "
+				"<usb-storage@lists.one-eyed-alien.net>\n",
+				le16_to_cpu(ddesc->idVendor),
+				le16_to_cpu(ddesc->idProduct),
+				le16_to_cpu(ddesc->bcdDevice),
+				idesc->bInterfaceSubClass,
+				idesc->bInterfaceProtocol,
+				msgs[msg],
+				utsname()->release);
 	}
 
 	return 0;
 }
 
 /* Get the transport settings */
-static void get_transport(struct us_data *us)
+static int get_transport(struct us_data *us)
 {
 	switch (us->protocol) {
 	case US_PR_CB:
@@ -601,11 +651,100 @@ static void get_transport(struct us_data *us)
 		us->transport = usb_stor_Bulk_transport;
 		us->transport_reset = usb_stor_Bulk_reset;
 		break;
+
+#ifdef CONFIG_USB_STORAGE_USBAT
+	case US_PR_USBAT:
+		us->transport_name = "Shuttle USBAT";
+		us->transport = usbat_transport;
+		us->transport_reset = usb_stor_CB_reset;
+		us->max_lun = 1;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_SDDR09
+	case US_PR_EUSB_SDDR09:
+		us->transport_name = "EUSB/SDDR09";
+		us->transport = sddr09_transport;
+		us->transport_reset = usb_stor_CB_reset;
+		us->max_lun = 0;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_SDDR55
+	case US_PR_SDDR55:
+		us->transport_name = "SDDR55";
+		us->transport = sddr55_transport;
+		us->transport_reset = sddr55_reset;
+		us->max_lun = 0;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_DPCM
+	case US_PR_DPCM_USB:
+		us->transport_name = "Control/Bulk-EUSB/SDDR09";
+		us->transport = dpcm_transport;
+		us->transport_reset = usb_stor_CB_reset;
+		us->max_lun = 1;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_FREECOM
+	case US_PR_FREECOM:
+		us->transport_name = "Freecom";
+		us->transport = freecom_transport;
+		us->transport_reset = usb_stor_freecom_reset;
+		us->max_lun = 0;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_DATAFAB
+	case US_PR_DATAFAB:
+		us->transport_name  = "Datafab Bulk-Only";
+		us->transport = datafab_transport;
+		us->transport_reset = usb_stor_Bulk_reset;
+		us->max_lun = 1;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_JUMPSHOT
+	case US_PR_JUMPSHOT:
+		us->transport_name  = "Lexar Jumpshot Control/Bulk";
+		us->transport = jumpshot_transport;
+		us->transport_reset = usb_stor_Bulk_reset;
+		us->max_lun = 1;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_ALAUDA
+	case US_PR_ALAUDA:
+		us->transport_name  = "Alauda Control/Bulk";
+		us->transport = alauda_transport;
+		us->transport_reset = usb_stor_Bulk_reset;
+		us->max_lun = 1;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_KARMA
+	case US_PR_KARMA:
+		us->transport_name = "Rio Karma/Bulk";
+		us->transport = rio_karma_transport;
+		us->transport_reset = usb_stor_Bulk_reset;
+		break;
+#endif
+
+	default:
+		return -EIO;
 	}
+	US_DEBUGP("Transport: %s\n", us->transport_name);
+
+	/* fix for single-lun devices */
+	if (us->fflags & US_FL_SINGLE_LUN)
+		us->max_lun = 0;
+	return 0;
 }
 
 /* Get the protocol settings */
-static void get_protocol(struct us_data *us)
+static int get_protocol(struct us_data *us)
 {
 	switch (us->subclass) {
 	case US_SC_RBC:
@@ -640,7 +779,26 @@ static void get_protocol(struct us_data *us)
 		us->protocol_name = "Uniform Floppy Interface (UFI)";
 		us->proto_handler = usb_stor_ufi_command;
 		break;
+
+#ifdef CONFIG_USB_STORAGE_ISD200
+	case US_SC_ISD200:
+		us->protocol_name = "ISD200 ATA/ATAPI";
+		us->proto_handler = isd200_ata_command;
+		break;
+#endif
+
+#ifdef CONFIG_USB_STORAGE_CYPRESS_ATACB
+	case US_SC_CYP_ATACB:
+		us->protocol_name = "Transparent SCSI with Cypress ATACB";
+		us->proto_handler = cypress_atacb_passthrough;
+		break;
+#endif
+
+	default:
+		return -EIO;
 	}
+	US_DEBUGP("Protocol: %s\n", us->protocol_name);
+	return 0;
 }
 
 /* Get the pipe settings */
@@ -688,12 +846,12 @@ static int get_pipes(struct us_data *us)
 	us->send_ctrl_pipe = usb_sndctrlpipe(us->pusb_dev, 0);
 	us->recv_ctrl_pipe = usb_rcvctrlpipe(us->pusb_dev, 0);
 	us->send_bulk_pipe = usb_sndbulkpipe(us->pusb_dev,
-		usb_endpoint_num(ep_out));
+		ep_out->bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);
 	us->recv_bulk_pipe = usb_rcvbulkpipe(us->pusb_dev, 
-		usb_endpoint_num(ep_in));
+		ep_in->bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);
 	if (ep_int) {
 		us->recv_intr_pipe = usb_rcvintpipe(us->pusb_dev,
-			usb_endpoint_num(ep_int));
+			ep_int->bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);
 		us->ep_bInterval = ep_int->bInterval;
 	}
 	return 0;
@@ -722,8 +880,8 @@ static int usb_stor_acquire_resources(struct us_data *us)
 	/* Start up our control thread */
 	th = kthread_run(usb_stor_control_thread, us, "usb-storage");
 	if (IS_ERR(th)) {
-		dev_warn(&us->pusb_intf->dev,
-				"Unable to start control thread\n");
+		printk(KERN_WARNING USB_STORAGE 
+		       "Unable to start control thread\n");
 		return PTR_ERR(th);
 	}
 	us->ctl_thread = th;
@@ -761,9 +919,13 @@ static void dissociate_dev(struct us_data *us)
 {
 	US_DEBUGP("-- %s\n", __func__);
 
-	/* Free the buffers */
-	kfree(us->cr);
-	usb_free_coherent(us->pusb_dev, US_IOBUF_SIZE, us->iobuf, us->iobuf_dma);
+	/* Free the device-related DMA-mapped buffers */
+	if (us->cr)
+		usb_buffer_free(us->pusb_dev, sizeof(*us->cr), us->cr,
+				us->cr_dma);
+	if (us->iobuf)
+		usb_buffer_free(us->pusb_dev, US_IOBUF_SIZE, us->iobuf,
+				us->iobuf_dma);
 
 	/* Remove our private data from the interface */
 	usb_set_intfdata(us->pusb_intf, NULL);
@@ -816,15 +978,15 @@ static void release_everything(struct us_data *us)
 static int usb_stor_scan_thread(void * __us)
 {
 	struct us_data *us = (struct us_data *)__us;
-	struct device *dev = &us->pusb_intf->dev;
 
-	dev_dbg(dev, "device found\n");
+	printk(KERN_DEBUG
+		"usb-storage: device found at %d\n", us->pusb_dev->devnum);
 
 	set_freezable();
 	/* Wait for the timeout to expire or for a disconnect */
 	if (delay_use > 0) {
-		dev_dbg(dev, "waiting for device to settle "
-				"before scanning\n");
+		printk(KERN_DEBUG "usb-storage: waiting for device "
+				"to settle before scanning\n");
 		wait_event_freezable_timeout(us->delay_wait,
 				test_bit(US_FLIDX_DONT_SCAN, &us->dflags),
 				delay_use * HZ);
@@ -841,34 +1003,26 @@ static int usb_stor_scan_thread(void * __us)
 			mutex_unlock(&us->dev_mutex);
 		}
 		scsi_scan_host(us_to_host(us));
-		dev_dbg(dev, "scan complete\n");
+		printk(KERN_DEBUG "usb-storage: device scan complete\n");
 
 		/* Should we unbind if no devices were detected? */
 	}
 
-	usb_autopm_put_interface(us->pusb_intf);
 	complete_and_exit(&us->scanning_done, 0);
 }
 
-static unsigned int usb_stor_sg_tablesize(struct usb_interface *intf)
-{
-	struct usb_device *usb_dev = interface_to_usbdev(intf);
 
-	if (usb_dev->bus->sg_tablesize) {
-		return usb_dev->bus->sg_tablesize;
-	}
-	return SG_ALL;
-}
-
-/* First part of general USB mass-storage probing */
-int usb_stor_probe1(struct us_data **pus,
-		struct usb_interface *intf,
-		const struct usb_device_id *id,
-		struct us_unusual_dev *unusual_dev)
+/* Probe to see if we can drive a newly-connected USB device */
+static int storage_probe(struct usb_interface *intf,
+			 const struct usb_device_id *id)
 {
 	struct Scsi_Host *host;
 	struct us_data *us;
 	int result;
+	struct task_struct *th;
+
+	if (usb_usual_check_type(id, USB_US_TYPE_STOR))
+		return -ENXIO;
 
 	US_DEBUGP("USB Mass Storage device detected\n");
 
@@ -878,8 +1032,8 @@ int usb_stor_probe1(struct us_data **pus,
 	 */
 	host = scsi_host_alloc(&usb_stor_host_template, sizeof(*us));
 	if (!host) {
-		dev_warn(&intf->dev,
-				"Unable to allocate the scsi host\n");
+		printk(KERN_WARNING USB_STORAGE
+			"Unable to allocate the scsi host\n");
 		return -ENOMEM;
 	}
 
@@ -887,8 +1041,7 @@ int usb_stor_probe1(struct us_data **pus,
 	 * Allow 16-byte CDBs and thus > 2TB
 	 */
 	host->max_cmd_len = 16;
-	host->sg_tablesize = usb_stor_sg_tablesize(intf);
-	*pus = us = host_to_us(host);
+	us = host_to_us(host);
 	memset(us, 0, sizeof(struct us_data));
 	mutex_init(&(us->dev_mutex));
 	init_completion(&us->cmnd_ready);
@@ -901,47 +1054,24 @@ int usb_stor_probe1(struct us_data **pus,
 	if (result)
 		goto BadDevice;
 
-	/* Get the unusual_devs entries and the descriptors */
-	result = get_device_info(us, id, unusual_dev);
+	/*
+	 * Get the unusual_devs entries and the descriptors
+	 *
+	 * id_index is calculated in the declaration to be the index number
+	 * of the match from the usb_device_id table, so we can find the
+	 * corresponding entry in the private table.
+	 */
+	result = get_device_info(us, id);
 	if (result)
 		goto BadDevice;
 
-	/* Get standard transport and protocol settings */
-	get_transport(us);
-	get_protocol(us);
-
-	/* Give the caller a chance to fill in specialized transport
-	 * or protocol settings.
-	 */
-	return 0;
-
-BadDevice:
-	US_DEBUGP("storage_probe() failed\n");
-	release_everything(us);
-	return result;
-}
-EXPORT_SYMBOL_GPL(usb_stor_probe1);
-
-/* Second part of general USB mass-storage probing */
-int usb_stor_probe2(struct us_data *us)
-{
-	struct task_struct *th;
-	int result;
-	struct device *dev = &us->pusb_intf->dev;
-
-	/* Make sure the transport and protocol have both been set */
-	if (!us->transport || !us->proto_handler) {
-		result = -ENXIO;
+	/* Get the transport, protocol, and pipe settings */
+	result = get_transport(us);
+	if (result)
 		goto BadDevice;
-	}
-	US_DEBUGP("Transport: %s\n", us->transport_name);
-	US_DEBUGP("Protocol: %s\n", us->protocol_name);
-
-	/* fix for single-lun devices */
-	if (us->fflags & US_FL_SINGLE_LUN)
-		us->max_lun = 0;
-
-	/* Find the endpoints and calculate pipe values */
+	result = get_protocol(us);
+	if (result)
+		goto BadDevice;
 	result = get_pipes(us);
 	if (result)
 		goto BadDevice;
@@ -950,27 +1080,24 @@ int usb_stor_probe2(struct us_data *us)
 	result = usb_stor_acquire_resources(us);
 	if (result)
 		goto BadDevice;
-	snprintf(us->scsi_name, sizeof(us->scsi_name), "usb-storage %s",
-					dev_name(&us->pusb_intf->dev));
-	result = scsi_add_host(us_to_host(us), dev);
+	result = scsi_add_host(host, &intf->dev);
 	if (result) {
-		dev_warn(dev,
-				"Unable to add the scsi host\n");
+		printk(KERN_WARNING USB_STORAGE
+			"Unable to add the scsi host\n");
 		goto BadDevice;
 	}
 
 	/* Start up the thread for delayed SCSI-device scanning */
 	th = kthread_create(usb_stor_scan_thread, us, "usb-stor-scan");
 	if (IS_ERR(th)) {
-		dev_warn(dev,
-				"Unable to start the device-scanning thread\n");
+		printk(KERN_WARNING USB_STORAGE 
+		       "Unable to start the device-scanning thread\n");
 		complete(&us->scanning_done);
 		quiesce_and_remove_host(us);
 		result = PTR_ERR(th);
 		goto BadDevice;
 	}
 
-	usb_autopm_get_interface_no_resume(us->pusb_intf);
 	wake_up_process(th);
 
 	return 0;
@@ -981,52 +1108,15 @@ BadDevice:
 	release_everything(us);
 	return result;
 }
-EXPORT_SYMBOL_GPL(usb_stor_probe2);
 
-/* Handle a USB mass-storage disconnect */
-void usb_stor_disconnect(struct usb_interface *intf)
+/* Handle a disconnect event from the USB core */
+static void storage_disconnect(struct usb_interface *intf)
 {
 	struct us_data *us = usb_get_intfdata(intf);
 
 	US_DEBUGP("storage_disconnect() called\n");
 	quiesce_and_remove_host(us);
 	release_everything(us);
-}
-EXPORT_SYMBOL_GPL(usb_stor_disconnect);
-
-/* The main probe routine for standard devices */
-static int storage_probe(struct usb_interface *intf,
-			 const struct usb_device_id *id)
-{
-	struct us_data *us;
-	int result;
-
-	/*
-	 * If libusual is configured, let it decide whether a standard
-	 * device should be handled by usb-storage or by ub.
-	 * If the device isn't standard (is handled by a subdriver
-	 * module) then don't accept it.
-	 */
-	if (usb_usual_check_type(id, USB_US_TYPE_STOR) ||
-			usb_usual_ignore_device(intf))
-		return -ENXIO;
-
-	/*
-	 * Call the general probe procedures.
-	 *
-	 * The unusual_dev_list array is parallel to the usb_storage_usb_ids
-	 * table, so we use the index of the id entry to find the
-	 * corresponding unusual_devs entry.
-	 */
-	result = usb_stor_probe1(&us, intf, id,
-			(id - usb_storage_usb_ids) + us_unusual_dev_list);
-	if (result)
-		return result;
-
-	/* No special transport or protocol settings in the main module */
-
-	result = usb_stor_probe2(us);
-	return result;
 }
 
 /***********************************************************************
@@ -1036,14 +1126,15 @@ static int storage_probe(struct usb_interface *intf,
 static struct usb_driver usb_storage_driver = {
 	.name =		"usb-storage",
 	.probe =	storage_probe,
-	.disconnect =	usb_stor_disconnect,
-	.suspend =	usb_stor_suspend,
-	.resume =	usb_stor_resume,
-	.reset_resume =	usb_stor_reset_resume,
-	.pre_reset =	usb_stor_pre_reset,
-	.post_reset =	usb_stor_post_reset,
-	.id_table =	usb_storage_usb_ids,
-	.supports_autosuspend = 1,
+	.disconnect =	storage_disconnect,
+#ifdef CONFIG_PM
+	.suspend =	storage_suspend,
+	.resume =	storage_resume,
+	.reset_resume =	storage_reset_resume,
+#endif
+	.pre_reset =	storage_pre_reset,
+	.post_reset =	storage_post_reset,
+	.id_table =	storage_usb_ids,
 	.soft_unbind =	1,
 };
 
@@ -1051,12 +1142,12 @@ static int __init usb_stor_init(void)
 {
 	int retval;
 
-	pr_info("Initializing USB Mass Storage driver...\n");
+	printk(KERN_INFO "Initializing USB Mass Storage driver...\n");
 
 	/* register the driver, return usb_register return code if error */
 	retval = usb_register(&usb_storage_driver);
 	if (retval == 0) {
-		pr_info("USB Mass Storage support registered.\n");
+		printk(KERN_INFO "USB Mass Storage support registered.\n");
 		usb_usual_set_present(USB_US_TYPE_STOR);
 	}
 	return retval;

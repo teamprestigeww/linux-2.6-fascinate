@@ -58,7 +58,7 @@ static int marvell_pata_active(struct pci_dev *pdev)
 }
 
 /**
- *	marvell_pre_reset	-	probe begin
+ *	marvell_pre_reset	-	check for 40/80 pin
  *	@link: link
  *	@deadline: deadline jiffies for the operation
  *
@@ -126,8 +126,8 @@ static int marvell_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 	static const struct ata_port_info info = {
 		.flags		= ATA_FLAG_SLAVE_POSS,
 
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f,
+		.mwdma_mask	= 0x07,
 		.udma_mask 	= ATA_UDMA5,
 
 		.port_ops	= &marvell_ops,
@@ -136,8 +136,8 @@ static int marvell_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 		/* Slave possible as its magically mapped not real */
 		.flags		= ATA_FLAG_SLAVE_POSS,
 
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f,
+		.mwdma_mask	= 0x07,
 		.udma_mask 	= ATA_UDMA6,
 
 		.port_ops	= &marvell_ops,
@@ -147,13 +147,13 @@ static int marvell_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 	if (pdev->device == 0x6101)
 		ppi[1] = &ata_dummy_port_info;
 
-#if defined(CONFIG_SATA_AHCI) || defined(CONFIG_SATA_AHCI_MODULE)
+#if defined(CONFIG_AHCI) || defined(CONFIG_AHCI_MODULE)
 	if (!marvell_pata_active(pdev)) {
 		printk(KERN_INFO DRV_NAME ": PATA port not active, deferring to AHCI driver.\n");
 		return -ENODEV;
 	}
 #endif
-	return ata_pci_bmdma_init_one(pdev, ppi, &marvell_sht, NULL, 0);
+	return ata_pci_sff_init_one(pdev, ppi, &marvell_sht, NULL);
 }
 
 static const struct pci_device_id marvell_pci_tbl[] = {

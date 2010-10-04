@@ -5,6 +5,7 @@
 #include <linux/dmi.h>
 #include <linux/efi.h>
 #include <linux/bootmem.h>
+#include <linux/slab.h>
 #include <asm/dmi.h>
 
 /*
@@ -67,8 +68,7 @@ static char * __init dmi_string(const struct dmi_header *dm, u8 s)
  *	pointing to completely the wrong place for example
  */
 static void dmi_table(u8 *buf, int len, int num,
-		      void (*decode)(const struct dmi_header *, void *),
-		      void *private_data)
+		      void (*decode)(const struct dmi_header *))
 {
 	u8 *data = buf;
 	int i = 0;
@@ -89,7 +89,7 @@ static void dmi_table(u8 *buf, int len, int num,
 		while ((data - buf < len - 1) && (data[0] || data[1]))
 			data++;
 		if (data - buf < len - 1)
-			decode(dm, private_data);
+			decode(dm);
 		data += 2;
 		i++;
 	}
@@ -99,8 +99,7 @@ static u32 dmi_base;
 static u16 dmi_len;
 static u16 dmi_num;
 
-static int __init dmi_walk_early(void (*decode)(const struct dmi_header *,
-		void *))
+static int __init dmi_walk_early(void (*decode)(const struct dmi_header *))
 {
 	u8 *buf;
 
@@ -108,7 +107,7 @@ static int __init dmi_walk_early(void (*decode)(const struct dmi_header *,
 	if (buf == NULL)
 		return -1;
 
-	dmi_table(buf, dmi_len, dmi_num, decode, NULL);
+	dmi_table(buf, dmi_len, dmi_num, decode);
 
 	dmi_iounmap(buf, dmi_len);
 	return 0;
@@ -168,7 +167,10 @@ static void __init dmi_save_uuid(const struct dmi_header *dm, int slot, int inde
 	if (!s)
 		return;
 
-	sprintf(s, "%pUB", d);
+	sprintf(s,
+		"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+		d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
+		d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
 
         dmi_ident[slot] = s;
 }
@@ -277,29 +279,6 @@ static void __init dmi_save_ipmi_device(const struct dmi_header *dm)
 	list_add_tail(&dev->list, &dmi_devices);
 }
 
-static void __init dmi_save_dev_onboard(int instance, int segment, int bus,
-					int devfn, const char *name)
-{
-	struct dmi_dev_onboard *onboard_dev;
-
-	onboard_dev = dmi_alloc(sizeof(*onboard_dev) + strlen(name) + 1);
-	if (!onboard_dev) {
-		printk(KERN_ERR "dmi_save_dev_onboard: out of memory.\n");
-		return;
-	}
-	onboard_dev->instance = instance;
-	onboard_dev->segment = segment;
-	onboard_dev->bus = bus;
-	onboard_dev->devfn = devfn;
-
-	strcpy((char *)&onboard_dev[1], name);
-	onboard_dev->dev.type = DMI_DEV_TYPE_DEV_ONBOARD;
-	onboard_dev->dev.name = (char *)&onboard_dev[1];
-	onboard_dev->dev.device_data = onboard_dev;
-
-	list_add(&onboard_dev->dev.list, &dmi_devices);
-}
-
 static void __init dmi_save_extended_devices(const struct dmi_header *dm)
 {
 	const u8 *d = (u8*) dm + 5;
@@ -308,8 +287,6 @@ static void __init dmi_save_extended_devices(const struct dmi_header *dm)
 	if ((*d & 0x80) == 0)
 		return;
 
-	dmi_save_dev_onboard(*(d+1), *(u16 *)(d+2), *(d+4), *(d+5),
-			     dmi_string_nosave(dm, *(d-1)));
 	dmi_save_one_device(*d & 0x7f, dmi_string_nosave(dm, *(d - 1)));
 }
 
@@ -318,7 +295,7 @@ static void __init dmi_save_extended_devices(const struct dmi_header *dm)
  *	and machine entries. For 2.5 we should pull the smbus controller info
  *	out of here.
  */
-static void __init dmi_decode(const struct dmi_header *dm, void *dummy)
+static void __init dmi_decode(const struct dmi_header *dm)
 {
 	switch(dm->type) {
 	case 0:		/* BIOS Information */
@@ -450,7 +427,7 @@ static bool dmi_matches(const struct dmi_system_id *dmi)
 	for (i = 0; i < ARRAY_SIZE(dmi->matches); i++) {
 		int s = dmi->matches[i].slot;
 		if (s == DMI_NONE)
-			break;
+			continue;
 		if (dmi_ident[s]
 		    && strstr(dmi_ident[s], dmi->matches[i].substr))
 			continue;
@@ -458,15 +435,6 @@ static bool dmi_matches(const struct dmi_system_id *dmi)
 		return false;
 	}
 	return true;
-}
-
-/**
- *	dmi_is_end_of_table - check for end-of-table marker
- *	@dmi: pointer to the dmi_system_id structure to check
- */
-static bool dmi_is_end_of_table(const struct dmi_system_id *dmi)
-{
-	return dmi->matches[0].slot == DMI_NONE;
 }
 
 /**
@@ -487,7 +455,7 @@ int dmi_check_system(const struct dmi_system_id *list)
 	int count = 0;
 	const struct dmi_system_id *d;
 
-	for (d = list; !dmi_is_end_of_table(d); d++)
+	for (d = list; d->ident; d++)
 		if (dmi_matches(d)) {
 			count++;
 			if (d->callback && d->callback(d))
@@ -514,7 +482,7 @@ const struct dmi_system_id *dmi_first_match(const struct dmi_system_id *list)
 {
 	const struct dmi_system_id *d;
 
-	for (d = list; !dmi_is_end_of_table(d); d++)
+	for (d = list; d->ident; d++)
 		if (dmi_matches(d))
 			return d;
 
@@ -598,86 +566,42 @@ const struct dmi_device * dmi_find_device(int type, const char *name,
 EXPORT_SYMBOL(dmi_find_device);
 
 /**
- *	dmi_get_date - parse a DMI date
- *	@field:	data index (see enum dmi_field)
- *	@yearp: optional out parameter for the year
- *	@monthp: optional out parameter for the month
- *	@dayp: optional out parameter for the day
+ *	dmi_get_year - Return year of a DMI date
+ *	@field:	data index (like dmi_get_system_info)
  *
- *	The date field is assumed to be in the form resembling
- *	[mm[/dd]]/yy[yy] and the result is stored in the out
- *	parameters any or all of which can be omitted.
- *
- *	If the field doesn't exist, all out parameters are set to zero
- *	and false is returned.  Otherwise, true is returned with any
- *	invalid part of date set to zero.
- *
- *	On return, year, month and day are guaranteed to be in the
- *	range of [0,9999], [0,12] and [0,31] respectively.
+ *	Returns -1 when the field doesn't exist. 0 when it is broken.
  */
-bool dmi_get_date(int field, int *yearp, int *monthp, int *dayp)
+int dmi_get_year(int field)
 {
-	int year = 0, month = 0, day = 0;
-	bool exists;
-	const char *s, *y;
-	char *e;
+	int year;
+	const char *s = dmi_get_system_info(field);
 
-	s = dmi_get_system_info(field);
-	exists = s;
-	if (!exists)
-		goto out;
+	if (!s)
+		return -1;
+	if (*s == '\0')
+		return 0;
+	s = strrchr(s, '/');
+	if (!s)
+		return 0;
 
-	/*
-	 * Determine year first.  We assume the date string resembles
-	 * mm/dd/yy[yy] but the original code extracted only the year
-	 * from the end.  Keep the behavior in the spirit of no
-	 * surprises.
-	 */
-	y = strrchr(s, '/');
-	if (!y)
-		goto out;
-
-	y++;
-	year = simple_strtoul(y, &e, 10);
-	if (y != e && year < 100) {	/* 2-digit year */
+	s += 1;
+	year = simple_strtoul(s, NULL, 0);
+	if (year && year < 100) {	/* 2-digit year */
 		year += 1900;
 		if (year < 1996)	/* no dates < spec 1.0 */
 			year += 100;
 	}
-	if (year > 9999)		/* year should fit in %04d */
-		year = 0;
 
-	/* parse the mm and dd */
-	month = simple_strtoul(s, &e, 10);
-	if (s == e || *e != '/' || !month || month > 12) {
-		month = 0;
-		goto out;
-	}
-
-	s = e + 1;
-	day = simple_strtoul(s, &e, 10);
-	if (s == y || s == e || *e != '/' || day > 31)
-		day = 0;
-out:
-	if (yearp)
-		*yearp = year;
-	if (monthp)
-		*monthp = month;
-	if (dayp)
-		*dayp = day;
-	return exists;
+	return year;
 }
-EXPORT_SYMBOL(dmi_get_date);
 
 /**
  *	dmi_walk - Walk the DMI table and get called back for every record
  *	@decode: Callback function
- *	@private_data: Private data to be passed to the callback function
  *
  *	Returns -1 when the DMI table can't be reached, 0 on success.
  */
-int dmi_walk(void (*decode)(const struct dmi_header *, void *),
-	     void *private_data)
+int dmi_walk(void (*decode)(const struct dmi_header *))
 {
 	u8 *buf;
 
@@ -688,7 +612,7 @@ int dmi_walk(void (*decode)(const struct dmi_header *, void *),
 	if (buf == NULL)
 		return -1;
 
-	dmi_table(buf, dmi_len, dmi_num, decode, private_data);
+	dmi_table(buf, dmi_len, dmi_num, decode);
 
 	iounmap(buf);
 	return 0;

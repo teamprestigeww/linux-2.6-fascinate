@@ -36,7 +36,6 @@
 #include <linux/seq_file.h>
 #include <linux/init.h>
 #include <linux/sysctl.h>
-#include <linux/slab.h>
 #include <net/arp.h>
 #include <net/net_namespace.h>
 
@@ -487,7 +486,6 @@ static struct rif_cache *rif_get_idx(loff_t pos)
 }
 
 static void *rif_seq_start(struct seq_file *seq, loff_t *pos)
-	__acquires(&rif_lock)
 {
 	spin_lock_irq(&rif_lock);
 
@@ -519,7 +517,6 @@ static void *rif_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 }
 
 static void rif_seq_stop(struct seq_file *seq, void *v)
-	__releases(&rif_lock)
 {
 	spin_unlock_irq(&rif_lock);
 }
@@ -562,9 +559,6 @@ static int rif_seq_show(struct seq_file *seq, void *v)
 				}
 				seq_putc(seq, '\n');
 			}
-
-		if (dev)
-			dev_put(dev);
 		}
 	return 0;
 }
@@ -636,18 +630,19 @@ struct net_device *alloc_trdev(int sizeof_priv)
 #ifdef CONFIG_SYSCTL
 static struct ctl_table tr_table[] = {
 	{
+		.ctl_name	= NET_TR_RIF_TIMEOUT,
 		.procname	= "rif_timeout",
 		.data		= &sysctl_tr_rif_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
 	},
-	{ },
+	{ 0 },
 };
 
 static __initdata struct ctl_path tr_path[] = {
-	{ .procname = "net", },
-	{ .procname = "token-ring", },
+	{ .procname = "net", .ctl_name = CTL_NET, },
+	{ .procname = "token-ring", .ctl_name = NET_TR, },
 	{ }
 };
 #endif

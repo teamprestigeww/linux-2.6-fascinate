@@ -25,6 +25,7 @@
 /* This file implements EXT2-compatible extended attribute ioctl() calls */
 
 #include <linux/compat.h>
+#include <linux/smp_lock.h>
 #include <linux/mount.h>
 #include "ubifs.h"
 

@@ -9,40 +9,49 @@
  */
 
 #include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/io.h>
 
 #include <asm/tlb.h>
-#include <asm/mach/map.h>
+#include <asm/memory.h>
 
-#include <mach/common.h>
+#include <asm/mach/map.h>
+#include <mach/clock.h>
+
+extern void davinci_check_revision(void);
 
 /*
- * Intercept ioremap() requests for addresses in our fixed mapping regions.
+ * The machine specific code may provide the extra mapping besides the
+ * default mapping provided here.
  */
-void __iomem *davinci_ioremap(unsigned long p, size_t size, unsigned int type)
+static struct map_desc davinci_io_desc[] __initdata = {
+	{
+		.virtual	= IO_VIRT,
+		.pfn		= __phys_to_pfn(IO_PHYS),
+		.length		= IO_SIZE,
+		.type		= MT_DEVICE
+	},
+};
+
+void __init davinci_map_common_io(void)
 {
-	struct map_desc *desc = davinci_soc_info.io_desc;
-	int desc_num = davinci_soc_info.io_desc_num;
-	int i;
+	iotable_init(davinci_io_desc, ARRAY_SIZE(davinci_io_desc));
 
-	for (i = 0; i < desc_num; i++, desc++) {
-		unsigned long iophys = __pfn_to_phys(desc->pfn);
-		unsigned long iosize = desc->length;
+	/* Normally devicemaps_init() would flush caches and tlb after
+	 * mdesc->map_io(), but we must also do it here because of the CPU
+	 * revision check below.
+	 */
+	local_flush_tlb_all();
+	flush_cache_all();
 
-		if (p >= iophys && (p + size) <= (iophys + iosize))
-			return __io(desc->virtual + p - iophys);
-	}
-
-	return __arm_ioremap_caller(p, size, type,
-					__builtin_return_address(0));
+	/* We want to check CPU revision early for cpu_is_xxxx() macros.
+	 * IO space mapping must be initialized before we can do that.
+	 */
+	davinci_check_revision();
 }
-EXPORT_SYMBOL(davinci_ioremap);
 
-void davinci_iounmap(volatile void __iomem *addr)
+void __init davinci_init_common_hw(void)
 {
-	unsigned long virt = (unsigned long)addr;
-
-	if (virt >= VMALLOC_START && virt < VMALLOC_END)
-		__iounmap(addr);
+	davinci_clk_init();
 }
-EXPORT_SYMBOL(davinci_iounmap);

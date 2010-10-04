@@ -12,7 +12,6 @@
 #include "icn.h"
 #include <linux/module.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/sched.h>
 
 static int portbase = ICN_BASEADDR;

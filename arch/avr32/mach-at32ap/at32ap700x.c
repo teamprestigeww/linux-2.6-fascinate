@@ -12,12 +12,9 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
-#include <linux/slab.h>
 #include <linux/gpio.h>
 #include <linux/spi/spi.h>
 #include <linux/usb/atmel_usba_udc.h>
-
-#include <mach/atmel-mci.h>
 #include <linux/atmel-mci.h>
 
 #include <asm/io.h>
@@ -28,9 +25,6 @@
 #include <mach/hmatrix.h>
 #include <mach/portmux.h>
 #include <mach/sram.h>
-
-#include <sound/atmel-abdac.h>
-#include <sound/atmel-ac97c.h>
 
 #include <video/atmel_lcdc.h>
 
@@ -63,26 +57,26 @@
  * don't ... tc, smc, pio, rtc, watchdog, pwm, ps2, and more.
  */
 #define DEFINE_DEV(_name, _id)					\
-static u64 _name##_id##_dma_mask = DMA_BIT_MASK(32);		\
+static u64 _name##_id##_dma_mask = DMA_32BIT_MASK;		\
 static struct platform_device _name##_id##_device = {		\
 	.name		= #_name,				\
 	.id		= _id,					\
 	.dev		= {					\
 		.dma_mask = &_name##_id##_dma_mask,		\
-		.coherent_dma_mask = DMA_BIT_MASK(32),		\
+		.coherent_dma_mask = DMA_32BIT_MASK,		\
 	},							\
 	.resource	= _name##_id##_resource,		\
 	.num_resources	= ARRAY_SIZE(_name##_id##_resource),	\
 }
 #define DEFINE_DEV_DATA(_name, _id)				\
-static u64 _name##_id##_dma_mask = DMA_BIT_MASK(32);		\
+static u64 _name##_id##_dma_mask = DMA_32BIT_MASK;		\
 static struct platform_device _name##_id##_device = {		\
 	.name		= #_name,				\
 	.id		= _id,					\
 	.dev		= {					\
 		.dma_mask = &_name##_id##_dma_mask,		\
 		.platform_data	= &_name##_id##_data,		\
-		.coherent_dma_mask = DMA_BIT_MASK(32),		\
+		.coherent_dma_mask = DMA_32BIT_MASK,		\
 	},							\
 	.resource	= _name##_id##_resource,		\
 	.num_resources	= ARRAY_SIZE(_name##_id##_resource),	\
@@ -969,68 +963,56 @@ static struct resource atmel_usart3_resource[] = {
 DEFINE_DEV_DATA(atmel_usart, 3);
 DEV_CLK(usart, atmel_usart3, pba, 6);
 
-static inline void configure_usart0_pins(int flags)
+static inline void configure_usart0_pins(void)
 {
 	u32 pin_mask = (1 << 8) | (1 << 9); /* RXD & TXD */
-	if (flags & ATMEL_USART_RTS)	pin_mask |= (1 << 6);
-	if (flags & ATMEL_USART_CTS)	pin_mask |= (1 << 7);
-	if (flags & ATMEL_USART_CLK)	pin_mask |= (1 << 10);
 
 	select_peripheral(PIOA, pin_mask, PERIPH_B, AT32_GPIOF_PULLUP);
 }
 
-static inline void configure_usart1_pins(int flags)
+static inline void configure_usart1_pins(void)
 {
 	u32 pin_mask = (1 << 17) | (1 << 18); /* RXD & TXD */
-	if (flags & ATMEL_USART_RTS)	pin_mask |= (1 << 19);
-	if (flags & ATMEL_USART_CTS)	pin_mask |= (1 << 20);
-	if (flags & ATMEL_USART_CLK)	pin_mask |= (1 << 16);
 
 	select_peripheral(PIOA, pin_mask, PERIPH_A, AT32_GPIOF_PULLUP);
 }
 
-static inline void configure_usart2_pins(int flags)
+static inline void configure_usart2_pins(void)
 {
 	u32 pin_mask = (1 << 26) | (1 << 27); /* RXD & TXD */
-	if (flags & ATMEL_USART_RTS)	pin_mask |= (1 << 30);
-	if (flags & ATMEL_USART_CTS)	pin_mask |= (1 << 29);
-	if (flags & ATMEL_USART_CLK)	pin_mask |= (1 << 28);
 
 	select_peripheral(PIOB, pin_mask, PERIPH_B, AT32_GPIOF_PULLUP);
 }
 
-static inline void configure_usart3_pins(int flags)
+static inline void configure_usart3_pins(void)
 {
 	u32 pin_mask = (1 << 18) | (1 << 17); /* RXD & TXD */
-	if (flags & ATMEL_USART_RTS)	pin_mask |= (1 << 16);
-	if (flags & ATMEL_USART_CTS)	pin_mask |= (1 << 15);
-	if (flags & ATMEL_USART_CLK)	pin_mask |= (1 << 19);
 
 	select_peripheral(PIOB, pin_mask, PERIPH_B, AT32_GPIOF_PULLUP);
 }
 
 static struct platform_device *__initdata at32_usarts[4];
 
-void __init at32_map_usart(unsigned int hw_id, unsigned int line, int flags)
+void __init at32_map_usart(unsigned int hw_id, unsigned int line)
 {
 	struct platform_device *pdev;
 
 	switch (hw_id) {
 	case 0:
 		pdev = &atmel_usart0_device;
-		configure_usart0_pins(flags);
+		configure_usart0_pins();
 		break;
 	case 1:
 		pdev = &atmel_usart1_device;
-		configure_usart1_pins(flags);
+		configure_usart1_pins();
 		break;
 	case 2:
 		pdev = &atmel_usart2_device;
-		configure_usart2_pins(flags);
+		configure_usart2_pins();
 		break;
 	case 3:
 		pdev = &atmel_usart3_device;
-		configure_usart3_pins(flags);
+		configure_usart3_pins();
 		break;
 	default:
 		return;
@@ -1184,24 +1166,11 @@ static struct resource atmel_spi1_resource[] = {
 DEFINE_DEV(atmel_spi, 1);
 DEV_CLK(spi_clk, atmel_spi1, pba, 1);
 
-void __init
-at32_spi_setup_slaves(unsigned int bus_num, struct spi_board_info *b, unsigned int n)
+static void __init
+at32_spi_setup_slaves(unsigned int bus_num, struct spi_board_info *b,
+		      unsigned int n, const u8 *pins)
 {
-	/*
-	 * Manage the chipselects as GPIOs, normally using the same pins
-	 * the SPI controller expects; but boards can use other pins.
-	 */
-	static u8 __initdata spi_pins[][4] = {
-		{ GPIO_PIN_PA(3), GPIO_PIN_PA(4),
-		  GPIO_PIN_PA(5), GPIO_PIN_PA(20) },
-		{ GPIO_PIN_PB(2), GPIO_PIN_PB(3),
-		  GPIO_PIN_PB(4), GPIO_PIN_PA(27) },
-	};
 	unsigned int pin, mode;
-
-	/* There are only 2 SPI controllers */
-	if (bus_num > 1)
-		return;
 
 	for (; n; n--, b++) {
 		b->bus_num = bus_num;
@@ -1209,7 +1178,7 @@ at32_spi_setup_slaves(unsigned int bus_num, struct spi_board_info *b, unsigned i
 			continue;
 		pin = (unsigned)b->controller_data;
 		if (!pin) {
-			pin = spi_pins[bus_num][b->chip_select];
+			pin = pins[b->chip_select];
 			b->controller_data = (void *)pin;
 		}
 		mode = AT32_GPIOF_OUTPUT;
@@ -1222,6 +1191,16 @@ at32_spi_setup_slaves(unsigned int bus_num, struct spi_board_info *b, unsigned i
 struct platform_device *__init
 at32_add_device_spi(unsigned int id, struct spi_board_info *b, unsigned int n)
 {
+	/*
+	 * Manage the chipselects as GPIOs, normally using the same pins
+	 * the SPI controller expects; but boards can use other pins.
+	 */
+	static u8 __initdata spi0_pins[] =
+		{ GPIO_PIN_PA(3), GPIO_PIN_PA(4),
+		  GPIO_PIN_PA(5), GPIO_PIN_PA(20), };
+	static u8 __initdata spi1_pins[] =
+		{ GPIO_PIN_PB(2), GPIO_PIN_PB(3),
+		  GPIO_PIN_PB(4), GPIO_PIN_PA(27), };
 	struct platform_device *pdev;
 	u32 pin_mask;
 
@@ -1234,7 +1213,7 @@ at32_add_device_spi(unsigned int id, struct spi_board_info *b, unsigned int n)
 		select_peripheral(PIOA, (1 << 0), PERIPH_A, AT32_GPIOF_PULLUP);
 		select_peripheral(PIOA, pin_mask, PERIPH_A, 0);
 
-		at32_spi_setup_slaves(0, b, n);
+		at32_spi_setup_slaves(0, b, n, spi0_pins);
 		break;
 
 	case 1:
@@ -1245,7 +1224,7 @@ at32_add_device_spi(unsigned int id, struct spi_board_info *b, unsigned int n)
 		select_peripheral(PIOB, (1 << 0), PERIPH_B, AT32_GPIOF_PULLUP);
 		select_peripheral(PIOB, pin_mask, PERIPH_B, 0);
 
-		at32_spi_setup_slaves(1, b, n);
+		at32_spi_setup_slaves(1, b, n, spi1_pins);
 		break;
 
 	default:
@@ -1326,7 +1305,7 @@ struct platform_device *__init
 at32_add_device_mci(unsigned int id, struct mci_platform_data *data)
 {
 	struct platform_device		*pdev;
-	struct mci_dma_data	        *slave;
+	struct dw_dma_slave		*dws = &data->dma_slave;
 	u32				pioa_mask;
 	u32				piob_mask;
 
@@ -1345,22 +1324,16 @@ at32_add_device_mci(unsigned int id, struct mci_platform_data *data)
 				ARRAY_SIZE(atmel_mci0_resource)))
 		goto fail;
 
-	slave = kzalloc(sizeof(struct mci_dma_data), GFP_KERNEL);
-	if (!slave)
-		goto fail;
-
-	slave->sdata.dma_dev = &dw_dmac0_device.dev;
-	slave->sdata.reg_width = DW_DMA_SLAVE_WIDTH_32BIT;
-	slave->sdata.cfg_hi = (DWC_CFGH_SRC_PER(0)
+	dws->dma_dev = &dw_dmac0_device.dev;
+	dws->reg_width = DW_DMA_SLAVE_WIDTH_32BIT;
+	dws->cfg_hi = (DWC_CFGH_SRC_PER(0)
 				| DWC_CFGH_DST_PER(1));
-	slave->sdata.cfg_lo &= ~(DWC_CFGL_HS_DST_POL
+	dws->cfg_lo &= ~(DWC_CFGL_HS_DST_POL
 				| DWC_CFGL_HS_SRC_POL);
-
-	data->dma_slave = slave;
 
 	if (platform_device_add_data(pdev, data,
 				sizeof(struct mci_platform_data)))
-		goto fail_free;
+		goto fail;
 
 	/* CLK line is common to both slots */
 	pioa_mask = 1 << 10;
@@ -1384,7 +1357,7 @@ at32_add_device_mci(unsigned int id, struct mci_platform_data *data)
 		/* Slot is unused */
 		break;
 	default:
-		goto fail_free;
+		goto fail;
 	}
 
 	select_peripheral(PIOA, pioa_mask, PERIPH_A, 0);
@@ -1411,7 +1384,7 @@ at32_add_device_mci(unsigned int id, struct mci_platform_data *data)
 		break;
 	default:
 		if (!data->slot[0].bus_width)
-			goto fail_free;
+			goto fail;
 
 		data->slot[1].bus_width = 0;
 		break;
@@ -1422,10 +1395,7 @@ at32_add_device_mci(unsigned int id, struct mci_platform_data *data)
 	platform_device_add(pdev);
 	return pdev;
 
-fail_free:
-	kfree(slave);
 fail:
-	data->dma_slave = NULL;
 	platform_device_put(pdev);
 	return NULL;
 }
@@ -1771,13 +1741,10 @@ at32_add_device_usba(unsigned int id, struct usba_platform_data *data)
 					  ARRAY_SIZE(usba0_resource)))
 		goto out_free_pdev;
 
-	if (data) {
+	if (data)
 		usba_data.pdata.vbus_pin = data->vbus_pin;
-		usba_data.pdata.vbus_pin_inverted = data->vbus_pin_inverted;
-	} else {
+	else
 		usba_data.pdata.vbus_pin = -EINVAL;
-		usba_data.pdata.vbus_pin_inverted = -EINVAL;
-	}
 
 	data = &usba_data.pdata;
 	data->num_ep = ARRAY_SIZE(at32_usba_ep);
@@ -1786,7 +1753,7 @@ at32_add_device_usba(unsigned int id, struct usba_platform_data *data)
 	if (platform_device_add_data(pdev, data, sizeof(usba_data)))
 		goto out_free_pdev;
 
-	if (gpio_is_valid(data->vbus_pin))
+	if (data->vbus_pin >= 0)
 		at32_select_gpio(data->vbus_pin, 0);
 
 	usba0_pclk.dev = &pdev->dev;
@@ -2013,14 +1980,11 @@ static struct clk atmel_ac97c0_pclk = {
 };
 
 struct platform_device *__init
-at32_add_device_ac97c(unsigned int id, struct ac97c_platform_data *data,
-		      unsigned int flags)
+at32_add_device_ac97c(unsigned int id, struct ac97c_platform_data *data)
 {
-	struct platform_device		*pdev;
-	struct dw_dma_slave		*rx_dws;
-	struct dw_dma_slave		*tx_dws;
-	struct ac97c_platform_data	_data;
-	u32				pin_mask;
+	struct platform_device *pdev;
+	struct ac97c_platform_data _data;
+	u32 pin_mask;
 
 	if (id != 0)
 		return NULL;
@@ -2031,52 +1995,37 @@ at32_add_device_ac97c(unsigned int id, struct ac97c_platform_data *data,
 
 	if (platform_device_add_resources(pdev, atmel_ac97c0_resource,
 				ARRAY_SIZE(atmel_ac97c0_resource)))
-		goto out_free_resources;
+		goto fail;
 
 	if (!data) {
 		data = &_data;
 		memset(data, 0, sizeof(struct ac97c_platform_data));
-		data->reset_pin = -ENODEV;
+		data->reset_pin = GPIO_PIN_NONE;
 	}
 
-	rx_dws = &data->rx_dws;
-	tx_dws = &data->tx_dws;
-
-	/* Check if DMA slave interface for capture should be configured. */
-	if (flags & AC97C_CAPTURE) {
-		rx_dws->dma_dev = &dw_dmac0_device.dev;
-		rx_dws->reg_width = DW_DMA_SLAVE_WIDTH_16BIT;
-		rx_dws->cfg_hi = DWC_CFGH_SRC_PER(3);
-		rx_dws->cfg_lo &= ~(DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL);
-	}
-
-	/* Check if DMA slave interface for playback should be configured. */
-	if (flags & AC97C_PLAYBACK) {
-		tx_dws->dma_dev = &dw_dmac0_device.dev;
-		tx_dws->reg_width = DW_DMA_SLAVE_WIDTH_16BIT;
-		tx_dws->cfg_hi = DWC_CFGH_DST_PER(4);
-		tx_dws->cfg_lo &= ~(DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL);
-	}
+	data->dma_rx_periph_id = 3;
+	data->dma_tx_periph_id = 4;
+	data->dma_controller_id = 0;
 
 	if (platform_device_add_data(pdev, data,
 				sizeof(struct ac97c_platform_data)))
-		goto out_free_resources;
+		goto fail;
 
-	/* SDO | SYNC | SCLK | SDI */
-	pin_mask = (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23);
+	pin_mask  = (1 << 20) | (1 << 21);	/* SDO & SYNC */
+	pin_mask |= (1 << 22) | (1 << 23);	/* SCLK & SDI */
 
 	select_peripheral(PIOB, pin_mask, PERIPH_B, 0);
 
-	if (gpio_is_valid(data->reset_pin))
-		at32_select_gpio(data->reset_pin, AT32_GPIOF_OUTPUT
-				| AT32_GPIOF_HIGH);
+	/* TODO: gpio_is_valid(data->reset_pin) with kernel 2.6.26. */
+	if (data->reset_pin != GPIO_PIN_NONE)
+		at32_select_gpio(data->reset_pin, 0);
 
 	atmel_ac97c0_pclk.dev = &pdev->dev;
 
 	platform_device_add(pdev);
 	return pdev;
 
-out_free_resources:
+fail:
 	platform_device_put(pdev);
 	return NULL;
 }
@@ -2104,34 +2053,21 @@ static struct clk abdac0_sample_clk = {
 	.index		= 6,
 };
 
-struct platform_device *__init
-at32_add_device_abdac(unsigned int id, struct atmel_abdac_pdata *data)
+struct platform_device *__init at32_add_device_abdac(unsigned int id)
 {
-	struct platform_device	*pdev;
-	struct dw_dma_slave	*dws;
-	u32			pin_mask;
+	struct platform_device *pdev;
+	u32 pin_mask;
 
-	if (id != 0 || !data)
+	if (id != 0)
 		return NULL;
 
-	pdev = platform_device_alloc("atmel_abdac", id);
+	pdev = platform_device_alloc("abdac", id);
 	if (!pdev)
 		return NULL;
 
 	if (platform_device_add_resources(pdev, abdac0_resource,
 				ARRAY_SIZE(abdac0_resource)))
-		goto out_free_resources;
-
-	dws = &data->dws;
-
-	dws->dma_dev = &dw_dmac0_device.dev;
-	dws->reg_width = DW_DMA_SLAVE_WIDTH_32BIT;
-	dws->cfg_hi = DWC_CFGH_DST_PER(2);
-	dws->cfg_lo &= ~(DWC_CFGL_HS_DST_POL | DWC_CFGL_HS_SRC_POL);
-
-	if (platform_device_add_data(pdev, data,
-				sizeof(struct atmel_abdac_pdata)))
-		goto out_free_resources;
+		goto err_add_resources;
 
 	pin_mask  = (1 << 20) | (1 << 22);	/* DATA1 & DATAN1 */
 	pin_mask |= (1 << 21) | (1 << 23);	/* DATA0 & DATAN0 */
@@ -2144,7 +2080,7 @@ at32_add_device_abdac(unsigned int id, struct atmel_abdac_pdata *data)
 	platform_device_add(pdev);
 	return pdev;
 
-out_free_resources:
+err_add_resources:
 	platform_device_put(pdev);
 	return NULL;
 }

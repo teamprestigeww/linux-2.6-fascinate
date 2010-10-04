@@ -25,9 +25,7 @@
 #include <asm/mach/time.h>
 #include <mach/msm_iomap.h>
 
-#ifndef MSM_DGT_BASE
 #define MSM_DGT_BASE (MSM_GPT_BASE + 0x10)
-#endif
 #define MSM_DGT_SHIFT (5)
 
 #define TIMER_MATCH_VAL         0x0000
@@ -59,12 +57,12 @@ static irqreturn_t msm_timer_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static cycle_t msm_gpt_read(struct clocksource *cs)
+static cycle_t msm_gpt_read(void)
 {
 	return readl(MSM_GPT_BASE + TIMER_COUNT_VAL);
 }
 
-static cycle_t msm_dgt_read(struct clocksource *cs)
+static cycle_t msm_dgt_read(void)
 {
 	return readl(MSM_DGT_BASE + TIMER_COUNT_VAL) >> MSM_DGT_SHIFT;
 }

@@ -36,7 +36,6 @@
 #include <linux/pci.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <asm/io.h>
 #include <rdma/ib_mad.h>
 
@@ -158,15 +157,13 @@ enum {
 enum {
 	CMD_TIME_CLASS_A = (HZ + 999) / 1000 + 1,
 	CMD_TIME_CLASS_B = (HZ +  99) /  100 + 1,
-	CMD_TIME_CLASS_C = (HZ +   9) /   10 + 1,
-	CMD_TIME_CLASS_D = 60 * HZ
+	CMD_TIME_CLASS_C = (HZ +   9) /   10 + 1
 };
 #else
 enum {
 	CMD_TIME_CLASS_A = 60 * HZ,
 	CMD_TIME_CLASS_B = 60 * HZ,
-	CMD_TIME_CLASS_C = 60 * HZ,
-	CMD_TIME_CLASS_D = 60 * HZ
+	CMD_TIME_CLASS_C = 60 * HZ
 };
 #endif
 
@@ -601,7 +598,7 @@ int mthca_SYS_EN(struct mthca_dev *dev, u8 *status)
 	u64 out;
 	int ret;
 
-	ret = mthca_cmd_imm(dev, 0, &out, 0, 0, CMD_SYS_EN, CMD_TIME_CLASS_D, status);
+	ret = mthca_cmd_imm(dev, 0, &out, 0, 0, CMD_SYS_EN, HZ, status);
 
 	if (*status == MTHCA_CMD_STAT_DDR_MEM_ERR)
 		mthca_warn(dev, "SYS_EN DDR error: syn=%x, sock=%d, "
@@ -614,7 +611,7 @@ int mthca_SYS_EN(struct mthca_dev *dev, u8 *status)
 
 int mthca_SYS_DIS(struct mthca_dev *dev, u8 *status)
 {
-	return mthca_cmd(dev, 0, 0, 0, CMD_SYS_DIS, CMD_TIME_CLASS_C, status);
+	return mthca_cmd(dev, 0, 0, 0, CMD_SYS_DIS, HZ, status);
 }
 
 static int mthca_map_cmd(struct mthca_dev *dev, u16 op, struct mthca_icm *icm,
@@ -1060,7 +1057,7 @@ int mthca_QUERY_DEV_LIM(struct mthca_dev *dev,
 	MTHCA_GET(field, outbox, QUERY_DEV_LIM_RSVD_MTT_OFFSET);
 	if (mthca_is_memfree(dev))
 		dev_lim->reserved_mtts = ALIGN((1 << (field >> 4)) * sizeof(u64),
-					       dev->limits.mtt_seg_size) / dev->limits.mtt_seg_size;
+					       MTHCA_MTT_SEG_SIZE) / MTHCA_MTT_SEG_SIZE;
 	else
 		dev_lim->reserved_mtts = 1 << (field >> 4);
 	MTHCA_GET(field, outbox, QUERY_DEV_LIM_MAX_MRW_SZ_OFFSET);
@@ -1393,7 +1390,7 @@ int mthca_INIT_HCA(struct mthca_dev *dev,
 		MTHCA_PUT(inbox, param->uarc_base,   INIT_HCA_UAR_CTX_BASE_OFFSET);
 	}
 
-	err = mthca_cmd(dev, mailbox->dma, 0, 0, CMD_INIT_HCA, CMD_TIME_CLASS_D, status);
+	err = mthca_cmd(dev, mailbox->dma, 0, 0, CMD_INIT_HCA, HZ, status);
 
 	mthca_free_mailbox(dev, mailbox);
 	return err;
@@ -1453,12 +1450,12 @@ int mthca_INIT_IB(struct mthca_dev *dev,
 
 int mthca_CLOSE_IB(struct mthca_dev *dev, int port, u8 *status)
 {
-	return mthca_cmd(dev, 0, port, 0, CMD_CLOSE_IB, CMD_TIME_CLASS_A, status);
+	return mthca_cmd(dev, 0, port, 0, CMD_CLOSE_IB, HZ, status);
 }
 
 int mthca_CLOSE_HCA(struct mthca_dev *dev, int panic, u8 *status)
 {
-	return mthca_cmd(dev, 0, 0, panic, CMD_CLOSE_HCA, CMD_TIME_CLASS_C, status);
+	return mthca_cmd(dev, 0, 0, panic, CMD_CLOSE_HCA, HZ, status);
 }
 
 int mthca_SET_IB(struct mthca_dev *dev, struct mthca_set_ib_param *param,
@@ -1817,7 +1814,7 @@ int mthca_CONF_SPECIAL_QP(struct mthca_dev *dev, int type, u32 qpn,
 	case IB_QPT_RAW_IPV6:
 		op_mod = 2;
 		break;
-	case IB_QPT_RAW_ETHERTYPE:
+	case IB_QPT_RAW_ETY:
 		op_mod = 3;
 		break;
 	default:

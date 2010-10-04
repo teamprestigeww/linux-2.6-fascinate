@@ -30,7 +30,6 @@
 #include <linux/wait.h>
 #include <linux/compiler.h>
 #include <asm/uaccess.h>
-#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/poll.h>
 #include <linux/smp_lock.h>
@@ -194,7 +193,7 @@ enum ep_state {
 };
 
 struct ep_data {
-	struct mutex			lock;
+	struct semaphore		lock;
 	enum ep_state			state;
 	atomic_t			count;
 	struct dev_data			*dev;
@@ -298,10 +297,10 @@ get_ready_ep (unsigned f_flags, struct ep_data *epdata)
 	int	val;
 
 	if (f_flags & O_NONBLOCK) {
-		if (!mutex_trylock(&epdata->lock))
+		if (down_trylock (&epdata->lock) != 0)
 			goto nonblock;
 		if (epdata->state != STATE_EP_ENABLED) {
-			mutex_unlock(&epdata->lock);
+			up (&epdata->lock);
 nonblock:
 			val = -EAGAIN;
 		} else
@@ -309,8 +308,7 @@ nonblock:
 		return val;
 	}
 
-	val = mutex_lock_interruptible(&epdata->lock);
-	if (val < 0)
+	if ((val = down_interruptible (&epdata->lock)) < 0)
 		return val;
 
 	switch (epdata->state) {
@@ -324,7 +322,7 @@ nonblock:
 		// FALLTHROUGH
 	case STATE_EP_UNBOUND:			/* clean disconnect */
 		val = -ENODEV;
-		mutex_unlock(&epdata->lock);
+		up (&epdata->lock);
 	}
 	return val;
 }
@@ -386,15 +384,16 @@ ep_read (struct file *fd, char __user *buf, size_t len, loff_t *ptr)
 		return value;
 
 	/* halt any endpoint by doing a "wrong direction" i/o call */
-	if (usb_endpoint_dir_in(&data->desc)) {
-		if (usb_endpoint_xfer_isoc(&data->desc))
+	if (data->desc.bEndpointAddress & USB_DIR_IN) {
+		if ((data->desc.bmAttributes & USB_ENDPOINT_XFERTYPE_MASK)
+				== USB_ENDPOINT_XFER_ISOC)
 			return -EINVAL;
 		DBG (data->dev, "%s halt\n", data->name);
 		spin_lock_irq (&data->dev->lock);
 		if (likely (data->ep != NULL))
 			usb_ep_set_halt (data->ep);
 		spin_unlock_irq (&data->dev->lock);
-		mutex_unlock(&data->lock);
+		up (&data->lock);
 		return -EBADMSG;
 	}
 
@@ -412,7 +411,7 @@ ep_read (struct file *fd, char __user *buf, size_t len, loff_t *ptr)
 		value = -EFAULT;
 
 free1:
-	mutex_unlock(&data->lock);
+	up (&data->lock);
 	kfree (kbuf);
 	return value;
 }
@@ -429,15 +428,16 @@ ep_write (struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 		return value;
 
 	/* halt any endpoint by doing a "wrong direction" i/o call */
-	if (!usb_endpoint_dir_in(&data->desc)) {
-		if (usb_endpoint_xfer_isoc(&data->desc))
+	if (!(data->desc.bEndpointAddress & USB_DIR_IN)) {
+		if ((data->desc.bmAttributes & USB_ENDPOINT_XFERTYPE_MASK)
+				== USB_ENDPOINT_XFER_ISOC)
 			return -EINVAL;
 		DBG (data->dev, "%s halt\n", data->name);
 		spin_lock_irq (&data->dev->lock);
 		if (likely (data->ep != NULL))
 			usb_ep_set_halt (data->ep);
 		spin_unlock_irq (&data->dev->lock);
-		mutex_unlock(&data->lock);
+		up (&data->lock);
 		return -EBADMSG;
 	}
 
@@ -456,7 +456,7 @@ ep_write (struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 	VDEBUG (data->dev, "%s write %zu IN, status %d\n",
 		data->name, len, (int) value);
 free1:
-	mutex_unlock(&data->lock);
+	up (&data->lock);
 	kfree (kbuf);
 	return value;
 }
@@ -467,8 +467,7 @@ ep_release (struct inode *inode, struct file *fd)
 	struct ep_data		*data = fd->private_data;
 	int value;
 
-	value = mutex_lock_interruptible(&data->lock);
-	if (value < 0)
+	if ((value = down_interruptible(&data->lock)) < 0)
 		return value;
 
 	/* clean up if this can be reopened */
@@ -478,7 +477,7 @@ ep_release (struct inode *inode, struct file *fd)
 		data->hs_desc.bDescriptorType = 0;
 		usb_ep_disable(data->ep);
 	}
-	mutex_unlock(&data->lock);
+	up (&data->lock);
 	put_ep (data);
 	return 0;
 }
@@ -509,7 +508,7 @@ static long ep_ioctl(struct file *fd, unsigned code, unsigned long value)
 	} else
 		status = -ENODEV;
 	spin_unlock_irq (&data->dev->lock);
-	mutex_unlock(&data->lock);
+	up (&data->lock);
 	return status;
 }
 
@@ -675,7 +674,7 @@ fail:
 		value = -ENODEV;
 	spin_unlock_irq(&epdata->dev->lock);
 
-	mutex_unlock(&epdata->lock);
+	up(&epdata->lock);
 
 	if (unlikely(value)) {
 		kfree(priv);
@@ -692,7 +691,7 @@ ep_aio_read(struct kiocb *iocb, const struct iovec *iov,
 	struct ep_data		*epdata = iocb->ki_filp->private_data;
 	char			*buf;
 
-	if (unlikely(usb_endpoint_dir_in(&epdata->desc)))
+	if (unlikely(epdata->desc.bEndpointAddress & USB_DIR_IN))
 		return -EINVAL;
 
 	buf = kmalloc(iocb->ki_left, GFP_KERNEL);
@@ -712,7 +711,7 @@ ep_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	size_t			len = 0;
 	int			i = 0;
 
-	if (unlikely(!usb_endpoint_dir_in(&epdata->desc)))
+	if (unlikely(!(epdata->desc.bEndpointAddress & USB_DIR_IN)))
 		return -EINVAL;
 
 	buf = kmalloc(iocb->ki_left, GFP_KERNEL);
@@ -767,8 +766,7 @@ ep_config (struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 	u32			tag;
 	int			value, length = len;
 
-	value = mutex_lock_interruptible(&data->lock);
-	if (value < 0)
+	if ((value = down_interruptible (&data->lock)) < 0)
 		return value;
 
 	if (data->state != STATE_EP_READY) {
@@ -857,7 +855,7 @@ fail:
 		data->desc.bDescriptorType = 0;
 		data->hs_desc.bDescriptorType = 0;
 	}
-	mutex_unlock(&data->lock);
+	up (&data->lock);
 	return value;
 fail0:
 	value = -EINVAL;
@@ -873,7 +871,7 @@ ep_open (struct inode *inode, struct file *fd)
 	struct ep_data		*data = inode->i_private;
 	int			value = -EBUSY;
 
-	if (mutex_lock_interruptible(&data->lock) != 0)
+	if (down_interruptible (&data->lock) != 0)
 		return -EINTR;
 	spin_lock_irq (&data->dev->lock);
 	if (data->dev->state == STATE_DEV_UNBOUND)
@@ -888,7 +886,7 @@ ep_open (struct inode *inode, struct file *fd)
 		DBG (data->dev, "%s state %d\n",
 			data->name, data->state);
 	spin_unlock_irq (&data->dev->lock);
-	mutex_unlock(&data->lock);
+	up (&data->lock);
 	return value;
 }
 
@@ -1299,9 +1297,11 @@ static long dev_ioctl (struct file *fd, unsigned code, unsigned long value)
 	struct usb_gadget	*gadget = dev->gadget;
 	long ret = -ENOTTY;
 
-	if (gadget->ops->ioctl)
+	if (gadget->ops->ioctl) {
+		lock_kernel();
 		ret = gadget->ops->ioctl (gadget, code, value);
-
+		unlock_kernel();
+	}
 	return ret;
 }
 
@@ -1334,7 +1334,7 @@ static void make_qualifier (struct dev_data *dev)
 
 	qual.bLength = sizeof qual;
 	qual.bDescriptorType = USB_DT_DEVICE_QUALIFIER;
-	qual.bcdUSB = cpu_to_le16 (0x0200);
+	qual.bcdUSB = __constant_cpu_to_le16 (0x0200);
 
 	desc = dev->dev;
 	qual.bDeviceClass = desc->bDeviceClass;
@@ -1632,7 +1632,7 @@ static int activate_ep_files (struct dev_data *dev)
 		if (!data)
 			goto enomem0;
 		data->state = STATE_EP_DISABLED;
-		mutex_init(&data->lock);
+		init_MUTEX (&data->lock);
 		init_waitqueue_head (&data->wait);
 
 		strncpy (data->name, ep->name, sizeof (data->name) - 1);
@@ -1865,9 +1865,13 @@ dev_config (struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 	buf += 4;
 	length -= 4;
 
-	kbuf = memdup_user(buf, length);
-	if (IS_ERR(kbuf))
-		return PTR_ERR(kbuf);
+	kbuf = kmalloc (length, GFP_KERNEL);
+	if (!kbuf)
+		return -ENOMEM;
+	if (copy_from_user (kbuf, buf, length)) {
+		kfree (kbuf);
+		return -EFAULT;
+	}
 
 	spin_lock_irq (&dev->lock);
 	value = -EINVAL;
@@ -1904,7 +1908,7 @@ dev_config (struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 			|| dev->dev->bNumConfigurations != 1)
 		goto fail;
 	dev->dev->bNumConfigurations = 1;
-	dev->dev->bcdUSB = cpu_to_le16 (0x0200);
+	dev->dev->bcdUSB = __constant_cpu_to_le16 (0x0200);
 
 	/* triggers gadgetfs_bind(); then we can enumerate. */
 	spin_unlock_irq (&dev->lock);
@@ -2031,7 +2035,7 @@ gadgetfs_create_file (struct super_block *sb, char const *name,
 	return inode;
 }
 
-static const struct super_operations gadget_fs_operations = {
+static struct super_operations gadget_fs_operations = {
 	.statfs =	simple_statfs,
 	.drop_inode =	generic_delete_inode,
 };

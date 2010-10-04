@@ -11,6 +11,8 @@ aty128fb.txt
 	- info on the ATI Rage128 frame buffer driver.
 cirrusfb.txt
 	- info on the driver for Cirrus Logic chipsets.
+cyblafb/
+	- directory with documentation files related to the cyblafb driver.
 deferred_io.txt
 	- an introduction to deferred IO.
 fbcon.txt

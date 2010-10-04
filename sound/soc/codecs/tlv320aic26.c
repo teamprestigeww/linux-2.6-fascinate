@@ -13,7 +13,6 @@
 #include <linux/device.h>
 #include <linux/sysfs.h>
 #include <linux/spi/spi.h>
-#include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -49,7 +48,7 @@ struct aic26 {
 static unsigned int aic26_reg_read(struct snd_soc_codec *codec,
 				   unsigned int reg)
 {
-	struct aic26 *aic26 = snd_soc_codec_get_drvdata(codec);
+	struct aic26 *aic26 = codec->private_data;
 	u16 *cache = codec->reg_cache;
 	u16 cmd, value;
 	u8 buffer[2];
@@ -93,7 +92,7 @@ static unsigned int aic26_reg_read_cache(struct snd_soc_codec *codec,
 static int aic26_reg_write(struct snd_soc_codec *codec, unsigned int reg,
 			   unsigned int value)
 {
-	struct aic26 *aic26 = snd_soc_codec_get_drvdata(codec);
+	struct aic26 *aic26 = codec->private_data;
 	u16 *cache = codec->reg_cache;
 	u16 cmd;
 	u8 buffer[4];
@@ -131,8 +130,8 @@ static int aic26_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_device *socdev = rtd->socdev;
-	struct snd_soc_codec *codec = socdev->card->codec;
-	struct aic26 *aic26 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_codec *codec = socdev->codec;
+	struct aic26 *aic26 = codec->private_data;
 	int fsref, divisor, wlen, pval, jval, dval, qval;
 	u16 reg;
 
@@ -199,7 +198,7 @@ static int aic26_hw_params(struct snd_pcm_substream *substream,
 static int aic26_mute(struct snd_soc_dai *dai, int mute)
 {
 	struct snd_soc_codec *codec = dai->codec;
-	struct aic26 *aic26 = snd_soc_codec_get_drvdata(codec);
+	struct aic26 *aic26 = codec->private_data;
 	u16 reg = aic26_reg_read_cache(codec, AIC26_REG_DAC_GAIN);
 
 	dev_dbg(&aic26->spi->dev, "aic26_mute(dai=%p, mute=%i)\n",
@@ -218,7 +217,7 @@ static int aic26_set_sysclk(struct snd_soc_dai *codec_dai,
 			    int clk_id, unsigned int freq, int dir)
 {
 	struct snd_soc_codec *codec = codec_dai->codec;
-	struct aic26 *aic26 = snd_soc_codec_get_drvdata(codec);
+	struct aic26 *aic26 = codec->private_data;
 
 	dev_dbg(&aic26->spi->dev, "aic26_set_sysclk(dai=%p, clk_id==%i,"
 		" freq=%i, dir=%i)\n",
@@ -235,7 +234,7 @@ static int aic26_set_sysclk(struct snd_soc_dai *codec_dai,
 static int aic26_set_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 {
 	struct snd_soc_codec *codec = codec_dai->codec;
-	struct aic26 *aic26 = snd_soc_codec_get_drvdata(codec);
+	struct aic26 *aic26 = codec->private_data;
 
 	dev_dbg(&aic26->spi->dev, "aic26_set_fmt(dai=%p, fmt==%i)\n",
 		codec_dai, fmt);
@@ -271,13 +270,6 @@ static int aic26_set_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 #define AIC26_FORMATS	(SNDRV_PCM_FMTBIT_S8     | SNDRV_PCM_FMTBIT_S16_BE |\
 			 SNDRV_PCM_FMTBIT_S24_BE | SNDRV_PCM_FMTBIT_S32_BE)
 
-static struct snd_soc_dai_ops aic26_dai_ops = {
-	.hw_params	= aic26_hw_params,
-	.digital_mute	= aic26_mute,
-	.set_sysclk	= aic26_set_sysclk,
-	.set_fmt	= aic26_set_fmt,
-};
-
 struct snd_soc_dai aic26_dai = {
 	.name = "tlv320aic26",
 	.playback = {
@@ -294,7 +286,12 @@ struct snd_soc_dai aic26_dai = {
 		.rates = AIC26_RATES,
 		.formats = AIC26_FORMATS,
 	},
-	.ops = &aic26_dai_ops,
+	.ops = {
+		.hw_params = aic26_hw_params,
+		.digital_mute = aic26_mute,
+		.set_sysclk = aic26_set_sysclk,
+		.set_fmt = aic26_set_fmt,
+	},
 };
 EXPORT_SYMBOL_GPL(aic26_dai);
 
@@ -325,8 +322,9 @@ static int aic26_probe(struct platform_device *pdev)
 {
 	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
 	struct snd_soc_codec *codec;
+	struct snd_kcontrol *kcontrol;
 	struct aic26 *aic26;
-	int ret, err;
+	int i, ret, err;
 
 	dev_info(&pdev->dev, "Probing AIC26 SoC CODEC driver\n");
 	dev_dbg(&pdev->dev, "socdev=%p\n", socdev);
@@ -340,7 +338,7 @@ static int aic26_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 	codec = &aic26->codec;
-	socdev->card->codec = codec;
+	socdev->codec = codec;
 
 	dev_dbg(&pdev->dev, "Registering PCMs, dev=%p, socdev->dev=%p\n",
 		&pdev->dev, socdev->dev);
@@ -353,11 +351,24 @@ static int aic26_probe(struct platform_device *pdev)
 
 	/* register controls */
 	dev_dbg(&pdev->dev, "Registering controls\n");
-	err = snd_soc_add_controls(codec, aic26_snd_controls,
-			ARRAY_SIZE(aic26_snd_controls));
-	WARN_ON(err < 0);
+	for (i = 0; i < ARRAY_SIZE(aic26_snd_controls); i++) {
+		kcontrol = snd_soc_cnew(&aic26_snd_controls[i], codec, NULL);
+		err = snd_ctl_add(codec->card, kcontrol);
+		WARN_ON(err < 0);
+	}
 
+	/* CODEC is setup, we can register the card now */
+	dev_dbg(&pdev->dev, "Registering card\n");
+	ret = snd_soc_init_card(socdev);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "aic26: failed to register card\n");
+		goto card_err;
+	}
 	return 0;
+
+ card_err:
+	snd_soc_free_pcms(socdev);
+	return ret;
 }
 
 static int aic26_remove(struct platform_device *pdev)
@@ -431,7 +442,7 @@ static int aic26_spi_probe(struct spi_device *spi)
 	/* Setup what we can in the codec structure so that the register
 	 * access functions will work as expected.  More will be filled
 	 * out when it is probed by the SoC CODEC part of this driver */
-	snd_soc_codec_set_drvdata(&aic26->codec, aic26);
+	aic26->codec.private_data = aic26;
 	aic26->codec.name = "aic26";
 	aic26->codec.owner = THIS_MODULE;
 	aic26->codec.dai = &aic26_dai;

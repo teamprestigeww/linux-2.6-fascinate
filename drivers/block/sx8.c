@@ -409,7 +409,7 @@ static int carm_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 static void carm_remove_one (struct pci_dev *pdev);
 static int carm_bdev_getgeo(struct block_device *bdev, struct hd_geometry *geo);
 
-static const struct pci_device_id carm_pci_tbl[] = {
+static struct pci_device_id carm_pci_tbl[] = {
 	{ PCI_VENDOR_ID_PROMISE, 0x8000, PCI_ANY_ID, PCI_ANY_ID, 0, 0, },
 	{ PCI_VENDOR_ID_PROMISE, 0x8002, PCI_ANY_ID, PCI_ANY_ID, 0, 0, },
 	{ }	/* terminate list */
@@ -423,7 +423,7 @@ static struct pci_driver carm_driver = {
 	.remove		= carm_remove_one,
 };
 
-static const struct block_device_operations carm_bd_ops = {
+static struct block_device_operations carm_bd_ops = {
 	.owner		= THIS_MODULE,
 	.getgeo		= carm_bdev_getgeo,
 };
@@ -749,7 +749,8 @@ static inline void carm_end_request_queued(struct carm_host *host,
 	struct request *req = crq->rq;
 	int rc;
 
-	__blk_end_request_all(req, error);
+	rc = __blk_end_request(req, error, blk_rq_bytes(req));
+	assert(rc == 0);
 
 	rc = carm_put_request(host, crq);
 	assert(rc == 0);
@@ -810,9 +811,11 @@ static void carm_oob_rq_fn(struct request_queue *q)
 
 	while (1) {
 		DPRINTK("get req\n");
-		rq = blk_fetch_request(q);
+		rq = elv_next_request(q);
 		if (!rq)
 			break;
+
+		blkdev_dequeue_request(rq);
 
 		crq = rq->special;
 		assert(crq != NULL);
@@ -844,7 +847,7 @@ static void carm_rq_fn(struct request_queue *q)
 
 queue_one_request:
 	VPRINTK("get req\n");
-	rq = blk_peek_request(q);
+	rq = elv_next_request(q);
 	if (!rq)
 		return;
 
@@ -855,7 +858,7 @@ queue_one_request:
 	}
 	crq->rq = rq;
 
-	blk_start_request(rq);
+	blkdev_dequeue_request(rq);
 
 	if (rq_data_dir(rq) == WRITE) {
 		writing = 1;
@@ -901,10 +904,10 @@ queue_one_request:
 	msg->sg_count	= n_elem;
 	msg->sg_type	= SGT_32BIT;
 	msg->handle	= cpu_to_le32(TAG_ENCODE(crq->tag));
-	msg->lba	= cpu_to_le32(blk_rq_pos(rq) & 0xffffffff);
-	tmp		= (blk_rq_pos(rq) >> 16) >> 16;
+	msg->lba	= cpu_to_le32(rq->sector & 0xffffffff);
+	tmp		= (rq->sector >> 16) >> 16;
 	msg->lba_high	= cpu_to_le16( (u16) tmp );
-	msg->lba_count	= cpu_to_le16(blk_rq_sectors(rq));
+	msg->lba_count	= cpu_to_le16(rq->nr_sectors);
 
 	msg_size = sizeof(struct carm_msg_rw) - sizeof(msg->sg);
 	for (i = 0; i < n_elem; i++) {
@@ -1518,7 +1521,8 @@ static int carm_init_disks(struct carm_host *host)
 			break;
 		}
 		disk->queue = q;
-		blk_queue_max_segments(q, CARM_MAX_REQ_SG);
+		blk_queue_max_hw_segments(q, CARM_MAX_REQ_SG);
+		blk_queue_max_phys_segments(q, CARM_MAX_REQ_SG);
 		blk_queue_segment_boundary(q, CARM_SG_BOUNDARY);
 
 		q->queuedata = port;
@@ -1563,13 +1567,15 @@ static int carm_init_shm(struct carm_host *host)
 
 static int carm_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 {
+	static unsigned int printed_version;
 	struct carm_host *host;
 	unsigned int pci_dac;
 	int rc;
 	struct request_queue *q;
 	unsigned int i;
 
-	printk_once(KERN_DEBUG DRV_NAME " version " DRV_VERSION "\n");
+	if (!printed_version++)
+		printk(KERN_DEBUG DRV_NAME " version " DRV_VERSION "\n");
 
 	rc = pci_enable_device(pdev);
 	if (rc)
@@ -1580,9 +1586,9 @@ static int carm_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_out;
 
 #ifdef IF_64BIT_DMA_IS_POSSIBLE /* grrrr... */
-	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
+	rc = pci_set_dma_mask(pdev, DMA_64BIT_MASK);
 	if (!rc) {
-		rc = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+		rc = pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK);
 		if (rc) {
 			printk(KERN_ERR DRV_NAME "(%s): consistent DMA mask failure\n",
 				pci_name(pdev));
@@ -1591,7 +1597,7 @@ static int carm_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 		pci_dac = 1;
 	} else {
 #endif
-		rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+		rc = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 		if (rc) {
 			printk(KERN_ERR DRV_NAME "(%s): DMA mask failure\n",
 				pci_name(pdev));

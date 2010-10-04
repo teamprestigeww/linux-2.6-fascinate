@@ -698,8 +698,8 @@ static void __devinit radeon_get_pllinfo(struct radeonfb_info *rinfo)
 found:
 	/*
 	 * Some methods fail to retrieve SCLK and MCLK values, we apply default
-	 * settings in this case (200Mhz). If that really happens often, we
-	 * could fetch from registers instead...
+	 * settings in this case (200Mhz). If that really happne often, we could
+	 * fetch from registers instead...
 	 */
 	if (rinfo->pll.mclk == 0)
 		rinfo->pll.mclk = 20000;
@@ -2099,7 +2099,7 @@ static ssize_t radeon_show_one_edid(char *buf, loff_t off, size_t count, const u
 }
 
 
-static ssize_t radeon_show_edid1(struct file *filp, struct kobject *kobj,
+static ssize_t radeon_show_edid1(struct kobject *kobj,
 				 struct bin_attribute *bin_attr,
 				 char *buf, loff_t off, size_t count)
 {
@@ -2112,7 +2112,7 @@ static ssize_t radeon_show_edid1(struct file *filp, struct kobject *kobj,
 }
 
 
-static ssize_t radeon_show_edid2(struct file *filp, struct kobject *kobj,
+static ssize_t radeon_show_edid2(struct kobject *kobj,
 				 struct bin_attribute *bin_attr,
 				 char *buf, loff_t off, size_t count)
 {

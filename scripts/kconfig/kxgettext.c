@@ -43,10 +43,6 @@ static char *escape(const char* text, char *bf, int len)
 			++text;
 			goto next;
 		}
-		else if (*text == '\\') {
-			*bfp++ = '\\';
-			len--;
-		}
 		*bfp++ = *text++;
 next:
 		--len;
@@ -166,7 +162,7 @@ static int message__add(const char *msg, char *option, char *file, int lineno)
 	return rc;
 }
 
-static void menu_build_message_list(struct menu *menu)
+void menu_build_message_list(struct menu *menu)
 {
 	struct menu *child;
 
@@ -211,7 +207,7 @@ static void message__print_gettext_msgid_msgstr(struct message *self)
 	       "msgstr \"\"\n", self->msg);
 }
 
-static void menu__xgettext(void)
+void menu__xgettext(void)
 {
 	struct message *m = message__list;
 

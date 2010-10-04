@@ -13,21 +13,13 @@
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/errno.h>
-#include <linux/slab.h>
 #include <linux/string.h>
 #include "base.h"
 
 static struct device *next_device(struct klist_iter *i)
 {
 	struct klist_node *n = klist_next(i);
-	struct device *dev = NULL;
-	struct device_private *dev_prv;
-
-	if (n) {
-		dev_prv = to_device_private_driver(n);
-		dev = dev_prv->device;
-	}
-	return dev;
+	return n ? container_of(n, struct device, knode_driver) : NULL;
 }
 
 /**
@@ -50,7 +42,7 @@ int driver_for_each_device(struct device_driver *drv, struct device *start,
 		return -EINVAL;
 
 	klist_iter_init_node(&drv->p->klist_devices, &i,
-			     start ? &start->p->knode_driver : NULL);
+			     start ? &start->knode_driver : NULL);
 	while ((dev = next_device(&i)) && !error)
 		error = fn(dev, data);
 	klist_iter_exit(&i);
@@ -84,7 +76,7 @@ struct device *driver_find_device(struct device_driver *drv,
 		return NULL;
 
 	klist_iter_init_node(&drv->p->klist_devices, &i,
-			     (start ? &start->p->knode_driver : NULL));
+			     (start ? &start->knode_driver : NULL));
 	while ((dev = next_device(&i)))
 		if (match(dev, data) && get_device(dev))
 			break;
@@ -99,7 +91,7 @@ EXPORT_SYMBOL_GPL(driver_find_device);
  * @attr: driver attribute descriptor.
  */
 int driver_create_file(struct device_driver *drv,
-		       const struct driver_attribute *attr)
+		       struct driver_attribute *attr)
 {
 	int error;
 	if (drv)
@@ -116,7 +108,7 @@ EXPORT_SYMBOL_GPL(driver_create_file);
  * @attr: driver attribute descriptor.
  */
 void driver_remove_file(struct device_driver *drv,
-			const struct driver_attribute *attr)
+			struct driver_attribute *attr)
 {
 	if (drv)
 		sysfs_remove_file(&drv->p->kobj, &attr->attr);
@@ -182,7 +174,7 @@ void put_driver(struct device_driver *drv)
 EXPORT_SYMBOL_GPL(put_driver);
 
 static int driver_add_groups(struct device_driver *drv,
-			     const struct attribute_group **groups)
+			     struct attribute_group **groups)
 {
 	int error = 0;
 	int i;
@@ -202,7 +194,7 @@ static int driver_add_groups(struct device_driver *drv,
 }
 
 static void driver_remove_groups(struct device_driver *drv,
-				 const struct attribute_group **groups)
+				 struct attribute_group **groups)
 {
 	int i;
 
@@ -224,8 +216,6 @@ int driver_register(struct device_driver *drv)
 	int ret;
 	struct device_driver *other;
 
-	BUG_ON(!drv->bus->p);
-
 	if ((drv->bus->probe && drv->probe) ||
 	    (drv->bus->remove && drv->remove) ||
 	    (drv->bus->shutdown && drv->shutdown))
@@ -237,7 +227,7 @@ int driver_register(struct device_driver *drv)
 		put_driver(other);
 		printk(KERN_ERR "Error: Driver '%s' is already registered, "
 			"aborting...\n", drv->name);
-		return -EBUSY;
+		return -EEXIST;
 	}
 
 	ret = bus_add_driver(drv);
@@ -258,10 +248,6 @@ EXPORT_SYMBOL_GPL(driver_register);
  */
 void driver_unregister(struct device_driver *drv)
 {
-	if (!drv || !drv->p) {
-		WARN(1, "Unexpected driver unregister!\n");
-		return;
-	}
 	driver_remove_groups(drv, drv->groups);
 	bus_remove_driver(drv);
 }

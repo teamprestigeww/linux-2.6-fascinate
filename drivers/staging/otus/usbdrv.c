@@ -38,9 +38,10 @@
 
 #include "linux/netlink.h"
 #include "linux/rtnetlink.h"
-#include "linux/slab.h"
 
+#if WIRELESS_EXT > 12
 #include <net/iw_handler.h>
+#endif
 
 #ifdef ZM_HOSTAPD_SUPPORT
 #include "athr_common.h"
@@ -112,7 +113,10 @@ extern u8_t zfLnxCreateThread(zdev_t *dev);
 
 /* Definition of Wireless Extension */
 
-/* wireless extension helper functions */
+#if WIRELESS_EXT > 12
+#include <net/iw_handler.h>
+#endif
+//wireless extension helper functions
 extern int usbdrv_ioctl_setessid(struct net_device *dev, struct iw_point *erq);
 extern int usbdrv_ioctl_setrts(struct net_device *dev, struct iw_param *rrq);
 /* Wireless Extension Handler functions */
@@ -199,6 +203,7 @@ struct iw_priv_args usbdrv_private_args[] = {
 //    { SIOCIWFIRSTPRIV + 0xC, 0, IW_PRIV_TYPE_CHAR | 12, "get_mac_mode" },
 };
 
+#if WIRELESS_EXT > 12
 static iw_handler usbdrvwext_handler[] = {
     (iw_handler) NULL,                              /* SIOCSIWCOMMIT */
     (iw_handler) usbdrvwext_giwname,                /* SIOCGIWNAME */
@@ -224,8 +229,13 @@ static iw_handler usbdrvwext_handler[] = {
     (iw_handler) usbdrvwext_giwap,                  /* SIOCGIWAP */
     (iw_handler) NULL,              /* -- hole -- */
     (iw_handler) usbdrvwext_iwaplist,               /* SIOCGIWAPLIST */
+#if WIRELESS_EXT > 13
     (iw_handler) usbdrvwext_siwscan,                /* SIOCSIWSCAN */
     (iw_handler) usbdrvwext_giwscan,                /* SIOCGIWSCAN */
+#else /* WIRELESS_EXT > 13 */
+    (iw_handler) NULL, /* null */                   /* SIOCSIWSCAN */
+    (iw_handler) NULL, /* null */                   /* SIOCGIWSCAN */
+#endif /* WIRELESS_EXT > 13 */
     (iw_handler) usbdrvwext_siwessid,               /* SIOCSIWESSID */
     (iw_handler) usbdrvwext_giwessid,               /* SIOCGIWESSID */
 
@@ -281,10 +291,11 @@ static struct iw_handler_def p80211wext_handler_def = {
     .private = (iw_handler *) usbdrv_private_handler,
     .private_args = (struct iw_priv_args *) usbdrv_private_args
 };
+#endif
 
 /* WDS */
-/* struct zsWdsStruct wds[ZM_WDS_PORT_NUMBER]; */
-/* void zfInitWdsStruct(void);	*/
+//struct zsWdsStruct wds[ZM_WDS_PORT_NUMBER];
+//void zfInitWdsStruct(void);
 
 /* VAP */
 struct zsVapStruct vap[ZM_VAP_PORT_NUMBER];
@@ -315,11 +326,13 @@ irqreturn_t usbdrv_intr(int irq, void *dev_inst, struct pt_regs *regs)
         return IRQ_NONE;
 
     /* the device is closed, don't continue or else bad things may happen. */
-    if (!netif_running(dev))
+    if (!netif_running(dev)) {
         return IRQ_NONE;
+    }
 
-    if (macp->driver_isolated)
+    if (macp->driver_isolated) {
         return IRQ_NONE;
+    }
 
 #if (WLAN_HOSTIF == WLAN_PCI)
     //zfiIsrPci(dev);
@@ -339,19 +352,16 @@ int usbdrv_open(struct net_device *dev)
 
     printk("Enter open()\n");
 
-/*
- * #ifndef CONFIG_SMP
- *   read_lock(&(macp->isolate_lock));
- * #endif
- */
+//#ifndef CONFIG_SMP
+//    read_lock(&(macp->isolate_lock));
+//#endif
     if (macp->driver_isolated) {
         rc = -EBUSY;
         goto exit;
     }
 
     size = zfiGlobalDataSize(dev);
-    mem = kmalloc(size, GFP_KERNEL);
-    if (mem == NULL)
+    if ((mem = kmalloc(size, GFP_KERNEL)) == NULL)
     {
         rc = -EBUSY;
         goto exit;
@@ -395,11 +405,11 @@ int usbdrv_open(struct net_device *dev)
     dev->dev_addr[4] = addr[4];
     dev->dev_addr[5] = addr[5];
 #endif
-    /* zfwMacAddressNotify() will be called to setup dev->dev_addr[] */
+    //zfwMacAddressNotify() will be called to setup dev->dev_addr[]
 
     zfLnxCreateThread(dev);
 
-    mod_timer(&(macp->hbTimer10ms), jiffies + (1*HZ)/100);   /* 10 ms */
+    mod_timer(&(macp->hbTimer10ms), jiffies + (1*HZ)/100);   //10 ms
 
     netif_carrier_on(dev);
 
@@ -427,15 +437,15 @@ int usbdrv_open(struct net_device *dev)
 
     #if ZM_SHARE_AUTH == 1
     zfiWlanSetAuthenticationMode(dev, 1);
-    #endif /* #if ZM_SHARE_AUTH == 1 */
-  #endif /* #if ZM_WEP_MOME == 1 */
+    #endif //#if ZM_SHARE_AUTH == 1
+  #endif //#if ZM_WEP_MOME == 1
 
 #elif ZM_PIBSS_MODE == 1
     zfiWlanSetWlanMode(dev, ZM_MODE_PSEUDO);
 #else
     zfiWlanSetWlanMode(dev, ZM_MODE_INFRASTRUCTURE);
 #endif
-    /* zfiWlanSetChannel(dev, ZM_CHANNEL, FALSE); */
+    //zfiWlanSetChannel(dev, ZM_CHANNEL, FALSE);
     zfiWlanSetFrequency(dev, 2462000, FALSE);
     zfiWlanSetRtsThreshold(dev, 32767);
     zfiWlanSetFragThreshold(dev, 0);
@@ -649,7 +659,7 @@ int usbdrv_xmit_frame(struct sk_buff *skb, struct net_device *dev)
         netif_stop_queue(dev);
     }
 
-    return NETDEV_TX_OK;
+    return 0;
 }
 
 
@@ -699,8 +709,7 @@ void usbdrv_remove1(struct pci_dev *pcid)
     struct net_device *dev;
     struct usbdrv_private *macp;
 
-    dev = (struct net_device *)pci_get_drvdata(pcid);
-    if (!dev)
+    if (!(dev = (struct net_device *) pci_get_drvdata(pcid)))
         return;
 
     macp = dev->ml_priv;
@@ -723,7 +732,7 @@ void zfLnxInitVapStruct(void)
 {
     u16_t i;
 
-    for (i = 0; i < ZM_VAP_PORT_NUMBER; i++)
+    for (i=0; i<ZM_VAP_PORT_NUMBER; i++)
     {
         vap[i].dev = NULL;
         vap[i].openFlag = 0;
@@ -787,13 +796,13 @@ int zfLnxVapXmitFrame(struct sk_buff *skb, struct net_device *dev)
     if (vapId >= ZM_VAP_PORT_NUMBER)
     {
         dev_kfree_skb_irq(skb);
-        return NETDEV_TX_OK;
+        return 0;
     }
 #if 1
     if (vap[vapId].openFlag == 0)
     {
         dev_kfree_skb_irq(skb);
-        return NETDEV_TX_OK;
+        return 0;
     }
 #endif
 
@@ -810,29 +819,14 @@ int zfLnxVapXmitFrame(struct sk_buff *skb, struct net_device *dev)
         netif_stop_queue(dev);
     }
 
-    return NETDEV_TX_OK;
+    return 0;
 }
-
-static const struct net_device_ops vap_netdev_ops = {
-	.ndo_open		= zfLnxVapOpen,
-	.ndo_stop		= zfLnxVapClose,
-	.ndo_start_xmit		= zfLnxVapXmitFrame,
-	.ndo_get_stats		= usbdrv_get_stats,
-	.ndo_change_mtu		= usbdrv_change_mtu,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_mac_address	= eth_mac_addr,
-#ifdef ZM_HOSTAPD_SUPPORT
-	.ndo_do_ioctl		= usbdrv_ioctl,
-#else
-	.ndo_do_ioctl		= NULL,
-#endif
-};
 
 int zfLnxRegisterVapDev(struct net_device* parentDev, u16_t vapId)
 {
     /* Allocate net device structure */
     vap[vapId].dev = alloc_etherdev(0);
-    printk("Register vap dev=%p\n", vap[vapId].dev);
+    printk("Register vap dev=%x\n", (u32_t)vap[vapId].dev);
 
     if(vap[vapId].dev == NULL) {
         printk("alloc_etherdev fail\n");
@@ -852,7 +846,16 @@ int zfLnxRegisterVapDev(struct net_device* parentDev, u16_t vapId)
     vap[vapId].dev->ml_priv = parentDev->ml_priv;
 
     //dev->hard_start_xmit = &zd1212_wds_xmit_frame;
-    vap[vapId].dev->netdev_ops = &vap_netdev_ops;
+    vap[vapId].dev->hard_start_xmit = &zfLnxVapXmitFrame;
+    vap[vapId].dev->open = &zfLnxVapOpen;
+    vap[vapId].dev->stop = &zfLnxVapClose;
+    vap[vapId].dev->get_stats = &usbdrv_get_stats;
+    vap[vapId].dev->change_mtu = &usbdrv_change_mtu;
+#ifdef ZM_HOSTAPD_SUPPORT
+    vap[vapId].dev->do_ioctl = usbdrv_ioctl;
+#else
+    vap[vapId].dev->do_ioctl = NULL;
+#endif
     vap[vapId].dev->destructor = free_netdev;
 
     vap[vapId].dev->tx_queue_len = 0;
@@ -886,7 +889,7 @@ int zfLnxUnregisterVapDev(struct net_device* parentDev, u16_t vapId)
     printk("Unregister VAP dev : %s\n", vap[vapId].dev->name);
 
     if(vap[vapId].dev != NULL) {
-        printk("Unregister vap dev=%p\n", vap[vapId].dev);
+        printk("Unregister vap dev=%x\n", (u32_t)vap[vapId].dev);
         //
         //unregister_netdevice(wds[wdsId].dev);
         unregister_netdev(vap[vapId].dev);
@@ -933,26 +936,30 @@ int zfLnxAllocAllUrbs(struct usbdrv_private *macp)
     for (i = 0; i < iface_desc->desc.bNumEndpoints; ++i)
     {
         endpoint = &iface_desc->endpoint[i].desc;
-	 if (usb_endpoint_is_bulk_in(endpoint))
+        if ((endpoint->bEndpointAddress & 0x80) &&
+            ((endpoint->bmAttributes & 3) == 0x02))
         {
             /* we found a bulk in endpoint */
             printk(KERN_ERR "bulk in: wMaxPacketSize = %x\n", le16_to_cpu(endpoint->wMaxPacketSize));
         }
 
-	 if (usb_endpoint_is_bulk_out(endpoint))
+        if (((endpoint->bEndpointAddress & 0x80) == 0x00) &&
+            ((endpoint->bmAttributes & 3) == 0x02))
         {
             /* we found a bulk out endpoint */
             printk(KERN_ERR "bulk out: wMaxPacketSize = %x\n", le16_to_cpu(endpoint->wMaxPacketSize));
         }
 
-	 if (usb_endpoint_is_int_in(endpoint))
+        if ((endpoint->bEndpointAddress & 0x80) &&
+            ((endpoint->bmAttributes & 3) == 0x03))
         {
             /* we found a interrupt in endpoint */
             printk(KERN_ERR "interrupt in: wMaxPacketSize = %x\n", le16_to_cpu(endpoint->wMaxPacketSize));
             printk(KERN_ERR "interrupt in: int_interval = %d\n", endpoint->bInterval);
         }
 
-	 if (usb_endpoint_is_int_out(endpoint))
+        if (((endpoint->bEndpointAddress & 0x80) == 0x00) &&
+            ((endpoint->bmAttributes & 3) == 0x03))
         {
             /* we found a interrupt out endpoint */
             printk(KERN_ERR "interrupt out: wMaxPacketSize = %x\n", le16_to_cpu(endpoint->wMaxPacketSize));
@@ -1065,18 +1072,6 @@ void zfLnxUnlinkAllUrbs(struct usbdrv_private *macp)
     usb_unlink_urb(macp->RegInUrb);
 }
 
-static const struct net_device_ops otus_netdev_ops = {
-	.ndo_open		= usbdrv_open,
-	.ndo_stop		= usbdrv_close,
-	.ndo_start_xmit		= usbdrv_xmit_frame,
-	.ndo_change_mtu		= usbdrv_change_mtu,
-	.ndo_get_stats		= usbdrv_get_stats,
-	.ndo_set_multicast_list	= usbdrv_set_multi,
-	.ndo_set_mac_address	= usbdrv_set_mac,
-	.ndo_do_ioctl		= usbdrv_ioctl,
-	.ndo_validate_addr	= eth_validate_addr,
-};
-
 u8_t zfLnxInitSetup(struct net_device *dev, struct usbdrv_private *macp)
 {
     //unsigned char addr[6];
@@ -1097,9 +1092,18 @@ u8_t zfLnxInitSetup(struct net_device *dev, struct usbdrv_private *macp)
     dev->dev_addr[4] = addr[4];
     dev->dev_addr[5] = addr[5];
 #endif
+#if WIRELESS_EXT > 12
     dev->wireless_handlers = (struct iw_handler_def *)&p80211wext_handler_def;
+#endif
 
-    dev->netdev_ops = &otus_netdev_ops;
+    dev->open = usbdrv_open;
+    dev->hard_start_xmit = usbdrv_xmit_frame;
+    dev->stop = usbdrv_close;
+    dev->change_mtu = &usbdrv_change_mtu;
+    dev->get_stats = usbdrv_get_stats;
+    dev->set_multicast_list = usbdrv_set_multi;
+    dev->set_mac_address = usbdrv_set_mac;
+    dev->do_ioctl = usbdrv_ioctl;
 
     dev->flags |= IFF_MULTICAST;
 
@@ -1131,7 +1135,8 @@ u8_t zfLnxClearStructs(struct net_device *dev)
 
     printk(KERN_ERR "TxQCnt: %d\n", TxQCnt);
 
-    for (ii = 0; ii < TxQCnt; ii++) {
+    for(ii = 0; ii < TxQCnt; ii++)
+    {
         UsbTxQ_t *TxQ = zfLnxGetUsbTxBuffer(dev);
 
         printk(KERN_ERR "dev_kfree_skb_any\n");

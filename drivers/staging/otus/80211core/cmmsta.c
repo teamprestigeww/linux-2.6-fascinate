@@ -216,7 +216,7 @@ void zfStaConnectFail(zdev_t* dev, u16_t reason, u16_t* bssid, u8_t weight)
     /* Change internal state */
     zfChangeAdapterState(dev, ZM_STA_STATE_DISCONNECT);
 
-    /* Improve WEP/TKIP performance with HT AP, detail information please look bug#32495 */
+    /* Improve WEP/TKIP performace with HT AP, detail information please look bug#32495 */
     //zfHpSetTTSIFSTime(dev, 0x8);
 
     /* Notify wrapper of connection status changes */
@@ -602,8 +602,7 @@ void zfStaProtErpMonitor(zdev_t* dev, zbuf_t* buf)
 
         if (zfRxBufferEqualToStr(dev, buf, bssid, ZM_WLAN_HEADER_A2_OFFSET, 6))
         {
-            offset = zfFindElement(dev, buf, ZM_WLAN_EID_ERP);
-            if (offset != 0xffff)
+            if ( (offset=zfFindElement(dev, buf, ZM_WLAN_EID_ERP)) != 0xffff )
             {
                 erp = zmw_rx_buf_readb(dev, buf, offset+2);
 
@@ -629,8 +628,7 @@ void zfStaProtErpMonitor(zdev_t* dev, zbuf_t* buf)
         }
 		//Check the existence of Non-N AP
 		//Follow the check the "pBssInfo->EnableHT"
-			offset = zfFindElement(dev, buf, ZM_WLAN_EID_HT_CAPABILITY);
-			if (offset != 0xffff)
+			if ((offset = zfFindElement(dev, buf, ZM_WLAN_EID_HT_CAPABILITY)) != 0xffff)
 			{}
 			else if ((offset = zfFindElement(dev, buf, ZM_WLAN_PREN2_EID_HTCAPABILITY)) != 0xffff)
 			{}
@@ -660,11 +658,9 @@ void zfStaUpdateWmeParameter(zdev_t* dev, zbuf_t* buf)
     if (wd->sta.wmeConnected != 0)
     {
         /* Find WME parameter element */
-        offset = zfFindWifiElement(dev, buf, 2, 1);
-        if (offset != 0xffff)
+        if ((offset = zfFindWifiElement(dev, buf, 2, 1)) != 0xffff)
         {
-            len = zmw_rx_buf_readb(dev, buf, offset+1);
-            if (len >= 7)
+            if ((len = zmw_rx_buf_readb(dev, buf, offset+1)) >= 7)
             {
                 rxWmeParameterSetCount=zmw_rx_buf_readb(dev, buf, offset+8);
                 if (rxWmeParameterSetCount != wd->sta.wmeParameterSetCount)
@@ -728,9 +724,6 @@ void zfStaUpdateWmeParameter(zdev_t* dev, zbuf_t* buf)
 /* process 802.11h Dynamic Frequency Selection */
 void zfStaUpdateDot11HDFS(zdev_t* dev, zbuf_t* buf)
 {
-    //u8_t    length, channel, is5G;
-    u16_t   offset;
-
     zmw_get_wlan_dev(dev);
 
     /*
@@ -743,10 +736,11 @@ void zfStaUpdateDot11HDFS(zdev_t* dev, zbuf_t* buf)
     |Value |   37     |  3   |       0 or 1      |unsigned integer  |unsigned integer    |
     +------+----------+------+-------------------+------------------+--------------------+
     */
+    //u8_t    length, channel, is5G;
+    u16_t   offset;
 
     /* get EID(Channel Switch Announcement) */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_CHANNEL_SWITCH_ANNOUNCE);
-    if (offset == 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_CHANNEL_SWITCH_ANNOUNCE)) == 0xffff )
     {
         //zm_debug_msg0("EID(Channel Switch Announcement) not found");
         return;
@@ -1221,8 +1215,7 @@ void zfStaSendBeacon(zdev_t* dev)
     //zm_debug_msg0("\n");
 
     /* TBD : Maximum size of beacon */
-    buf = zfwBufAllocate(dev, 1024);
-    if (buf == NULL)
+    if ((buf = zfwBufAllocate(dev, 1024)) == NULL)
     {
         zm_debug_msg0("Allocate beacon buffer failed");
         return;
@@ -1376,8 +1369,7 @@ struct zsBssInfo* zfStaFindBssInfo(zdev_t* dev, zbuf_t* buf, struct zsWlanProbeR
 
     zmw_get_wlan_dev(dev);
 
-    pBssInfo = wd->sta.bssList.head;
-    if (pBssInfo == NULL)
+    if ((pBssInfo = wd->sta.bssList.head) == NULL)
     {
         return NULL;
     }
@@ -1427,10 +1419,8 @@ struct zsBssInfo* zfStaFindBssInfo(zdev_t* dev, zbuf_t* buf, struct zsWlanProbeR
         /* Check channel */
         /* Add check channel to solve the bug #31222 */
         if (isMatched) {
-            offset = zfFindElement(dev, buf, ZM_WLAN_EID_DS);
-            if (offset != 0xffff) {
-                length = zmw_rx_buf_readb(dev, buf, offset+1);
-                if (length == 1) {
+            if ((offset = zfFindElement(dev, buf, ZM_WLAN_EID_DS)) != 0xffff) {
+                if ((length = zmw_rx_buf_readb(dev, buf, offset+1)) == 1) {
                     channel = zmw_rx_buf_readb(dev, buf, offset+2);
                     if (zfHpIsAllowedChannel(dev, zfChNumToFreq(dev, channel, 0)) == 0) {
                         frequency = 0;
@@ -1482,8 +1472,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     }
 
     /* get SSID */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_SSID);
-    if (offset == 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_SSID)) == 0xffff )
     {
         zm_debug_msg0("EID(SSID) not found");
         goto zlError;
@@ -1516,8 +1505,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     zfCopyFromRxBuffer(dev, buf, pBssInfo->ssid, offset, length+2);
 
     /* get DS parameter */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_DS);
-    if (offset != 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_DS)) != 0xffff )
     {
         length = zmw_rx_buf_readb(dev, buf, offset+1);
         if ( length != 1 )
@@ -1601,8 +1589,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     pBssInfo->frameBodysize = accumulateLen;
 
     /* get supported rates */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_SUPPORT_RATE);
-    if (offset == 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_SUPPORT_RATE)) == 0xffff )
     {
         zm_debug_msg0("EID(supported rates) not found");
         goto zlError;
@@ -1619,8 +1606,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
 
 
     /* get Country information */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_COUNTRY);
-    if (offset != 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_COUNTRY)) != 0xffff )
     {
         length = zmw_rx_buf_readb(dev, buf, offset+1);
         if (length > ZM_MAX_COUNTRY_INFO_SIZE)
@@ -1638,15 +1624,13 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     }
 
     /* get ERP information */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_ERP);
-    if (offset != 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_ERP)) != 0xffff )
     {
         pBssInfo->erp = zmw_rx_buf_readb(dev, buf, offset+2);
     }
 
     /* get extended supported rates */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_EXTENDED_RATE);
-    if (offset != 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_EXTENDED_RATE)) != 0xffff )
     {
         length = zmw_rx_buf_readb(dev, buf, offset+1);
         if (length > ZM_MAX_SUPP_RATES_IE_SIZE)
@@ -1663,8 +1647,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     }
 
     /* get WPA IE */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_WPA_IE);
-    if (offset != 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_WPA_IE)) != 0xffff )
     {
         length = zmw_rx_buf_readb(dev, buf, offset+1);
         if (length > ZM_MAX_IE_SIZE)
@@ -1680,8 +1663,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     }
 
     /* get WPS IE */
-    offset = zfFindWifiElement(dev, buf, 4, 0xff);
-    if (offset != 0xffff)
+    if ((offset = zfFindWifiElement(dev, buf, 4, 0xff)) != 0xffff)
     {
         length = zmw_rx_buf_readb(dev, buf, offset+1);
         if (length > ZM_MAX_WPS_IE_SIZE )
@@ -1696,22 +1678,19 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     }
 
     /* get SuperG IE */
-    offset = zfFindSuperGElement(dev, buf, ZM_WLAN_EID_VENDOR_PRIVATE);
-    if (offset != 0xffff)
+    if ((offset = zfFindSuperGElement(dev, buf, ZM_WLAN_EID_VENDOR_PRIVATE)) != 0xffff)
     {
         pBssInfo->apCap |= ZM_SuperG_AP;
     }
 
     /* get XR IE */
-    offset = zfFindXRElement(dev, buf, ZM_WLAN_EID_VENDOR_PRIVATE);
-    if (offset != 0xffff)
+    if ((offset = zfFindXRElement(dev, buf, ZM_WLAN_EID_VENDOR_PRIVATE)) != 0xffff)
     {
         pBssInfo->apCap |= ZM_XR_AP;
     }
 
     /* get RSN IE */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_RSN_IE);
-    if (offset != 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_RSN_IE)) != 0xffff )
     {
         length = zmw_rx_buf_readb(dev, buf, offset+1);
         if (length > ZM_MAX_IE_SIZE)
@@ -1727,8 +1706,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     }
 #ifdef ZM_ENABLE_CENC
     /* get CENC IE */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_CENC_IE);
-    if (offset != 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_CENC_IE)) != 0xffff )
     {
         length = zmw_rx_buf_readb(dev, buf, offset+1);
         if (length > ZM_MAX_IE_SIZE )
@@ -1747,8 +1725,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     /* get WME Parameter IE, probe rsp may contain WME parameter element */
     //if ( wd->bQoSEnable )
     {
-        offset = zfFindWifiElement(dev, buf, 2, 1);
-        if (offset != 0xffff)
+        if ((offset = zfFindWifiElement(dev, buf, 2, 1)) != 0xffff)
         {
             apQosInfo = zmw_rx_buf_readb(dev, buf, offset+8) & 0x80;
             pBssInfo->wmeSupport = 1 | apQosInfo;
@@ -1764,8 +1741,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
         }
     }
     //CWYang(+)
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_HT_CAPABILITY);
-    if (offset != 0xffff)
+    if ((offset = zfFindElement(dev, buf, ZM_WLAN_EID_HT_CAPABILITY)) != 0xffff)
     {
         /* 11n AP */
         pBssInfo->EnableHT = 1;
@@ -1815,8 +1791,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
         pBssInfo->EnableHT = 0;
     }
     /* HT information */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_EXTENDED_HT_CAPABILITY);
-    if (offset != 0xffff)
+    if ((offset = zfFindElement(dev, buf, ZM_WLAN_EID_EXTENDED_HT_CAPABILITY)) != 0xffff)
     {
         /* atheros pre n */
         pBssInfo->extChOffset = zmw_rx_buf_readb(dev, buf, offset+2) & 0x03;
@@ -1872,8 +1847,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     }
 
     /* get Marvel Extended Capability */
-    offset = zfFindMarvelExtCap(dev, buf);
-    if (offset != 0xffff)
+    if ((offset = zfFindMarvelExtCap(dev, buf)) != 0xffff)
     {
         pBssInfo->marvelAp = 1;
     }
@@ -1883,8 +1857,7 @@ u8_t zfStaInitBssInfo(zdev_t* dev, zbuf_t* buf,
     }
 
     /* get ATIM window */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_IBSS);
-    if (offset != 0xffff )
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_IBSS)) != 0xffff )
     {
         pBssInfo->atimWindow = zmw_rx_buf_readh(dev, buf,offset+2);
     }
@@ -2043,8 +2016,7 @@ zlUpdateRssi:
     pBssInfo->tick = wd->tick;
 
     /* Update ERP information */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_ERP);
-    if (offset != 0xffff)
+    if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_ERP)) != 0xffff )
     {
         pBssInfo->erp = zmw_rx_buf_readb(dev, buf, offset+2);
     }
@@ -2143,8 +2115,7 @@ void zfStaProcessBeacon(zdev_t* dev, zbuf_t* buf, struct zsAdditionInfo* AddInfo
 #if 0
             else if ( wd->sta.oppositeCount == 0 )
             {   /* IBSS merge if SSID matched */
-                offset = zfFindElement(dev, buf, ZM_WLAN_EID_SSID);
-                if (offset != 0xffff)
+                if ( (offset = zfFindElement(dev, buf, ZM_WLAN_EID_SSID)) != 0xffff )
                 {
                     if ( (wd->sta.ssidLen == zmw_buf_readb(dev, buf, offset+1))&&
                          (zfRxBufferEqualToStr(dev, buf, wd->sta.ssid,
@@ -2438,8 +2409,7 @@ void zfStaProcessAsocRsp(zdev_t* dev, zbuf_t* buf)
             if ((wd->sta.wmeEnabled & ZM_STA_WME_ENABLE_BIT) != 0) //WME enabled
             {
                 /* Asoc rsp may contain WME parameter element */
-                offset = zfFindWifiElement(dev, buf, 2, 1);
-                if (offset != 0xffff)
+                if ((offset = zfFindWifiElement(dev, buf, 2, 1)) != 0xffff)
                 {
                     zm_debug_msg0("WME enable");
                     wd->sta.wmeConnected = 1;
@@ -2634,8 +2604,7 @@ void zfStaStoreAsocRspIe(zdev_t* dev, zbuf_t* buf)
         return;
     }
 
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_HT_CAPABILITY);
-    if (offset != 0xffff)
+    if ((offset = zfFindElement(dev, buf, ZM_WLAN_EID_HT_CAPABILITY)) != 0xffff)
     {
         /* atheros pre n */
         zm_debug_msg0("atheros pre n");
@@ -2675,8 +2644,7 @@ void zfStaStoreAsocRspIe(zdev_t* dev, zbuf_t* buf)
     asocBw40 = (u8_t)((wd->sta.ie.HtCap.HtCapInfo & HTCAP_SupChannelWidthSet) >> 1);
 
     /* HT information */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_EXTENDED_HT_CAPABILITY);
-    if (offset != 0xffff)
+    if ((offset = zfFindElement(dev, buf, ZM_WLAN_EID_EXTENDED_HT_CAPABILITY)) != 0xffff)
     {
         /* atheros pre n */
         zm_debug_msg0("atheros pre n HTINFO");
@@ -2839,15 +2807,14 @@ void zfStaProcessProbeReq(zdev_t* dev, zbuf_t* buf, u16_t* src)
     zmw_get_wlan_dev(dev);
 
     /* check mode : AP/IBSS */
-    if ((wd->wlanMode != ZM_MODE_AP) && (wd->wlanMode != ZM_MODE_IBSS))
+    if ((wd->wlanMode != ZM_MODE_AP) || (wd->wlanMode != ZM_MODE_IBSS))
     {
         zm_msg0_mm(ZM_LV_3, "Ignore probe req");
         return;
     }
 
     /* check SSID */
-    offset = zfFindElement(dev, buf, ZM_WLAN_EID_SSID);
-    if (offset == 0xffff)
+    if ((offset = zfFindElement(dev, buf, ZM_WLAN_EID_SSID)) == 0xffff)
     {
         zm_msg0_mm(ZM_LV_3, "probe req SSID not found");
         return;
@@ -3806,8 +3773,7 @@ static struct zsBssInfo* zfInfraFindAPToConnect(zdev_t* dev,
             }
 
             /* Skip if AP in blocking list */
-            ret = zfStaIsApInBlockingList(dev, pBssInfo->bssid);
-            if (ret == TRUE)
+            if ((ret = zfStaIsApInBlockingList(dev, pBssInfo->bssid)) == TRUE)
             {
                 zm_msg0_mm(ZM_LV_0, "Candidate AP in blocking List, skip if there's stilla choice!");
                 pNowBssInfo = pBssInfo;
@@ -4181,7 +4147,7 @@ void zfInfraConnectNetwork(zdev_t* dev)
             wd->sta.bIsSharedKey = 0;
         }
 
-        /* Improve WEP/TKIP performance with HT AP, detail information please look bug#32495 */
+        /* Improve WEP/TKIP performace with HT AP, detail information please look bug#32495 */
         /*
         if ( (pBssInfo->broadcomHTAp == 1)
              && (wd->sta.SWEncryptEnable != 0) )
@@ -4881,6 +4847,8 @@ u16_t zfStaAddIePowerCap(zdev_t* dev, zbuf_t* buf, u16_t offset)
     u8_t MaxTxPower;
     u8_t MinTxPower;
 
+    zmw_get_wlan_dev(dev);
+
     /* Element ID */
     zmw_tx_buf_writeb(dev, buf, offset++, ZM_WLAN_EID_POWER_CAPABILITY);
 
@@ -5040,8 +5008,7 @@ void zfSendNullData(zdev_t* dev, u8_t type)
 
     zmw_get_wlan_dev(dev);
 
-    buf = zfwBufAllocate(dev, 1024);
-    if (buf == NULL)
+    if ((buf = zfwBufAllocate(dev, 1024)) == NULL)
     {
         zm_msg0_mm(ZM_LV_0, "Alloc mm buf Fail!");
         return;
@@ -5090,9 +5057,8 @@ void zfSendNullData(zdev_t* dev, u8_t type)
     /*increase unicast frame counter*/
     wd->commTally.txUnicastFrm++;
 
-    err = zfHpSend(dev, header, hlen, NULL, 0, NULL, 0, buf, 0,
-            ZM_INTERNAL_ALLOC_BUF, 0, 0xff);
-    if (err != ZM_SUCCESS)
+    if ((err = zfHpSend(dev, header, hlen, NULL, 0, NULL, 0, buf, 0,
+            ZM_INTERNAL_ALLOC_BUF, 0, 0xff)) != ZM_SUCCESS)
     {
         goto zlError;
     }
@@ -5118,8 +5084,7 @@ void zfSendPSPoll(zdev_t* dev)
 
     zmw_get_wlan_dev(dev);
 
-    buf = zfwBufAllocate(dev, 1024);
-    if (buf == NULL)
+    if ((buf = zfwBufAllocate(dev, 1024)) == NULL)
     {
         zm_msg0_mm(ZM_LV_0, "Alloc mm buf Fail!");
         return;
@@ -5143,9 +5108,8 @@ void zfSendPSPoll(zdev_t* dev)
     //    goto zlError;
     //}
 
-    err = zfHpSend(dev, header, hlen, NULL, 0, NULL, 0, buf, 0,
-		   ZM_INTERNAL_ALLOC_BUF, 0, 0xff);
-    if (err != ZM_SUCCESS)
+    if ((err = zfHpSend(dev, header, hlen, NULL, 0, NULL, 0, buf, 0,
+            ZM_INTERNAL_ALLOC_BUF, 0, 0xff)) != ZM_SUCCESS)
     {
         goto zlError;
     }
@@ -5171,8 +5135,7 @@ void zfSendBA(zdev_t* dev, u16_t start_seq, u8_t *bitmap)
 
     zmw_get_wlan_dev(dev);
 
-    buf = zfwBufAllocate(dev, 1024);
-    if (buf == NULL)
+    if ((buf = zfwBufAllocate(dev, 1024)) == NULL)
     {
         zm_msg0_mm(ZM_LV_0, "Alloc mm buf Fail!");
         return;
@@ -5204,9 +5167,8 @@ void zfSendBA(zdev_t* dev, u16_t start_seq, u8_t *bitmap)
         offset++;
     }
 
-    err = zfHpSend(dev, header, hlen, NULL, 0, NULL, 0, buf, 0,
-		   ZM_INTERNAL_ALLOC_BUF, 0, 0xff);
-    if (err != ZM_SUCCESS)
+    if ((err = zfHpSend(dev, header, hlen, NULL, 0, NULL, 0, buf, 0,
+            ZM_INTERNAL_ALLOC_BUF, 0, 0xff)) != ZM_SUCCESS)
     {
         goto zlError;
     }
@@ -5313,6 +5275,7 @@ u16_t zfStaRxValidateFrame(zdev_t* dev, zbuf_t* buf)
     u8_t   da0;
     //u16_t  sa[3];
     u16_t  ret;
+    u16_t  i;
     //u8_t    sa0;
 
     zmw_get_wlan_dev(dev);
@@ -5773,6 +5736,8 @@ u16_t zfComputeBssInfoWeightValue(zdev_t *dev, u8_t isBMode, u8_t isHT, u8_t isH
 	u8_t  weightOfN20UpThr    = 30;
 	u8_t  weightOfN40BelowThr = 16;
 	u8_t  weightOfN40UpThr    = 32;
+
+    zmw_get_wlan_dev(dev);
 
     if( isBMode == 0 )
         return (signalStrength + weightOfB);    // pure b mode , do not add the weight value for this AP !

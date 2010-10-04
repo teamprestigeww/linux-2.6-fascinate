@@ -13,7 +13,6 @@
 #include <linux/interrupt.h>
 #include <linux/amba/bus.h>
 #include <linux/io.h>
-#include <linux/slab.h>
 
 #define RTC_DR		(0)
 #define RTC_MR		(4)
@@ -103,7 +102,7 @@ static const struct rtc_class_ops pl030_ops = {
 	.set_alarm	= pl030_set_alarm,
 };
 
-static int pl030_probe(struct amba_device *dev, struct amba_id *id)
+static int pl030_probe(struct amba_device *dev, void *id)
 {
 	struct pl030_rtc *rtc;
 	int ret;
@@ -118,7 +117,7 @@ static int pl030_probe(struct amba_device *dev, struct amba_id *id)
 		goto err_rtc;
 	}
 
-	rtc->base = ioremap(dev->res.start, resource_size(&dev->res));
+	rtc->base = ioremap(dev->res.start, SZ_4K);
 	if (!rtc->base) {
 		ret = -ENOMEM;
 		goto err_map;

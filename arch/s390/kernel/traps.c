@@ -18,7 +18,7 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/errno.h>
-#include <linux/tracehook.h>
+#include <linux/ptrace.h>
 #include <linux/timer.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
@@ -46,7 +46,13 @@
 
 pgm_check_handler_t *pgm_check_table[128];
 
-int show_unhandled_signals;
+#ifdef CONFIG_SYSCTL
+#ifdef CONFIG_PROCESS_DEBUG
+int sysctl_userprocess_debug = 1;
+#else
+int sysctl_userprocess_debug = 0;
+#endif
+#endif
 
 extern pgm_check_handler_t do_protection_exception;
 extern pgm_check_handler_t do_dat_exception;
@@ -55,11 +61,9 @@ extern pgm_check_handler_t do_asce_exception;
 #define stack_pointer ({ void **sp; asm("la %0,0(15)" : "=&d" (sp)); sp; })
 
 #ifndef CONFIG_64BIT
-#define LONG "%08lx "
 #define FOURLONG "%08lx %08lx %08lx %08lx\n"
 static int kstack_depth_to_print = 12;
 #else /* CONFIG_64BIT */
-#define LONG "%016lx "
 #define FOURLONG "%016lx %016lx %016lx %016lx\n"
 static int kstack_depth_to_print = 20;
 #endif /* CONFIG_64BIT */
@@ -151,7 +155,7 @@ void show_stack(struct task_struct *task, unsigned long *sp)
 			break;
 		if (i && ((i * sizeof (long) % 32) == 0))
 			printk("\n       ");
-		printk(LONG, *stack++);
+		printk("%p ", (void *)*stack++);
 	}
 	printk("\n");
 	show_trace(task, sp);
@@ -309,19 +313,18 @@ void die(const char * str, struct pt_regs * regs, long err)
 	do_exit(SIGSEGV);
 }
 
-static void inline report_user_fault(struct pt_regs *regs, long int_code,
-				     int signr)
+static void inline
+report_user_fault(long interruption_code, struct pt_regs *regs)
 {
-	if ((task_pid_nr(current) > 1) && !show_unhandled_signals)
+#if defined(CONFIG_SYSCTL)
+	if (!sysctl_userprocess_debug)
 		return;
-	if (!unhandled_signal(current, signr))
-		return;
-	if (!printk_ratelimit())
-		return;
-	printk("User process fault: interruption code 0x%lX ", int_code);
-	print_vma_addr("in ", regs->psw.addr & PSW_ADDR_INSN);
-	printk("\n");
+#endif
+#if defined(CONFIG_SYSCTL) || defined(CONFIG_PROCESS_DEBUG)
+	printk("User process fault: interruption code 0x%lX\n",
+	       interruption_code);
 	show_regs(regs);
+#endif
 }
 
 int is_valid_bugaddr(unsigned long addr)
@@ -349,7 +352,7 @@ static void __kprobes inline do_trap(long interruption_code, int signr,
 
                 tsk->thread.trap_no = interruption_code & 0xffff;
 		force_sig_info(signr, info, tsk);
-		report_user_fault(regs, interruption_code, signr);
+		report_user_fault(interruption_code, regs);
         } else {
                 const struct exception_table_entry *fixup;
                 fixup = search_exception_tables(regs->psw.addr & PSW_ADDR_INSN);
@@ -377,7 +380,7 @@ void __kprobes do_single_step(struct pt_regs *regs)
 					SIGTRAP) == NOTIFY_STOP){
 		return;
 	}
-	if (tracehook_consider_fatal_signal(current, SIGTRAP))
+	if ((current->ptrace & PT_PTRACED) != 0)
 		force_sig(SIGTRAP, current);
 }
 
@@ -385,8 +388,8 @@ static void default_trap_handler(struct pt_regs * regs, long interruption_code)
 {
         if (regs->psw.mask & PSW_MASK_PSTATE) {
 		local_irq_enable();
-		report_user_fault(regs, interruption_code, SIGSEGV);
 		do_exit(SIGSEGV);
+		report_user_fault(interruption_code, regs);
 	} else
 		die("Unknown program exception", regs, interruption_code);
 }
@@ -478,7 +481,7 @@ static void illegal_op(struct pt_regs * regs, long interruption_code)
 		if (get_user(*((__u16 *) opcode), (__u16 __user *) location))
 			return;
 		if (*((__u16 *) opcode) == S390_BREAKPOINT_U16) {
-			if (tracehook_consider_fatal_signal(current, SIGTRAP))
+			if (current->ptrace & PT_PTRACED)
 				force_sig(SIGTRAP, current);
 			else
 				signal = SIGILL;

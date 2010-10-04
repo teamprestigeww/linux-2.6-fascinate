@@ -22,14 +22,6 @@
 #define MPIC_GREG_FEATURE_1		0x00010
 #define MPIC_GREG_GLOBAL_CONF_0		0x00020
 #define		MPIC_GREG_GCONF_RESET			0x80000000
-/* On the FSL mpic implementations the Mode field is expand to be
- * 2 bits wide:
- *	0b00 = pass through (interrupts routed to IRQ0)
- *	0b01 = Mixed mode
- *	0b10 = reserved
- *	0b11 = External proxy / coreint
- */
-#define		MPIC_GREG_GCONF_COREINT			0x60000000
 #define		MPIC_GREG_GCONF_8259_PTHROU_DIS		0x20000000
 #define		MPIC_GREG_GCONF_NO_BIAS			0x10000000
 #define		MPIC_GREG_GCONF_BASE_MASK		0x000fffff
@@ -289,7 +281,7 @@ struct mpic
 #ifdef CONFIG_MPIC_U3_HT_IRQS
 	/* The fixup table */
 	struct mpic_irq_fixup	*fixups;
-	raw_spinlock_t	fixup_lock;
+	spinlock_t		fixup_lock;
 #endif
 
 	/* Register access method */
@@ -365,8 +357,6 @@ struct mpic
 #define MPIC_BROKEN_FRR_NIRQS		0x00000800
 /* Destination only supports a single CPU at a time */
 #define MPIC_SINGLE_DEST_CPU		0x00001000
-/* Enable CoreInt delivery of interrupts */
-#define MPIC_ENABLE_COREINT		0x00002000
 
 /* MPIC HW modification ID */
 #define MPIC_REGSET_MASK		0xf0000000
@@ -463,6 +453,9 @@ extern void mpic_cpu_set_priority(int prio);
 /* Request IPIs on primary mpic */
 extern void mpic_request_ipis(void);
 
+/* Send an IPI (non offseted number 0..3) */
+extern void mpic_send_ipi(unsigned int ipi_no, unsigned int cpu_mask);
+
 /* Send a message (IPI) to a given target (cpu number or MSG_*) */
 void smp_mpic_message_pass(int target, int msg);
 
@@ -477,8 +470,6 @@ extern void mpic_end_irq(unsigned int irq);
 extern unsigned int mpic_get_one_irq(struct mpic *mpic);
 /* This one gets from the primary mpic */
 extern unsigned int mpic_get_irq(void);
-/* This one gets from the primary mpic via CoreInt*/
-extern unsigned int mpic_get_coreint_irq(void);
 /* Fetch Machine Check interrupt from primary mpic */
 extern unsigned int mpic_get_mcirq(void);
 

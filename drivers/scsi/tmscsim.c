@@ -233,7 +233,6 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/spinlock.h>
-#include <linux/slab.h>
 #include <asm/io.h>
 
 #include <scsi/scsi.h>

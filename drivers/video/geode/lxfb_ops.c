@@ -13,7 +13,7 @@
 #include <linux/fb.h>
 #include <linux/uaccess.h>
 #include <linux/delay.h>
-#include <linux/cs5535.h>
+#include <asm/geode.h>
 
 #include "lxfb.h"
 
@@ -274,15 +274,7 @@ static void lx_graphics_enable(struct fb_info *info)
 		u32 msrlo, msrhi;
 
 		write_fp(par, FP_PT1, 0);
-		temp = FP_PT2_SCRC;
-
-		if (info->var.sync & FB_SYNC_HOR_HIGH_ACT)
-			temp |= FP_PT2_HSP;
-
-		if (info->var.sync & FB_SYNC_VERT_HIGH_ACT)
-			temp |= FP_PT2_VSP;
-
-		write_fp(par, FP_PT2, temp);
+		write_fp(par, FP_PT2, FP_PT2_SCRC);
 		write_fp(par, FP_DFC, FP_DFC_BC);
 
 		msrlo = MSR_LX_MSR_PADSEL_TFT_SEL_LOW;
@@ -315,7 +307,7 @@ unsigned int lx_framebuffer_size(void)
 {
 	unsigned int val;
 
-	if (!cs5535_has_vsa2()) {
+	if (!geode_has_vsa2()) {
 		uint32_t hi, lo;
 
 		/* The number of pages is (PMAX - PMIN)+1 */

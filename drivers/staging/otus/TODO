@@ -1,8 +1,9 @@
-I'm hesitant to add a TODO file here, as the wireless developers would
-really have people help them out on the "clean" ar9170 driver that can
-be found at the linux-wireless developer site.
+TODO:
+	- checkpatch.pl cleanups
+	- sparse cleanups
+	- port to in-kernel 80211 stack
+	- proper network developer maintainer
 
-This driver is unmaintained and its only purpose is as a
-source of documentation for developers working on ar9170 and carl9170.
-Once carl9170 gets 11n support and merged upstream then this driver
-can be removed.
+Please send any patches to Greg Kroah-Hartman <greg@kroah.com> and
+Luis Rodriguez <Luis.Rodriguez@Atheros.com> and the
+otus-devel@lists.madwifi-project.org mailing list.

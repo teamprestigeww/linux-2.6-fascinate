@@ -9,7 +9,6 @@
  * 2 of the Licence, or (at your option) any later version.
  */
 
-#include <linux/init.h>
 #include <linux/threads.h>
 #include <linux/linkage.h>
 #include <linux/serial_reg.h>
@@ -18,9 +17,9 @@
 #include <asm/pgtable.h>
 #include <asm/frame.inc>
 #include <asm/param.h>
-#include <unit/serial.h>
+#include <asm/unit/serial.h>
 
-	__HEAD
+	.section .text.head,"ax"
 
 ###############################################################################
 #

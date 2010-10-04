@@ -25,7 +25,6 @@
 #include <linux/moduleparam.h>
 #include <linux/err.h>
 #include <linux/mtd/mtd.h>
-#include <linux/slab.h>
 #include <linux/sched.h>
 
 #define PRINT_PREF KERN_INFO "mtd_pagetest: "
@@ -117,11 +116,11 @@ static int verify_eraseblock(int ebnum)
 	loff_t addr = ebnum * mtd->erasesize;
 
 	addr0 = 0;
-	for (i = 0; i < ebcnt && bbt[i]; ++i)
+	for (i = 0; bbt[i] && i < ebcnt; ++i)
 		addr0 += mtd->erasesize;
 
 	addrn = mtd->size;
-	for (i = 0; i < ebcnt && bbt[ebcnt - i - 1]; ++i)
+	for (i = 0; bbt[ebcnt - i - 1] && i < ebcnt; ++i)
 		addrn -= mtd->erasesize;
 
 	set_random_data(writebuf, mtd->erasesize);
@@ -220,11 +219,11 @@ static int crosstest(void)
 	memset(pp1, 0, pgsize * 4);
 
 	addr0 = 0;
-	for (i = 0; i < ebcnt && bbt[i]; ++i)
+	for (i = 0; bbt[i] && i < ebcnt; ++i)
 		addr0 += mtd->erasesize;
 
 	addrn = mtd->size;
-	for (i = 0; i < ebcnt && bbt[ebcnt - i - 1]; ++i)
+	for (i = 0; bbt[ebcnt - i - 1] && i < ebcnt; ++i)
 		addrn -= mtd->erasesize;
 
 	/* Read 2nd-to-last page to pp1 */
@@ -310,7 +309,7 @@ static int crosstest(void)
 static int erasecrosstest(void)
 {
 	size_t read = 0, written = 0;
-	int err = 0, i, ebnum, ebnum2;
+	int err = 0, i, ebnum, ok = 1, ebnum2;
 	loff_t addr0;
 	char *readbuf = twopages;
 
@@ -318,7 +317,7 @@ static int erasecrosstest(void)
 
 	ebnum = 0;
 	addr0 = 0;
-	for (i = 0; i < ebcnt && bbt[i]; ++i) {
+	for (i = 0; bbt[i] && i < ebcnt; ++i) {
 		addr0 += mtd->erasesize;
 		ebnum += 1;
 	}
@@ -357,7 +356,8 @@ static int erasecrosstest(void)
 	if (memcmp(writebuf, readbuf, pgsize)) {
 		printk(PRINT_PREF "verify failed!\n");
 		errcnt += 1;
-		return -1;
+		ok = 0;
+		return err;
 	}
 
 	printk(PRINT_PREF "erasing block %d\n", ebnum);
@@ -395,10 +395,10 @@ static int erasecrosstest(void)
 	if (memcmp(writebuf, readbuf, pgsize)) {
 		printk(PRINT_PREF "verify failed!\n");
 		errcnt += 1;
-		return -1;
+		ok = 0;
 	}
 
-	if (!err)
+	if (ok && !err)
 		printk(PRINT_PREF "erasecrosstest ok\n");
 	return err;
 }
@@ -413,7 +413,7 @@ static int erasetest(void)
 
 	ebnum = 0;
 	addr0 = 0;
-	for (i = 0; i < ebcnt && bbt[i]; ++i) {
+	for (i = 0; bbt[i] && i < ebcnt; ++i) {
 		addr0 += mtd->erasesize;
 		ebnum += 1;
 	}
@@ -479,11 +479,12 @@ static int scan_for_bad_eraseblocks(void)
 {
 	int i, bad = 0;
 
-	bbt = kzalloc(ebcnt, GFP_KERNEL);
+	bbt = kmalloc(ebcnt, GFP_KERNEL);
 	if (!bbt) {
 		printk(PRINT_PREF "error: cannot allocate memory\n");
 		return -ENOMEM;
 	}
+	memset(bbt, 0 , ebcnt);
 
 	printk(PRINT_PREF "scanning for bad eraseblocks\n");
 	for (i = 0; i < ebcnt; ++i) {
@@ -522,7 +523,6 @@ static int __init mtd_pagetest_init(void)
 	do_div(tmp, mtd->erasesize);
 	ebcnt = tmp;
 	pgcnt = mtd->erasesize / mtd->writesize;
-	pgsize = mtd->writesize;
 
 	printk(PRINT_PREF "MTD device size %llu, eraseblock size %u, "
 	       "page size %u, count of eraseblocks %u, pages per "

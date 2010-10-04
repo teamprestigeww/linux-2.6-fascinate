@@ -36,8 +36,6 @@
 struct mmu_gather {
 	struct mm_struct	*mm;
 	unsigned int		fullmm;
-	unsigned long		range_start;
-	unsigned long		range_end;
 };
 
 DECLARE_PER_CPU(struct mmu_gather, mmu_gathers);
@@ -65,19 +63,7 @@ tlb_finish_mmu(struct mmu_gather *tlb, unsigned long start, unsigned long end)
 	put_cpu_var(mmu_gathers);
 }
 
-/*
- * Memorize the range for the TLB flush.
- */
-static inline void
-tlb_remove_tlb_entry(struct mmu_gather *tlb, pte_t *ptep, unsigned long addr)
-{
-	if (!tlb->fullmm) {
-		if (addr < tlb->range_start)
-			tlb->range_start = addr;
-		if (addr + PAGE_SIZE > tlb->range_end)
-			tlb->range_end = addr + PAGE_SIZE;
-	}
-}
+#define tlb_remove_tlb_entry(tlb,ptep,address)	do { } while (0)
 
 /*
  * In the case of tlb vma handling, we can optimise these away in the
@@ -87,23 +73,20 @@ tlb_remove_tlb_entry(struct mmu_gather *tlb, pte_t *ptep, unsigned long addr)
 static inline void
 tlb_start_vma(struct mmu_gather *tlb, struct vm_area_struct *vma)
 {
-	if (!tlb->fullmm) {
+	if (!tlb->fullmm)
 		flush_cache_range(vma, vma->vm_start, vma->vm_end);
-		tlb->range_start = TASK_SIZE;
-		tlb->range_end = 0;
-	}
 }
 
 static inline void
 tlb_end_vma(struct mmu_gather *tlb, struct vm_area_struct *vma)
 {
-	if (!tlb->fullmm && tlb->range_end > 0)
-		flush_tlb_range(vma, tlb->range_start, tlb->range_end);
+	if (!tlb->fullmm)
+		flush_tlb_range(vma, vma->vm_start, vma->vm_end);
 }
 
 #define tlb_remove_page(tlb,page)	free_page_and_swap_cache(page)
-#define pte_free_tlb(tlb, ptep, addr)	pte_free((tlb)->mm, ptep)
-#define pmd_free_tlb(tlb, pmdp, addr)	pmd_free((tlb)->mm, pmdp)
+#define pte_free_tlb(tlb, ptep)		pte_free((tlb)->mm, ptep)
+#define pmd_free_tlb(tlb, pmdp)		pmd_free((tlb)->mm, pmdp)
 
 #define tlb_migrate_finish(mm)		do { } while (0)
 

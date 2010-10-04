@@ -38,11 +38,13 @@
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/flash.h>
-
-#include <mach/pxa25x.h>
 #include <mach/mmc.h>
 #include <mach/udc.h>
 #include <mach/gumstix.h>
+
+#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-regs.h>
+#include <mach/mfp-pxa25x.h>
 
 #include "generic.h"
 
@@ -88,10 +90,7 @@ static struct platform_device *devices[] __initdata = {
 
 #ifdef CONFIG_MMC_PXA
 static struct pxamci_platform_data gumstix_mci_platform_data = {
-	.ocr_mask		= MMC_VDD_32_33|MMC_VDD_33_34,
-	.gpio_card_detect 	= -1,
-	.gpio_card_ro		= -1,
-	.gpio_power		= -1,
+	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
 };
 
 static void __init gumstix_mmc_init(void)
@@ -192,11 +191,6 @@ int __attribute__((weak)) am200_init(void)
 	return 0;
 }
 
-int __attribute__((weak)) am300_init(void)
-{
-	return 0;
-}
-
 static void __init carrier_board_init(void)
 {
 	/*
@@ -204,17 +198,11 @@ static void __init carrier_board_init(void)
 	 * they cannot be detected programatically
 	 */
 	am200_init();
-	am300_init();
 }
 
 static void __init gumstix_init(void)
 {
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(gumstix_pin_config));
-
-	pxa_set_ffuart_info(NULL);
-	pxa_set_btuart_info(NULL);
-	pxa_set_stuart_info(NULL);
-	pxa_set_hwuart_info(NULL);
 
 	gumstix_bluetooth_init();
 	gumstix_udc_init();

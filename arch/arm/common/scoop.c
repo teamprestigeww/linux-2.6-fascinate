@@ -82,7 +82,7 @@ static int scoop_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
 	struct scoop_dev *sdev = container_of(chip, struct scoop_dev, gpio);
 
-	/* XXX: I'm unsure, but it seems so */
+	/* XXX: I'm usure,  but it seems so */
 	return ioread16(sdev->base + SCOOP_GPRR) & (1 << (offset + 1));
 }
 
@@ -124,6 +124,37 @@ static int scoop_gpio_direction_output(struct gpio_chip *chip,
 	return 0;
 }
 
+unsigned short set_scoop_gpio(struct device *dev, unsigned short bit)
+{
+	unsigned short gpio_bit;
+	unsigned long flag;
+	struct scoop_dev *sdev = dev_get_drvdata(dev);
+
+	spin_lock_irqsave(&sdev->scoop_lock, flag);
+	gpio_bit = ioread16(sdev->base + SCOOP_GPWR) | bit;
+	iowrite16(gpio_bit, sdev->base + SCOOP_GPWR);
+	spin_unlock_irqrestore(&sdev->scoop_lock, flag);
+
+	return gpio_bit;
+}
+
+unsigned short reset_scoop_gpio(struct device *dev, unsigned short bit)
+{
+	unsigned short gpio_bit;
+	unsigned long flag;
+	struct scoop_dev *sdev = dev_get_drvdata(dev);
+
+	spin_lock_irqsave(&sdev->scoop_lock, flag);
+	gpio_bit = ioread16(sdev->base + SCOOP_GPWR) & ~bit;
+	iowrite16(gpio_bit, sdev->base + SCOOP_GPWR);
+	spin_unlock_irqrestore(&sdev->scoop_lock, flag);
+
+	return gpio_bit;
+}
+
+EXPORT_SYMBOL(set_scoop_gpio);
+EXPORT_SYMBOL(reset_scoop_gpio);
+
 unsigned short read_scoop_reg(struct device *dev, unsigned short reg)
 {
 	struct scoop_dev *sdev = dev_get_drvdata(dev);
@@ -140,7 +171,6 @@ EXPORT_SYMBOL(reset_scoop);
 EXPORT_SYMBOL(read_scoop_reg);
 EXPORT_SYMBOL(write_scoop_reg);
 
-#ifdef CONFIG_PM
 static void check_scoop_reg(struct scoop_dev *sdev)
 {
 	unsigned short mcr;
@@ -150,6 +180,7 @@ static void check_scoop_reg(struct scoop_dev *sdev)
 		iowrite16(0x0101, sdev->base + SCOOP_MCR);
 }
 
+#ifdef CONFIG_PM
 static int scoop_suspend(struct platform_device *dev, pm_message_t state)
 {
 	struct scoop_dev *sdev = platform_get_drvdata(dev);

@@ -31,8 +31,6 @@
  * SOFTWARE.
  */
 
-#include <linux/slab.h>
-
 #include "mlx4.h"
 
 struct mlx4_device_context {

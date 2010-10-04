@@ -43,7 +43,6 @@
 #define RTC_VERSION	"1.07"
 
 #include <linux/module.h>
-#include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
 #include <linux/fcntl.h>
@@ -262,7 +261,7 @@ static inline int gen_set_rtc_irq_bit(unsigned char bit)
 #endif
 }
 
-static int gen_rtc_ioctl(struct file *file,
+static int gen_rtc_ioctl(struct inode *inode, struct file *file,
 			 unsigned int cmd, unsigned long arg)
 {
 	struct rtc_time wtime;
@@ -330,18 +329,6 @@ static int gen_rtc_ioctl(struct file *file,
 	}
 
 	return -EINVAL;
-}
-
-static long gen_rtc_unlocked_ioctl(struct file *file, unsigned int cmd,
-				   unsigned long arg)
-{
-	int ret;
-
-	lock_kernel();
-	ret = gen_rtc_ioctl(file, cmd, arg);
-	unlock_kernel();
-
-	return ret;
 }
 
 /*
@@ -494,7 +481,7 @@ static const struct file_operations gen_rtc_fops = {
 	.read		= gen_rtc_read,
 	.poll		= gen_rtc_poll,
 #endif
-	.unlocked_ioctl	= gen_rtc_unlocked_ioctl,
+	.ioctl		= gen_rtc_ioctl,
 	.open		= gen_rtc_open,
 	.release	= gen_rtc_release,
 };

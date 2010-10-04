@@ -30,7 +30,6 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/pagemap.h>
 #include <linux/miscdevice.h>
 #include <linux/pm.h>
@@ -115,9 +114,9 @@ static int agp_find_max(void)
 	long memory, index, result;
 
 #if PAGE_SHIFT < 20
-	memory = totalram_pages >> (20 - PAGE_SHIFT);
+	memory = num_physpages >> (20 - PAGE_SHIFT);
 #else
-	memory = totalram_pages << (PAGE_SHIFT - 20);
+	memory = num_physpages << (PAGE_SHIFT - 20);
 #endif
 	index = 1;
 
@@ -142,29 +141,17 @@ static int agp_backend_initialize(struct agp_bridge_data *bridge)
 	bridge->version = &agp_current_version;
 
 	if (bridge->driver->needs_scratch_page) {
-		struct page *page = bridge->driver->agp_alloc_page(bridge);
+		void *addr = bridge->driver->agp_alloc_page(bridge);
 
-		if (!page) {
+		if (!addr) {
 			dev_err(&bridge->dev->dev,
 				"can't get memory for scratch page\n");
 			return -ENOMEM;
 		}
 
-		bridge->scratch_page_page = page;
-		if (bridge->driver->agp_map_page) {
-			if (bridge->driver->agp_map_page(page,
-							 &bridge->scratch_page_dma)) {
-				dev_err(&bridge->dev->dev,
-					"unable to dma-map scratch page\n");
-				rc = -ENOMEM;
-				goto err_out_nounmap;
-			}
-		} else {
-			bridge->scratch_page_dma = page_to_phys(page);
-		}
-
-		bridge->scratch_page = bridge->driver->mask_memory(bridge,
-						   bridge->scratch_page_dma, 0);
+		bridge->scratch_page_real = virt_to_gart(addr);
+		bridge->scratch_page =
+		    bridge->driver->mask_memory(bridge, bridge->scratch_page_real, 0);
 	}
 
 	size_value = bridge->driver->fetch_size();
@@ -204,14 +191,8 @@ static int agp_backend_initialize(struct agp_bridge_data *bridge)
 	return 0;
 
 err_out:
-	if (bridge->driver->needs_scratch_page &&
-	    bridge->driver->agp_unmap_page) {
-		bridge->driver->agp_unmap_page(bridge->scratch_page_page,
-					       bridge->scratch_page_dma);
-	}
-err_out_nounmap:
 	if (bridge->driver->needs_scratch_page) {
-		void *va = page_address(bridge->scratch_page_page);
+		void *va = gart_to_virt(bridge->scratch_page_real);
 
 		bridge->driver->agp_destroy_page(va, AGP_PAGE_DESTROY_UNMAP);
 		bridge->driver->agp_destroy_page(va, AGP_PAGE_DESTROY_FREE);
@@ -238,11 +219,7 @@ static void agp_backend_cleanup(struct agp_bridge_data *bridge)
 
 	if (bridge->driver->agp_destroy_page &&
 	    bridge->driver->needs_scratch_page) {
-		void *va = page_address(bridge->scratch_page_page);
-
-		if (bridge->driver->agp_unmap_page)
-			bridge->driver->agp_unmap_page(bridge->scratch_page_page,
-						       bridge->scratch_page_dma);
+		void *va = gart_to_virt(bridge->scratch_page_real);
 
 		bridge->driver->agp_destroy_page(va, AGP_PAGE_DESTROY_UNMAP);
 		bridge->driver->agp_destroy_page(va, AGP_PAGE_DESTROY_FREE);
@@ -286,22 +263,18 @@ int agp_add_bridge(struct agp_bridge_data *bridge)
 {
 	int error;
 
-	if (agp_off) {
-		error = -ENODEV;
-		goto err_put_bridge;
-	}
+	if (agp_off)
+		return -ENODEV;
 
 	if (!bridge->dev) {
 		printk (KERN_DEBUG PFX "Erk, registering with no pci_dev!\n");
-		error = -EINVAL;
-		goto err_put_bridge;
+		return -EINVAL;
 	}
 
 	/* Grab reference on the chipset driver. */
 	if (!try_module_get(bridge->driver->owner)) {
 		dev_info(&bridge->dev->dev, "can't lock chipset driver\n");
-		error = -EINVAL;
-		goto err_put_bridge;
+		return -EINVAL;
 	}
 
 	error = agp_backend_initialize(bridge);
@@ -331,7 +304,6 @@ frontend_err:
 	agp_backend_cleanup(bridge);
 err_out:
 	module_put(bridge->driver->owner);
-err_put_bridge:
 	agp_put_bridge(bridge);
 	return error;
 }

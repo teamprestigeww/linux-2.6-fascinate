@@ -254,9 +254,7 @@ __flush_batch(journal_t *journal, struct buffer_head **bhs, int *batch_count)
 {
 	int i;
 
-	for (i = 0; i < *batch_count; i++)
-		write_dirty_buffer(bhs[i], WRITE);
-
+	ll_rw_block(SWRITE, *batch_count, bhs);
 	for (i = 0; i < *batch_count; i++) {
 		struct buffer_head *bh = bhs[i];
 		clear_buffer_jwrite(bh);
@@ -458,7 +456,7 @@ int cleanup_journal_tail(journal_t *journal)
 {
 	transaction_t * transaction;
 	tid_t		first_tid;
-	unsigned int	blocknr, freed;
+	unsigned long	blocknr, freed;
 
 	if (is_journal_aborted(journal))
 		return 1;
@@ -504,8 +502,8 @@ int cleanup_journal_tail(journal_t *journal)
 		freed = freed + journal->j_last - journal->j_first;
 
 	jbd_debug(1,
-		  "Cleaning journal tail from %d to %d (offset %u), "
-		  "freeing %u\n",
+		  "Cleaning journal tail from %d to %d (offset %lu), "
+		  "freeing %lu\n",
 		  journal->j_tail_sequence, first_tid, blocknr, freed);
 
 	journal->j_free += freed;

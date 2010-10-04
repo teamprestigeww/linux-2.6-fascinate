@@ -1,7 +1,7 @@
-	.section .text..page_aligned
+	.section .text.page_aligned
 #include <linux/linkage.h>
 #include <asm/segment.h>
-#include <asm/page_types.h>
+#include <asm/page.h>
 
 # Copyright 2003, 2008 Pavel Machek <pavel@suse.cz>, distribute under GPLv2
 

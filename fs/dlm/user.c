@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2006-2010 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2006-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -17,7 +17,6 @@
 #include <linux/spinlock.h>
 #include <linux/dlm.h>
 #include <linux/dlm_device.h>
-#include <linux/slab.h>
 
 #include "dlm_internal.h"
 #include "lockspace.h"
@@ -85,7 +84,7 @@ struct dlm_lock_result32 {
 
 static void compat_input(struct dlm_write_request *kb,
 			 struct dlm_write_request32 *kb32,
-			 int namelen)
+			 size_t count)
 {
 	kb->version[0] = kb32->version[0];
 	kb->version[1] = kb32->version[1];
@@ -97,7 +96,8 @@ static void compat_input(struct dlm_write_request *kb,
 	    kb->cmd == DLM_USER_REMOVE_LOCKSPACE) {
 		kb->i.lspace.flags = kb32->i.lspace.flags;
 		kb->i.lspace.minor = kb32->i.lspace.minor;
-		memcpy(kb->i.lspace.name, kb32->i.lspace.name, namelen);
+		memcpy(kb->i.lspace.name, kb32->i.lspace.name, count -
+			offsetof(struct dlm_write_request32, i.lspace.name));
 	} else if (kb->cmd == DLM_USER_PURGE) {
 		kb->i.purge.nodeid = kb32->i.purge.nodeid;
 		kb->i.purge.pid = kb32->i.purge.pid;
@@ -115,7 +115,8 @@ static void compat_input(struct dlm_write_request *kb,
 		kb->i.lock.bastaddr = (void *)(long)kb32->i.lock.bastaddr;
 		kb->i.lock.lksb = (void *)(long)kb32->i.lock.lksb;
 		memcpy(kb->i.lock.lvb, kb32->i.lock.lvb, DLM_USER_LVB_LEN);
-		memcpy(kb->i.lock.name, kb32->i.lock.name, namelen);
+		memcpy(kb->i.lock.name, kb32->i.lock.name, count -
+			offsetof(struct dlm_write_request32, i.lock.name));
 	}
 }
 
@@ -174,7 +175,7 @@ static int lkb_is_endoflife(struct dlm_lkb *lkb, int sb_status, int type)
 /* we could possibly check if the cancel of an orphan has resulted in the lkb
    being removed and then remove that lkb from the orphans list and free it */
 
-void dlm_user_add_ast(struct dlm_lkb *lkb, int type, int mode)
+void dlm_user_add_ast(struct dlm_lkb *lkb, int type, int bastmode)
 {
 	struct dlm_ls *ls;
 	struct dlm_user_args *ua;
@@ -207,15 +208,12 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, int type, int mode)
 
 	ast_type = lkb->lkb_ast_type;
 	lkb->lkb_ast_type |= type;
-	if (type == AST_BAST)
-		lkb->lkb_bastmode = mode;
-	else
-		lkb->lkb_castmode = mode;
+	if (bastmode)
+		lkb->lkb_bastmode = bastmode;
 
 	if (!ast_type) {
 		kref_get(&lkb->lkb_ref);
 		list_add_tail(&lkb->lkb_astqueue, &proc->asts);
-		lkb->lkb_ast_first = type;
 		wake_up_interruptible(&proc->wait);
 	}
 	if (type == AST_COMP && (ast_type & AST_COMP))
@@ -224,6 +222,7 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, int type, int mode)
 
 	eol = lkb_is_endoflife(lkb, ua->lksb.sb_status, type);
 	if (eol) {
+		lkb->lkb_ast_type &= ~AST_BAST;
 		lkb->lkb_flags |= DLM_IFL_ENDOFLIFE;
 	}
 
@@ -270,7 +269,7 @@ static int device_user_lock(struct dlm_user_proc *proc,
 		goto out;
 	}
 
-	ua = kzalloc(sizeof(struct dlm_user_args), GFP_NOFS);
+	ua = kzalloc(sizeof(struct dlm_user_args), GFP_KERNEL);
 	if (!ua)
 		goto out;
 	ua->proc = proc;
@@ -310,7 +309,7 @@ static int device_user_unlock(struct dlm_user_proc *proc,
 	if (!ls)
 		return -ENOENT;
 
-	ua = kzalloc(sizeof(struct dlm_user_args), GFP_NOFS);
+	ua = kzalloc(sizeof(struct dlm_user_args), GFP_KERNEL);
 	if (!ua)
 		goto out;
 	ua->proc = proc;
@@ -355,7 +354,7 @@ static int dlm_device_register(struct dlm_ls *ls, char *name)
 
 	error = -ENOMEM;
 	len = strlen(name) + strlen(name_prefix) + 2;
-	ls->ls_device.name = kzalloc(len, GFP_NOFS);
+	ls->ls_device.name = kzalloc(len, GFP_KERNEL);
 	if (!ls->ls_device.name)
 		goto fail;
 
@@ -523,7 +522,7 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 #endif
 		return -EINVAL;
 
-	kbuf = kzalloc(count + 1, GFP_NOFS);
+	kbuf = kzalloc(count + 1, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
 
@@ -540,16 +539,9 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 #ifdef CONFIG_COMPAT
 	if (!kbuf->is64bit) {
 		struct dlm_write_request32 *k32buf;
-		int namelen = 0;
-
-		if (count > sizeof(struct dlm_write_request32))
-			namelen = count - sizeof(struct dlm_write_request32);
-
 		k32buf = (struct dlm_write_request32 *)kbuf;
-
-		/* add 1 after namelen so that the name string is terminated */
-		kbuf = kzalloc(sizeof(struct dlm_write_request) + namelen + 1,
-			       GFP_NOFS);
+		kbuf = kmalloc(count + 1 + (sizeof(struct dlm_write_request) -
+			       sizeof(struct dlm_write_request32)), GFP_KERNEL);
 		if (!kbuf) {
 			kfree(k32buf);
 			return -ENOMEM;
@@ -557,8 +549,7 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 
 		if (proc)
 			set_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags);
-
-		compat_input(kbuf, k32buf, namelen);
+		compat_input(kbuf, k32buf, count + 1);
 		kfree(k32buf);
 	}
 #endif
@@ -651,7 +642,7 @@ static int device_open(struct inode *inode, struct file *file)
 	if (!ls)
 		return -ENOENT;
 
-	proc = kzalloc(sizeof(struct dlm_user_proc), GFP_NOFS);
+	proc = kzalloc(sizeof(struct dlm_user_proc), GFP_KERNEL);
 	if (!proc) {
 		dlm_put_lockspace(ls);
 		return -ENOMEM;
@@ -706,7 +697,7 @@ static int device_close(struct inode *inode, struct file *file)
 }
 
 static int copy_result_to_user(struct dlm_user_args *ua, int compat, int type,
-			       int mode, char __user *buf, size_t count)
+			       int bmode, char __user *buf, size_t count)
 {
 #ifdef CONFIG_COMPAT
 	struct dlm_lock_result32 result32;
@@ -733,7 +724,7 @@ static int copy_result_to_user(struct dlm_user_args *ua, int compat, int type,
 	if (type == AST_BAST) {
 		result.user_astaddr = ua->bastaddr;
 		result.user_astparam = ua->bastparam;
-		result.bast_mode = mode;
+		result.bast_mode = bmode;
 	} else {
 		result.user_astaddr = ua->castaddr;
 		result.user_astparam = ua->castparam;
@@ -801,9 +792,7 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 	struct dlm_user_proc *proc = file->private_data;
 	struct dlm_lkb *lkb;
 	DECLARE_WAITQUEUE(wait, current);
-	int error = 0, removed;
-	int ret_type, ret_mode;
-	int bastmode, castmode, do_bast, do_cast;
+	int error, type=0, bmode=0, removed = 0;
 
 	if (count == sizeof(struct dlm_device_version)) {
 		error = copy_version_to_user(buf, count);
@@ -821,8 +810,6 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 	if (count < sizeof(struct dlm_lock_result))
 #endif
 		return -EINVAL;
-
- try_another:
 
 	/* do we really need this? can a read happen after a close? */
 	if (test_bit(DLM_PROC_FLAGS_CLOSING, &proc->flags))
@@ -859,55 +846,13 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 
 	lkb = list_entry(proc->asts.next, struct dlm_lkb, lkb_astqueue);
 
-	removed = 0;
-	ret_type = 0;
-	ret_mode = 0;
-	do_bast = lkb->lkb_ast_type & AST_BAST;
-	do_cast = lkb->lkb_ast_type & AST_COMP;
-	bastmode = lkb->lkb_bastmode;
-	castmode = lkb->lkb_castmode;
-
-	/* when both are queued figure out which to do first and
-	   switch first so the other goes in the next read */
-
-	if (do_cast && do_bast) {
-		if (lkb->lkb_ast_first == AST_COMP) {
-			ret_type = AST_COMP;
-			ret_mode = castmode;
-			lkb->lkb_ast_type &= ~AST_COMP;
-			lkb->lkb_ast_first = AST_BAST;
-		} else {
-			ret_type = AST_BAST;
-			ret_mode = bastmode;
-			lkb->lkb_ast_type &= ~AST_BAST;
-			lkb->lkb_ast_first = AST_COMP;
-		}
-	} else {
-		ret_type = lkb->lkb_ast_first;
-		ret_mode = (ret_type == AST_COMP) ? castmode : bastmode;
-		lkb->lkb_ast_type &= ~ret_type;
-		lkb->lkb_ast_first = 0;
-	}
-
-	/* if we're doing a bast but the bast is unnecessary, then
-	   switch to do nothing or do a cast if that was needed next */
-
-	if ((ret_type == AST_BAST) &&
-	    dlm_modes_compat(bastmode, lkb->lkb_castmode_done)) {
-		ret_type = 0;
-		ret_mode = 0;
-
-		if (do_cast) {
-			ret_type = AST_COMP;
-			ret_mode = castmode;
-			lkb->lkb_ast_type &= ~AST_COMP;
-			lkb->lkb_ast_first = 0;
-		}
-	}
-
-	if (lkb->lkb_ast_first != lkb->lkb_ast_type) {
-		log_print("device_read %x ast_first %x ast_type %x",
-			  lkb->lkb_id, lkb->lkb_ast_first, lkb->lkb_ast_type);
+	if (lkb->lkb_ast_type & AST_COMP) {
+		lkb->lkb_ast_type &= ~AST_COMP;
+		type = AST_COMP;
+	} else if (lkb->lkb_ast_type & AST_BAST) {
+		lkb->lkb_ast_type &= ~AST_BAST;
+		type = AST_BAST;
+		bmode = lkb->lkb_bastmode;
 	}
 
 	if (!lkb->lkb_ast_type) {
@@ -916,28 +861,14 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 	}
 	spin_unlock(&proc->asts_spin);
 
-	if (ret_type) {
-		error = copy_result_to_user(lkb->lkb_ua,
-				test_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags),
-				ret_type, ret_mode, buf, count);
-
-		if (ret_type == AST_COMP)
-			lkb->lkb_castmode_done = castmode;
-		if (ret_type == AST_BAST)
-			lkb->lkb_bastmode_done = bastmode;
-	}
+	error = copy_result_to_user(lkb->lkb_ua,
+			 	test_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags),
+				type, bmode, buf, count);
 
 	/* removes reference for the proc->asts lists added by
 	   dlm_user_add_ast() and may result in the lkb being freed */
-
 	if (removed)
 		dlm_put_lkb(lkb);
-
-	/* the bast that was queued was eliminated (see unnecessary above),
-	   leaving nothing to return */
-
-	if (!ret_type)
-		goto try_another;
 
 	return error;
 }

@@ -1,7 +1,7 @@
 ENTRY(sys_call_table)
 	.long sys_restart_syscall	/* 0 - old "setup()" system call, used for restarting */
 	.long sys_exit
-	.long ptregs_fork
+	.long sys_fork
 	.long sys_read
 	.long sys_write
 	.long sys_open		/* 5 */
@@ -10,7 +10,7 @@ ENTRY(sys_call_table)
 	.long sys_creat
 	.long sys_link
 	.long sys_unlink	/* 10 */
-	.long ptregs_execve
+	.long sys_execve
 	.long sys_chdir
 	.long sys_time
 	.long sys_mknod
@@ -81,7 +81,7 @@ ENTRY(sys_call_table)
 	.long sys_settimeofday
 	.long sys_getgroups16	/* 80 */
 	.long sys_setgroups16
-	.long sys_old_select
+	.long old_select
 	.long sys_symlink
 	.long sys_lstat
 	.long sys_readlink	/* 85 */
@@ -89,7 +89,7 @@ ENTRY(sys_call_table)
 	.long sys_swapon
 	.long sys_reboot
 	.long sys_old_readdir
-	.long sys_old_mmap	/* 90 */
+	.long old_mmap		/* 90 */
 	.long sys_munmap
 	.long sys_truncate
 	.long sys_ftruncate
@@ -109,17 +109,17 @@ ENTRY(sys_call_table)
 	.long sys_newlstat
 	.long sys_newfstat
 	.long sys_uname
-	.long ptregs_iopl	/* 110 */
+	.long sys_iopl		/* 110 */
 	.long sys_vhangup
 	.long sys_ni_syscall	/* old "idle" system call */
-	.long ptregs_vm86old
+	.long sys_vm86old
 	.long sys_wait4
 	.long sys_swapoff	/* 115 */
 	.long sys_sysinfo
 	.long sys_ipc
 	.long sys_fsync
-	.long ptregs_sigreturn
-	.long ptregs_clone	/* 120 */
+	.long sys_sigreturn
+	.long sys_clone		/* 120 */
 	.long sys_setdomainname
 	.long sys_newuname
 	.long sys_modify_ldt
@@ -165,14 +165,14 @@ ENTRY(sys_call_table)
 	.long sys_mremap
 	.long sys_setresuid16
 	.long sys_getresuid16	/* 165 */
-	.long ptregs_vm86
+	.long sys_vm86
 	.long sys_ni_syscall	/* Old sys_query_module */
 	.long sys_poll
 	.long sys_nfsservctl
 	.long sys_setresgid16	/* 170 */
 	.long sys_getresgid16
 	.long sys_prctl
-	.long ptregs_rt_sigreturn
+	.long sys_rt_sigreturn
 	.long sys_rt_sigaction
 	.long sys_rt_sigprocmask	/* 175 */
 	.long sys_rt_sigpending
@@ -185,13 +185,13 @@ ENTRY(sys_call_table)
 	.long sys_getcwd
 	.long sys_capget
 	.long sys_capset	/* 185 */
-	.long ptregs_sigaltstack
+	.long sys_sigaltstack
 	.long sys_sendfile
 	.long sys_ni_syscall	/* reserved for streams1 */
 	.long sys_ni_syscall	/* reserved for streams2 */
-	.long ptregs_vfork	/* 190 */
+	.long sys_vfork		/* 190 */
 	.long sys_getrlimit
-	.long sys_mmap_pgoff
+	.long sys_mmap2
 	.long sys_truncate64
 	.long sys_ftruncate64
 	.long sys_stat64	/* 195 */
@@ -332,11 +332,3 @@ ENTRY(sys_call_table)
 	.long sys_dup3			/* 330 */
 	.long sys_pipe2
 	.long sys_inotify_init1
-	.long sys_preadv
-	.long sys_pwritev
-	.long sys_rt_tgsigqueueinfo	/* 335 */
-	.long sys_perf_event_open
-	.long sys_recvmmsg
-	.long sys_fanotify_init
-	.long sys_fanotify_mark
-	.long sys_prlimit64		/* 340 */

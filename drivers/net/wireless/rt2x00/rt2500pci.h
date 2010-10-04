@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
+	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -46,7 +46,7 @@
 
 /*
  * Signal information.
- * Default offset is required for RSSI <-> dBm conversion.
+ * Defaul offset is required for RSSI <-> dBm conversion.
  */
 #define DEFAULT_RSSI_OFFSET		121
 
@@ -59,8 +59,8 @@
 #define EEPROM_SIZE			0x0200
 #define BBP_BASE			0x0000
 #define BBP_SIZE			0x0040
-#define RF_BASE				0x0004
-#define RF_SIZE				0x0010
+#define RF_BASE				0x0000
+#define RF_SIZE				0x0014
 
 /*
  * Number of TX queues.
@@ -76,7 +76,6 @@
  * CSR0: ASIC revision number.
  */
 #define CSR0				0x0000
-#define CSR0_REVISION			FIELD32(0x0000ffff)
 
 /*
  * CSR1: System control register.
@@ -1219,7 +1218,7 @@
 #define RXD_W10_DROP			FIELD32(0x00000001)
 
 /*
- * Macros for converting txpower from EEPROM to mac80211 value
+ * Macro's for converting txpower from EEPROM to mac80211 value
  * and from mac80211 value to register value.
  */
 #define MIN_TXPOWER	0

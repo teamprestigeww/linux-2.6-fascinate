@@ -12,36 +12,30 @@
 
 #include <crypto/algapi.h>
 #include <crypto/internal/hash.h>
-#include <crypto/cryptd.h>
-#include <crypto/crypto_wq.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/scatterlist.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 
-#define CRYPTD_MAX_CPU_QLEN 100
+#define CRYPTD_MAX_QLEN 100
 
-struct cryptd_cpu_queue {
+struct cryptd_state {
+	spinlock_t lock;
+	struct mutex mutex;
 	struct crypto_queue queue;
-	struct work_struct work;
-};
-
-struct cryptd_queue {
-	struct cryptd_cpu_queue __percpu *cpu_queue;
+	struct task_struct *task;
 };
 
 struct cryptd_instance_ctx {
 	struct crypto_spawn spawn;
-	struct cryptd_queue *queue;
-};
-
-struct hashd_instance_ctx {
-	struct crypto_shash_spawn spawn;
-	struct cryptd_queue *queue;
+	struct cryptd_state *state;
 };
 
 struct cryptd_blkcipher_ctx {
@@ -53,93 +47,18 @@ struct cryptd_blkcipher_request_ctx {
 };
 
 struct cryptd_hash_ctx {
-	struct crypto_shash *child;
+	struct crypto_hash *child;
 };
 
 struct cryptd_hash_request_ctx {
 	crypto_completion_t complete;
-	struct shash_desc desc;
 };
 
-static void cryptd_queue_worker(struct work_struct *work);
-
-static int cryptd_init_queue(struct cryptd_queue *queue,
-			     unsigned int max_cpu_qlen)
-{
-	int cpu;
-	struct cryptd_cpu_queue *cpu_queue;
-
-	queue->cpu_queue = alloc_percpu(struct cryptd_cpu_queue);
-	if (!queue->cpu_queue)
-		return -ENOMEM;
-	for_each_possible_cpu(cpu) {
-		cpu_queue = per_cpu_ptr(queue->cpu_queue, cpu);
-		crypto_init_queue(&cpu_queue->queue, max_cpu_qlen);
-		INIT_WORK(&cpu_queue->work, cryptd_queue_worker);
-	}
-	return 0;
-}
-
-static void cryptd_fini_queue(struct cryptd_queue *queue)
-{
-	int cpu;
-	struct cryptd_cpu_queue *cpu_queue;
-
-	for_each_possible_cpu(cpu) {
-		cpu_queue = per_cpu_ptr(queue->cpu_queue, cpu);
-		BUG_ON(cpu_queue->queue.qlen);
-	}
-	free_percpu(queue->cpu_queue);
-}
-
-static int cryptd_enqueue_request(struct cryptd_queue *queue,
-				  struct crypto_async_request *request)
-{
-	int cpu, err;
-	struct cryptd_cpu_queue *cpu_queue;
-
-	cpu = get_cpu();
-	cpu_queue = this_cpu_ptr(queue->cpu_queue);
-	err = crypto_enqueue_request(&cpu_queue->queue, request);
-	queue_work_on(cpu, kcrypto_wq, &cpu_queue->work);
-	put_cpu();
-
-	return err;
-}
-
-/* Called in workqueue context, do one real cryption work (via
- * req->complete) and reschedule itself if there are more work to
- * do. */
-static void cryptd_queue_worker(struct work_struct *work)
-{
-	struct cryptd_cpu_queue *cpu_queue;
-	struct crypto_async_request *req, *backlog;
-
-	cpu_queue = container_of(work, struct cryptd_cpu_queue, work);
-	/* Only handle one request at a time to avoid hogging crypto
-	 * workqueue. preempt_disable/enable is used to prevent
-	 * being preempted by cryptd_enqueue_request() */
-	preempt_disable();
-	backlog = crypto_get_backlog(&cpu_queue->queue);
-	req = crypto_dequeue_request(&cpu_queue->queue);
-	preempt_enable();
-
-	if (!req)
-		return;
-
-	if (backlog)
-		backlog->complete(backlog, -EINPROGRESS);
-	req->complete(req, 0);
-
-	if (cpu_queue->queue.qlen)
-		queue_work(kcrypto_wq, &cpu_queue->work);
-}
-
-static inline struct cryptd_queue *cryptd_get_queue(struct crypto_tfm *tfm)
+static inline struct cryptd_state *cryptd_get_state(struct crypto_tfm *tfm)
 {
 	struct crypto_instance *inst = crypto_tfm_alg_instance(tfm);
 	struct cryptd_instance_ctx *ictx = crypto_instance_ctx(inst);
-	return ictx->queue;
+	return ictx->state;
 }
 
 static int cryptd_blkcipher_setkey(struct crypto_ablkcipher *parent,
@@ -211,13 +130,19 @@ static int cryptd_blkcipher_enqueue(struct ablkcipher_request *req,
 {
 	struct cryptd_blkcipher_request_ctx *rctx = ablkcipher_request_ctx(req);
 	struct crypto_ablkcipher *tfm = crypto_ablkcipher_reqtfm(req);
-	struct cryptd_queue *queue;
+	struct cryptd_state *state =
+		cryptd_get_state(crypto_ablkcipher_tfm(tfm));
+	int err;
 
-	queue = cryptd_get_queue(crypto_ablkcipher_tfm(tfm));
 	rctx->complete = req->base.complete;
 	req->base.complete = complete;
 
-	return cryptd_enqueue_request(queue, &req->base);
+	spin_lock_bh(&state->lock);
+	err = ablkcipher_enqueue_request(&state->queue, req);
+	spin_unlock_bh(&state->lock);
+
+	wake_up_process(state->task);
+	return err;
 }
 
 static int cryptd_blkcipher_encrypt_enqueue(struct ablkcipher_request *req)
@@ -251,27 +176,44 @@ static int cryptd_blkcipher_init_tfm(struct crypto_tfm *tfm)
 static void cryptd_blkcipher_exit_tfm(struct crypto_tfm *tfm)
 {
 	struct cryptd_blkcipher_ctx *ctx = crypto_tfm_ctx(tfm);
+	struct cryptd_state *state = cryptd_get_state(tfm);
+	int active;
+
+	mutex_lock(&state->mutex);
+	active = ablkcipher_tfm_in_queue(&state->queue,
+					 __crypto_ablkcipher_cast(tfm));
+	mutex_unlock(&state->mutex);
+
+	BUG_ON(active);
 
 	crypto_free_blkcipher(ctx->child);
 }
 
-static void *cryptd_alloc_instance(struct crypto_alg *alg, unsigned int head,
-				   unsigned int tail)
+static struct crypto_instance *cryptd_alloc_instance(struct crypto_alg *alg,
+						     struct cryptd_state *state)
 {
-	char *p;
 	struct crypto_instance *inst;
+	struct cryptd_instance_ctx *ctx;
 	int err;
 
-	p = kzalloc(head + sizeof(*inst) + tail, GFP_KERNEL);
-	if (!p)
-		return ERR_PTR(-ENOMEM);
-
-	inst = (void *)(p + head);
+	inst = kzalloc(sizeof(*inst) + sizeof(*ctx), GFP_KERNEL);
+	if (!inst) {
+		inst = ERR_PTR(-ENOMEM);
+		goto out;
+	}
 
 	err = -ENAMETOOLONG;
 	if (snprintf(inst->alg.cra_driver_name, CRYPTO_MAX_ALG_NAME,
 		     "cryptd(%s)", alg->cra_driver_name) >= CRYPTO_MAX_ALG_NAME)
 		goto out_free_inst;
+
+	ctx = crypto_instance_ctx(inst);
+	err = crypto_init_spawn(&ctx->spawn, alg, inst,
+				CRYPTO_ALG_TYPE_MASK | CRYPTO_ALG_ASYNC);
+	if (err)
+		goto out_free_inst;
+
+	ctx->state = state;
 
 	memcpy(inst->alg.cra_name, alg->cra_name, CRYPTO_MAX_ALG_NAME);
 
@@ -280,40 +222,28 @@ static void *cryptd_alloc_instance(struct crypto_alg *alg, unsigned int head,
 	inst->alg.cra_alignmask = alg->cra_alignmask;
 
 out:
-	return p;
+	return inst;
 
 out_free_inst:
-	kfree(p);
-	p = ERR_PTR(err);
+	kfree(inst);
+	inst = ERR_PTR(err);
 	goto out;
 }
 
-static int cryptd_create_blkcipher(struct crypto_template *tmpl,
-				   struct rtattr **tb,
-				   struct cryptd_queue *queue)
+static struct crypto_instance *cryptd_alloc_blkcipher(
+	struct rtattr **tb, struct cryptd_state *state)
 {
-	struct cryptd_instance_ctx *ctx;
 	struct crypto_instance *inst;
 	struct crypto_alg *alg;
-	int err;
 
 	alg = crypto_get_attr_alg(tb, CRYPTO_ALG_TYPE_BLKCIPHER,
 				  CRYPTO_ALG_TYPE_MASK);
 	if (IS_ERR(alg))
-		return PTR_ERR(alg);
+		return ERR_CAST(alg);
 
-	inst = cryptd_alloc_instance(alg, 0, sizeof(*ctx));
-	err = PTR_ERR(inst);
+	inst = cryptd_alloc_instance(alg, state);
 	if (IS_ERR(inst))
 		goto out_put_alg;
-
-	ctx = crypto_instance_ctx(inst);
-	ctx->queue = queue;
-
-	err = crypto_init_spawn(&ctx->spawn, alg, inst,
-				CRYPTO_ALG_TYPE_MASK | CRYPTO_ALG_ASYNC);
-	if (err)
-		goto out_free_inst;
 
 	inst->alg.cra_flags = CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC;
 	inst->alg.cra_type = &crypto_ablkcipher_type;
@@ -333,57 +263,58 @@ static int cryptd_create_blkcipher(struct crypto_template *tmpl,
 	inst->alg.cra_ablkcipher.encrypt = cryptd_blkcipher_encrypt_enqueue;
 	inst->alg.cra_ablkcipher.decrypt = cryptd_blkcipher_decrypt_enqueue;
 
-	err = crypto_register_instance(tmpl, inst);
-	if (err) {
-		crypto_drop_spawn(&ctx->spawn);
-out_free_inst:
-		kfree(inst);
-	}
-
 out_put_alg:
 	crypto_mod_put(alg);
-	return err;
+	return inst;
 }
 
 static int cryptd_hash_init_tfm(struct crypto_tfm *tfm)
 {
 	struct crypto_instance *inst = crypto_tfm_alg_instance(tfm);
-	struct hashd_instance_ctx *ictx = crypto_instance_ctx(inst);
-	struct crypto_shash_spawn *spawn = &ictx->spawn;
+	struct cryptd_instance_ctx *ictx = crypto_instance_ctx(inst);
+	struct crypto_spawn *spawn = &ictx->spawn;
 	struct cryptd_hash_ctx *ctx = crypto_tfm_ctx(tfm);
-	struct crypto_shash *hash;
+	struct crypto_hash *cipher;
 
-	hash = crypto_spawn_shash(spawn);
-	if (IS_ERR(hash))
-		return PTR_ERR(hash);
+	cipher = crypto_spawn_hash(spawn);
+	if (IS_ERR(cipher))
+		return PTR_ERR(cipher);
 
-	ctx->child = hash;
-	crypto_ahash_set_reqsize(__crypto_ahash_cast(tfm),
-				 sizeof(struct cryptd_hash_request_ctx) +
-				 crypto_shash_descsize(hash));
+	ctx->child = cipher;
+	tfm->crt_ahash.reqsize =
+		sizeof(struct cryptd_hash_request_ctx);
 	return 0;
 }
 
 static void cryptd_hash_exit_tfm(struct crypto_tfm *tfm)
 {
 	struct cryptd_hash_ctx *ctx = crypto_tfm_ctx(tfm);
+	struct cryptd_state *state = cryptd_get_state(tfm);
+	int active;
 
-	crypto_free_shash(ctx->child);
+	mutex_lock(&state->mutex);
+	active = ahash_tfm_in_queue(&state->queue,
+				__crypto_ahash_cast(tfm));
+	mutex_unlock(&state->mutex);
+
+	BUG_ON(active);
+
+	crypto_free_hash(ctx->child);
 }
 
 static int cryptd_hash_setkey(struct crypto_ahash *parent,
 				   const u8 *key, unsigned int keylen)
 {
 	struct cryptd_hash_ctx *ctx   = crypto_ahash_ctx(parent);
-	struct crypto_shash *child = ctx->child;
+	struct crypto_hash     *child = ctx->child;
 	int err;
 
-	crypto_shash_clear_flags(child, CRYPTO_TFM_REQ_MASK);
-	crypto_shash_set_flags(child, crypto_ahash_get_flags(parent) &
-				      CRYPTO_TFM_REQ_MASK);
-	err = crypto_shash_setkey(child, key, keylen);
-	crypto_ahash_set_flags(parent, crypto_shash_get_flags(child) &
-				       CRYPTO_TFM_RES_MASK);
+	crypto_hash_clear_flags(child, CRYPTO_TFM_REQ_MASK);
+	crypto_hash_set_flags(child, crypto_ahash_get_flags(parent) &
+					  CRYPTO_TFM_REQ_MASK);
+	err = crypto_hash_setkey(child, key, keylen);
+	crypto_ahash_set_flags(parent, crypto_hash_get_flags(child) &
+					    CRYPTO_TFM_RES_MASK);
 	return err;
 }
 
@@ -392,30 +323,38 @@ static int cryptd_hash_enqueue(struct ahash_request *req,
 {
 	struct cryptd_hash_request_ctx *rctx = ahash_request_ctx(req);
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
-	struct cryptd_queue *queue =
-		cryptd_get_queue(crypto_ahash_tfm(tfm));
+	struct cryptd_state *state =
+		cryptd_get_state(crypto_ahash_tfm(tfm));
+	int err;
 
 	rctx->complete = req->base.complete;
 	req->base.complete = complete;
 
-	return cryptd_enqueue_request(queue, &req->base);
+	spin_lock_bh(&state->lock);
+	err = ahash_enqueue_request(&state->queue, req);
+	spin_unlock_bh(&state->lock);
+
+	wake_up_process(state->task);
+	return err;
 }
 
 static void cryptd_hash_init(struct crypto_async_request *req_async, int err)
 {
-	struct cryptd_hash_ctx *ctx = crypto_tfm_ctx(req_async->tfm);
-	struct crypto_shash *child = ctx->child;
-	struct ahash_request *req = ahash_request_cast(req_async);
-	struct cryptd_hash_request_ctx *rctx = ahash_request_ctx(req);
-	struct shash_desc *desc = &rctx->desc;
+	struct cryptd_hash_ctx *ctx   = crypto_tfm_ctx(req_async->tfm);
+	struct crypto_hash     *child = ctx->child;
+	struct ahash_request    *req = ahash_request_cast(req_async);
+	struct cryptd_hash_request_ctx *rctx;
+	struct hash_desc desc;
+
+	rctx = ahash_request_ctx(req);
 
 	if (unlikely(err == -EINPROGRESS))
 		goto out;
 
-	desc->tfm = child;
-	desc->flags = CRYPTO_TFM_REQ_MAY_SLEEP;
+	desc.tfm = child;
+	desc.flags = CRYPTO_TFM_REQ_MAY_SLEEP;
 
-	err = crypto_shash_init(desc);
+	err = crypto_hash_crt(child)->init(&desc);
 
 	req->base.complete = rctx->complete;
 
@@ -432,15 +371,23 @@ static int cryptd_hash_init_enqueue(struct ahash_request *req)
 
 static void cryptd_hash_update(struct crypto_async_request *req_async, int err)
 {
-	struct ahash_request *req = ahash_request_cast(req_async);
+	struct cryptd_hash_ctx *ctx   = crypto_tfm_ctx(req_async->tfm);
+	struct crypto_hash     *child = ctx->child;
+	struct ahash_request    *req = ahash_request_cast(req_async);
 	struct cryptd_hash_request_ctx *rctx;
+	struct hash_desc desc;
 
 	rctx = ahash_request_ctx(req);
 
 	if (unlikely(err == -EINPROGRESS))
 		goto out;
 
-	err = shash_ahash_update(req, &rctx->desc);
+	desc.tfm = child;
+	desc.flags = CRYPTO_TFM_REQ_MAY_SLEEP;
+
+	err = crypto_hash_crt(child)->update(&desc,
+						req->src,
+						req->nbytes);
 
 	req->base.complete = rctx->complete;
 
@@ -457,13 +404,21 @@ static int cryptd_hash_update_enqueue(struct ahash_request *req)
 
 static void cryptd_hash_final(struct crypto_async_request *req_async, int err)
 {
-	struct ahash_request *req = ahash_request_cast(req_async);
-	struct cryptd_hash_request_ctx *rctx = ahash_request_ctx(req);
+	struct cryptd_hash_ctx *ctx   = crypto_tfm_ctx(req_async->tfm);
+	struct crypto_hash     *child = ctx->child;
+	struct ahash_request    *req = ahash_request_cast(req_async);
+	struct cryptd_hash_request_ctx *rctx;
+	struct hash_desc desc;
+
+	rctx = ahash_request_ctx(req);
 
 	if (unlikely(err == -EINPROGRESS))
 		goto out;
 
-	err = crypto_shash_final(&rctx->desc, req->result);
+	desc.tfm = child;
+	desc.flags = CRYPTO_TFM_REQ_MAY_SLEEP;
+
+	err = crypto_hash_crt(child)->final(&desc, req->result);
 
 	req->base.complete = rctx->complete;
 
@@ -478,44 +433,26 @@ static int cryptd_hash_final_enqueue(struct ahash_request *req)
 	return cryptd_hash_enqueue(req, cryptd_hash_final);
 }
 
-static void cryptd_hash_finup(struct crypto_async_request *req_async, int err)
-{
-	struct ahash_request *req = ahash_request_cast(req_async);
-	struct cryptd_hash_request_ctx *rctx = ahash_request_ctx(req);
-
-	if (unlikely(err == -EINPROGRESS))
-		goto out;
-
-	err = shash_ahash_finup(req, &rctx->desc);
-
-	req->base.complete = rctx->complete;
-
-out:
-	local_bh_disable();
-	rctx->complete(&req->base, err);
-	local_bh_enable();
-}
-
-static int cryptd_hash_finup_enqueue(struct ahash_request *req)
-{
-	return cryptd_hash_enqueue(req, cryptd_hash_finup);
-}
-
 static void cryptd_hash_digest(struct crypto_async_request *req_async, int err)
 {
-	struct cryptd_hash_ctx *ctx = crypto_tfm_ctx(req_async->tfm);
-	struct crypto_shash *child = ctx->child;
-	struct ahash_request *req = ahash_request_cast(req_async);
-	struct cryptd_hash_request_ctx *rctx = ahash_request_ctx(req);
-	struct shash_desc *desc = &rctx->desc;
+	struct cryptd_hash_ctx *ctx   = crypto_tfm_ctx(req_async->tfm);
+	struct crypto_hash     *child = ctx->child;
+	struct ahash_request    *req = ahash_request_cast(req_async);
+	struct cryptd_hash_request_ctx *rctx;
+	struct hash_desc desc;
+
+	rctx = ahash_request_ctx(req);
 
 	if (unlikely(err == -EINPROGRESS))
 		goto out;
 
-	desc->tfm = child;
-	desc->flags = CRYPTO_TFM_REQ_MAY_SLEEP;
+	desc.tfm = child;
+	desc.flags = CRYPTO_TFM_REQ_MAY_SLEEP;
 
-	err = shash_ahash_digest(req, desc);
+	err = crypto_hash_crt(child)->digest(&desc,
+						req->src,
+						req->nbytes,
+						req->result);
 
 	req->base.complete = rctx->complete;
 
@@ -530,108 +467,64 @@ static int cryptd_hash_digest_enqueue(struct ahash_request *req)
 	return cryptd_hash_enqueue(req, cryptd_hash_digest);
 }
 
-static int cryptd_hash_export(struct ahash_request *req, void *out)
+static struct crypto_instance *cryptd_alloc_hash(
+	struct rtattr **tb, struct cryptd_state *state)
 {
-	struct cryptd_hash_request_ctx *rctx = ahash_request_ctx(req);
-
-	return crypto_shash_export(&rctx->desc, out);
-}
-
-static int cryptd_hash_import(struct ahash_request *req, const void *in)
-{
-	struct cryptd_hash_request_ctx *rctx = ahash_request_ctx(req);
-
-	return crypto_shash_import(&rctx->desc, in);
-}
-
-static int cryptd_create_hash(struct crypto_template *tmpl, struct rtattr **tb,
-			      struct cryptd_queue *queue)
-{
-	struct hashd_instance_ctx *ctx;
-	struct ahash_instance *inst;
-	struct shash_alg *salg;
+	struct crypto_instance *inst;
 	struct crypto_alg *alg;
-	int err;
 
-	salg = shash_attr_alg(tb[1], 0, 0);
-	if (IS_ERR(salg))
-		return PTR_ERR(salg);
+	alg = crypto_get_attr_alg(tb, CRYPTO_ALG_TYPE_HASH,
+				  CRYPTO_ALG_TYPE_HASH_MASK);
+	if (IS_ERR(alg))
+		return ERR_PTR(PTR_ERR(alg));
 
-	alg = &salg->base;
-	inst = cryptd_alloc_instance(alg, ahash_instance_headroom(),
-				     sizeof(*ctx));
-	err = PTR_ERR(inst);
+	inst = cryptd_alloc_instance(alg, state);
 	if (IS_ERR(inst))
 		goto out_put_alg;
 
-	ctx = ahash_instance_ctx(inst);
-	ctx->queue = queue;
+	inst->alg.cra_flags = CRYPTO_ALG_TYPE_AHASH | CRYPTO_ALG_ASYNC;
+	inst->alg.cra_type = &crypto_ahash_type;
 
-	err = crypto_init_shash_spawn(&ctx->spawn, salg,
-				      ahash_crypto_instance(inst));
-	if (err)
-		goto out_free_inst;
+	inst->alg.cra_ahash.digestsize = alg->cra_hash.digestsize;
+	inst->alg.cra_ctxsize = sizeof(struct cryptd_hash_ctx);
 
-	inst->alg.halg.base.cra_flags = CRYPTO_ALG_ASYNC;
+	inst->alg.cra_init = cryptd_hash_init_tfm;
+	inst->alg.cra_exit = cryptd_hash_exit_tfm;
 
-	inst->alg.halg.digestsize = salg->digestsize;
-	inst->alg.halg.base.cra_ctxsize = sizeof(struct cryptd_hash_ctx);
-
-	inst->alg.halg.base.cra_init = cryptd_hash_init_tfm;
-	inst->alg.halg.base.cra_exit = cryptd_hash_exit_tfm;
-
-	inst->alg.init   = cryptd_hash_init_enqueue;
-	inst->alg.update = cryptd_hash_update_enqueue;
-	inst->alg.final  = cryptd_hash_final_enqueue;
-	inst->alg.finup  = cryptd_hash_finup_enqueue;
-	inst->alg.export = cryptd_hash_export;
-	inst->alg.import = cryptd_hash_import;
-	inst->alg.setkey = cryptd_hash_setkey;
-	inst->alg.digest = cryptd_hash_digest_enqueue;
-
-	err = ahash_register_instance(tmpl, inst);
-	if (err) {
-		crypto_drop_shash(&ctx->spawn);
-out_free_inst:
-		kfree(inst);
-	}
+	inst->alg.cra_ahash.init   = cryptd_hash_init_enqueue;
+	inst->alg.cra_ahash.update = cryptd_hash_update_enqueue;
+	inst->alg.cra_ahash.final  = cryptd_hash_final_enqueue;
+	inst->alg.cra_ahash.setkey = cryptd_hash_setkey;
+	inst->alg.cra_ahash.digest = cryptd_hash_digest_enqueue;
 
 out_put_alg:
 	crypto_mod_put(alg);
-	return err;
+	return inst;
 }
 
-static struct cryptd_queue queue;
+static struct cryptd_state state;
 
-static int cryptd_create(struct crypto_template *tmpl, struct rtattr **tb)
+static struct crypto_instance *cryptd_alloc(struct rtattr **tb)
 {
 	struct crypto_attr_type *algt;
 
 	algt = crypto_get_attr_type(tb);
 	if (IS_ERR(algt))
-		return PTR_ERR(algt);
+		return ERR_CAST(algt);
 
 	switch (algt->type & algt->mask & CRYPTO_ALG_TYPE_MASK) {
 	case CRYPTO_ALG_TYPE_BLKCIPHER:
-		return cryptd_create_blkcipher(tmpl, tb, &queue);
+		return cryptd_alloc_blkcipher(tb, &state);
 	case CRYPTO_ALG_TYPE_DIGEST:
-		return cryptd_create_hash(tmpl, tb, &queue);
+		return cryptd_alloc_hash(tb, &state);
 	}
 
-	return -EINVAL;
+	return ERR_PTR(-EINVAL);
 }
 
 static void cryptd_free(struct crypto_instance *inst)
 {
 	struct cryptd_instance_ctx *ctx = crypto_instance_ctx(inst);
-	struct hashd_instance_ctx *hctx = crypto_instance_ctx(inst);
-
-	switch (inst->alg.cra_flags & CRYPTO_ALG_TYPE_MASK) {
-	case CRYPTO_ALG_TYPE_AHASH:
-		crypto_drop_shash(&hctx->spawn);
-		kfree(ahash_instance(inst));
-		return;
-	}
 
 	crypto_drop_spawn(&ctx->spawn);
 	kfree(inst);
@@ -639,109 +532,87 @@ static void cryptd_free(struct crypto_instance *inst)
 
 static struct crypto_template cryptd_tmpl = {
 	.name = "cryptd",
-	.create = cryptd_create,
+	.alloc = cryptd_alloc,
 	.free = cryptd_free,
 	.module = THIS_MODULE,
 };
 
-struct cryptd_ablkcipher *cryptd_alloc_ablkcipher(const char *alg_name,
-						  u32 type, u32 mask)
+static inline int cryptd_create_thread(struct cryptd_state *state,
+				       int (*fn)(void *data), const char *name)
 {
-	char cryptd_alg_name[CRYPTO_MAX_ALG_NAME];
-	struct crypto_tfm *tfm;
+	spin_lock_init(&state->lock);
+	mutex_init(&state->mutex);
+	crypto_init_queue(&state->queue, CRYPTD_MAX_QLEN);
 
-	if (snprintf(cryptd_alg_name, CRYPTO_MAX_ALG_NAME,
-		     "cryptd(%s)", alg_name) >= CRYPTO_MAX_ALG_NAME)
-		return ERR_PTR(-EINVAL);
-	type &= ~(CRYPTO_ALG_TYPE_MASK | CRYPTO_ALG_GENIV);
-	type |= CRYPTO_ALG_TYPE_BLKCIPHER;
-	mask &= ~CRYPTO_ALG_TYPE_MASK;
-	mask |= (CRYPTO_ALG_GENIV | CRYPTO_ALG_TYPE_BLKCIPHER_MASK);
-	tfm = crypto_alloc_base(cryptd_alg_name, type, mask);
-	if (IS_ERR(tfm))
-		return ERR_CAST(tfm);
-	if (tfm->__crt_alg->cra_module != THIS_MODULE) {
-		crypto_free_tfm(tfm);
-		return ERR_PTR(-EINVAL);
-	}
+	state->task = kthread_run(fn, state, name);
+	if (IS_ERR(state->task))
+		return PTR_ERR(state->task);
 
-	return __cryptd_ablkcipher_cast(__crypto_ablkcipher_cast(tfm));
+	return 0;
 }
-EXPORT_SYMBOL_GPL(cryptd_alloc_ablkcipher);
 
-struct crypto_blkcipher *cryptd_ablkcipher_child(struct cryptd_ablkcipher *tfm)
+static inline void cryptd_stop_thread(struct cryptd_state *state)
 {
-	struct cryptd_blkcipher_ctx *ctx = crypto_ablkcipher_ctx(&tfm->base);
-	return ctx->child;
+	BUG_ON(state->queue.qlen);
+	kthread_stop(state->task);
 }
-EXPORT_SYMBOL_GPL(cryptd_ablkcipher_child);
 
-void cryptd_free_ablkcipher(struct cryptd_ablkcipher *tfm)
+static int cryptd_thread(void *data)
 {
-	crypto_free_ablkcipher(&tfm->base);
+	struct cryptd_state *state = data;
+	int stop;
+
+	current->flags |= PF_NOFREEZE;
+
+	do {
+		struct crypto_async_request *req, *backlog;
+
+		mutex_lock(&state->mutex);
+		__set_current_state(TASK_INTERRUPTIBLE);
+
+		spin_lock_bh(&state->lock);
+		backlog = crypto_get_backlog(&state->queue);
+		req = crypto_dequeue_request(&state->queue);
+		spin_unlock_bh(&state->lock);
+
+		stop = kthread_should_stop();
+
+		if (stop || req) {
+			__set_current_state(TASK_RUNNING);
+			if (req) {
+				if (backlog)
+					backlog->complete(backlog,
+							  -EINPROGRESS);
+				req->complete(req, 0);
+			}
+		}
+
+		mutex_unlock(&state->mutex);
+
+		schedule();
+	} while (!stop);
+
+	return 0;
 }
-EXPORT_SYMBOL_GPL(cryptd_free_ablkcipher);
-
-struct cryptd_ahash *cryptd_alloc_ahash(const char *alg_name,
-					u32 type, u32 mask)
-{
-	char cryptd_alg_name[CRYPTO_MAX_ALG_NAME];
-	struct crypto_ahash *tfm;
-
-	if (snprintf(cryptd_alg_name, CRYPTO_MAX_ALG_NAME,
-		     "cryptd(%s)", alg_name) >= CRYPTO_MAX_ALG_NAME)
-		return ERR_PTR(-EINVAL);
-	tfm = crypto_alloc_ahash(cryptd_alg_name, type, mask);
-	if (IS_ERR(tfm))
-		return ERR_CAST(tfm);
-	if (tfm->base.__crt_alg->cra_module != THIS_MODULE) {
-		crypto_free_ahash(tfm);
-		return ERR_PTR(-EINVAL);
-	}
-
-	return __cryptd_ahash_cast(tfm);
-}
-EXPORT_SYMBOL_GPL(cryptd_alloc_ahash);
-
-struct crypto_shash *cryptd_ahash_child(struct cryptd_ahash *tfm)
-{
-	struct cryptd_hash_ctx *ctx = crypto_ahash_ctx(&tfm->base);
-
-	return ctx->child;
-}
-EXPORT_SYMBOL_GPL(cryptd_ahash_child);
-
-struct shash_desc *cryptd_shash_desc(struct ahash_request *req)
-{
-	struct cryptd_hash_request_ctx *rctx = ahash_request_ctx(req);
-	return &rctx->desc;
-}
-EXPORT_SYMBOL_GPL(cryptd_shash_desc);
-
-void cryptd_free_ahash(struct cryptd_ahash *tfm)
-{
-	crypto_free_ahash(&tfm->base);
-}
-EXPORT_SYMBOL_GPL(cryptd_free_ahash);
 
 static int __init cryptd_init(void)
 {
 	int err;
 
-	err = cryptd_init_queue(&queue, CRYPTD_MAX_CPU_QLEN);
+	err = cryptd_create_thread(&state, cryptd_thread, "cryptd");
 	if (err)
 		return err;
 
 	err = crypto_register_template(&cryptd_tmpl);
 	if (err)
-		cryptd_fini_queue(&queue);
+		kthread_stop(state.task);
 
 	return err;
 }
 
 static void __exit cryptd_exit(void)
 {
-	cryptd_fini_queue(&queue);
+	cryptd_stop_thread(&state);
 	crypto_unregister_template(&cryptd_tmpl);
 }
 

@@ -15,13 +15,13 @@
 
 #include <asm/tlb.h>
 #include <asm/mach/map.h>
-#include <plat/mux.h>
-#include <plat/tc.h>
+#include <mach/mux.h>
+#include <mach/tc.h>
 
-#include "clock.h"
-
+extern int omap1_clk_init(void);
 extern void omap_check_revision(void);
 extern void omap_sram_init(void);
+extern void omapfb_reserve_sdram(void);
 
 /*
  * The machine specific code may provide the extra mapping besides the
@@ -29,24 +29,24 @@ extern void omap_sram_init(void);
  */
 static struct map_desc omap_io_desc[] __initdata = {
 	{
-		.virtual	= OMAP1_IO_VIRT,
-		.pfn		= __phys_to_pfn(OMAP1_IO_PHYS),
-		.length		= OMAP1_IO_SIZE,
+		.virtual	= IO_VIRT,
+		.pfn		= __phys_to_pfn(IO_PHYS),
+		.length		= IO_SIZE,
 		.type		= MT_DEVICE
 	}
 };
 
-#if defined (CONFIG_ARCH_OMAP730) || defined (CONFIG_ARCH_OMAP850)
-static struct map_desc omap7xx_io_desc[] __initdata = {
+#ifdef CONFIG_ARCH_OMAP730
+static struct map_desc omap730_io_desc[] __initdata = {
 	{
-		.virtual	= OMAP7XX_DSP_BASE,
-		.pfn		= __phys_to_pfn(OMAP7XX_DSP_START),
-		.length		= OMAP7XX_DSP_SIZE,
+		.virtual	= OMAP730_DSP_BASE,
+		.pfn		= __phys_to_pfn(OMAP730_DSP_START),
+		.length		= OMAP730_DSP_SIZE,
 		.type		= MT_DEVICE
 	}, {
-		.virtual	= OMAP7XX_DSPREG_BASE,
-		.pfn		= __phys_to_pfn(OMAP7XX_DSPREG_START),
-		.length		= OMAP7XX_DSPREG_SIZE,
+		.virtual	= OMAP730_DSPREG_BASE,
+		.pfn		= __phys_to_pfn(OMAP730_DSPREG_START),
+		.length		= OMAP730_DSPREG_SIZE,
 		.type		= MT_DEVICE
 	}
 };
@@ -104,9 +104,9 @@ void __init omap1_map_common_io(void)
 	 */
 	omap_check_revision();
 
-#if defined (CONFIG_ARCH_OMAP730) || defined (CONFIG_ARCH_OMAP850)
-	if (cpu_is_omap7xx()) {
-		iotable_init(omap7xx_io_desc, ARRAY_SIZE(omap7xx_io_desc));
+#ifdef CONFIG_ARCH_OMAP730
+	if (cpu_is_omap730()) {
+		iotable_init(omap730_io_desc, ARRAY_SIZE(omap730_io_desc));
 	}
 #endif
 #ifdef CONFIG_ARCH_OMAP15XX
@@ -121,6 +121,7 @@ void __init omap1_map_common_io(void)
 #endif
 
 	omap_sram_init();
+	omapfb_reserve_sdram();
 }
 
 /*

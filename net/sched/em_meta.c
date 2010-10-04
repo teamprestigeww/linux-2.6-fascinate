@@ -58,7 +58,6 @@
  * 	      only available if that subsystem is enabled in the kernel.
  */
 
-#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -177,10 +176,8 @@ META_COLLECTOR(var_dev)
 
 META_COLLECTOR(int_vlan_tag)
 {
-	unsigned short tag;
-
-	tag = vlan_tx_tag_get(skb);
-	if (!tag && __vlan_get_tag(skb, &tag))
+	unsigned short uninitialized_var(tag);
+	if (vlan_get_tag(skb, &tag) < 0)
 		*err = -1;
 	else
 		dst->value = tag;
@@ -247,11 +244,11 @@ META_COLLECTOR(int_tcindex)
 
 META_COLLECTOR(int_rtclassid)
 {
-	if (unlikely(skb_dst(skb) == NULL))
+	if (unlikely(skb->dst == NULL))
 		*err = -1;
 	else
 #ifdef CONFIG_NET_CLS_ROUTE
-		dst->value = skb_dst(skb)->tclassid;
+		dst->value = skb->dst->tclassid;
 #else
 		dst->value = 0;
 #endif
@@ -259,10 +256,10 @@ META_COLLECTOR(int_rtclassid)
 
 META_COLLECTOR(int_rtiif)
 {
-	if (unlikely(skb_rtable(skb) == NULL))
+	if (unlikely(skb->rtable == NULL))
 		*err = -1;
 	else
-		dst->value = skb_rtable(skb)->fl.iif;
+		dst->value = skb->rtable->fl.iif;
 }
 
 /**************************************************************************
@@ -304,18 +301,17 @@ META_COLLECTOR(var_sk_bound_if)
 {
 	SKIP_NONLOCAL(skb);
 
-	if (skb->sk->sk_bound_dev_if == 0) {
+	 if (skb->sk->sk_bound_dev_if == 0) {
 		dst->value = (unsigned long) "any";
 		dst->len = 3;
-	} else {
+	 } else  {
 		struct net_device *dev;
 
-		rcu_read_lock();
-		dev = dev_get_by_index_rcu(sock_net(skb->sk),
-					   skb->sk->sk_bound_dev_if);
+		dev = dev_get_by_index(&init_net, skb->sk->sk_bound_dev_if);
 		*err = var_dev(dev, dst);
-		rcu_read_unlock();
-	}
+		if (dev)
+			dev_put(dev);
+	 }
 }
 
 META_COLLECTOR(int_sk_refcnt)
@@ -351,13 +347,13 @@ META_COLLECTOR(int_sk_type)
 META_COLLECTOR(int_sk_rmem_alloc)
 {
 	SKIP_NONLOCAL(skb);
-	dst->value = sk_rmem_alloc_get(skb->sk);
+	dst->value = atomic_read(&skb->sk->sk_rmem_alloc);
 }
 
 META_COLLECTOR(int_sk_wmem_alloc)
 {
 	SKIP_NONLOCAL(skb);
-	dst->value = sk_wmem_alloc_get(skb->sk);
+	dst->value = atomic_read(&skb->sk->sk_wmem_alloc);
 }
 
 META_COLLECTOR(int_sk_omem_alloc)

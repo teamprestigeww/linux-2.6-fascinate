@@ -40,10 +40,8 @@
 #include <linux/udp.h>
 #include <linux/moduleparam.h>
 #include <linux/mm.h>
-#include <linux/slab.h>
 #include <net/ip.h>
 
-#include <xen/xen.h>
 #include <xen/xenbus.h>
 #include <xen/events.h>
 #include <xen/page.h>
@@ -53,7 +51,7 @@
 #include <xen/interface/memory.h>
 #include <xen/interface/grant_table.h>
 
-static const struct ethtool_ops xennet_ethtool_ops;
+static struct ethtool_ops xennet_ethtool_ops;
 
 struct netfront_cb {
 	struct page *page;
@@ -198,7 +196,7 @@ static void rx_refill_timeout(unsigned long data)
 {
 	struct net_device *dev = (struct net_device *)data;
 	struct netfront_info *np = netdev_priv(dev);
-	napi_schedule(&np->napi);
+	netif_rx_schedule(&np->napi);
 }
 
 static int netfront_tx_slot_available(struct netfront_info *np)
@@ -330,7 +328,7 @@ static int xennet_open(struct net_device *dev)
 		xennet_alloc_rx_buffers(dev);
 		np->rx.sring->rsp_event = np->rx.rsp_cons + 1;
 		if (RING_HAS_UNCONSUMED_RESPONSES(&np->rx))
-			napi_schedule(&np->napi);
+			netif_rx_schedule(&np->napi);
 	}
 	spin_unlock_bh(&np->rx_lock);
 
@@ -560,12 +558,12 @@ static int xennet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	spin_unlock_irq(&np->tx_lock);
 
-	return NETDEV_TX_OK;
+	return 0;
 
  drop:
 	dev->stats.tx_dropped++;
 	dev_kfree_skb(skb);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 static int xennet_close(struct net_device *dev)
@@ -981,7 +979,7 @@ err:
 
 		RING_FINAL_CHECK_FOR_RESPONSES(&np->rx, more_to_do);
 		if (!more_to_do)
-			__napi_complete(napi);
+			__netif_rx_complete(napi);
 
 		local_irq_restore(flags);
 	}
@@ -1214,7 +1212,7 @@ static int __devinit netfront_probe(struct xenbus_device *dev,
 	}
 
 	info = netdev_priv(netdev);
-	dev_set_drvdata(&dev->dev, info);
+	dev->dev.driver_data = info;
 
 	err = register_netdev(info->netdev);
 	if (err) {
@@ -1235,7 +1233,7 @@ static int __devinit netfront_probe(struct xenbus_device *dev,
 
  fail:
 	free_netdev(netdev);
-	dev_set_drvdata(&dev->dev, NULL);
+	dev->dev.driver_data = NULL;
 	return err;
 }
 
@@ -1277,7 +1275,7 @@ static void xennet_disconnect_backend(struct netfront_info *info)
  */
 static int netfront_resume(struct xenbus_device *dev)
 {
-	struct netfront_info *info = dev_get_drvdata(&dev->dev);
+	struct netfront_info *info = dev->dev.driver_data;
 
 	dev_dbg(&dev->dev, "%s\n", dev->nodename);
 
@@ -1319,7 +1317,7 @@ static irqreturn_t xennet_interrupt(int irq, void *dev_id)
 		xennet_tx_buf_gc(dev);
 		/* Under tx_lock: protects access to rx shared-ring indexes. */
 		if (RING_HAS_UNCONSUMED_RESPONSES(&np->rx))
-			napi_schedule(&np->napi);
+			netif_rx_schedule(&np->napi);
 	}
 
 	spin_unlock_irqrestore(&np->tx_lock, flags);
@@ -1513,7 +1511,7 @@ static int xennet_set_tso(struct net_device *dev, u32 data)
 static void xennet_set_features(struct net_device *dev)
 {
 	/* Turn off all GSO bits except ROBUST. */
-	dev->features &= ~NETIF_F_GSO_MASK;
+	dev->features &= (1 << NETIF_F_GSO_SHIFT) - 1;
 	dev->features |= NETIF_F_GSO_ROBUST;
 	xennet_set_sg(dev, 0);
 
@@ -1602,7 +1600,7 @@ static int xennet_connect(struct net_device *dev)
 static void backend_changed(struct xenbus_device *dev,
 			    enum xenbus_state backend_state)
 {
-	struct netfront_info *np = dev_get_drvdata(&dev->dev);
+	struct netfront_info *np = dev->dev.driver_data;
 	struct net_device *netdev = np->netdev;
 
 	dev_dbg(&dev->dev, "%s\n", xenbus_strstate(backend_state));
@@ -1621,7 +1619,6 @@ static void backend_changed(struct xenbus_device *dev,
 		if (xennet_connect(netdev) != 0)
 			break;
 		xenbus_switch_state(dev, XenbusStateConnected);
-		netif_notify_peers(netdev);
 		break;
 
 	case XenbusStateClosing:
@@ -1630,7 +1627,7 @@ static void backend_changed(struct xenbus_device *dev,
 	}
 }
 
-static const struct ethtool_ops xennet_ethtool_ops =
+static struct ethtool_ops xennet_ethtool_ops =
 {
 	.set_tx_csum = ethtool_op_set_tx_csum,
 	.set_sg = xennet_set_sg,
@@ -1777,7 +1774,7 @@ static struct xenbus_device_id netfront_ids[] = {
 
 static int __devexit xennet_remove(struct xenbus_device *dev)
 {
-	struct netfront_info *info = dev_get_drvdata(&dev->dev);
+	struct netfront_info *info = dev->dev.driver_data;
 
 	dev_dbg(&dev->dev, "%s\n", dev->nodename);
 

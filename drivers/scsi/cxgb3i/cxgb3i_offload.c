@@ -13,7 +13,6 @@
  */
 
 #include <linux/if_vlan.h>
-#include <linux/slab.h>
 #include <linux/version.h>
 
 #include "cxgb3_defs.h"
@@ -95,30 +94,29 @@ static int c3cn_get_port(struct s3_conn *c3cn, struct cxgb3i_sdev_data *cdata)
 	if (!cdata)
 		goto error_out;
 
-	if (c3cn->saddr.sin_port) {
-		cxgb3i_log_error("connect, sin_port NON-ZERO %u.\n",
-				 c3cn->saddr.sin_port);
-		return -EADDRINUSE;
+	if (c3cn->saddr.sin_port != 0) {
+		idx = ntohs(c3cn->saddr.sin_port) - cxgb3_sport_base;
+		if (idx < 0 || idx >= cxgb3_max_connect)
+			return 0;
+		if (!test_and_set_bit(idx, cdata->sport_map))
+			return -EADDRINUSE;
 	}
 
-	spin_lock_bh(&cdata->lock);
-	start = idx = cdata->sport_next;
+	/* the sport_map_next may not be accurate but that is okay, sport_map
+	   should be */
+	start = idx = cdata->sport_map_next;
 	do {
 		if (++idx >= cxgb3_max_connect)
 			idx = 0;
-		if (!cdata->sport_conn[idx]) {
+		if (!(test_and_set_bit(idx, cdata->sport_map))) {
 			c3cn->saddr.sin_port = htons(cxgb3_sport_base + idx);
-			cdata->sport_next = idx;
-			cdata->sport_conn[idx] = c3cn;
-			spin_unlock_bh(&cdata->lock);
-
+			cdata->sport_map_next = idx;
 			c3cn_conn_debug("%s reserve port %u.\n",
 					cdata->cdev->name,
 					cxgb3_sport_base + idx);
 			return 0;
 		}
 	} while (idx != start);
-	spin_unlock_bh(&cdata->lock);
 
 error_out:
 	return -EADDRNOTAVAIL;
@@ -126,19 +124,15 @@ error_out:
 
 static void c3cn_put_port(struct s3_conn *c3cn)
 {
-	if (!c3cn->cdev)
-		return;
+	struct cxgb3i_sdev_data *cdata = CXGB3_SDEV_DATA(c3cn->cdev);
 
 	if (c3cn->saddr.sin_port) {
-		struct cxgb3i_sdev_data *cdata = CXGB3_SDEV_DATA(c3cn->cdev);
 		int idx = ntohs(c3cn->saddr.sin_port) - cxgb3_sport_base;
 
 		c3cn->saddr.sin_port = 0;
 		if (idx < 0 || idx >= cxgb3_max_connect)
 			return;
-		spin_lock_bh(&cdata->lock);
-		cdata->sport_conn[idx] = NULL;
-		spin_unlock_bh(&cdata->lock);
+		clear_bit(idx, cdata->sport_map);
 		c3cn_conn_debug("%s, release port %u.\n",
 				cdata->cdev->name, cxgb3_sport_base + idx);
 	}
@@ -264,7 +258,6 @@ static void make_act_open_req(struct s3_conn *c3cn, struct sk_buff *skb,
 	skb->priority = CPL_PRIORITY_SETUP;
 	req = (struct cpl_act_open_req *)__skb_put(skb, sizeof(*req));
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
-	req->wr.wr_lo = 0;
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_ACT_OPEN_REQ, atid));
 	req->local_port = c3cn->saddr.sin_port;
 	req->peer_port = c3cn->daddr.sin_port;
@@ -274,7 +267,6 @@ static void make_act_open_req(struct s3_conn *c3cn, struct sk_buff *skb,
 			   V_TX_CHANNEL(e->smt_idx));
 	req->opt0l = htonl(calc_opt0l(c3cn));
 	req->params = 0;
-	req->opt2 = 0;
 }
 
 static void fail_act_open(struct s3_conn *c3cn, int errno)
@@ -294,7 +286,7 @@ static void act_open_req_arp_failure(struct t3cdev *dev, struct sk_buff *skb)
 	c3cn_hold(c3cn);
 	spin_lock_bh(&c3cn->lock);
 	if (c3cn->state == C3CN_STATE_CONNECTING)
-		fail_act_open(c3cn, -EHOSTUNREACH);
+		fail_act_open(c3cn, EHOSTUNREACH);
 	spin_unlock_bh(&c3cn->lock);
 	c3cn_put(c3cn);
 	__kfree_skb(skb);
@@ -381,7 +373,6 @@ static void send_abort_req(struct s3_conn *c3cn)
 
 	c3cn->cpl_abort_req = NULL;
 	req = (struct cpl_abort_req *)skb->head;
-	memset(req, 0, sizeof(*req));
 
 	skb->priority = CPL_PRIORITY_DATA;
 	set_arp_failure_handler(skb, abort_arp_failure);
@@ -409,7 +400,6 @@ static void send_abort_rpl(struct s3_conn *c3cn, int rst_status)
 	c3cn->cpl_abort_rpl = NULL;
 
 	skb->priority = CPL_PRIORITY_DATA;
-	memset(rpl, 0, sizeof(*rpl));
 	rpl->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_OFLD_HOST_ABORT_CON_RPL));
 	rpl->wr.wr_lo = htonl(V_WR_TID(c3cn->tid));
 	OPCODE_TID(rpl) = htonl(MK_OPCODE_TID(CPL_ABORT_RPL, c3cn->tid));
@@ -434,7 +424,6 @@ static u32 send_rx_credits(struct s3_conn *c3cn, u32 credits, u32 dack)
 
 	req = (struct cpl_rx_data_ack *)__skb_put(skb, sizeof(*req));
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
-	req->wr.wr_lo = 0;
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_RX_DATA_ACK, c3cn->tid));
 	req->credit_dack = htonl(dack | V_RX_CREDITS(credits));
 	skb->priority = CPL_PRIORITY_ACK;
@@ -798,18 +787,18 @@ static int act_open_rpl_status_to_errno(int status)
 {
 	switch (status) {
 	case CPL_ERR_CONN_RESET:
-		return -ECONNREFUSED;
+		return ECONNREFUSED;
 	case CPL_ERR_ARP_MISS:
-		return -EHOSTUNREACH;
+		return EHOSTUNREACH;
 	case CPL_ERR_CONN_TIMEDOUT:
-		return -ETIMEDOUT;
+		return ETIMEDOUT;
 	case CPL_ERR_TCAM_FULL:
-		return -ENOMEM;
+		return ENOMEM;
 	case CPL_ERR_CONN_EXIST:
 		cxgb3i_log_error("ACTIVE_OPEN_RPL: 4-tuple in use\n");
-		return -EADDRINUSE;
+		return EADDRINUSE;
 	default:
-		return -EIO;
+		return EIO;
 	}
 }
 
@@ -823,7 +812,7 @@ static void act_open_retry_timer(unsigned long data)
 	spin_lock_bh(&c3cn->lock);
 	skb = alloc_skb(sizeof(struct cpl_act_open_req), GFP_ATOMIC);
 	if (!skb)
-		fail_act_open(c3cn, -ENOMEM);
+		fail_act_open(c3cn, ENOMEM);
 	else {
 		skb->sk = (struct sock *)c3cn;
 		set_arp_failure_handler(skb, act_open_req_arp_failure);
@@ -972,14 +961,14 @@ static int abort_status_to_errno(struct s3_conn *c3cn, int abort_reason,
 	case CPL_ERR_BAD_SYN: /* fall through */
 	case CPL_ERR_CONN_RESET:
 		return c3cn->state > C3CN_STATE_ESTABLISHED ?
-			-EPIPE : -ECONNRESET;
+			EPIPE : ECONNRESET;
 	case CPL_ERR_XMIT_TIMEDOUT:
 	case CPL_ERR_PERSIST_TIMEDOUT:
 	case CPL_ERR_FINWAIT2_TIMEDOUT:
 	case CPL_ERR_KEEPALIVE_TIMEDOUT:
-		return -ETIMEDOUT;
+		return ETIMEDOUT;
 	default:
-		return -EIO;
+		return EIO;
 	}
 }
 
@@ -1316,7 +1305,11 @@ static void c3cn_release_offload_resources(struct s3_conn *c3cn)
 	struct t3cdev *cdev = c3cn->cdev;
 	unsigned int tid = c3cn->tid;
 
+	if (!cdev)
+		return;
+
 	c3cn->qset = 0;
+
 	c3cn_free_cpl_skbs(c3cn);
 
 	if (c3cn->wr_avail != c3cn->wr_max) {
@@ -1324,22 +1317,18 @@ static void c3cn_release_offload_resources(struct s3_conn *c3cn)
 		reset_wr_list(c3cn);
 	}
 
-	if (cdev) {
-		if (c3cn->l2t) {
-			l2t_release(L2DATA(cdev), c3cn->l2t);
-			c3cn->l2t = NULL;
-		}
-		if (c3cn->state == C3CN_STATE_CONNECTING)
-			/* we have ATID */
-			s3_free_atid(cdev, tid);
-		else {
-			/* we have TID */
-			cxgb3_remove_tid(cdev, (void *)c3cn, tid);
-			c3cn_put(c3cn);
-		}
+	if (c3cn->l2t) {
+		l2t_release(L2DATA(cdev), c3cn->l2t);
+		c3cn->l2t = NULL;
 	}
 
-	c3cn->dst_cache = NULL;
+	if (c3cn->state == C3CN_STATE_CONNECTING) /* we have ATID */
+		s3_free_atid(cdev, tid);
+	else {		/* we have TID */
+		cxgb3_remove_tid(cdev, (void *)c3cn, tid);
+		c3cn_put(c3cn);
+	}
+
 	c3cn->cdev = NULL;
 }
 
@@ -1436,20 +1425,16 @@ void cxgb3i_c3cn_release(struct s3_conn *c3cn)
 {
 	c3cn_conn_debug("c3cn 0x%p, s %u, f 0x%lx.\n",
 			c3cn, c3cn->state, c3cn->flags);
-	if (unlikely(c3cn->state == C3CN_STATE_CONNECTING))
-		c3cn_set_flag(c3cn, C3CN_ACTIVE_CLOSE_NEEDED);
-	else if (likely(c3cn->state != C3CN_STATE_CLOSED))
+	if (likely(c3cn->state != C3CN_STATE_CONNECTING))
 		c3cn_active_close(c3cn);
+	else
+		c3cn_set_flag(c3cn, C3CN_ACTIVE_CLOSE_NEEDED);
 	c3cn_put(c3cn);
 }
 
 static int is_cxgb3_dev(struct net_device *dev)
 {
 	struct cxgb3i_sdev_data *cdata;
-	struct net_device *ndev = dev;
-
-	if (dev->priv_flags & IFF_802_1Q_VLAN)
-		ndev = vlan_dev_real_dev(dev);
 
 	write_lock(&cdata_rwlock);
 	list_for_each_entry(cdata, &cdata_list, list) {
@@ -1457,7 +1442,7 @@ static int is_cxgb3_dev(struct net_device *dev)
 		int i;
 
 		for (i = 0; i < ports->nports; i++)
-			if (ndev == ports->lldevs[i]) {
+			if (dev == ports->lldevs[i]) {
 				write_unlock(&cdata_rwlock);
 				return 1;
 			}
@@ -1489,13 +1474,12 @@ static struct net_device *cxgb3_egress_dev(struct net_device *root_dev,
 	return NULL;
 }
 
-static struct rtable *find_route(struct net_device *dev,
-				 __be32 saddr, __be32 daddr,
+static struct rtable *find_route(__be32 saddr, __be32 daddr,
 				 __be16 sport, __be16 dport)
 {
 	struct rtable *rt;
 	struct flowi fl = {
-		.oif = dev ? dev->ifindex : 0,
+		.oif = 0,
 		.nl_u = {
 			 .ip4_u = {
 				   .daddr = daddr,
@@ -1573,29 +1557,9 @@ free_tid:
 	s3_free_atid(cdev, c3cn->tid);
 	c3cn->tid = 0;
 out_err:
-	return -EINVAL;
+	return -1;
 }
 
-/**
- * cxgb3i_find_dev - find the interface associated with the given address
- * @ipaddr: ip address
- */
-static struct net_device *
-cxgb3i_find_dev(struct net_device *dev, __be32 ipaddr)
-{
-	struct flowi fl;
-	int err;
-	struct rtable *rt;
-
-	memset(&fl, 0, sizeof(fl));
-	fl.nl_u.ip4_u.daddr = ipaddr;
-
-	err = ip_route_output_key(dev ? dev_net(dev) : &init_net, &rt, &fl);
-	if (!err)
-		return (&rt->dst)->dev;
-
-	return NULL;
-}
 
 /**
  * cxgb3i_c3cn_connect - initiates an iscsi tcp connection to a given address
@@ -1604,17 +1568,14 @@ cxgb3i_find_dev(struct net_device *dev, __be32 ipaddr)
  *
  * return 0 if active open request is sent, < 0 otherwise.
  */
-int cxgb3i_c3cn_connect(struct net_device *dev, struct s3_conn *c3cn,
-			struct sockaddr_in *usin)
+int cxgb3i_c3cn_connect(struct s3_conn *c3cn, struct sockaddr_in *usin)
 {
 	struct rtable *rt;
+	struct net_device *dev;
 	struct cxgb3i_sdev_data *cdata;
 	struct t3cdev *cdev;
 	__be32 sipv4;
-	struct net_device *dstdev;
 	int err;
-
-	c3cn_conn_debug("c3cn 0x%p, dev 0x%p.\n", c3cn, dev);
 
 	if (usin->sin_family != AF_INET)
 		return -EAFNOSUPPORT;
@@ -1622,30 +1583,21 @@ int cxgb3i_c3cn_connect(struct net_device *dev, struct s3_conn *c3cn,
 	c3cn->daddr.sin_port = usin->sin_port;
 	c3cn->daddr.sin_addr.s_addr = usin->sin_addr.s_addr;
 
-	dstdev = cxgb3i_find_dev(dev, usin->sin_addr.s_addr);
-	if (!dstdev || !is_cxgb3_dev(dstdev))
-		return -ENETUNREACH;
-
-	if (dstdev->priv_flags & IFF_802_1Q_VLAN)
-		dev = dstdev;
-
-	rt = find_route(dev, c3cn->saddr.sin_addr.s_addr,
+	rt = find_route(c3cn->saddr.sin_addr.s_addr,
 			c3cn->daddr.sin_addr.s_addr,
 			c3cn->saddr.sin_port,
 			c3cn->daddr.sin_port);
 	if (rt == NULL) {
-		c3cn_conn_debug("NO route to 0x%x, port %u, dev %s.\n",
+		c3cn_conn_debug("NO route to 0x%x, port %u.\n",
 				c3cn->daddr.sin_addr.s_addr,
-				ntohs(c3cn->daddr.sin_port),
-				dev ? dev->name : "any");
+				ntohs(c3cn->daddr.sin_port));
 		return -ENETUNREACH;
 	}
 
 	if (rt->rt_flags & (RTCF_MULTICAST | RTCF_BROADCAST)) {
-		c3cn_conn_debug("multi-cast route to 0x%x, port %u, dev %s.\n",
+		c3cn_conn_debug("multi-cast route to 0x%x, port %u.\n",
 				c3cn->daddr.sin_addr.s_addr,
-				ntohs(c3cn->daddr.sin_port),
-				dev ? dev->name : "any");
+				ntohs(c3cn->daddr.sin_port));
 		ip_rt_put(rt);
 		return -ENETUNREACH;
 	}
@@ -1654,7 +1606,7 @@ int cxgb3i_c3cn_connect(struct net_device *dev, struct s3_conn *c3cn,
 		c3cn->saddr.sin_addr.s_addr = rt->rt_src;
 
 	/* now commit destination to connection */
-	c3cn->dst_cache = &rt->dst;
+	c3cn->dst_cache = &rt->u.dst;
 
 	/* try to establish an offloaded connection */
 	dev = cxgb3_egress_dev(c3cn->dst_cache->dev, c3cn, 0);
@@ -1681,11 +1633,10 @@ int cxgb3i_c3cn_connect(struct net_device *dev, struct s3_conn *c3cn,
 	} else
 		c3cn->saddr.sin_addr.s_addr = sipv4;
 
-	c3cn_conn_debug("c3cn 0x%p, %pI4,%u-%pI4,%u SYN_SENT.\n",
-			c3cn,
-			&c3cn->saddr.sin_addr.s_addr,
+	c3cn_conn_debug("c3cn 0x%p, %u.%u.%u.%u,%u-%u.%u.%u.%u,%u SYN_SENT.\n",
+			c3cn, NIPQUAD(c3cn->saddr.sin_addr.s_addr),
 			ntohs(c3cn->saddr.sin_port),
-			&c3cn->daddr.sin_addr.s_addr,
+			NIPQUAD(c3cn->daddr.sin_addr.s_addr),
 			ntohs(c3cn->daddr.sin_port));
 
 	c3cn_set_state(c3cn, C3CN_STATE_CONNECTING);
@@ -1706,6 +1657,7 @@ int cxgb3i_c3cn_connect(struct net_device *dev, struct s3_conn *c3cn,
 	c3cn_set_state(c3cn, C3CN_STATE_CLOSED);
 	ip_rt_put(rt);
 	c3cn_put_port(c3cn);
+	c3cn->daddr.sin_port = 0;
 	return err;
 }
 
@@ -1781,7 +1733,7 @@ int cxgb3i_c3cn_send_pdus(struct s3_conn *c3cn, struct sk_buff *skb)
 		c3cn_tx_debug("c3cn 0x%p, snd %u - %u > %u.\n",
 				c3cn, c3cn->write_seq, c3cn->snd_una,
 				cxgb3_snd_win);
-		err = -ENOBUFS;
+		err = -EAGAIN;
 		goto out_err;
 	}
 
@@ -1819,33 +1771,16 @@ done:
 out_err:
 	if (copied == 0 && err == -EPIPE)
 		copied = c3cn->err ? c3cn->err : -EPIPE;
-	else
-		copied = err;
 	goto done;
 }
 
 static void sdev_data_cleanup(struct cxgb3i_sdev_data *cdata)
 {
 	struct adap_ports *ports = &cdata->ports;
-	struct s3_conn *c3cn;
 	int i;
-
-	for (i = 0; i < cxgb3_max_connect; i++) {
-		if (cdata->sport_conn[i]) {
-			c3cn = cdata->sport_conn[i];
-			cdata->sport_conn[i] = NULL;
-
-			spin_lock_bh(&c3cn->lock);
-			c3cn->cdev = NULL;
-			c3cn_set_flag(c3cn, C3CN_OFFLOAD_DOWN);
-			c3cn_closed(c3cn);
-			spin_unlock_bh(&c3cn->lock);
-		}
-	}
 
 	for (i = 0; i < ports->nports; i++)
 		NDEV2CDATA(ports->lldevs[i]) = NULL;
-
 	cxgb3i_free_big_mem(cdata);
 }
 
@@ -1887,27 +1822,21 @@ void cxgb3i_sdev_add(struct t3cdev *cdev, struct cxgb3_client *client)
 	struct cxgb3i_sdev_data *cdata;
 	struct ofld_page_info rx_page_info;
 	unsigned int wr_len;
-	int mapsize = cxgb3_max_connect * sizeof(struct s3_conn *);
+	int mapsize = DIV_ROUND_UP(cxgb3_max_connect,
+				   8 * sizeof(unsigned long));
 	int i;
 
 	cdata =  cxgb3i_alloc_big_mem(sizeof(*cdata) + mapsize, GFP_KERNEL);
-	if (!cdata) {
-		cxgb3i_log_warn("t3dev 0x%p, offload up, OOM %d.\n",
-				cdev, mapsize);
+	if (!cdata)
 		return;
-	}
 
 	if (cdev->ctl(cdev, GET_WR_LEN, &wr_len) < 0 ||
 	    cdev->ctl(cdev, GET_PORTS, &cdata->ports) < 0 ||
-	    cdev->ctl(cdev, GET_RX_PAGE_INFO, &rx_page_info) < 0) {
-		cxgb3i_log_warn("t3dev 0x%p, offload up, ioctl failed.\n",
-				cdev);
+	    cdev->ctl(cdev, GET_RX_PAGE_INFO, &rx_page_info) < 0)
 		goto free_cdata;
-	}
 
 	s3_init_wr_tab(wr_len);
 
-	spin_lock_init(&cdata->lock);
 	INIT_LIST_HEAD(&cdata->list);
 	cdata->cdev = cdev;
 	cdata->client = client;
@@ -1919,7 +1848,6 @@ void cxgb3i_sdev_add(struct t3cdev *cdev, struct cxgb3_client *client)
 	list_add_tail(&cdata->list, &cdata_list);
 	write_unlock(&cdata_rwlock);
 
-	cxgb3i_log_info("t3dev 0x%p, offload up, added.\n", cdev);
 	return;
 
 free_cdata:
@@ -1933,8 +1861,6 @@ free_cdata:
 void cxgb3i_sdev_remove(struct t3cdev *cdev)
 {
 	struct cxgb3i_sdev_data *cdata = CXGB3_SDEV_DATA(cdev);
-
-	cxgb3i_log_info("t3dev 0x%p, offload down, remove.\n", cdev);
 
 	write_lock(&cdata_rwlock);
 	list_del(&cdata->list);

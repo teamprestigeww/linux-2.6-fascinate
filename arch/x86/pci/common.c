@@ -9,7 +9,6 @@
 #include <linux/ioport.h>
 #include <linux/init.h>
 #include <linux/dmi.h>
-#include <linux/slab.h>
 
 #include <asm/acpi.h>
 #include <asm/segment.h>
@@ -73,10 +72,16 @@ struct pci_ops pci_root_ops = {
 };
 
 /*
+ * legacy, numa, and acpi all want to call pcibios_scan_root
+ * from their initcalls. This flag prevents that.
+ */
+int pcibios_scanned;
+
+/*
  * This interrupt-safe spinlock protects all accesses to PCI
  * configuration space.
  */
-DEFINE_RAW_SPINLOCK(pci_config_lock);
+DEFINE_SPINLOCK(pci_config_lock);
 
 static int __devinit can_skip_ioresource_align(const struct dmi_system_id *d)
 {
@@ -85,7 +90,7 @@ static int __devinit can_skip_ioresource_align(const struct dmi_system_id *d)
 	return 0;
 }
 
-static const struct dmi_system_id can_skip_pciprobe_dmi_table[] __devinitconst = {
+static struct dmi_system_id can_skip_pciprobe_dmi_table[] __devinitdata = {
 /*
  * Systems where PCI IO resource ISA alignment can be skipped
  * when the ISA enable bit in the bridge control is not set
@@ -125,23 +130,6 @@ void __init dmi_check_skip_isa_align(void)
 static void __devinit pcibios_fixup_device_resources(struct pci_dev *dev)
 {
 	struct resource *rom_r = &dev->resource[PCI_ROM_RESOURCE];
-	struct resource *bar_r;
-	int bar;
-
-	if (pci_probe & PCI_NOASSIGN_BARS) {
-		/*
-		* If the BIOS did not assign the BAR, zero out the
-		* resource so the kernel doesn't attmept to assign
-		* it later on in pci_assign_unassigned_resources
-		*/
-		for (bar = 0; bar <= PCI_STD_RESOURCE_END; bar++) {
-			bar_r = &dev->resource[bar];
-			if (bar_r->start == 0 && bar_r->end != 0) {
-				bar_r->flags = 0;
-				bar_r->end = 0;
-			}
-		}
-	}
 
 	if (pci_probe & PCI_NOASSIGN_ROMS) {
 		if (rom_r->parent)
@@ -159,13 +147,10 @@ static void __devinit pcibios_fixup_device_resources(struct pci_dev *dev)
  *  are examined.
  */
 
-void __devinit pcibios_fixup_bus(struct pci_bus *b)
+void __devinit  pcibios_fixup_bus(struct pci_bus *b)
 {
 	struct pci_dev *dev;
 
-	/* root bus? */
-	if (!b->parent)
-		x86_pci_root_bus_res_quirks(b);
 	pci_read_bridge_bases(b);
 	list_for_each_entry(dev, &b->devices, bus_list)
 		pcibios_fixup_device_resources(dev);
@@ -198,7 +183,7 @@ static int __devinit assign_all_busses(const struct dmi_system_id *d)
 }
 #endif
 
-static const struct dmi_system_id __devinitconst pciprobe_dmi_table[] = {
+static struct dmi_system_id __devinitdata pciprobe_dmi_table[] = {
 #ifdef __i386__
 /*
  * Laptops which need pci=assign-busses to see Cardbus cards
@@ -422,6 +407,8 @@ struct pci_bus * __devinit pcibios_scan_root(int busnum)
 	return bus;
 }
 
+extern u8 pci_cache_line_size;
+
 int __init pcibios_init(void)
 {
 	struct cpuinfo_x86 *c = &boot_cpu_data;
@@ -432,19 +419,15 @@ int __init pcibios_init(void)
 	}
 
 	/*
-	 * Set PCI cacheline size to that of the CPU if the CPU has reported it.
-	 * (For older CPUs that don't support cpuid, we se it to 32 bytes
-	 * It's also good for 386/486s (which actually have 16)
+	 * Assume PCI cacheline size of 32 bytes for all x86s except K7/K8
+	 * and P4. It's also good for 386/486s (which actually have 16)
 	 * as quite a few PCI devices do not support smaller values.
 	 */
-	if (c->x86_clflush_size > 0) {
-		pci_dfl_cache_line_size = c->x86_clflush_size >> 2;
-		printk(KERN_DEBUG "PCI: pci_cache_line_size set to %d bytes\n",
-			pci_dfl_cache_line_size << 2);
-	} else {
- 		pci_dfl_cache_line_size = 32 >> 2;
-		printk(KERN_DEBUG "PCI: Unknown cacheline size. Setting to 32 bytes\n");
-	}
+	pci_cache_line_size = 32 >> 2;
+	if (c->x86 >= 6 && c->x86_vendor == X86_VENDOR_AMD)
+		pci_cache_line_size = 64 >> 2;	/* K7 & K8 */
+	else if (c->x86 > 6 && c->x86_vendor == X86_VENDOR_INTEL)
+		pci_cache_line_size = 128 >> 2;	/* P4 */
 
 	pcibios_resource_survey();
 
@@ -526,17 +509,11 @@ char * __devinit  pcibios_setup(char *str)
 	} else if (!strcmp(str, "norom")) {
 		pci_probe |= PCI_NOASSIGN_ROMS;
 		return NULL;
-	} else if (!strcmp(str, "nobar")) {
-		pci_probe |= PCI_NOASSIGN_BARS;
-		return NULL;
 	} else if (!strcmp(str, "assign-busses")) {
 		pci_probe |= PCI_ASSIGN_ALL_BUSSES;
 		return NULL;
 	} else if (!strcmp(str, "use_crs")) {
 		pci_probe |= PCI_USE__CRS;
-		return NULL;
-	} else if (!strcmp(str, "nocrs")) {
-		pci_probe |= PCI_ROOT_NO_CRS;
 		return NULL;
 	} else if (!strcmp(str, "earlydump")) {
 		pci_early_dump_regs = 1;
@@ -620,72 +597,3 @@ struct pci_bus * __devinit pci_scan_bus_with_sysdata(int busno)
 {
 	return pci_scan_bus_on_node(busno, &pci_root_ops, -1);
 }
-
-/*
- * NUMA info for PCI busses
- *
- * Early arch code is responsible for filling in reasonable values here.
- * A node id of "-1" means "use current node".  In other words, if a bus
- * has a -1 node id, it's not tightly coupled to any particular chunk
- * of memory (as is the case on some Nehalem systems).
- */
-#ifdef CONFIG_NUMA
-
-#define BUS_NR 256
-
-#ifdef CONFIG_X86_64
-
-static int mp_bus_to_node[BUS_NR] = {
-	[0 ... BUS_NR - 1] = -1
-};
-
-void set_mp_bus_to_node(int busnum, int node)
-{
-	if (busnum >= 0 &&  busnum < BUS_NR)
-		mp_bus_to_node[busnum] = node;
-}
-
-int get_mp_bus_to_node(int busnum)
-{
-	int node = -1;
-
-	if (busnum < 0 || busnum > (BUS_NR - 1))
-		return node;
-
-	node = mp_bus_to_node[busnum];
-
-	/*
-	 * let numa_node_id to decide it later in dma_alloc_pages
-	 * if there is no ram on that node
-	 */
-	if (node != -1 && !node_online(node))
-		node = -1;
-
-	return node;
-}
-
-#else /* CONFIG_X86_32 */
-
-static int mp_bus_to_node[BUS_NR] = {
-	[0 ... BUS_NR - 1] = -1
-};
-
-void set_mp_bus_to_node(int busnum, int node)
-{
-	if (busnum >= 0 &&  busnum < BUS_NR)
-	mp_bus_to_node[busnum] = (unsigned char) node;
-}
-
-int get_mp_bus_to_node(int busnum)
-{
-	int node;
-
-	if (busnum < 0 || busnum > (BUS_NR - 1))
-		return 0;
-	node = mp_bus_to_node[busnum];
-	return node;
-}
-
-#endif /* CONFIG_X86_32 */
-
-#endif /* CONFIG_NUMA */

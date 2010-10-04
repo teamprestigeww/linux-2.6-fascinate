@@ -124,13 +124,12 @@ struct usb_function {
 	void			(*suspend)(struct usb_function *);
 	void			(*resume)(struct usb_function *);
 
-	/* private: */
 	/* internals */
 	struct list_head		list;
-	DECLARE_BITMAP(endpoints, 32);
 };
 
 int usb_add_function(struct usb_configuration *, struct usb_function *);
+void reorder_usb_function(struct usb_configuration *, int);
 
 int usb_function_deactivate(struct usb_function *);
 int usb_function_activate(struct usb_function *);
@@ -221,7 +220,6 @@ struct usb_configuration {
 
 	struct usb_composite_dev	*cdev;
 
-	/* private: */
 	/* internals */
 	struct list_head	list;
 	struct list_head	functions;
@@ -232,6 +230,9 @@ struct usb_configuration {
 };
 
 int usb_add_config(struct usb_composite_dev *,
+		struct usb_configuration *);
+		
+int usb_change_config(struct usb_composite_dev *,
 		struct usb_configuration *);
 
 /**
@@ -247,11 +248,6 @@ int usb_add_config(struct usb_composite_dev *,
  *	value; it should return zero on successful initialization.
  * @unbind: Reverses @bind(); called as a side effect of unregistering
  *	this driver.
- * @disconnect: optional driver disconnect method
- * @suspend: Notifies when the host stops sending USB traffic,
- *	after function notifications
- * @resume: Notifies configuration when the host restarts USB traffic,
- *	before function notifications
  *
  * Devices default to reporting self powered operation.  Devices which rely
  * on bus powered operation should report this in their @bind() method.
@@ -276,12 +272,6 @@ struct usb_composite_driver {
 
 	int			(*bind)(struct usb_composite_dev *);
 	int			(*unbind)(struct usb_composite_dev *);
-
-	void			(*disconnect)(struct usb_composite_dev *);
-
-	/* global suspend hooks */
-	void			(*suspend)(struct usb_composite_dev *);
-	void			(*resume)(struct usb_composite_dev *);
 };
 
 extern int usb_composite_register(struct usb_composite_driver *);
@@ -327,9 +317,7 @@ struct usb_composite_dev {
 
 	struct usb_configuration	*config;
 
-	/* private: */
 	/* internals */
-	unsigned int			suspended:1;
 	struct usb_device_descriptor	desc;
 	struct list_head		configs;
 	struct usb_composite_driver	*driver;
@@ -345,10 +333,6 @@ struct usb_composite_dev {
 };
 
 extern int usb_string_id(struct usb_composite_dev *c);
-extern int usb_string_ids_tab(struct usb_composite_dev *c,
-			      struct usb_string *str);
-extern int usb_string_ids_n(struct usb_composite_dev *c, unsigned n);
-
 
 /* messaging utils */
 #define DBG(d, fmt, args...) \

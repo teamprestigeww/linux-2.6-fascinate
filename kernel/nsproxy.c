@@ -13,7 +13,6 @@
  *             Pavel Emelianov <xemul@openvz.org>
  */
 
-#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/nsproxy.h>
 #include <linux/init_task.h>
@@ -25,27 +24,21 @@
 
 static struct kmem_cache *nsproxy_cachep;
 
-struct nsproxy init_nsproxy = {
-	.count	= ATOMIC_INIT(1),
-	.uts_ns	= &init_uts_ns,
-#if defined(CONFIG_POSIX_MQUEUE) || defined(CONFIG_SYSVIPC)
-	.ipc_ns	= &init_ipc_ns,
-#endif
-	.mnt_ns	= NULL,
-	.pid_ns	= &init_pid_ns,
-#ifdef CONFIG_NET
-	.net_ns	= &init_net,
-#endif
-};
+struct nsproxy init_nsproxy = INIT_NSPROXY(init_nsproxy);
 
-static inline struct nsproxy *create_nsproxy(void)
+/*
+ * creates a copy of "orig" with refcount 1.
+ */
+static inline struct nsproxy *clone_nsproxy(struct nsproxy *orig)
 {
-	struct nsproxy *nsproxy;
+	struct nsproxy *ns;
 
-	nsproxy = kmem_cache_alloc(nsproxy_cachep, GFP_KERNEL);
-	if (nsproxy)
-		atomic_set(&nsproxy->count, 1);
-	return nsproxy;
+	ns = kmem_cache_alloc(nsproxy_cachep, GFP_KERNEL);
+	if (ns) {
+		memcpy(ns, orig, sizeof(struct nsproxy));
+		atomic_set(&ns->count, 1);
+	}
+	return ns;
 }
 
 /*
@@ -59,7 +52,7 @@ static struct nsproxy *create_new_namespaces(unsigned long flags,
 	struct nsproxy *new_nsp;
 	int err;
 
-	new_nsp = create_nsproxy();
+	new_nsp = clone_nsproxy(tsk->nsproxy);
 	if (!new_nsp)
 		return ERR_PTR(-ENOMEM);
 

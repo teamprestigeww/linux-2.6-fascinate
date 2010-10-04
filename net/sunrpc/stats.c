@@ -13,7 +13,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/slab.h>
 
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -142,30 +141,35 @@ EXPORT_SYMBOL_GPL(rpc_free_iostats);
 void rpc_count_iostats(struct rpc_task *task)
 {
 	struct rpc_rqst *req = task->tk_rqstp;
-	struct rpc_iostats *stats;
+	struct rpc_iostats *stats = task->tk_client->cl_metrics;
 	struct rpc_iostats *op_metrics;
-	ktime_t delta;
+	long rtt, execute, queue;
 
-	if (!task->tk_client || !task->tk_client->cl_metrics || !req)
+	if (!stats || !req)
 		return;
-
-	stats = task->tk_client->cl_metrics;
 	op_metrics = &stats[task->tk_msg.rpc_proc->p_statidx];
 
 	op_metrics->om_ops++;
 	op_metrics->om_ntrans += req->rq_ntrans;
 	op_metrics->om_timeouts += task->tk_timeouts;
 
-	op_metrics->om_bytes_sent += req->rq_xmit_bytes_sent;
-	op_metrics->om_bytes_recv += req->rq_reply_bytes_recvd;
+	op_metrics->om_bytes_sent += task->tk_bytes_sent;
+	op_metrics->om_bytes_recv += req->rq_received;
 
-	delta = ktime_sub(req->rq_xtime, task->tk_start);
-	op_metrics->om_queue = ktime_add(op_metrics->om_queue, delta);
+	queue = (long)req->rq_xtime - task->tk_start;
+	if (queue < 0)
+		queue = -queue;
+	op_metrics->om_queue += queue;
 
-	op_metrics->om_rtt = ktime_add(op_metrics->om_rtt, req->rq_rtt);
+	rtt = task->tk_rtt;
+	if (rtt < 0)
+		rtt = -rtt;
+	op_metrics->om_rtt += rtt;
 
-	delta = ktime_sub(ktime_get(), task->tk_start);
-	op_metrics->om_execute = ktime_add(op_metrics->om_execute, delta);
+	execute = (long)jiffies - task->tk_start;
+	if (execute < 0)
+		execute = -execute;
+	op_metrics->om_execute += execute;
 }
 
 static void _print_name(struct seq_file *seq, unsigned int op,
@@ -178,6 +182,8 @@ static void _print_name(struct seq_file *seq, unsigned int op,
 	else
 		seq_printf(seq, "\t%12u: ", op);
 }
+
+#define MILLISECS_PER_JIFFY	(1000 / HZ)
 
 void rpc_print_iostats(struct seq_file *seq, struct rpc_clnt *clnt)
 {
@@ -205,9 +211,9 @@ void rpc_print_iostats(struct seq_file *seq, struct rpc_clnt *clnt)
 				metrics->om_timeouts,
 				metrics->om_bytes_sent,
 				metrics->om_bytes_recv,
-				ktime_to_ms(metrics->om_queue),
-				ktime_to_ms(metrics->om_rtt),
-				ktime_to_ms(metrics->om_execute));
+				metrics->om_queue * MILLISECS_PER_JIFFY,
+				metrics->om_rtt * MILLISECS_PER_JIFFY,
+				metrics->om_execute * MILLISECS_PER_JIFFY);
 	}
 }
 EXPORT_SYMBOL_GPL(rpc_print_iostats);
@@ -256,8 +262,14 @@ void
 rpc_proc_init(void)
 {
 	dprintk("RPC:       registering /proc/net/rpc\n");
-	if (!proc_net_rpc)
-		proc_net_rpc = proc_mkdir("rpc", init_net.proc_net);
+	if (!proc_net_rpc) {
+		struct proc_dir_entry *ent;
+		ent = proc_mkdir("rpc", init_net.proc_net);
+		if (ent) {
+			ent->owner = THIS_MODULE;
+			proc_net_rpc = ent;
+		}
+	}
 }
 
 void

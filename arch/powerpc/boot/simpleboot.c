@@ -19,7 +19,7 @@
 #include "types.h"
 #include "io.h"
 #include "stdio.h"
-#include <libfdt.h>
+#include "libfdt/libfdt.h"
 
 BSS_STACK(4*1024);
 

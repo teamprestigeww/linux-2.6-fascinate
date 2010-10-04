@@ -111,11 +111,9 @@
  * Sorry, I had to rewrite most of this for 2.5.x -DaveM
  */
 
-#include <linux/capability.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/timer.h>
 #include <linux/netdevice.h>
 #include <net/net_namespace.h>
@@ -129,7 +127,7 @@
 static int eql_open(struct net_device *dev);
 static int eql_close(struct net_device *dev);
 static int eql_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
-static netdev_tx_t eql_slave_xmit(struct sk_buff *skb, struct net_device *dev);
+static int eql_slave_xmit(struct sk_buff *skb, struct net_device *dev);
 
 #define eql_is_slave(dev)	((dev->flags & IFF_SLAVE) == IFF_SLAVE)
 #define eql_is_master(dev)	((dev->flags & IFF_MASTER) == IFF_MASTER)
@@ -161,7 +159,7 @@ static void eql_timer(unsigned long param)
 	add_timer(&eql->timer);
 }
 
-static const char version[] __initconst =
+static char version[] __initdata =
 	"Equalizer2002: Simon Janes (simon@ncm.com) and David S. Miller (davem@redhat.com)\n";
 
 static const struct net_device_ops eql_netdev_ops = {
@@ -196,7 +194,6 @@ static void __init eql_setup(struct net_device *dev)
 
 	dev->type       	= ARPHRD_SLIP;
 	dev->tx_queue_len 	= 5;		/* Hands them off fast */
-	dev->priv_flags	       &= ~IFF_XMIT_DST_RELEASE;
 }
 
 static int eql_open(struct net_device *dev)
@@ -288,7 +285,7 @@ static int eql_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 			return eql_s_master_cfg(dev, ifr->ifr_data);
 		default:
 			return -EOPNOTSUPP;
-	}
+	};
 }
 
 /* queue->lock must be held */
@@ -327,7 +324,7 @@ static slave_t *__eql_schedule_slaves(slave_queue_t *queue)
 	return best_slave;
 }
 
-static netdev_tx_t eql_slave_xmit(struct sk_buff *skb, struct net_device *dev)
+static int eql_slave_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	equalizer_t *eql = netdev_priv(dev);
 	slave_t *slave;
@@ -350,7 +347,7 @@ static netdev_tx_t eql_slave_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	spin_unlock(&eql->queue.lock);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -545,8 +542,6 @@ static int eql_s_slave_cfg(struct net_device *dev, slave_config_t __user *scp)
 	}
 	spin_unlock_bh(&eql->queue.lock);
 
-	dev_put(slave_dev);
-
 	return ret;
 }
 
@@ -554,8 +549,6 @@ static int eql_g_master_cfg(struct net_device *dev, master_config_t __user *mcp)
 {
 	equalizer_t *eql;
 	master_config_t mc;
-
-	memset(&mc, 0, sizeof(master_config_t));
 
 	if (eql_is_master(dev)) {
 		eql = netdev_priv(dev);

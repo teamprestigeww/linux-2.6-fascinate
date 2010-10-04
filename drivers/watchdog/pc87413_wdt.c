@@ -53,9 +53,7 @@
 #define WDTO                0x11	/* Watchdog timeout register */
 #define WDCFG               0x12	/* Watchdog config register */
 
-#define IO_DEFAULT	0x2E		/* Address used on Portwell Boards */
-
-static int io = IO_DEFAULT;
+static int io = 0x2E;			/* Address used on Portwell Boards */
 
 static int timeout = DEFAULT_TIMEOUT;	/* timeout value */
 static unsigned long timer_enabled;	/* is the timer enabled? */
@@ -409,7 +407,7 @@ static long pc87413_ioctl(struct file *file, unsigned int cmd,
 		int __user *i;
 	} uarg;
 
-	static const struct watchdog_info ident = {
+	static struct watchdog_info ident = {
 		.options          = WDIOF_KEEPALIVEPING |
 				    WDIOF_SETTIMEOUT |
 				    WDIOF_MAGICCLOSE,
@@ -538,8 +536,7 @@ static int __init pc87413_init(void)
 
 	ret = misc_register(&pc87413_miscdev);
 	if (ret != 0) {
-		printk(KERN_ERR PFX
-			"cannot register miscdev on minor=%d (err=%d)\n",
+		printk(KERN_ERR PFX "cannot register miscdev on minor=%d (err=%d)\n",
 			WATCHDOG_MINOR, ret);
 		unregister_reboot_notifier(&pc87413_notifier);
 		return ret;
@@ -577,21 +574,19 @@ static void __exit pc87413_exit(void)
 module_init(pc87413_init);
 module_exit(pc87413_exit);
 
-MODULE_AUTHOR("Sven Anders <anders@anduras.de>, "
-		"Marcus Junker <junker@anduras.de>,");
+MODULE_AUTHOR("Sven Anders <anders@anduras.de>, Marcus Junker <junker@anduras.de>,");
 MODULE_DESCRIPTION("PC87413 WDT driver");
 MODULE_LICENSE("GPL");
 
 MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 
 module_param(io, int, 0);
-MODULE_PARM_DESC(io, MODNAME " I/O port (default: "
-					__MODULE_STRING(IO_DEFAULT) ").");
+MODULE_PARM_DESC(io, MODNAME " I/O port (default: " __MODULE_STRING(io) ").");
 
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout,
 		"Watchdog timeout in minutes (default="
-				__MODULE_STRING(DEFAULT_TIMEOUT) ").");
+				__MODULE_STRING(timeout) ").");
 
 module_param(nowayout, int, 0);
 MODULE_PARM_DESC(nowayout,

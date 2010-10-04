@@ -20,7 +20,7 @@
 #include <asm/intctl-regs.h>
 #include <asm/busctl-regs.h>
 #include <asm/timer-regs.h>
-#include <unit/leds.h>
+#include <asm/unit/leds.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/errno.h>
@@ -76,7 +76,7 @@ ENTRY(system_call)
 	cmp	nr_syscalls,d0
 	bcc	syscall_badsys
 	btst	_TIF_SYSCALL_TRACE,(TI_flags,a2)
-	bne	syscall_entry_trace
+	bne	syscall_trace_entry
 syscall_call:
 	add	d0,d0,a1
 	add	a1,a1
@@ -104,10 +104,11 @@ restore_all:
 syscall_exit_work:
 	btst	_TIF_SYSCALL_TRACE,d2
 	beq	work_pending
-	__sti				# could let syscall_trace_exit() call
+	__sti				# could let do_syscall_trace() call
 					# schedule() instead
 	mov	fp,d0
-	call	syscall_trace_exit[],0	# do_syscall_trace(regs)
+	mov	1,d1
+	call	do_syscall_trace[],0	# do_syscall_trace(regs,entryexit)
 	jmp	resume_userspace
 
 	ALIGN
@@ -137,11 +138,13 @@ work_notifysig:
 	jmp	resume_userspace
 
 	# perform syscall entry tracing
-syscall_entry_trace:
+syscall_trace_entry:
 	mov	-ENOSYS,d0
 	mov	d0,(REG_D0,fp)
 	mov	fp,d0
-	call	syscall_trace_entry[],0	# returns the syscall number to actually use
+	clr	d1
+	call	do_syscall_trace[],0
+	mov	(REG_ORIG_D0,fp),d0
 	mov	(REG_D1,fp),d1
 	cmp	nr_syscalls,d0
 	bcs	syscall_call
@@ -468,7 +471,7 @@ ENTRY(sys_call_table)
 	.long sys_settimeofday
 	.long sys_getgroups16	/* 80 */
 	.long sys_setgroups16
-	.long sys_old_select
+	.long old_select
 	.long sys_symlink
 	.long sys_lstat
 	.long sys_readlink	/* 85 */
@@ -578,7 +581,7 @@ ENTRY(sys_call_table)
 	.long sys_ni_syscall	/* reserved for streams2 */
 	.long sys_vfork		/* 190 */
 	.long sys_getrlimit
-	.long sys_mmap_pgoff
+	.long sys_mmap2
 	.long sys_truncate64
 	.long sys_ftruncate64
 	.long sys_stat64	/* 195 */
@@ -720,11 +723,6 @@ ENTRY(sys_call_table)
 	.long sys_dup3
 	.long sys_pipe2
 	.long sys_inotify_init1
-	.long sys_preadv
-	.long sys_pwritev		/* 335 */
-	.long sys_rt_tgsigqueueinfo
-	.long sys_perf_event_open
-	.long sys_recvmmsg
 
 
 nr_syscalls=(.-sys_call_table)/4

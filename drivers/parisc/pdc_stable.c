@@ -370,7 +370,7 @@ pdcspath_layer_read(struct pdcspath_entry *entry, char *buf)
 	if (!i)	/* entry is not ready */
 		return -ENODATA;
 	
-	for (i = 0; i < 6 && devpath->layers[i]; i++)
+	for (i = 0; devpath->layers[i] && (likely(i < 6)); i++)
 		out += sprintf(out, "%u ", devpath->layers[i]);
 
 	out += sprintf(out, "\n");
@@ -481,7 +481,7 @@ pdcspath_attr_store(struct kobject *kobj, struct attribute *attr,
 	return ret;
 }
 
-static const struct sysfs_ops pdcspath_attr_ops = {
+static struct sysfs_ops pdcspath_attr_ops = {
 	.show = pdcspath_attr_show,
 	.store = pdcspath_attr_store,
 };
@@ -779,9 +779,12 @@ static ssize_t pdcs_auto_write(struct kobject *kobj,
 	read_unlock(&pathentry->rw_lock);
 	
 	DPRINTK("%s: flags before: 0x%X\n", __func__, flags);
-
-	temp = skip_spaces(in);
-
+			
+	temp = in;
+	
+	while (*temp && isspace(*temp))
+		temp++;
+	
 	c = *temp++ - '0';
 	if ((c != 0) && (c != 1))
 		goto parse_error;

@@ -55,6 +55,7 @@ static struct irqaction timer16_irq = {
 	.name		= "timer-16",
 	.handler	= timer_interrupt,
 	.flags		= IRQF_DISABLED | IRQF_TIMER,
+	.mask		= CPU_MASK_NONE,
 };
 
 static const int __initdata divide_rate[] = {1, 2, 4, 8};
@@ -68,7 +69,7 @@ void __init h8300_timer_setup(void)
 
 	setup_irq(_16IRQ, &timer16_irq);
 
-	/* initialize timer */
+	/* initalize timer */
 	ctrl_outb(0, TSTR);
 	ctrl_outb(CCLR0 | div, _16BASE + TCR);
 	ctrl_outw(cnt, _16BASE + GRA);

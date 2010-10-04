@@ -1,4 +1,7 @@
 /*
+ *  arch/mips/emma2rh/markeins/platofrm.c
+ *      This file sets up platform devices for EMMA2RH Mark-eins.
+ *
  *  Copyright(C) MontaVista Software Inc, 2006
  *
  *  Author: dmitry pervushin <dpervushin@ru.mvista.com>
@@ -107,7 +110,6 @@ struct platform_device i2c_emma_devices[] = {
 static struct  plat_serial8250_port platform_serial_ports[] = {
 	[0] = {
 		.membase= (void __iomem*)KSEG1ADDR(EMMA2RH_PFUR0_BASE + 3),
-		.mapbase = EMMA2RH_PFUR0_BASE + 3,
 		.irq = EMMA2RH_IRQ_PFUR0,
 		.uartclk = EMMA2RH_SERIAL_CLOCK,
 		.regshift = 4,
@@ -115,7 +117,6 @@ static struct  plat_serial8250_port platform_serial_ports[] = {
 		.flags = EMMA2RH_SERIAL_FLAGS,
        }, [1] = {
 		.membase = (void __iomem*)KSEG1ADDR(EMMA2RH_PFUR1_BASE + 3),
-		.mapbase = EMMA2RH_PFUR1_BASE + 3,
 		.irq = EMMA2RH_IRQ_PFUR1,
 		.uartclk = EMMA2RH_SERIAL_CLOCK,
 		.regshift = 4,
@@ -123,7 +124,6 @@ static struct  plat_serial8250_port platform_serial_ports[] = {
 		.flags = EMMA2RH_SERIAL_FLAGS,
        }, [2] = {
 		.membase = (void __iomem*)KSEG1ADDR(EMMA2RH_PFUR2_BASE + 3),
-		.mapbase = EMMA2RH_PFUR2_BASE + 3,
 		.irq = EMMA2RH_IRQ_PFUR2,
 		.uartclk = EMMA2RH_SERIAL_CLOCK,
 		.regshift = 4,

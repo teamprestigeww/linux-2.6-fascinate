@@ -43,11 +43,11 @@ static int my3126_interrupt_handler(struct cphy *cphy)
 	adapter = cphy->adapter;
 
 	if (cphy->count == 50) {
-		cphy_mdio_read(cphy, MDIO_MMD_PMAPMD, MDIO_STAT1, &val);
+		mdio_read(cphy, 0x1, 0x1, &val);
 		val16 = (u16) val;
 		status = cphy->bmsr ^ val16;
 
-		if (status & MDIO_STAT1_LSTATUS)
+		if (status & BMSR_LSTATUS)
 			t1_link_changed(adapter, 0);
 		cphy->bmsr = val16;
 
@@ -114,14 +114,14 @@ static int my3126_get_link_status(struct cphy *cphy,
 	adapter_t *adapter;
 
 	adapter = cphy->adapter;
-	cphy_mdio_read(cphy, MDIO_MMD_PMAPMD, MDIO_STAT1, &val);
+	mdio_read(cphy, 0x1, 0x1, &val);
 	val16 = (u16) val;
 
 	/* Populate elmer_gpo with the register value */
 	t1_tpi_read(adapter, A_ELMER0_GPO, &val);
 	cphy->elmer_gpo = val;
 
-	*link_ok = (val16 & MDIO_STAT1_LSTATUS);
+	*link_ok = (val16 & BMSR_LSTATUS);
 
 	if (*link_ok) {
 		/* Turn on the LED. */
@@ -163,11 +163,9 @@ static struct cphy_ops my3126_ops = {
 	.interrupt_handler	= my3126_interrupt_handler,
 	.get_link_status	= my3126_get_link_status,
 	.set_loopback		= my3126_set_loopback,
-	.mmds			= (MDIO_DEVS_PMAPMD | MDIO_DEVS_PCS |
-				   MDIO_DEVS_PHYXS),
 };
 
-static struct cphy *my3126_phy_create(struct net_device *dev,
+static struct cphy *my3126_phy_create(adapter_t *adapter,
 			int phy_addr, const struct mdio_ops *mdio_ops)
 {
 	struct cphy *cphy = kzalloc(sizeof (*cphy), GFP_KERNEL);
@@ -175,7 +173,7 @@ static struct cphy *my3126_phy_create(struct net_device *dev,
 	if (!cphy)
 		return NULL;
 
-	cphy_init(cphy, dev, phy_addr, &my3126_ops, mdio_ops);
+	cphy_init(cphy, adapter, phy_addr, &my3126_ops, mdio_ops);
 	INIT_DELAYED_WORK(&cphy->phy_update, my3216_poll);
 	cphy->bmsr = 0;
 

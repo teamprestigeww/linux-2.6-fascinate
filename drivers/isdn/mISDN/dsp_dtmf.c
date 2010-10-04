@@ -51,9 +51,6 @@ void dsp_dtmf_hardware(struct dsp *dsp)
 {
 	int hardware = 1;
 
-	if (!dsp->dtmf.enable)
-		return;
-
 	if (!dsp->features.hfc_dtmf)
 		hardware = 0;
 

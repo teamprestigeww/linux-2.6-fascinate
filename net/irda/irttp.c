@@ -28,7 +28,6 @@
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/seq_file.h>
-#include <linux/slab.h>
 
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
@@ -1454,7 +1453,6 @@ struct tsap_cb *irttp_dup(struct tsap_cb *orig, void *instance)
 	}
 	/* Dup */
 	memcpy(new, orig, sizeof(struct tsap_cb));
-	spin_lock_init(&new->lock);
 
 	/* We don't need the old instance any more */
 	spin_unlock_irqrestore(&irttp->tsaps->hb_spinlock, flags);
@@ -1853,23 +1851,23 @@ static int irttp_seq_show(struct seq_file *seq, void *v)
 		   self->remote_credit);
 	seq_printf(seq, "send credit: %d\n",
 		   self->send_credit);
-	seq_printf(seq, "  tx packets: %lu, ",
+	seq_printf(seq, "  tx packets: %ld, ",
 		   self->stats.tx_packets);
-	seq_printf(seq, "rx packets: %lu, ",
+	seq_printf(seq, "rx packets: %ld, ",
 		   self->stats.rx_packets);
-	seq_printf(seq, "tx_queue len: %u ",
+	seq_printf(seq, "tx_queue len: %d ",
 		   skb_queue_len(&self->tx_queue));
-	seq_printf(seq, "rx_queue len: %u\n",
+	seq_printf(seq, "rx_queue len: %d\n",
 		   skb_queue_len(&self->rx_queue));
 	seq_printf(seq, "  tx_sdu_busy: %s, ",
 		   self->tx_sdu_busy? "TRUE":"FALSE");
 	seq_printf(seq, "rx_sdu_busy: %s\n",
 		   self->rx_sdu_busy? "TRUE":"FALSE");
-	seq_printf(seq, "  max_seg_size: %u, ",
+	seq_printf(seq, "  max_seg_size: %d, ",
 		   self->max_seg_size);
-	seq_printf(seq, "tx_max_sdu_size: %u, ",
+	seq_printf(seq, "tx_max_sdu_size: %d, ",
 		   self->tx_max_sdu_size);
-	seq_printf(seq, "rx_max_sdu_size: %u\n",
+	seq_printf(seq, "rx_max_sdu_size: %d\n",
 		   self->rx_max_sdu_size);
 
 	seq_printf(seq, "  Used by (%s)\n\n",

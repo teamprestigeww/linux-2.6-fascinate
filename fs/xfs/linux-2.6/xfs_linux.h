@@ -24,7 +24,7 @@
  * XFS_BIG_BLKNOS needs block layer disk addresses to be 64 bits.
  * XFS_BIG_INUMS requires XFS_BIG_BLKNOS to be set.
  */
-#if defined(CONFIG_LBDAF) || (BITS_PER_LONG == 64)
+#if defined(CONFIG_LBD) || (BITS_PER_LONG == 64)
 # define XFS_BIG_BLKNOS	1
 # define XFS_BIG_INUMS	1
 #else
@@ -38,8 +38,10 @@
 #include <kmem.h>
 #include <mrlock.h>
 #include <sv.h>
+#include <mutex.h>
 #include <time.h>
 
+#include <support/ktrace.h>
 #include <support/debug.h>
 #include <support/uuid.h>
 
@@ -49,7 +51,6 @@
 #include <linux/blkdev.h>
 #include <linux/slab.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/file.h>
 #include <linux/swap.h>
 #include <linux/errno.h>
@@ -87,6 +88,8 @@
 #include <xfs_aops.h>
 #include <xfs_super.h>
 #include <xfs_globals.h>
+#include <xfs_fs_subr.h>
+#include <xfs_lrw.h>
 #include <xfs_buf.h>
 
 /*
@@ -144,6 +147,17 @@
 #define SYNCHRONIZE()	barrier()
 #define __return_address __builtin_return_address(0)
 
+/*
+ * IRIX (BSD) quotactl makes use of separate commands for user/group,
+ * whereas on Linux the syscall encodes this information into the cmd
+ * field (see the QCMD macro in quota.h).  These macros help keep the
+ * code portable - they are not visible from the syscall interface.
+ */
+#define Q_XSETGQLIM	XQM_CMD(8)	/* set groups disk limits */
+#define Q_XGETGQUOTA	XQM_CMD(9)	/* get groups disk limits */
+#define Q_XSETPQLIM	XQM_CMD(10)	/* set projects disk limits */
+#define Q_XGETPQUOTA	XQM_CMD(11)	/* get projects disk limits */
+
 #define dfltprid	0
 #define MAXPATHLEN	1024
 
@@ -156,6 +170,8 @@
  */
 #define xfs_sort(a,n,s,fn)	sort(a,n,s,fn,NULL)
 #define xfs_stack_trace()	dump_stack()
+#define xfs_itruncate_data(ip, off)	\
+	(-vmtruncate(VFS_I(ip), (off)))
 
 
 /* Move the kernel do_div definition off to one side */

@@ -76,7 +76,7 @@ u32_t zfHpEchoCommand(zdev_t* dev, u32_t value);
 
 
 #define zm_hp_priv(x) (((struct zsHpPriv*)wd->hpPrivate)->x)
-static struct zsHpPriv zgHpPriv;
+struct zsHpPriv zgHpPriv;
 
 #define ZM_FIRMWARE_WLAN_ADDR           0x200000
 #define ZM_FIRMWARE_SPI_ADDR      0x114000
@@ -142,9 +142,8 @@ u16_t zfHpInit(zdev_t* dev, u32_t frequency)
     if (wd->modeMDKEnable)
     {
         /* download the MDK firmware */
-        ret = zfFirmwareDownload(dev, (u32_t*)zcDKFwImage,
-                (u32_t)zcDKFwImageSize, ZM_FIRMWARE_WLAN_ADDR);
-        if (ret != ZM_SUCCESS)
+        if ((ret = zfFirmwareDownload(dev, (u32_t*)zcDKFwImage,
+                (u32_t)zcDKFwImageSize, ZM_FIRMWARE_WLAN_ADDR)) != ZM_SUCCESS)
         {
             /* TODO : exception handling */
             //return 1;
@@ -153,10 +152,9 @@ u16_t zfHpInit(zdev_t* dev, u32_t frequency)
     else
     {
     #ifndef ZM_OTUS_LINUX_PHASE_2
-        /* download the normal firmware */
-        ret = zfFirmwareDownload(dev, (u32_t*)zcFwImage,
-                (u32_t)zcFwImageSize, ZM_FIRMWARE_WLAN_ADDR);
-        if (ret != ZM_SUCCESS)
+        /* donwload the normal frimware */
+        if ((ret = zfFirmwareDownload(dev, (u32_t*)zcFwImage,
+                (u32_t)zcFwImageSize, ZM_FIRMWARE_WLAN_ADDR)) != ZM_SUCCESS)
         {
             /* TODO : exception handling */
             //return 1;
@@ -164,18 +162,16 @@ u16_t zfHpInit(zdev_t* dev, u32_t frequency)
     #else
 
         // 1-PH fw: ReadMac() store some global variable
-        ret = zfFirmwareDownloadNotJump(dev, (u32_t*)zcFwBufImage,
-                (u32_t)zcFwBufImageSize, 0x102800);
-        if (ret != ZM_SUCCESS)
+        if ((ret = zfFirmwareDownloadNotJump(dev, (u32_t*)zcFwBufImage,
+                (u32_t)zcFwBufImageSize, 0x102800)) != ZM_SUCCESS)
         {
             DbgPrint("Dl zcFwBufImage failed!");
         }
 
         zfwSleep(dev, 1000);
 
-        ret = zfFirmwareDownload(dev, (u32_t*)zcFwImage,
-                (u32_t)zcFwImageSize, ZM_FIRMWARE_WLAN_ADDR);
-        if (ret != ZM_SUCCESS)
+        if ((ret = zfFirmwareDownload(dev, (u32_t*)zcFwImage,
+                (u32_t)zcFwImageSize, ZM_FIRMWARE_WLAN_ADDR)) != ZM_SUCCESS)
         {
             DbgPrint("Dl zcFwBufImage failed!");
         }
@@ -253,17 +249,15 @@ u16_t zfHpReinit(zdev_t* dev, u32_t frequency)
 
     #ifndef ZM_OTUS_LINUX_PHASE_2
     /* Download firmware */
-    ret = zfFirmwareDownload(dev, (u32_t*)zcFwImage,
-            (u32_t)zcFwImageSize, ZM_FIRMWARE_WLAN_ADDR);
-    if (ret != ZM_SUCCESS)
+    if ((ret = zfFirmwareDownload(dev, (u32_t*)zcFwImage,
+            (u32_t)zcFwImageSize, ZM_FIRMWARE_WLAN_ADDR)) != ZM_SUCCESS)
     {
         /* TODO : exception handling */
         //return 1;
     }
     #else
-    ret = zfFirmwareDownload(dev, (u32_t*)zcP2FwImage,
-            (u32_t)zcP2FwImageSize, ZM_FIRMWARE_WLAN_ADDR);
-    if (ret != ZM_SUCCESS)
+    if ((ret = zfFirmwareDownload(dev, (u32_t*)zcP2FwImage,
+            (u32_t)zcP2FwImageSize, ZM_FIRMWARE_WLAN_ADDR)) != ZM_SUCCESS)
     {
         /* TODO : exception handling */
         //return 1;
@@ -334,8 +328,8 @@ void zfInitPhy(zdev_t* dev,  u32_t frequency, u8_t bw40)
     u16_t modesIndex = 0;
     u16_t freqIndex = 0;
     u32_t tmp, tmp1;
-    struct zsHpPriv* hpPriv;
-
+    zmw_get_wlan_dev(dev);
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
     u32_t eepromBoardData[15][6] = {
     /* Register   A-20        A-20/40     G-20/40     G-20        G-Turbo    */
         {0x9964,    0,      0,      0,      0,      0},
@@ -354,9 +348,6 @@ void zfInitPhy(zdev_t* dev,  u32_t frequency, u8_t bw40)
         {0xb920,    0,      0,      0,      0,      0},
         {0xa258,    0,      0,      0,      0,      0},
     };
-
-    zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
 
     /* #1 Save the initial value of the related RIFS register settings */
     //((struct zsHpPriv*)wd->hpPrivate)->isInitialPhy++;
@@ -430,7 +421,7 @@ void zfInitPhy(zdev_t* dev,  u32_t frequency, u8_t bw40)
      * Register setting by mode
      */
 
-    entries = ARRAY_SIZE(ar5416Modes);
+    entries = sizeof(ar5416Modes) / sizeof(*ar5416Modes);
     zm_msg1_scan(ZM_LV_2, "Modes register setting entries=", entries);
     for (i=0; i<entries; i++)
     {
@@ -496,7 +487,7 @@ void zfInitPhy(zdev_t* dev,  u32_t frequency, u8_t bw40)
     /*
      * Common Register setting
      */
-    entries = ARRAY_SIZE(ar5416Common);
+    entries = sizeof(ar5416Common) / sizeof(*ar5416Common);
     for (i=0; i<entries; i++)
     {
         reg_write(ar5416Common[i][0], ar5416Common[i][1]);
@@ -506,7 +497,7 @@ void zfInitPhy(zdev_t* dev,  u32_t frequency, u8_t bw40)
     /*
      * RF Gain setting by freqIndex
      */
-    entries = ARRAY_SIZE(ar5416BB_RfGain);
+    entries = sizeof(ar5416BB_RfGain) / sizeof(*ar5416BB_RfGain);
     for (i=0; i<entries; i++)
     {
         reg_write(ar5416BB_RfGain[i][0], ar5416BB_RfGain[i][freqIndex]);
@@ -963,6 +954,7 @@ u32_t reverse_bits(u32_t chan_sel)
 /* Bank 0 1 2 3 5 6 7 */
 void zfSetRfRegs(zdev_t* dev, u32_t frequency)
 {
+    u16_t entries;
     u16_t freqIndex = 0;
     u16_t i;
 
@@ -983,28 +975,33 @@ void zfSetRfRegs(zdev_t* dev, u32_t frequency)
     }
 
 #if 1
-    for (i=0; i<ARRAY_SIZE(otusBank); i++)
+    entries = sizeof(otusBank) / sizeof(*otusBank);
+    for (i=0; i<entries; i++)
     {
         reg_write(otusBank[i][0], otusBank[i][freqIndex]);
     }
 #else
     /* Bank0 */
-    for (i=0; i<ARRAY_SIZE(ar5416Bank0); i++)
+    entries = sizeof(ar5416Bank0) / sizeof(*ar5416Bank0);
+    for (i=0; i<entries; i++)
     {
         reg_write(ar5416Bank0[i][0], ar5416Bank0[i][1]);
     }
     /* Bank1 */
-    for (i=0; i<ARRAY_SIZE(ar5416Bank1); i++)
+    entries = sizeof(ar5416Bank1) / sizeof(*ar5416Bank1);
+    for (i=0; i<entries; i++)
     {
         reg_write(ar5416Bank1[i][0], ar5416Bank1[i][1]);
     }
     /* Bank2 */
-    for (i=0; i<ARRAY_SIZE(ar5416Bank2); i++)
+    entries = sizeof(ar5416Bank2) / sizeof(*ar5416Bank2);
+    for (i=0; i<entries; i++)
     {
         reg_write(ar5416Bank2[i][0], ar5416Bank2[i][1]);
     }
     /* Bank3 */
-    for (i=0; i<ARRAY_SIZE(ar5416Bank3); i++)
+    entries = sizeof(ar5416Bank3) / sizeof(*ar5416Bank3);
+    for (i=0; i<entries; i++)
     {
         reg_write(ar5416Bank3[i][0], ar5416Bank3[i][freqIndex]);
     }
@@ -1012,12 +1009,14 @@ void zfSetRfRegs(zdev_t* dev, u32_t frequency)
     reg_write (0x98b0,  0x00000013);
     reg_write (0x98e4,  0x00000002);
     /* Bank6 */
-    for (i=0; i<ARRAY_SIZE(ar5416Bank6); i++)
+    entries = sizeof(ar5416Bank6) / sizeof(*ar5416Bank6);
+    for (i=0; i<entries; i++)
     {
         reg_write(ar5416Bank6[i][0], ar5416Bank6[i][freqIndex]);
     }
     /* Bank7 */
-    for (i=0; i<ARRAY_SIZE(ar5416Bank7); i++)
+    entries = sizeof(ar5416Bank7) / sizeof(*ar5416Bank7);
+    for (i=0; i<entries; i++)
     {
         reg_write(ar5416Bank7[i][0], ar5416Bank7[i][1]);
     }
@@ -1314,6 +1313,7 @@ void zfHpSetFrequencyEx(zdev_t* dev, u32_t frequency, u8_t bw40,
         u8_t extOffset, u8_t initRF)
 {
     u32_t cmd[9];
+    u32_t cmdB[3];
     u16_t ret;
     u8_t old_band;
     u8_t new_band;
@@ -1324,10 +1324,9 @@ void zfHpSetFrequencyEx(zdev_t* dev, u32_t frequency, u8_t bw40,
     int delta_slope_coeff_man;
     int delta_slope_coeff_exp_shgi;
     int delta_slope_coeff_man_shgi;
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv = wd->hpPrivate;
+    struct zsHpPriv* hpPriv = wd->hpPrivate;
 
     zm_msg1_scan(ZM_LV_1, "Frequency = ", frequency);
     zm_msg1_scan(ZM_LV_1, "bw40 = ", bw40);
@@ -1561,10 +1560,9 @@ u16_t zfHpResetKeyCache(zdev_t* dev)
 {
     u8_t i;
     u32_t key[4] = {0, 0, 0, 0};
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     for(i=0;i<4;i++)
     {
@@ -1603,10 +1601,9 @@ u32_t zfHpSetKey(zdev_t* dev, u8_t user, u8_t keyId, u8_t type,
     u32_t cmd[(ZM_MAX_CMD_SIZE/4)];
     u16_t ret;
     u16_t i;
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
 #if 0   /* remove to zfCoreSetKey() */
     zmw_declare_for_critical_section();
@@ -1673,10 +1670,8 @@ u32_t zfHpSetDefaultKey(zdev_t* dev, u8_t keyId, u8_t type, u32_t* key, u32_t* m
     u16_t macAddr[3] = {0, 0, 0};
 
     #ifdef ZM_ENABLE_IBSS_WPA2PSK
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv = wd->hpPrivate;
+    struct zsHpPriv* hpPriv = wd->hpPrivate;
 
     if ( hpPriv->dot11Mode == ZM_HAL_80211_MODE_IBSS_WPA2PSK )
     { /* If not wpa2psk , use traditional */
@@ -1707,10 +1702,8 @@ u32_t zfHpSetDefaultKey(zdev_t* dev, u8_t keyId, u8_t type, u32_t* key, u32_t* m
 u32_t zfHpSetPerUserKey(zdev_t* dev, u8_t user, u8_t keyId, u8_t* mac, u8_t type, u32_t* key, u32_t* micKey)
 {
 #ifdef ZM_ENABLE_IBSS_WPA2PSK
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv = wd->hpPrivate;
+    struct zsHpPriv* hpPriv = wd->hpPrivate;
 
     if ( hpPriv->dot11Mode == ZM_HAL_80211_MODE_IBSS_WPA2PSK )
     { /* If not wpa2psk , use traditional */
@@ -1925,10 +1918,9 @@ u16_t zfHpSetSnifferMode(zdev_t* dev, u16_t on)
 
 u16_t zfHpSetApStaMode(zdev_t* dev, u8_t mode)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv = wd->hpPrivate;
+
+    struct zsHpPriv* hpPriv = wd->hpPrivate;
     hpPriv->dot11Mode = mode;
 
     switch(mode)
@@ -2001,10 +1993,8 @@ u16_t zfHpSetBssid(zdev_t* dev, u8_t* bssidSrc)
 u8_t zfHpUpdateQosParameter(zdev_t* dev, u16_t* cwminTbl, u16_t* cwmaxTbl,
         u16_t* aifsTbl, u16_t* txopTbl)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv = wd->hpPrivate;
+    struct zsHpPriv* hpPriv = wd->hpPrivate;
 
     zm_msg0_mm(ZM_LV_0, "zfHalUpdateQosParameter()");
 
@@ -2269,11 +2259,9 @@ u32_t zfHpCwmUpdate(zdev_t* dev)
     //
     //ret = zfIssueCmd(dev, cmd, 12, ZM_CWM_READ, 0);
     //return ret;
-
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     zfCoreCwmBusy(dev, zfCwmIsExtChanBusy(hpPriv->ctlBusy, hpPriv->extBusy));
 
@@ -2303,10 +2291,9 @@ u32_t zfHpAniUpdate(zdev_t* dev)
  */
 u32_t zfHpAniUpdateRssi(zdev_t* dev, u8_t rssi)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     hpPriv->stats.ast_nodestats.ns_avgbrssi = rssi;
 
@@ -2338,11 +2325,10 @@ u32_t zfHpGetMacAddress(zdev_t* dev)
 
 u32_t zfHpGetTransmitPower(zdev_t* dev)
 {
-    struct zsHpPriv*    hpPriv;
-    u16_t               tpc     = 0;
-
     zmw_get_wlan_dev(dev);
-    hpPriv  = wd->hpPrivate;
+
+    struct zsHpPriv*    hpPriv  = wd->hpPrivate;
+    u16_t               tpc     = 0;
 
     if (hpPriv->hwFrequency < 3000) {
         tpc = hpPriv->tPow2x2g[0] & 0x3f;
@@ -2359,11 +2345,10 @@ u32_t zfHpGetTransmitPower(zdev_t* dev)
 
 u8_t zfHpGetMinTxPower(zdev_t* dev)
 {
-    struct zsHpPriv*    hpPriv;
-    u8_t               tpc     = 0;
-
     zmw_get_wlan_dev(dev);
-    hpPriv  = wd->hpPrivate;
+
+    struct zsHpPriv*    hpPriv  = wd->hpPrivate;
+    u8_t               tpc     = 0;
 
     if (hpPriv->hwFrequency < 3000)
     {
@@ -2397,11 +2382,10 @@ u8_t zfHpGetMinTxPower(zdev_t* dev)
 
 u8_t zfHpGetMaxTxPower(zdev_t* dev)
 {
-    struct zsHpPriv*    hpPriv;
-    u8_t               tpc     = 0;
-
     zmw_get_wlan_dev(dev);
-    hpPriv  = wd->hpPrivate;
+
+    struct zsHpPriv*    hpPriv  = wd->hpPrivate;
+    u8_t               tpc     = 0;
 
     if (hpPriv->hwFrequency < 3000)
     {
@@ -2437,12 +2421,10 @@ u32_t zfHpLoadEEPROMFromFW(zdev_t* dev)
 
 void zfHpHeartBeat(zdev_t* dev)
 {
-    struct zsHpPriv* hpPriv;
+    zmw_get_wlan_dev(dev);
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
     u8_t polluted = 0;
     u8_t ackTpc;
-
-    zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
 
     /* Workaround : Make OTUS fire more beacon in ad hoc mode in 2.4GHz */
     if (hpPriv->ibssBcnEnabled != 0)
@@ -3431,6 +3413,7 @@ void zfSetPowerCalTable(zdev_t* dev, u32_t frequency, u8_t bw40, u8_t extOffset)
     /* Write PHY regs 672-703 */
     for (i=0; i<128; i+=4)
     {
+        u32_t regAddr = 0x9800 + (672 * 4);
         u32_t val;
 
         val = ((u32_t)vpd_chain1[i+3]<<24) |
@@ -3481,6 +3464,7 @@ void zfSetPowerCalTable(zdev_t* dev, u32_t frequency, u8_t bw40, u8_t extOffset)
     /* Write PHY regs 672-703 + 0x1000 */
     for (i=0; i<128; i+=4)
     {
+        u32_t regAddr = 0x9800 + (672 * 4) + 0x1000;
         u32_t val;
 
         val = ((u32_t)vpd_chain3[i+3]<<24) |
@@ -4235,10 +4219,8 @@ void zfHpPowerSaveSetMode(zdev_t* dev, u8_t staMode, u8_t psMode, u16_t bcnInter
 
 void zfHpPowerSaveSetState(zdev_t* dev, u8_t psState)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv = wd->hpPrivate;
+    struct zsHpPriv* hpPriv = wd->hpPrivate;
 
 	//DbgPrint("INTO zfHpPowerSaveSetState");
 
@@ -4297,10 +4279,8 @@ void zfHpPowerSaveSetState(zdev_t* dev, u8_t psState)
 
 void zfHpSetAggPktNum(zdev_t* dev, u32_t num)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv = wd->hpPrivate;
+    struct zsHpPriv* hpPriv = wd->hpPrivate;
 
     num = (num << 16) | (0xa);
 
@@ -4330,10 +4310,8 @@ void zfHpSetMPDUDensity(zdev_t* dev, u8_t density)
 
 void zfHpSetSlotTime(zdev_t* dev, u8_t type)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv = wd->hpPrivate;
+    struct zsHpPriv* hpPriv = wd->hpPrivate;
 
     if (type == 0)
     {
@@ -4398,10 +4376,8 @@ void zfHpSetRifs(zdev_t* dev, u8_t ht_enable, u8_t ht2040, u8_t g_mode)
 
 void zfHpBeginSiteSurvey(zdev_t* dev, u8_t status)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     if ( status == 1 )
     { // Connected
@@ -4445,10 +4421,8 @@ void zfHpBeginSiteSurvey(zdev_t* dev, u8_t status)
 
 void zfHpFinishSiteSurvey(zdev_t* dev, u8_t status)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     zmw_declare_for_critical_section();
 
@@ -4553,20 +4527,16 @@ void zfHpSWEncrypt(zdev_t* dev, u8_t enable)
 
 u32_t zfHpCapability(zdev_t* dev)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     return hpPriv->halCapability;
 }
 
 void zfHpSetRollCallTable(zdev_t* dev)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     if (hpPriv->camRollCallTable != (u64_t) 0)
     {
@@ -4579,6 +4549,7 @@ void zfHpSetRollCallTable(zdev_t* dev)
 void zfHpSetTTSIFSTime(zdev_t* dev, u8_t sifs_time)
 {
     u32_t reg_value = 0;
+    zmw_get_wlan_dev(dev);
 
     sifs_time &= 0x3f;
     reg_value = 0x14400b | (((u32_t)sifs_time)<<24);

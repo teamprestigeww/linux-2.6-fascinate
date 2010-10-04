@@ -136,12 +136,15 @@ extern unsigned long sysv_count_free_blocks(struct super_block *);
 
 /* itree.c */
 extern void sysv_truncate(struct inode *);
-extern int sysv_prepare_chunk(struct page *page, loff_t pos, unsigned len);
+extern int __sysv_write_begin(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned flags,
+			struct page **pagep, void **fsdata);
 
 /* inode.c */
 extern struct inode *sysv_iget(struct super_block *, unsigned int);
-extern int sysv_write_inode(struct inode *, struct writeback_control *wbc);
+extern int sysv_write_inode(struct inode *, int);
 extern int sysv_sync_inode(struct inode *);
+extern int sysv_sync_file(struct file *, struct dentry *, int);
 extern void sysv_set_inode(struct inode *, dev_t);
 extern int sysv_getattr(struct vfsmount *, struct dentry *, struct kstat *);
 extern int sysv_init_icache(void);
@@ -167,7 +170,7 @@ extern const struct file_operations sysv_file_operations;
 extern const struct file_operations sysv_dir_operations;
 extern const struct address_space_operations sysv_aops;
 extern const struct super_operations sysv_sops;
-extern const struct dentry_operations sysv_dentry_operations;
+extern struct dentry_operations sysv_dentry_operations;
 
 
 enum {

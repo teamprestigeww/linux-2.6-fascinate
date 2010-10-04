@@ -15,7 +15,6 @@
 #include <linux/module.h>
 #include <linux/ctype.h>
 #include <linux/debugfs.h>
-#include <linux/slab.h>
 
 #include "dlm_internal.h"
 #include "lock.h"
@@ -257,7 +256,7 @@ static int print_format3_lock(struct seq_file *s, struct dlm_lkb *lkb,
 			lkb->lkb_status,
 			lkb->lkb_grmode,
 			lkb->lkb_rqmode,
-			lkb->lkb_bastmode,
+			lkb->lkb_highbast,
 			rsb_lookup,
 			lkb->lkb_wait_type,
 			lkb->lkb_lvbseq,
@@ -387,9 +386,9 @@ static int table_seq_show(struct seq_file *seq, void *iter_ptr)
 	return rv;
 }
 
-static const struct seq_operations format1_seq_ops;
-static const struct seq_operations format2_seq_ops;
-static const struct seq_operations format3_seq_ops;
+static struct seq_operations format1_seq_ops;
+static struct seq_operations format2_seq_ops;
+static struct seq_operations format3_seq_ops;
 
 static void *table_seq_start(struct seq_file *seq, loff_t *pos)
 {
@@ -405,7 +404,7 @@ static void *table_seq_start(struct seq_file *seq, loff_t *pos)
 	if (bucket >= ls->ls_rsbtbl_size)
 		return NULL;
 
-	ri = kzalloc(sizeof(struct rsbtbl_iter), GFP_NOFS);
+	ri = kzalloc(sizeof(struct rsbtbl_iter), GFP_KERNEL);
 	if (!ri)
 		return NULL;
 	if (n == 0)
@@ -535,21 +534,21 @@ static void table_seq_stop(struct seq_file *seq, void *iter_ptr)
 	}
 }
 
-static const struct seq_operations format1_seq_ops = {
+static struct seq_operations format1_seq_ops = {
 	.start = table_seq_start,
 	.next  = table_seq_next,
 	.stop  = table_seq_stop,
 	.show  = table_seq_show,
 };
 
-static const struct seq_operations format2_seq_ops = {
+static struct seq_operations format2_seq_ops = {
 	.start = table_seq_start,
 	.next  = table_seq_next,
 	.stop  = table_seq_stop,
 	.show  = table_seq_show,
 };
 
-static const struct seq_operations format3_seq_ops = {
+static struct seq_operations format3_seq_ops = {
 	.start = table_seq_start,
 	.next  = table_seq_next,
 	.stop  = table_seq_stop,

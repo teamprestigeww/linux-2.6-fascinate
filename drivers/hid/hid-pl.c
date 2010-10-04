@@ -9,12 +9,9 @@
  *   - contains two reports, one for each port (HID_QUIRK_MULTI_INPUT)
  *
  *  0e8f:0003 "GreenAsia Inc.    USB Joystick     "
- *   - tested with König Gaming gamepad
+ *   - tested with K??ng Gaming gamepad
  *
- *  0e8f:0003 "GASIA USB Gamepad"
- *   - another version of the König gamepad
- *
- *  Copyright (c) 2007, 2009 Anssi Hannula <anssi.hannula@gmail.com>
+ *  Copyright (c) 2007 Anssi Hannula <anssi.hannula@gmail.com>
  */
 
 /*
@@ -39,7 +36,6 @@
 #define debug(format, arg...) pr_debug("hid-plff: " format "\n" , ## arg)
 
 #include <linux/input.h>
-#include <linux/slab.h>
 #include <linux/usb.h>
 #include <linux/hid.h>
 
@@ -50,8 +46,6 @@
 
 struct plff_device {
 	struct hid_report *report;
-	s32 *strong;
-	s32 *weak;
 };
 
 static int hid_plff_play(struct input_dev *dev, void *data,
@@ -68,8 +62,8 @@ static int hid_plff_play(struct input_dev *dev, void *data,
 	left = left * 0x7f / 0xffff;
 	right = right * 0x7f / 0xffff;
 
-	*plff->strong = left;
-	*plff->weak = right;
+	plff->report->field[0]->value[2] = left;
+	plff->report->field[0]->value[3] = right;
 	debug("running with 0x%02x 0x%02x", left, right);
 	usbhid_submit_report(hid, plff->report, USB_DIR_OUT);
 
@@ -86,8 +80,6 @@ static int plff_init(struct hid_device *hid)
 	struct list_head *report_ptr = report_list;
 	struct input_dev *dev;
 	int error;
-	s32 *strong;
-	s32 *weak;
 
 	/* The device contains one output report per physical device, all
 	   containing 1 field, which contains 4 ff00.0002 usages and 4 16bit
@@ -95,12 +87,7 @@ static int plff_init(struct hid_device *hid)
 
 	   The input reports also contain a field which contains
 	   8 ff00.0001 usages and 8 boolean values. Their meaning is
-	   currently unknown.
-	   
-	   A version of the 0e8f:0003 exists that has all the values in
-	   separate fields and misses the extra input field, thus resembling
-	   Zeroplus (hid-zpff) devices.
-	*/
+	   currently unknown. */
 
 	if (list_empty(report_list)) {
 		dev_err(&hid->dev, "no output reports found\n");
@@ -123,21 +110,8 @@ static int plff_init(struct hid_device *hid)
 			return -ENODEV;
 		}
 
-		if (report->field[0]->report_count >= 4) {
-			report->field[0]->value[0] = 0x00;
-			report->field[0]->value[1] = 0x00;
-			strong = &report->field[0]->value[2];
-			weak = &report->field[0]->value[3];
-			debug("detected single-field device");
-		} else if (report->maxfield >= 4 && report->field[0]->maxusage == 1 &&
-				report->field[0]->usage[0].hid == (HID_UP_LED | 0x43)) {
-			report->field[0]->value[0] = 0x00;
-			report->field[1]->value[0] = 0x00;
-			strong = &report->field[2]->value[0];
-			weak = &report->field[3]->value[0];
-			debug("detected 4-field device");
-		} else {
-			dev_err(&hid->dev, "not enough fields or values\n");
+		if (report->field[0]->report_count < 4) {
+			dev_err(&hid->dev, "not enough values in the field\n");
 			return -ENODEV;
 		}
 
@@ -156,11 +130,10 @@ static int plff_init(struct hid_device *hid)
 		}
 
 		plff->report = report;
-		plff->strong = strong;
-		plff->weak = weak;
-
-		*strong = 0x00;
-		*weak = 0x00;
+		plff->report->field[0]->value[0] = 0x00;
+		plff->report->field[0]->value[1] = 0x00;
+		plff->report->field[0]->value[2] = 0x00;
+		plff->report->field[0]->value[3] = 0x00;
 		usbhid_submit_report(hid, plff->report, USB_DIR_OUT);
 	}
 
@@ -207,7 +180,7 @@ static const struct hid_device_id pl_devices[] = {
 		.driver_data = 1 }, /* Twin USB Joystick */
 	{ HID_USB_DEVICE(USB_VENDOR_ID_GAMERON, USB_DEVICE_ID_GAMERON_DUAL_PCS_ADAPTOR),
 		.driver_data = 1 }, /* Twin USB Joystick */
-	{ HID_USB_DEVICE(USB_VENDOR_ID_GREENASIA, 0x0003), },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_GREENASIA, 0x0003), }, /* GreenAsia Inc. USB Joystick */
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, pl_devices);
@@ -218,12 +191,12 @@ static struct hid_driver pl_driver = {
 	.probe = pl_probe,
 };
 
-static int __init pl_init(void)
+static int pl_init(void)
 {
 	return hid_register_driver(&pl_driver);
 }
 
-static void __exit pl_exit(void)
+static void pl_exit(void)
 {
 	hid_unregister_driver(&pl_driver);
 }
@@ -231,3 +204,5 @@ static void __exit pl_exit(void)
 module_init(pl_init);
 module_exit(pl_exit);
 MODULE_LICENSE("GPL");
+
+HID_COMPAT_LOAD_DRIVER(pantherlord);

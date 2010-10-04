@@ -78,3 +78,28 @@ const struct clkops clk_cken_ops = {
 	.enable		= clk_cken_enable,
 	.disable	= clk_cken_disable,
 };
+
+void clks_register(struct clk_lookup *clks, size_t num)
+{
+	int i;
+
+	for (i = 0; i < num; i++)
+		clkdev_add(&clks[i]);
+}
+
+int clk_add_alias(char *alias, struct device *alias_dev, char *id,
+	struct device *dev)
+{
+	struct clk *r = clk_get(dev, id);
+	struct clk_lookup *l;
+
+	if (!r)
+		return -ENODEV;
+
+	l = clkdev_alloc(r, alias, alias_dev ? dev_name(alias_dev) : NULL);
+	clk_put(r);
+	if (!l)
+		return -ENODEV;
+	clkdev_add(l);
+	return 0;
+}

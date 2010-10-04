@@ -158,11 +158,6 @@ void tcp_vegas_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 }
 EXPORT_SYMBOL_GPL(tcp_vegas_cwnd_event);
 
-static inline u32 tcp_vegas_ssthresh(struct tcp_sock *tp)
-{
-	return  min(tp->snd_ssthresh, tp->snd_cwnd-1);
-}
-
 static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -226,10 +221,11 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			 */
 			diff = tp->snd_cwnd * (rtt-vegas->baseRTT) / vegas->baseRTT;
 
-			if (diff > gamma && tp->snd_cwnd <= tp->snd_ssthresh) {
+			if (diff > gamma && tp->snd_ssthresh > 2 ) {
 				/* Going too fast. Time to slow down
 				 * and switch to congestion avoidance.
 				 */
+				tp->snd_ssthresh = 2;
 
 				/* Set cwnd to match the actual rate
 				 * exactly:
@@ -239,7 +235,6 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 				 * utilization.
 				 */
 				tp->snd_cwnd = min(tp->snd_cwnd, (u32)target_cwnd+1);
-				tp->snd_ssthresh = tcp_vegas_ssthresh(tp);
 
 			} else if (tp->snd_cwnd <= tp->snd_ssthresh) {
 				/* Slow start.  */
@@ -255,8 +250,6 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 					 * we slow down.
 					 */
 					tp->snd_cwnd--;
-					tp->snd_ssthresh
-						= tcp_vegas_ssthresh(tp);
 				} else if (diff < alpha) {
 					/* We don't have enough extra packets
 					 * in the network, so speed up.

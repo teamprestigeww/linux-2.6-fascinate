@@ -50,7 +50,6 @@
 #include <linux/debugfs.h>
 #include <linux/random.h>
 #include <linux/ieee80211.h>
-#include <linux/slab.h>
 #include <net/mac80211.h>
 #include "rate.h"
 #include "rc80211_minstrel.h"
@@ -67,8 +66,24 @@ rix_to_ndx(struct minstrel_sta_info *mi, int rix)
 	for (i = rix; i >= 0; i--)
 		if (mi->r[i].rix == rix)
 			break;
+	WARN_ON(mi->r[i].rix != rix);
 	return i;
 }
+
+static inline bool
+use_low_rate(struct sk_buff *skb)
+{
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+	u16 fc;
+
+	fc = le16_to_cpu(hdr->frame_control);
+
+	return ((info->flags & IEEE80211_TX_CTL_NO_ACK) ||
+		(fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_DATA ||
+		is_multicast_ether_addr(hdr->addr1));
+}
+
 
 static void
 minstrel_update_stats(struct minstrel_priv *mp, struct minstrel_sta_info *mi)
@@ -167,9 +182,6 @@ minstrel_tx_status(void *priv, struct ieee80211_supported_band *sband,
 			break;
 
 		ndx = rix_to_ndx(mi, ar[i].idx);
-		if (ndx < 0)
-			continue;
-
 		mi->r[ndx].attempts += ar[i].count;
 
 		if ((i != IEEE80211_TX_MAX_RATES - 1) && (ar[i + 1].idx < 0))
@@ -204,7 +216,7 @@ minstrel_get_next_sample(struct minstrel_sta_info *mi)
 	unsigned int sample_ndx;
 	sample_ndx = SAMPLE_TBL(mi, mi->sample_idx, mi->sample_column);
 	mi->sample_idx++;
-	if ((int) mi->sample_idx > (mi->n_rates - 2)) {
+	if (mi->sample_idx > (mi->n_rates - 2)) {
 		mi->sample_idx = 0;
 		mi->sample_column++;
 		if (mi->sample_column >= SAMPLE_COLUMNS)
@@ -218,6 +230,7 @@ minstrel_get_rate(void *priv, struct ieee80211_sta *sta,
 		  void *priv_sta, struct ieee80211_tx_rate_control *txrc)
 {
 	struct sk_buff *skb = txrc->skb;
+	struct ieee80211_supported_band *sband = txrc->sband;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct minstrel_sta_info *mi = priv_sta;
 	struct minstrel_priv *mp = priv;
@@ -230,8 +243,11 @@ minstrel_get_rate(void *priv, struct ieee80211_sta *sta,
 	int mrr_ndx[3];
 	int sample_rate;
 
-	if (rate_control_send_low(sta, priv_sta, txrc))
+	if (!sta || !mi || use_low_rate(skb)) {
+		ar[0].idx = rate_lowest_index(sband, sta);
+		ar[0].count = mp->max_retry;
 		return;
+	}
 
 	mrr = mp->has_mrr && !txrc->rts && !txrc->bss_conf->use_cts_prot;
 
@@ -418,7 +434,7 @@ minstrel_rate_init(void *priv, struct ieee80211_supported_band *sband,
 
 			/* contention window */
 			tx_time_single += t_slot + min(cw, mp->cw_max);
-			cw = (cw << 1) | 1;
+			cw = (cw + 1) << 1;
 
 			tx_time += tx_time_single;
 			tx_time_cts += tx_time_single + mi->sp_ack_dur;
@@ -460,8 +476,8 @@ minstrel_alloc_sta(void *priv, struct ieee80211_sta *sta, gfp_t gfp)
 		return NULL;
 
 	for (i = 0; i < IEEE80211_NUM_BANDS; i++) {
-		sband = hw->wiphy->bands[i];
-		if (sband && sband->n_bitrates > max_rates)
+		sband = hw->wiphy->bands[hw->conf.channel->band];
+		if (sband->n_bitrates > max_rates)
 			max_rates = sband->n_bitrates;
 	}
 
@@ -541,7 +557,7 @@ minstrel_free(void *priv)
 	kfree(priv);
 }
 
-struct rate_control_ops mac80211_minstrel = {
+static struct rate_control_ops mac80211_minstrel = {
 	.name = "minstrel",
 	.tx_status = minstrel_tx_status,
 	.get_rate = minstrel_get_rate,

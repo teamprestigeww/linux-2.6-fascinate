@@ -30,6 +30,7 @@
 #include <linux/miscdevice.h>
 #include <linux/utsname.h>
 #include <linux/cpumask.h>
+#include <linux/smp_lock.h>
 #include <linux/nodemask.h>
 #include <linux/smp.h>
 #include <linux/mutex.h>
@@ -274,7 +275,8 @@ static int sn_hwperf_get_nearest_node_objdata(struct sn_hwperf_object_info *objb
 
 	/* get it's interconnect topology */
 	sz = op->ports * sizeof(struct sn_hwperf_port_info);
-	BUG_ON(sz > sizeof(ptdata));
+	if (sz > sizeof(ptdata))
+		BUG();
 	e = ia64_sn_hwperf_op(sn_hwperf_master_nasid,
 			      SN_HWPERF_ENUM_PORTS, nodeobj->id, sz,
 			      (u64)&ptdata, 0, 0, NULL);
@@ -308,7 +310,8 @@ static int sn_hwperf_get_nearest_node_objdata(struct sn_hwperf_object_info *objb
 	if (router && (!found_cpu || !found_mem)) {
 		/* search for a node connected to the same router */
 		sz = router->ports * sizeof(struct sn_hwperf_port_info);
-		BUG_ON(sz > sizeof(ptdata));
+		if (sz > sizeof(ptdata))
+			BUG();
 		e = ia64_sn_hwperf_op(sn_hwperf_master_nasid,
 				      SN_HWPERF_ENUM_PORTS, router->id, sz,
 				      (u64)&ptdata, 0, 0, NULL);
@@ -413,7 +416,7 @@ static int sn_topology_show(struct seq_file *s, void *d)
 		}
 		seq_printf(s, "partition %u %s local "
 			"shubtype %s, "
-			"nasid_mask 0x%016llx, "
+			"nasid_mask 0x%016lx, "
 			"nasid_bits %d:%d, "
 			"system_size %d, "
 			"sharing_size %d, "
@@ -609,7 +612,7 @@ static int sn_hwperf_op_cpu(struct sn_hwperf_op_info *op_info)
 	op_info->a->arg &= SN_HWPERF_ARG_OBJID_MASK;
 
 	if (cpu != SN_HWPERF_ARG_ANY_CPU) {
-		if (cpu >= nr_cpu_ids || !cpu_online(cpu)) {
+		if (cpu >= NR_CPUS || !cpu_online(cpu)) {
 			r = -EINVAL;
 			goto out;
 		}
@@ -628,9 +631,9 @@ static int sn_hwperf_op_cpu(struct sn_hwperf_op_info *op_info)
 		else {
 			/* migrate the task before calling SAL */ 
 			save_allowed = current->cpus_allowed;
-			set_cpus_allowed_ptr(current, cpumask_of(cpu));
+			set_cpus_allowed(current, cpumask_of_cpu(cpu));
 			sn_hwperf_call_sal(op_info);
-			set_cpus_allowed_ptr(current, &save_allowed);
+			set_cpus_allowed(current, save_allowed);
 		}
 	}
 	r = op_info->ret;
@@ -681,7 +684,8 @@ static int sn_hwperf_map_err(int hwperf_err)
 /*
  * ioctl for "sn_hwperf" misc device
  */
-static long sn_hwperf_ioctl(struct file *fp, u32 op, unsigned long arg)
+static int
+sn_hwperf_ioctl(struct inode *in, struct file *fp, u32 op, u64 arg)
 {
 	struct sn_hwperf_ioctl_args a;
 	struct cpuinfo_ia64 *cdata;
@@ -696,6 +700,8 @@ static long sn_hwperf_ioctl(struct file *fp, u32 op, unsigned long arg)
 	int v0;
 	int i;
 	int j;
+
+	unlock_kernel();
 
 	/* only user requests are allowed here */
 	if ((op & SN_HWPERF_OP_MASK) < 10) {
@@ -782,18 +788,17 @@ static long sn_hwperf_ioctl(struct file *fp, u32 op, unsigned long arg)
 		break;
 
 	case SN_HWPERF_GET_OBJ_NODE:
-		i = a.arg;
-		if (a.sz != sizeof(u64) || i < 0) {
+		if (a.sz != sizeof(u64) || a.arg < 0) {
 			r = -EINVAL;
 			goto error;
 		}
 		if ((r = sn_hwperf_enum_objects(&nobj, &objs)) == 0) {
-			if (i >= nobj) {
+			if (a.arg >= nobj) {
 				r = -EINVAL;
 				vfree(objs);
 				goto error;
 			}
-			if (objs[i].id != a.arg) {
+			if (objs[(i = a.arg)].id != a.arg) {
 				for (i = 0; i < nobj; i++) {
 					if (objs[i].id == a.arg)
 						break;
@@ -855,11 +860,12 @@ static long sn_hwperf_ioctl(struct file *fp, u32 op, unsigned long arg)
 error:
 	vfree(p);
 
+	lock_kernel();
 	return r;
 }
 
 static const struct file_operations sn_hwperf_fops = {
-	.unlocked_ioctl = sn_hwperf_ioctl,
+	.ioctl = sn_hwperf_ioctl,
 };
 
 static struct miscdevice sn_hwperf_dev = {

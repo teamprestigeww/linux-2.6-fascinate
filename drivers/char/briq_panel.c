@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/wait.h>
 #include <linux/string.h>
+#include <linux/slab.h>
 #include <linux/ioport.h>
 #include <linux/delay.h>
 #include <linux/miscdevice.h>
@@ -67,15 +68,15 @@ static void set_led(char state)
 
 static int briq_panel_open(struct inode *ino, struct file *filep)
 {
-	tty_lock();
+	lock_kernel();
 	/* enforce single access, vfd_is_open is protected by BKL */
 	if (vfd_is_open) {
-		tty_unlock();
+		unlock_kernel();
 		return -EBUSY;
 	}
 	vfd_is_open = 1;
 
-	tty_unlock();
+	unlock_kernel();
 	return 0;
 }
 

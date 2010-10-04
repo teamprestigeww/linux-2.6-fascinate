@@ -94,7 +94,14 @@ static void tcp_yeah_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 
 	} else {
 		/* Reno */
-		tcp_cong_avoid_ai(tp, tp->snd_cwnd);
+
+		if (tp->snd_cwnd_cnt < tp->snd_cwnd)
+			tp->snd_cwnd_cnt++;
+
+		if (tp->snd_cwnd_cnt >= tp->snd_cwnd) {
+			tp->snd_cwnd++;
+			tp->snd_cwnd_cnt = 0;
+		}
 	}
 
 	/* The key players are v_vegas.beg_snd_una and v_beg_snd_nxt.
@@ -157,8 +164,8 @@ static void tcp_yeah_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 
 			if (queue > TCP_YEAH_ALPHA ||
 			    rtt - yeah->vegas.baseRTT > (yeah->vegas.baseRTT / TCP_YEAH_PHY)) {
-				if (queue > TCP_YEAH_ALPHA &&
-				    tp->snd_cwnd > yeah->reno_count) {
+				if (queue > TCP_YEAH_ALPHA
+				    && tp->snd_cwnd > yeah->reno_count) {
 					u32 reduction = min(queue / TCP_YEAH_GAMMA ,
 							    tp->snd_cwnd >> TCP_YEAH_EPSILON);
 

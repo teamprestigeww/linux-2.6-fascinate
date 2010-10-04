@@ -12,13 +12,21 @@
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/bootmem.h>
+#include <linux/ioport.h>
+#include <linux/string.h>
+#include <linux/kexec.h>
+#include <linux/module.h>
+#include <linux/mm.h>
 #include <linux/pfn.h>
 #include <linux/suspend.h>
 #include <linux/firmware-map.h>
 
+#include <asm/pgtable.h>
+#include <asm/page.h>
 #include <asm/e820.h>
 #include <asm/proto.h>
 #include <asm/setup.h>
+#include <asm/trampoline.h>
 
 /*
  * The e820 map is the map that gets modified e.g. with command line parameters
@@ -102,50 +110,19 @@ int __init e820_all_mapped(u64 start, u64 end, unsigned type)
 /*
  * Add a memory region to the kernel e820 map.
  */
-static void __init __e820_add_region(struct e820map *e820x, u64 start, u64 size,
-					 int type)
+void __init e820_add_region(u64 start, u64 size, int type)
 {
-	int x = e820x->nr_map;
+	int x = e820.nr_map;
 
-	if (x >= ARRAY_SIZE(e820x->map)) {
+	if (x == ARRAY_SIZE(e820.map)) {
 		printk(KERN_ERR "Ooops! Too many entries in the memory map!\n");
 		return;
 	}
 
-	e820x->map[x].addr = start;
-	e820x->map[x].size = size;
-	e820x->map[x].type = type;
-	e820x->nr_map++;
-}
-
-void __init e820_add_region(u64 start, u64 size, int type)
-{
-	__e820_add_region(&e820, start, size, type);
-}
-
-static void __init e820_print_type(u32 type)
-{
-	switch (type) {
-	case E820_RAM:
-	case E820_RESERVED_KERN:
-		printk(KERN_CONT "(usable)");
-		break;
-	case E820_RESERVED:
-		printk(KERN_CONT "(reserved)");
-		break;
-	case E820_ACPI:
-		printk(KERN_CONT "(ACPI data)");
-		break;
-	case E820_NVS:
-		printk(KERN_CONT "(ACPI NVS)");
-		break;
-	case E820_UNUSABLE:
-		printk(KERN_CONT "(unusable)");
-		break;
-	default:
-		printk(KERN_CONT "type %u", type);
-		break;
-	}
+	e820.map[x].addr = start;
+	e820.map[x].size = size;
+	e820.map[x].type = type;
+	e820.nr_map++;
 }
 
 void __init e820_print_map(char *who)
@@ -157,8 +134,27 @@ void __init e820_print_map(char *who)
 		       (unsigned long long) e820.map[i].addr,
 		       (unsigned long long)
 		       (e820.map[i].addr + e820.map[i].size));
-		e820_print_type(e820.map[i].type);
-		printk(KERN_CONT "\n");
+		switch (e820.map[i].type) {
+		case E820_RAM:
+		case E820_RESERVED_KERN:
+			printk(KERN_CONT "(usable)\n");
+			break;
+		case E820_RESERVED:
+			printk(KERN_CONT "(reserved)\n");
+			break;
+		case E820_ACPI:
+			printk(KERN_CONT "(ACPI data)\n");
+			break;
+		case E820_NVS:
+			printk(KERN_CONT "(ACPI NVS)\n");
+			break;
+		case E820_UNUSABLE:
+			printk("(unusable)\n");
+			break;
+		default:
+			printk(KERN_CONT "type %u\n", e820.map[i].type);
+			break;
+		}
 	}
 }
 
@@ -225,7 +221,7 @@ void __init e820_print_map(char *who)
  */
 
 int __init sanitize_e820_map(struct e820entry *biosmap, int max_nr_map,
-			     u32 *pnr_map)
+				int *pnr_map)
 {
 	struct change_member {
 		struct e820entry *pbios; /* pointer to original bios entry */
@@ -421,12 +417,11 @@ static int __init append_e820_map(struct e820entry *biosmap, int nr_map)
 	return __append_e820_map(biosmap, nr_map);
 }
 
-static u64 __init __e820_update_range(struct e820map *e820x, u64 start,
+static u64 __init e820_update_range_map(struct e820map *e820x, u64 start,
 					u64 size, unsigned old_type,
 					unsigned new_type)
 {
-	u64 end;
-	unsigned int i;
+	int i;
 	u64 real_updated_size = 0;
 
 	BUG_ON(old_type == new_type);
@@ -434,55 +429,27 @@ static u64 __init __e820_update_range(struct e820map *e820x, u64 start,
 	if (size > (ULLONG_MAX - start))
 		size = ULLONG_MAX - start;
 
-	end = start + size;
-	printk(KERN_DEBUG "e820 update range: %016Lx - %016Lx ",
-		       (unsigned long long) start,
-		       (unsigned long long) end);
-	e820_print_type(old_type);
-	printk(KERN_CONT " ==> ");
-	e820_print_type(new_type);
-	printk(KERN_CONT "\n");
-
-	for (i = 0; i < e820x->nr_map; i++) {
+	for (i = 0; i < e820.nr_map; i++) {
 		struct e820entry *ei = &e820x->map[i];
 		u64 final_start, final_end;
-		u64 ei_end;
-
 		if (ei->type != old_type)
 			continue;
-
-		ei_end = ei->addr + ei->size;
-		/* totally covered by new range? */
-		if (ei->addr >= start && ei_end <= end) {
+		/* totally covered? */
+		if (ei->addr >= start &&
+		    (ei->addr + ei->size) <= (start + size)) {
 			ei->type = new_type;
 			real_updated_size += ei->size;
 			continue;
 		}
-
-		/* new range is totally covered? */
-		if (ei->addr < start && ei_end > end) {
-			__e820_add_region(e820x, start, size, new_type);
-			__e820_add_region(e820x, end, ei_end - end, ei->type);
-			ei->size = start - ei->addr;
-			real_updated_size += size;
-			continue;
-		}
-
 		/* partially covered */
 		final_start = max(start, ei->addr);
-		final_end = min(end, ei_end);
+		final_end = min(start + size, ei->addr + ei->size);
 		if (final_start >= final_end)
 			continue;
-
-		__e820_add_region(e820x, final_start, final_end - final_start,
-				  new_type);
-
+		e820_add_region(final_start, final_end - final_start,
+					 new_type);
 		real_updated_size += final_end - final_start;
 
-		/*
-		 * left range could be head or tail, so need to update
-		 * size at first.
-		 */
 		ei->size -= final_end - final_start;
 		if (ei->addr < final_start)
 			continue;
@@ -494,13 +461,13 @@ static u64 __init __e820_update_range(struct e820map *e820x, u64 start,
 u64 __init e820_update_range(u64 start, u64 size, unsigned old_type,
 			     unsigned new_type)
 {
-	return __e820_update_range(&e820, start, size, old_type, new_type);
+	return e820_update_range_map(&e820, start, size, old_type, new_type);
 }
 
 static u64 __init e820_update_range_saved(u64 start, u64 size,
 					  unsigned old_type, unsigned new_type)
 {
-	return __e820_update_range(&e820_saved, start, size, old_type,
+	return e820_update_range_map(&e820_saved, start, size, old_type,
 				     new_type);
 }
 
@@ -509,55 +476,31 @@ u64 __init e820_remove_range(u64 start, u64 size, unsigned old_type,
 			     int checktype)
 {
 	int i;
-	u64 end;
 	u64 real_removed_size = 0;
 
 	if (size > (ULLONG_MAX - start))
 		size = ULLONG_MAX - start;
 
-	end = start + size;
-	printk(KERN_DEBUG "e820 remove range: %016Lx - %016Lx ",
-		       (unsigned long long) start,
-		       (unsigned long long) end);
-	if (checktype)
-		e820_print_type(old_type);
-	printk(KERN_CONT "\n");
-
 	for (i = 0; i < e820.nr_map; i++) {
 		struct e820entry *ei = &e820.map[i];
 		u64 final_start, final_end;
-		u64 ei_end;
 
 		if (checktype && ei->type != old_type)
 			continue;
-
-		ei_end = ei->addr + ei->size;
 		/* totally covered? */
-		if (ei->addr >= start && ei_end <= end) {
+		if (ei->addr >= start &&
+		    (ei->addr + ei->size) <= (start + size)) {
 			real_removed_size += ei->size;
 			memset(ei, 0, sizeof(struct e820entry));
 			continue;
 		}
-
-		/* new range is totally covered? */
-		if (ei->addr < start && ei_end > end) {
-			e820_add_region(end, ei_end - end, ei->type);
-			ei->size = start - ei->addr;
-			real_removed_size += size;
-			continue;
-		}
-
 		/* partially covered */
 		final_start = max(start, ei->addr);
-		final_end = min(end, ei_end);
+		final_end = min(start + size, ei->addr + ei->size);
 		if (final_start >= final_end)
 			continue;
 		real_removed_size += final_end - final_start;
 
-		/*
-		 * left range could be head or tail, so need to update
-		 * size at first.
-		 */
 		ei->size -= final_end - final_start;
 		if (ei->addr < final_start)
 			continue;
@@ -568,7 +511,7 @@ u64 __init e820_remove_range(u64 start, u64 size, unsigned old_type,
 
 void __init update_e820(void)
 {
-	u32 nr_map;
+	int nr_map;
 
 	nr_map = e820.nr_map;
 	if (sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &nr_map))
@@ -579,7 +522,7 @@ void __init update_e820(void)
 }
 static void __init update_e820_saved(void)
 {
-	u32 nr_map;
+	int nr_map;
 
 	nr_map = e820_saved.nr_map;
 	if (sanitize_e820_map(e820_saved.map, ARRAY_SIZE(e820_saved.map), &nr_map))
@@ -633,7 +576,7 @@ __init int e820_search_gap(unsigned long *gapstart, unsigned long *gapsize,
  */
 __init void e820_setup_gap(void)
 {
-	unsigned long gapstart, gapsize;
+	unsigned long gapstart, gapsize, round;
 	int found;
 
 	gapstart = 0x10000000;
@@ -643,16 +586,22 @@ __init void e820_setup_gap(void)
 #ifdef CONFIG_X86_64
 	if (!found) {
 		gapstart = (max_pfn << PAGE_SHIFT) + 1024*1024;
-		printk(KERN_ERR
-	"PCI: Warning: Cannot find a gap in the 32bit address range\n"
-	"PCI: Unassigned devices with 32bit resource registers may break!\n");
+		printk(KERN_ERR "PCI: Warning: Cannot find a gap in the 32bit "
+		       "address range\n"
+		       KERN_ERR "PCI: Unassigned devices with 32bit resource "
+		       "registers may break!\n");
 	}
 #endif
 
 	/*
-	 * e820_reserve_resources_late protect stolen RAM already
+	 * See how much we want to round up: start off with
+	 * rounding to the next 1MB area.
 	 */
-	pci_mem_start = gapstart;
+	round = 0x100000;
+	while ((gapsize >> 4) > round)
+		round += round;
+	/* Fun with two's complement */
+	pci_mem_start = (gapstart + round) & -round;
 
 	printk(KERN_INFO
 	       "Allocating PCI resources starting at %lx (gap: %lx:%lx)\n",
@@ -729,13 +678,283 @@ static int __init e820_mark_nvs_memory(void)
 		struct e820entry *ei = &e820.map[i];
 
 		if (ei->type == E820_NVS)
-			suspend_nvs_register(ei->addr, ei->size);
+			hibernate_nvs_register(ei->addr, ei->size);
 	}
 
 	return 0;
 }
 core_initcall(e820_mark_nvs_memory);
 #endif
+
+/*
+ * Early reserved memory areas.
+ */
+#define MAX_EARLY_RES 20
+
+struct early_res {
+	u64 start, end;
+	char name[16];
+	char overlap_ok;
+};
+static struct early_res early_res[MAX_EARLY_RES] __initdata = {
+	{ 0, PAGE_SIZE, "BIOS data page" },	/* BIOS data page */
+	{}
+};
+
+static int __init find_overlapped_early(u64 start, u64 end)
+{
+	int i;
+	struct early_res *r;
+
+	for (i = 0; i < MAX_EARLY_RES && early_res[i].end; i++) {
+		r = &early_res[i];
+		if (end > r->start && start < r->end)
+			break;
+	}
+
+	return i;
+}
+
+/*
+ * Drop the i-th range from the early reservation map,
+ * by copying any higher ranges down one over it, and
+ * clearing what had been the last slot.
+ */
+static void __init drop_range(int i)
+{
+	int j;
+
+	for (j = i + 1; j < MAX_EARLY_RES && early_res[j].end; j++)
+		;
+
+	memmove(&early_res[i], &early_res[i + 1],
+	       (j - 1 - i) * sizeof(struct early_res));
+
+	early_res[j - 1].end = 0;
+}
+
+/*
+ * Split any existing ranges that:
+ *  1) are marked 'overlap_ok', and
+ *  2) overlap with the stated range [start, end)
+ * into whatever portion (if any) of the existing range is entirely
+ * below or entirely above the stated range.  Drop the portion
+ * of the existing range that overlaps with the stated range,
+ * which will allow the caller of this routine to then add that
+ * stated range without conflicting with any existing range.
+ */
+static void __init drop_overlaps_that_are_ok(u64 start, u64 end)
+{
+	int i;
+	struct early_res *r;
+	u64 lower_start, lower_end;
+	u64 upper_start, upper_end;
+	char name[16];
+
+	for (i = 0; i < MAX_EARLY_RES && early_res[i].end; i++) {
+		r = &early_res[i];
+
+		/* Continue past non-overlapping ranges */
+		if (end <= r->start || start >= r->end)
+			continue;
+
+		/*
+		 * Leave non-ok overlaps as is; let caller
+		 * panic "Overlapping early reservations"
+		 * when it hits this overlap.
+		 */
+		if (!r->overlap_ok)
+			return;
+
+		/*
+		 * We have an ok overlap.  We will drop it from the early
+		 * reservation map, and add back in any non-overlapping
+		 * portions (lower or upper) as separate, overlap_ok,
+		 * non-overlapping ranges.
+		 */
+
+		/* 1. Note any non-overlapping (lower or upper) ranges. */
+		strncpy(name, r->name, sizeof(name) - 1);
+
+		lower_start = lower_end = 0;
+		upper_start = upper_end = 0;
+		if (r->start < start) {
+		 	lower_start = r->start;
+			lower_end = start;
+		}
+		if (r->end > end) {
+			upper_start = end;
+			upper_end = r->end;
+		}
+
+		/* 2. Drop the original ok overlapping range */
+		drop_range(i);
+
+		i--;		/* resume for-loop on copied down entry */
+
+		/* 3. Add back in any non-overlapping ranges. */
+		if (lower_end)
+			reserve_early_overlap_ok(lower_start, lower_end, name);
+		if (upper_end)
+			reserve_early_overlap_ok(upper_start, upper_end, name);
+	}
+}
+
+static void __init __reserve_early(u64 start, u64 end, char *name,
+						int overlap_ok)
+{
+	int i;
+	struct early_res *r;
+
+	i = find_overlapped_early(start, end);
+	if (i >= MAX_EARLY_RES)
+		panic("Too many early reservations");
+	r = &early_res[i];
+	if (r->end)
+		panic("Overlapping early reservations "
+		      "%llx-%llx %s to %llx-%llx %s\n",
+		      start, end - 1, name?name:"", r->start,
+		      r->end - 1, r->name);
+	r->start = start;
+	r->end = end;
+	r->overlap_ok = overlap_ok;
+	if (name)
+		strncpy(r->name, name, sizeof(r->name) - 1);
+}
+
+/*
+ * A few early reservtations come here.
+ *
+ * The 'overlap_ok' in the name of this routine does -not- mean it
+ * is ok for these reservations to overlap an earlier reservation.
+ * Rather it means that it is ok for subsequent reservations to
+ * overlap this one.
+ *
+ * Use this entry point to reserve early ranges when you are doing
+ * so out of "Paranoia", reserving perhaps more memory than you need,
+ * just in case, and don't mind a subsequent overlapping reservation
+ * that is known to be needed.
+ *
+ * The drop_overlaps_that_are_ok() call here isn't really needed.
+ * It would be needed if we had two colliding 'overlap_ok'
+ * reservations, so that the second such would not panic on the
+ * overlap with the first.  We don't have any such as of this
+ * writing, but might as well tolerate such if it happens in
+ * the future.
+ */
+void __init reserve_early_overlap_ok(u64 start, u64 end, char *name)
+{
+	drop_overlaps_that_are_ok(start, end);
+	__reserve_early(start, end, name, 1);
+}
+
+/*
+ * Most early reservations come here.
+ *
+ * We first have drop_overlaps_that_are_ok() drop any pre-existing
+ * 'overlap_ok' ranges, so that we can then reserve this memory
+ * range without risk of panic'ing on an overlapping overlap_ok
+ * early reservation.
+ */
+void __init reserve_early(u64 start, u64 end, char *name)
+{
+	drop_overlaps_that_are_ok(start, end);
+	__reserve_early(start, end, name, 0);
+}
+
+void __init free_early(u64 start, u64 end)
+{
+	struct early_res *r;
+	int i;
+
+	i = find_overlapped_early(start, end);
+	r = &early_res[i];
+	if (i >= MAX_EARLY_RES || r->end != end || r->start != start)
+		panic("free_early on not reserved area: %llx-%llx!",
+			 start, end - 1);
+
+	drop_range(i);
+}
+
+void __init early_res_to_bootmem(u64 start, u64 end)
+{
+	int i, count;
+	u64 final_start, final_end;
+
+	count  = 0;
+	for (i = 0; i < MAX_EARLY_RES && early_res[i].end; i++)
+		count++;
+
+	printk(KERN_INFO "(%d early reservations) ==> bootmem [%010llx - %010llx]\n",
+			 count, start, end);
+	for (i = 0; i < count; i++) {
+		struct early_res *r = &early_res[i];
+		printk(KERN_INFO "  #%d [%010llx - %010llx] %16s", i,
+			r->start, r->end, r->name);
+		final_start = max(start, r->start);
+		final_end = min(end, r->end);
+		if (final_start >= final_end) {
+			printk(KERN_CONT "\n");
+			continue;
+		}
+		printk(KERN_CONT " ==> [%010llx - %010llx]\n",
+			final_start, final_end);
+		reserve_bootmem_generic(final_start, final_end - final_start,
+				BOOTMEM_DEFAULT);
+	}
+}
+
+/* Check for already reserved areas */
+static inline int __init bad_addr(u64 *addrp, u64 size, u64 align)
+{
+	int i;
+	u64 addr = *addrp;
+	int changed = 0;
+	struct early_res *r;
+again:
+	i = find_overlapped_early(addr, addr + size);
+	r = &early_res[i];
+	if (i < MAX_EARLY_RES && r->end) {
+		*addrp = addr = round_up(r->end, align);
+		changed = 1;
+		goto again;
+	}
+	return changed;
+}
+
+/* Check for already reserved areas */
+static inline int __init bad_addr_size(u64 *addrp, u64 *sizep, u64 align)
+{
+	int i;
+	u64 addr = *addrp, last;
+	u64 size = *sizep;
+	int changed = 0;
+again:
+	last = addr + size;
+	for (i = 0; i < MAX_EARLY_RES && early_res[i].end; i++) {
+		struct early_res *r = &early_res[i];
+		if (last > r->start && addr < r->start) {
+			size = r->start - addr;
+			changed = 1;
+			goto again;
+		}
+		if (last > r->end && addr < r->end) {
+			addr = round_up(r->end, align);
+			size = last - addr;
+			changed = 1;
+			goto again;
+		}
+		if (last <= r->end && addr >= r->start) {
+			(*sizep)++;
+			return 0;
+		}
+	}
+	if (changed) {
+		*addrp = addr;
+		*sizep = size;
+	}
+	return changed;
+}
 
 /*
  * Find a free area with specified alignment in a specific range.
@@ -746,36 +965,29 @@ u64 __init find_e820_area(u64 start, u64 end, u64 size, u64 align)
 
 	for (i = 0; i < e820.nr_map; i++) {
 		struct e820entry *ei = &e820.map[i];
-		u64 addr;
-		u64 ei_start, ei_last;
+		u64 addr, last;
+		u64 ei_last;
 
 		if (ei->type != E820_RAM)
 			continue;
-
+		addr = round_up(ei->addr, align);
 		ei_last = ei->addr + ei->size;
-		ei_start = ei->addr;
-		addr = find_early_area(ei_start, ei_last, start, end,
-					 size, align);
-
-		if (addr != -1ULL)
-			return addr;
+		if (addr < start)
+			addr = round_up(start, align);
+		if (addr >= ei_last)
+			continue;
+		while (bad_addr(&addr, size, align) && addr+size <= ei_last)
+			;
+		last = addr + size;
+		if (last > ei_last)
+			continue;
+		if (last > end)
+			continue;
+		return addr;
 	}
 	return -1ULL;
 }
 
-u64 __init find_fw_memmap_area(u64 start, u64 end, u64 size, u64 align)
-{
-	return find_e820_area(start, end, size, align);
-}
-
-u64 __init get_max_mapped(void)
-{
-	u64 end = max_pfn_mapped;
-
-	end <<= PAGE_SHIFT;
-
-	return end;
-}
 /*
  * Find next free range after *start
  */
@@ -785,22 +997,28 @@ u64 __init find_e820_area_size(u64 start, u64 *sizep, u64 align)
 
 	for (i = 0; i < e820.nr_map; i++) {
 		struct e820entry *ei = &e820.map[i];
-		u64 addr;
-		u64 ei_start, ei_last;
+		u64 addr, last;
+		u64 ei_last;
 
 		if (ei->type != E820_RAM)
 			continue;
-
+		addr = round_up(ei->addr, align);
 		ei_last = ei->addr + ei->size;
-		ei_start = ei->addr;
-		addr = find_early_area_size(ei_start, ei_last, start,
-					 sizep, align);
-
-		if (addr != -1ULL)
-			return addr;
+		if (addr < start)
+			addr = round_up(start, align);
+		if (addr >= ei_last)
+			continue;
+		*sizep = ei_last - addr;
+		while (bad_addr_size(&addr, sizep, align) &&
+			addr + *sizep <= ei_last)
+			;
+		last = addr + *sizep;
+		if (last > ei_last)
+			continue;
+		return addr;
 	}
+	return -1UL;
 
-	return -1ULL;
 }
 
 /*
@@ -812,24 +1030,14 @@ u64 __init early_reserve_e820(u64 startt, u64 sizet, u64 align)
 	u64 addr;
 	u64 start;
 
-	for (start = startt; ; start += size) {
+	start = startt;
+	while (size < sizet)
 		start = find_e820_area_size(start, &size, align);
-		if (!(start + 1))
-			return 0;
-		if (size >= sizet)
-			break;
-	}
 
-#ifdef CONFIG_X86_32
-	if (start >= MAXMEM)
+	if (size < sizet)
 		return 0;
-	if (start + size > MAXMEM)
-		size = MAXMEM - start;
-#endif
 
 	addr = round_down(start + size - sizet, align);
-	if (addr < start)
-		return 0;
 	e820_update_range(addr, sizet, E820_RAM, E820_RESERVED);
 	e820_update_range_saved(addr, sizet, E820_RAM, E820_RESERVED);
 	printk(KERN_INFO "update e820 for early_reserve_e820\n");
@@ -1042,7 +1250,7 @@ early_param("memmap", parse_memmap_opt);
 void __init finish_e820_parsing(void)
 {
 	if (userdef) {
-		u32 nr = e820.nr_map;
+		int nr = e820.nr_map;
 
 		if (sanitize_e820_map(e820.map, ARRAY_SIZE(e820.map), &nr) < 0)
 			early_panic("Invalid user supplied memory map");
@@ -1075,7 +1283,7 @@ void __init e820_reserve_resources(void)
 	struct resource *res;
 	u64 end;
 
-	res = alloc_bootmem(sizeof(struct resource) * e820.nr_map);
+	res = alloc_bootmem_low(sizeof(struct resource) * e820.nr_map);
 	e820_res = res;
 	for (i = 0; i < e820.nr_map; i++) {
 		end = e820.map[i].addr + e820.map[i].size - 1;
@@ -1109,25 +1317,6 @@ void __init e820_reserve_resources(void)
 	}
 }
 
-/* How much should we pad RAM ending depending on where it is? */
-static unsigned long ram_alignment(resource_size_t pos)
-{
-	unsigned long mb = pos >> 20;
-
-	/* To 64kB in the first megabyte */
-	if (!mb)
-		return 64*1024;
-
-	/* To 1MB in the first 16MB */
-	if (mb < 16)
-		return 1024*1024;
-
-	/* To 64MB for anything above that */
-	return 64*1024*1024;
-}
-
-#define MAX_RESOURCE_SIZE ((resource_size_t)-1)
-
 void __init e820_reserve_resources_late(void)
 {
 	int i;
@@ -1139,34 +1328,12 @@ void __init e820_reserve_resources_late(void)
 			insert_resource_expand_to_fit(&iomem_resource, res);
 		res++;
 	}
-
-	/*
-	 * Try to bump up RAM regions to reasonable boundaries to
-	 * avoid stolen RAM:
-	 */
-	for (i = 0; i < e820.nr_map; i++) {
-		struct e820entry *entry = &e820.map[i];
-		u64 start, end;
-
-		if (entry->type != E820_RAM)
-			continue;
-		start = entry->addr + entry->size;
-		end = round_up(start, ram_alignment(start)) - 1;
-		if (end > MAX_RESOURCE_SIZE)
-			end = MAX_RESOURCE_SIZE;
-		if (start >= end)
-			continue;
-		printk(KERN_DEBUG "reserve RAM buffer: %016llx - %016llx ",
-			       start, end);
-		reserve_region_with_split(&iomem_resource, start, end,
-					  "RAM buffer");
-	}
 }
 
 char *__init default_machine_specific_memory_setup(void)
 {
 	char *who = "BIOS-e820";
-	u32 new_nr;
+	int new_nr;
 	/*
 	 * Try to copy the BIOS-supplied E820-map.
 	 *
@@ -1201,11 +1368,28 @@ char *__init default_machine_specific_memory_setup(void)
 	return who;
 }
 
+char *__init __attribute__((weak)) machine_specific_memory_setup(void)
+{
+	if (x86_quirks->arch_memory_setup) {
+		char *who = x86_quirks->arch_memory_setup();
+
+		if (who)
+			return who;
+	}
+	return default_machine_specific_memory_setup();
+}
+
+/* Overridden in paravirt.c if CONFIG_PARAVIRT */
+char * __init __attribute__((weak)) memory_setup(void)
+{
+	return machine_specific_memory_setup();
+}
+
 void __init setup_memory_map(void)
 {
 	char *who;
 
-	who = x86_init.resources.memory_setup();
+	who = memory_setup();
 	memcpy(&e820_saved, &e820, sizeof(struct e820map));
 	printk(KERN_INFO "BIOS-provided physical RAM map:\n");
 	e820_print_map(who);

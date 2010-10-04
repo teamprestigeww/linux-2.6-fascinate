@@ -6,7 +6,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -63,6 +63,7 @@ acpi_status acpi_hw_set_mode(u32 mode)
 {
 
 	acpi_status status;
+	u32 retry;
 
 	ACPI_FUNCTION_TRACE(hw_set_mode);
 
@@ -85,8 +86,7 @@ acpi_status acpi_hw_set_mode(u32 mode)
 	 */
 	if (!acpi_gbl_FADT.acpi_enable && !acpi_gbl_FADT.acpi_disable) {
 		ACPI_ERROR((AE_INFO,
-			    "No ACPI mode transition supported in this system "
-			    "(enable/disable both zero)"));
+			    "No ACPI mode transition supported in this system (enable/disable both zero)"));
 		return_ACPI_STATUS(AE_OK);
 	}
 
@@ -95,7 +95,7 @@ acpi_status acpi_hw_set_mode(u32 mode)
 
 		/* BIOS should have disabled ALL fixed and GP events */
 
-		status = acpi_hw_write_port(acpi_gbl_FADT.smi_command,
+		status = acpi_os_write_port(acpi_gbl_FADT.smi_command,
 					    (u32) acpi_gbl_FADT.acpi_enable, 8);
 		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
 				  "Attempting to enable ACPI mode\n"));
@@ -107,7 +107,7 @@ acpi_status acpi_hw_set_mode(u32 mode)
 		 * BIOS should clear all fixed status bits and restore fixed event
 		 * enable bits to default
 		 */
-		status = acpi_hw_write_port(acpi_gbl_FADT.smi_command,
+		status = acpi_os_write_port(acpi_gbl_FADT.smi_command,
 					    (u32) acpi_gbl_FADT.acpi_disable,
 					    8);
 		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
@@ -124,7 +124,24 @@ acpi_status acpi_hw_set_mode(u32 mode)
 		return_ACPI_STATUS(status);
 	}
 
-	return_ACPI_STATUS(AE_OK);
+	/*
+	 * Some hardware takes a LONG time to switch modes. Give them 3 sec to
+	 * do so, but allow faster systems to proceed more quickly.
+	 */
+	retry = 3000;
+	while (retry) {
+		if (acpi_hw_get_mode() == mode) {
+			ACPI_DEBUG_PRINT((ACPI_DB_INFO,
+					  "Mode %X successfully enabled\n",
+					  mode));
+			return_ACPI_STATUS(AE_OK);
+		}
+		acpi_os_stall(1000);
+		retry--;
+	}
+
+	ACPI_ERROR((AE_INFO, "Hardware did not change modes"));
+	return_ACPI_STATUS(AE_NO_HARDWARE_RESPONSE);
 }
 
 /*******************************************************************************
@@ -155,7 +172,7 @@ u32 acpi_hw_get_mode(void)
 		return_UINT32(ACPI_SYS_MODE_ACPI);
 	}
 
-	status = acpi_read_bit_register(ACPI_BITREG_SCI_ENABLE, &value);
+	status = acpi_get_register(ACPI_BITREG_SCI_ENABLE, &value);
 	if (ACPI_FAILURE(status)) {
 		return_UINT32(ACPI_SYS_MODE_LEGACY);
 	}

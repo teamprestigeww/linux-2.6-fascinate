@@ -2,7 +2,7 @@
 #
 # headers_check.pl execute a number of trivial consistency checks
 #
-# Usage: headers_check.pl dir arch [files...]
+# Usage: headers_check.pl dir [files...]
 # dir:   dir to look for included files
 # arch:  architecture
 # files: list of files to check
@@ -28,20 +28,19 @@ my $lineno = 0;
 my $filename;
 
 foreach my $file (@files) {
+	local *FH;
 	$filename = $file;
-
-	open(my $fh, '<', $filename)
-		or die "$filename: $!\n";
+	open(FH, "<$filename") or die "$filename: $!\n";
 	$lineno = 0;
-	while ($line = <$fh>) {
+	while ($line = <FH>) {
 		$lineno++;
 		&check_include();
 		&check_asm_types();
 		&check_sizetypes();
-		&check_declarations();
-		# Dropped for now. Too much noise &check_config();
+		&check_prototypes();
+		&check_config();
 	}
-	close $fh;
+	close FH;
 }
 exit $ret;
 
@@ -62,24 +61,22 @@ sub check_include
 	}
 }
 
-sub check_declarations
+sub check_prototypes
 {
-	if ($line =~m/^\s*extern\b/) {
-		printf STDERR "$filename:$lineno: " .
-		              "userspace cannot call function or variable " .
-		              "defined in the kernel\n";
+	if ($line =~ m/^\s*extern\b/) {
+		printf STDERR "$filename:$lineno: extern's make no sense in userspace\n";
 	}
 }
 
 sub check_config
 {
-	if ($line =~ m/[^a-zA-Z0-9_]+CONFIG_([a-zA-Z0-9_]+)[^a-zA-Z0-9_]/) {
+	if ($line =~ m/[^a-zA-Z0-9_]+CONFIG_([a-zA-Z0-9]+)[^a-zA-Z0-9]/) {
 		printf STDERR "$filename:$lineno: leaks CONFIG_$1 to userspace where it is not valid\n";
 	}
 }
 
 my $linux_asm_types;
-sub check_asm_types
+sub check_asm_types()
 {
 	if ($filename =~ /types.h|int-l64.h|int-ll64.h/o) {
 		return;

@@ -284,8 +284,5 @@ struct xl_private {
 	u8 xl_laa[6] ; 
 	u32 rx_ring_dma_addr ; 
 	u32 tx_ring_dma_addr ; 
-
-	/* firmware section */
-	const struct firmware *fw;
 };
 

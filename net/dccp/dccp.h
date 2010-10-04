@@ -42,11 +42,9 @@
 extern int dccp_debug;
 #define dccp_pr_debug(format, a...)	  DCCP_PR_DEBUG(dccp_debug, format, ##a)
 #define dccp_pr_debug_cat(format, a...)   DCCP_PRINTK(dccp_debug, format, ##a)
-#define dccp_debug(fmt, a...)		  dccp_pr_debug_cat(KERN_DEBUG fmt, ##a)
 #else
 #define dccp_pr_debug(format, a...)
 #define dccp_pr_debug_cat(format, a...)
-#define dccp_debug(format, a...)
 #endif
 
 extern struct inet_hashinfo dccp_hashinfo;
@@ -63,13 +61,10 @@ extern void dccp_time_wait(struct sock *sk, int state, int timeo);
  *    - DCCP-Reset    with ACK Subheader and 4 bytes of Reset Code fields
  *  Hence a safe upper bound for the maximum option length is 1020-28 = 992
  */
-#define MAX_DCCP_SPECIFIC_HEADER (255 * sizeof(uint32_t))
+#define MAX_DCCP_SPECIFIC_HEADER (255 * sizeof(int))
 #define DCCP_MAX_PACKET_HDR 28
 #define DCCP_MAX_OPT_LEN (MAX_DCCP_SPECIFIC_HEADER - DCCP_MAX_PACKET_HDR)
 #define MAX_DCCP_HEADER (MAX_DCCP_SPECIFIC_HEADER + MAX_HEADER)
-
-/* Upper bound for initial feature-negotiation overhead (padded to 32 bits) */
-#define DCCP_FEATNEG_OVERHEAD	 (32 * sizeof(uint32_t))
 
 #define DCCP_TIMEWAIT_LEN (60 * HZ) /* how long to wait to destroy TIME-WAIT
 				     * state, about 60 seconds */
@@ -100,6 +95,9 @@ extern void dccp_time_wait(struct sock *sk, int state, int timeo);
 extern int  sysctl_dccp_request_retries;
 extern int  sysctl_dccp_retries1;
 extern int  sysctl_dccp_retries2;
+extern int  sysctl_dccp_feat_sequence_window;
+extern int  sysctl_dccp_feat_rx_ccid;
+extern int  sysctl_dccp_feat_tx_ccid;
 extern int  sysctl_dccp_tx_qlen;
 extern int  sysctl_dccp_sync_ratelimit;
 
@@ -189,7 +187,7 @@ enum {
 #define DCCP_MIB_MAX	__DCCP_MIB_MAX
 struct dccp_mib {
 	unsigned long	mibs[DCCP_MIB_MAX];
-};
+} __SNMP_MIB_ALIGN__;
 
 DECLARE_SNMP_STAT(struct dccp_mib, dccp_statistics);
 #define DCCP_INC_STATS(field)	    SNMP_INC_STATS(dccp_statistics, field)
@@ -223,7 +221,7 @@ static inline void dccp_csum_outgoing(struct sk_buff *skb)
 	skb->csum = skb_checksum(skb, 0, (cov > skb->len)? skb->len : cov, 0);
 }
 
-extern void dccp_v4_send_check(struct sock *sk, struct sk_buff *skb);
+extern void dccp_v4_send_check(struct sock *sk, int len, struct sk_buff *skb);
 
 extern int  dccp_retransmit_skb(struct sock *sk);
 
@@ -290,14 +288,14 @@ extern int	   dccp_disconnect(struct sock *sk, int flags);
 extern int	   dccp_getsockopt(struct sock *sk, int level, int optname,
 				   char __user *optval, int __user *optlen);
 extern int	   dccp_setsockopt(struct sock *sk, int level, int optname,
-				   char __user *optval, unsigned int optlen);
+				   char __user *optval, int optlen);
 #ifdef CONFIG_COMPAT
 extern int	   compat_dccp_getsockopt(struct sock *sk,
 				int level, int optname,
 				char __user *optval, int __user *optlen);
 extern int	   compat_dccp_setsockopt(struct sock *sk,
 				int level, int optname,
-				char __user *optval, unsigned int optlen);
+				char __user *optval, int optlen);
 #endif
 extern int	   dccp_ioctl(struct sock *sk, int cmd, unsigned long arg);
 extern int	   dccp_sendmsg(struct kiocb *iocb, struct sock *sk,
@@ -411,21 +409,23 @@ static inline void dccp_hdr_set_ack(struct dccp_hdr_ack_bits *dhack,
 static inline void dccp_update_gsr(struct sock *sk, u64 seq)
 {
 	struct dccp_sock *dp = dccp_sk(sk);
+	const struct dccp_minisock *dmsk = dccp_msk(sk);
 
 	dp->dccps_gsr = seq;
-	/* Sequence validity window depends on remote Sequence Window (7.5.1) */
-	dp->dccps_swl = SUB48(ADD48(dp->dccps_gsr, 1), dp->dccps_r_seq_win / 4);
-	dp->dccps_swh = ADD48(dp->dccps_gsr, (3 * dp->dccps_r_seq_win) / 4);
+	dccp_set_seqno(&dp->dccps_swl,
+		       dp->dccps_gsr + 1 - (dmsk->dccpms_sequence_window / 4));
+	dccp_set_seqno(&dp->dccps_swh,
+		       dp->dccps_gsr + (3 * dmsk->dccpms_sequence_window) / 4);
 }
 
 static inline void dccp_update_gss(struct sock *sk, u64 seq)
 {
 	struct dccp_sock *dp = dccp_sk(sk);
 
-	dp->dccps_gss = seq;
-	/* Ack validity window depends on local Sequence Window value (7.5.1) */
-	dp->dccps_awl = SUB48(ADD48(dp->dccps_gss, 1), dp->dccps_l_seq_win);
-	dp->dccps_awh = dp->dccps_gss;
+	dp->dccps_awh = dp->dccps_gss = seq;
+	dccp_set_seqno(&dp->dccps_awl,
+		       (dp->dccps_gss -
+			dccp_msk(sk)->dccpms_sequence_window + 1));
 }
 
 static inline int dccp_ack_pending(const struct sock *sk)
@@ -446,12 +446,16 @@ extern void dccp_feat_list_purge(struct list_head *fn_list);
 
 extern int dccp_insert_options(struct sock *sk, struct sk_buff *skb);
 extern int dccp_insert_options_rsk(struct dccp_request_sock*, struct sk_buff*);
-extern int dccp_insert_option_elapsed_time(struct sk_buff *skb, u32 elapsed);
+extern int dccp_insert_option_elapsed_time(struct sock *sk,
+					    struct sk_buff *skb,
+					    u32 elapsed_time);
 extern u32 dccp_timestamp(void);
 extern void dccp_timestamping_init(void);
-extern int dccp_insert_option_timestamp(struct sk_buff *skb);
-extern int dccp_insert_option(struct sk_buff *skb, unsigned char option,
-			      const void *value, unsigned char len);
+extern int dccp_insert_option_timestamp(struct sock *sk,
+					 struct sk_buff *skb);
+extern int dccp_insert_option(struct sock *sk, struct sk_buff *skb,
+			       unsigned char option,
+			       const void *value, unsigned char len);
 
 #ifdef CONFIG_SYSCTL
 extern int dccp_sysctl_init(void);

@@ -1,15 +1,11 @@
 /*
  * IUCV network driver
  *
- * Copyright IBM Corp. 2001, 2009
+ * Copyright 2001 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ * Author(s): Fritz Elfert (elfert@de.ibm.com, felfert@millenux.com)
  *
- * Author(s):
- *	Original netiucv driver:
- *		Fritz Elfert (elfert@de.ibm.com, felfert@millenux.com)
- *	Sysfs integration and all bugs therein:
- *		Cornelia Huck (cornelia.huck@de.ibm.com)
- *	PM functions:
- *		Ursula Braun (ursula.braun@de.ibm.com)
+ * Sysfs integration and all bugs therein by Cornelia Huck
+ * (cornelia.huck@de.ibm.com)
  *
  * Documentation used:
  *  the source of the original IUCV driver by:
@@ -113,9 +109,11 @@ static inline int iucv_dbf_passes(debug_info_t *dbf_grp, int level)
 #define IUCV_DBF_TEXT_(name, level, text...) \
 	do { \
 		if (iucv_dbf_passes(iucv_dbf_##name, level)) { \
-			char* __buf = get_cpu_var(iucv_dbf_txt_buf); \
-			sprintf(__buf, text); \
-			debug_text_event(iucv_dbf_##name, level, __buf); \
+			char* iucv_dbf_txt_buf = \
+					get_cpu_var(iucv_dbf_txt_buf); \
+			sprintf(iucv_dbf_txt_buf, text); \
+			debug_text_event(iucv_dbf_##name, level, \
+						iucv_dbf_txt_buf); \
 			put_cpu_var(iucv_dbf_txt_buf); \
 		} \
 	} while (0)
@@ -151,27 +149,10 @@ PRINT_##importance(header "%02x %02x %02x %02x  %02x %02x %02x %02x  " \
 
 #define PRINTK_HEADER " iucv: "       /* for debugging */
 
-/* dummy device to make sure netiucv_pm functions are called */
-static struct device *netiucv_dev;
-
-static int netiucv_pm_prepare(struct device *);
-static void netiucv_pm_complete(struct device *);
-static int netiucv_pm_freeze(struct device *);
-static int netiucv_pm_restore_thaw(struct device *);
-
-static const struct dev_pm_ops netiucv_pm_ops = {
-	.prepare = netiucv_pm_prepare,
-	.complete = netiucv_pm_complete,
-	.freeze = netiucv_pm_freeze,
-	.thaw = netiucv_pm_restore_thaw,
-	.restore = netiucv_pm_restore_thaw,
-};
-
 static struct device_driver netiucv_driver = {
 	.owner = THIS_MODULE,
 	.name = "netiucv",
 	.bus  = &iucv_bus,
-	.pm = &netiucv_pm_ops,
 };
 
 static int netiucv_callback_connreq(struct iucv_path *,
@@ -252,7 +233,6 @@ struct netiucv_priv {
 	fsm_instance            *fsm;
         struct iucv_connection  *conn;
 	struct device           *dev;
-	int			 pm_state;
 };
 
 /**
@@ -674,6 +654,7 @@ static void netiucv_unpack_skb(struct iucv_connection *conn,
 		 * we must use netif_rx_ni() instead of netif_rx()
 		 */
 		netif_rx_ni(skb);
+		dev->last_rx = jiffies;
 		skb_pull(pskb, header->next);
 		skb_put(pskb, NETIUCV_HDRLEN);
 	}
@@ -739,13 +720,13 @@ static void conn_action_txdone(fsm_instance *fi, int event, void *arg)
 	if (single_flag) {
 		if ((skb = skb_dequeue(&conn->commit_queue))) {
 			atomic_dec(&skb->users);
+			dev_kfree_skb_any(skb);
 			if (privptr) {
 				privptr->stats.tx_packets++;
 				privptr->stats.tx_bytes +=
 					(skb->len - NETIUCV_HDRLEN
-						  - NETIUCV_HDRLEN);
+					 	  - NETIUCV_HDRLEN);
 			}
-			dev_kfree_skb_any(skb);
 		}
 	}
 	conn->tx_buff->data = conn->tx_buff->head;
@@ -1284,72 +1265,6 @@ static int netiucv_close(struct net_device *dev)
 	return 0;
 }
 
-static int netiucv_pm_prepare(struct device *dev)
-{
-	IUCV_DBF_TEXT(trace, 3, __func__);
-	return 0;
-}
-
-static void netiucv_pm_complete(struct device *dev)
-{
-	IUCV_DBF_TEXT(trace, 3, __func__);
-	return;
-}
-
-/**
- * netiucv_pm_freeze() - Freeze PM callback
- * @dev:	netiucv device
- *
- * close open netiucv interfaces
- */
-static int netiucv_pm_freeze(struct device *dev)
-{
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
-	struct net_device *ndev = NULL;
-	int rc = 0;
-
-	IUCV_DBF_TEXT(trace, 3, __func__);
-	if (priv && priv->conn)
-		ndev = priv->conn->netdev;
-	if (!ndev)
-		goto out;
-	netif_device_detach(ndev);
-	priv->pm_state = fsm_getstate(priv->fsm);
-	rc = netiucv_close(ndev);
-out:
-	return rc;
-}
-
-/**
- * netiucv_pm_restore_thaw() - Thaw and restore PM callback
- * @dev:	netiucv device
- *
- * re-open netiucv interfaces closed during freeze
- */
-static int netiucv_pm_restore_thaw(struct device *dev)
-{
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
-	struct net_device *ndev = NULL;
-	int rc = 0;
-
-	IUCV_DBF_TEXT(trace, 3, __func__);
-	if (priv && priv->conn)
-		ndev = priv->conn->netdev;
-	if (!ndev)
-		goto out;
-	switch (priv->pm_state) {
-	case DEV_STATE_RUNNING:
-	case DEV_STATE_STARTWAIT:
-		rc = netiucv_open(ndev);
-		break;
-	default:
-		break;
-	}
-	netif_device_attach(ndev);
-out:
-	return rc;
-}
-
 /**
  * Start transmission of a packet.
  * Called from generic network device layer.
@@ -1373,14 +1288,14 @@ static int netiucv_tx(struct sk_buff *skb, struct net_device *dev)
 	if (skb == NULL) {
 		IUCV_DBF_TEXT(data, 2, "netiucv_tx: skb is NULL\n");
 		privptr->stats.tx_dropped++;
-		return NETDEV_TX_OK;
+		return 0;
 	}
 	if (skb_headroom(skb) < NETIUCV_HDRLEN) {
 		IUCV_DBF_TEXT(data, 2,
 			"netiucv_tx: skb_headroom < NETIUCV_HDRLEN\n");
 		dev_kfree_skb(skb);
 		privptr->stats.tx_dropped++;
-		return NETDEV_TX_OK;
+		return 0;
 	}
 
 	/**
@@ -1392,17 +1307,17 @@ static int netiucv_tx(struct sk_buff *skb, struct net_device *dev)
 		privptr->stats.tx_dropped++;
 		privptr->stats.tx_errors++;
 		privptr->stats.tx_carrier_errors++;
-		return NETDEV_TX_OK;
+		return 0;
 	}
 
 	if (netiucv_test_and_set_busy(dev)) {
 		IUCV_DBF_TEXT(data, 2, "EBUSY from netiucv_tx\n");
-		return NETDEV_TX_BUSY;
+		return -EBUSY;
 	}
 	dev->trans_start = jiffies;
-	rc = netiucv_transmit_skb(privptr->conn, skb);
+	rc = netiucv_transmit_skb(privptr->conn, skb) != 0;
 	netiucv_clear_busy(dev);
-	return rc ? NETDEV_TX_BUSY : NETDEV_TX_OK;
+	return rc;
 }
 
 /**
@@ -1449,7 +1364,7 @@ static int netiucv_change_mtu(struct net_device * dev, int new_mtu)
 static ssize_t user_show(struct device *dev, struct device_attribute *attr,
 			 char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%s\n", netiucv_printname(priv->conn->userid));
@@ -1458,7 +1373,7 @@ static ssize_t user_show(struct device *dev, struct device_attribute *attr,
 static ssize_t user_write(struct device *dev, struct device_attribute *attr,
 			  const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 	struct net_device *ndev = priv->conn->netdev;
 	char    *p;
 	char    *tmp;
@@ -1515,8 +1430,7 @@ static DEVICE_ATTR(user, 0644, user_show, user_write);
 
 static ssize_t buffer_show (struct device *dev, struct device_attribute *attr,
 			    char *buf)
-{
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+{	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%d\n", priv->conn->max_buffsize);
@@ -1525,7 +1439,7 @@ static ssize_t buffer_show (struct device *dev, struct device_attribute *attr,
 static ssize_t buffer_write (struct device *dev, struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 	struct net_device *ndev = priv->conn->netdev;
 	char         *e;
 	int          bs1;
@@ -1573,7 +1487,7 @@ static DEVICE_ATTR(buffer, 0644, buffer_show, buffer_write);
 static ssize_t dev_fsm_show (struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%s\n", fsm_getstate_str(priv->fsm));
@@ -1584,7 +1498,7 @@ static DEVICE_ATTR(device_fsm_state, 0444, dev_fsm_show, NULL);
 static ssize_t conn_fsm_show (struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%s\n", fsm_getstate_str(priv->conn->fsm));
@@ -1595,7 +1509,7 @@ static DEVICE_ATTR(connection_fsm_state, 0444, conn_fsm_show, NULL);
 static ssize_t maxmulti_show (struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%ld\n", priv->conn->prof.maxmulti);
@@ -1605,7 +1519,7 @@ static ssize_t maxmulti_write (struct device *dev,
 			       struct device_attribute *attr,
 			       const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 4, __func__);
 	priv->conn->prof.maxmulti = 0;
@@ -1617,7 +1531,7 @@ static DEVICE_ATTR(max_tx_buffer_used, 0644, maxmulti_show, maxmulti_write);
 static ssize_t maxcq_show (struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%ld\n", priv->conn->prof.maxcqueue);
@@ -1626,7 +1540,7 @@ static ssize_t maxcq_show (struct device *dev, struct device_attribute *attr,
 static ssize_t maxcq_write (struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 4, __func__);
 	priv->conn->prof.maxcqueue = 0;
@@ -1638,7 +1552,7 @@ static DEVICE_ATTR(max_chained_skbs, 0644, maxcq_show, maxcq_write);
 static ssize_t sdoio_show (struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%ld\n", priv->conn->prof.doios_single);
@@ -1647,7 +1561,7 @@ static ssize_t sdoio_show (struct device *dev, struct device_attribute *attr,
 static ssize_t sdoio_write (struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 4, __func__);
 	priv->conn->prof.doios_single = 0;
@@ -1659,7 +1573,7 @@ static DEVICE_ATTR(tx_single_write_ops, 0644, sdoio_show, sdoio_write);
 static ssize_t mdoio_show (struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%ld\n", priv->conn->prof.doios_multi);
@@ -1668,7 +1582,7 @@ static ssize_t mdoio_show (struct device *dev, struct device_attribute *attr,
 static ssize_t mdoio_write (struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	priv->conn->prof.doios_multi = 0;
@@ -1680,7 +1594,7 @@ static DEVICE_ATTR(tx_multi_write_ops, 0644, mdoio_show, mdoio_write);
 static ssize_t txlen_show (struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%ld\n", priv->conn->prof.txlen);
@@ -1689,7 +1603,7 @@ static ssize_t txlen_show (struct device *dev, struct device_attribute *attr,
 static ssize_t txlen_write (struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 4, __func__);
 	priv->conn->prof.txlen = 0;
@@ -1701,7 +1615,7 @@ static DEVICE_ATTR(netto_bytes, 0644, txlen_show, txlen_write);
 static ssize_t txtime_show (struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%ld\n", priv->conn->prof.tx_time);
@@ -1710,7 +1624,7 @@ static ssize_t txtime_show (struct device *dev, struct device_attribute *attr,
 static ssize_t txtime_write (struct device *dev, struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 4, __func__);
 	priv->conn->prof.tx_time = 0;
@@ -1722,7 +1636,7 @@ static DEVICE_ATTR(max_tx_io_time, 0644, txtime_show, txtime_write);
 static ssize_t txpend_show (struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%ld\n", priv->conn->prof.tx_pending);
@@ -1731,7 +1645,7 @@ static ssize_t txpend_show (struct device *dev, struct device_attribute *attr,
 static ssize_t txpend_write (struct device *dev, struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 4, __func__);
 	priv->conn->prof.tx_pending = 0;
@@ -1743,7 +1657,7 @@ static DEVICE_ATTR(tx_pending, 0644, txpend_show, txpend_write);
 static ssize_t txmpnd_show (struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 5, __func__);
 	return sprintf(buf, "%ld\n", priv->conn->prof.tx_max_pending);
@@ -1752,7 +1666,7 @@ static ssize_t txmpnd_show (struct device *dev, struct device_attribute *attr,
 static ssize_t txmpnd_write (struct device *dev, struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
-	struct netiucv_priv *priv = dev_get_drvdata(dev);
+	struct netiucv_priv *priv = dev->driver_data;
 
 	IUCV_DBF_TEXT(trace, 4, __func__);
 	priv->conn->prof.tx_max_pending = 0;
@@ -1817,6 +1731,7 @@ static int netiucv_register_device(struct net_device *ndev)
 	struct device *dev = kzalloc(sizeof(struct device), GFP_KERNEL);
 	int ret;
 
+
 	IUCV_DBF_TEXT(trace, 3, __func__);
 
 	if (dev) {
@@ -1836,15 +1751,14 @@ static int netiucv_register_device(struct net_device *ndev)
 		return -ENOMEM;
 
 	ret = device_register(dev);
-	if (ret) {
-		put_device(dev);
+
+	if (ret)
 		return ret;
-	}
 	ret = netiucv_add_files(dev);
 	if (ret)
 		goto out_unreg;
 	priv->dev = dev;
-	dev_set_drvdata(dev, priv);
+	dev->driver_data = priv;
 	return 0;
 
 out_unreg:
@@ -1962,24 +1876,20 @@ static void netiucv_free_netdevice(struct net_device *dev)
 /**
  * Initialize a net device. (Called from kernel in alloc_netdev())
  */
-static const struct net_device_ops netiucv_netdev_ops = {
-	.ndo_open		= netiucv_open,
-	.ndo_stop		= netiucv_close,
-	.ndo_get_stats		= netiucv_stats,
-	.ndo_start_xmit		= netiucv_tx,
-	.ndo_change_mtu	   	= netiucv_change_mtu,
-};
-
 static void netiucv_setup_netdevice(struct net_device *dev)
 {
 	dev->mtu	         = NETIUCV_MTU_DEFAULT;
+	dev->hard_start_xmit     = netiucv_tx;
+	dev->open	         = netiucv_open;
+	dev->stop	         = netiucv_close;
+	dev->get_stats	         = netiucv_stats;
+	dev->change_mtu          = netiucv_change_mtu;
 	dev->destructor          = netiucv_free_netdevice;
 	dev->hard_header_len     = NETIUCV_HDRLEN;
 	dev->addr_len            = 0;
 	dev->type                = ARPHRD_SLIP;
 	dev->tx_queue_len        = NETIUCV_QUEUELEN_DEFAULT;
 	dev->flags	         = IFF_POINTOPOINT | IFF_NOARP;
-	dev->netdev_ops		 = &netiucv_netdev_ops;
 }
 
 /**
@@ -2111,7 +2021,7 @@ static ssize_t remove_write (struct device_driver *drv,
 	IUCV_DBF_TEXT(trace, 3, __func__);
 
         if (count >= IFNAMSIZ)
-                count = IFNAMSIZ - 1;
+                count = IFNAMSIZ - 1;;
 
 	for (i = 0, p = buf; i < count && *p; i++, p++) {
 		if (*p == '\n' || *p == ' ')
@@ -2157,7 +2067,7 @@ static struct attribute_group netiucv_drv_attr_group = {
 	.attrs = netiucv_drv_attrs,
 };
 
-static const struct attribute_group *netiucv_drv_attr_groups[] = {
+static struct attribute_group *netiucv_drv_attr_groups[] = {
 	&netiucv_drv_attr_group,
 	NULL,
 };
@@ -2186,7 +2096,6 @@ static void __exit netiucv_exit(void)
 		netiucv_unregister_device(dev);
 	}
 
-	device_unregister(netiucv_dev);
 	driver_unregister(&netiucv_driver);
 	iucv_unregister(&netiucv_handler, 1);
 	iucv_unregister_dbf_views();
@@ -2212,27 +2121,10 @@ static int __init netiucv_init(void)
 		IUCV_DBF_TEXT_(setup, 2, "ret %d from driver_register\n", rc);
 		goto out_iucv;
 	}
-	/* establish dummy device */
-	netiucv_dev = kzalloc(sizeof(struct device), GFP_KERNEL);
-	if (!netiucv_dev) {
-		rc = -ENOMEM;
-		goto out_driver;
-	}
-	dev_set_name(netiucv_dev, "netiucv");
-	netiucv_dev->bus = &iucv_bus;
-	netiucv_dev->parent = iucv_root;
-	netiucv_dev->release = (void (*)(struct device *))kfree;
-	netiucv_dev->driver = &netiucv_driver;
-	rc = device_register(netiucv_dev);
-	if (rc) {
-		put_device(netiucv_dev);
-		goto out_driver;
-	}
+
 	netiucv_banner();
 	return rc;
 
-out_driver:
-	driver_unregister(&netiucv_driver);
 out_iucv:
 	iucv_unregister(&netiucv_handler, 1);
 out_dbf:

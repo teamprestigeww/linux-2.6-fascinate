@@ -19,14 +19,11 @@
 /*****************************************************************************/
 
 #include <linux/module.h>
-#include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/interrupt.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/serial.h>
-#include <linux/seq_file.h>
 #include <linux/cdk.h>
 #include <linux/comstats.h>
 #include <linux/istallion.h>
@@ -203,9 +200,9 @@ static int		stli_shared;
  *	the board has been detected, and whether it is actually running a slave
  *	or not.
  */
-#define	BST_FOUND	0
-#define	BST_STARTED	1
-#define	BST_PROBED	2
+#define	BST_FOUND	0x1
+#define	BST_STARTED	0x2
+#define	BST_PROBED	0x4
 
 /*
  *	Define the set of port state flags. These are marked for internal
@@ -213,6 +210,7 @@ static int		stli_shared;
  *	with the slave. Most of them need to be updated atomically, so always
  *	use the bit setting operations (unless protected by cli/sti).
  */
+#define	ST_INITIALIZING	1
 #define	ST_OPENING	2
 #define	ST_CLOSING	3
 #define	ST_CMDING	4
@@ -615,12 +613,13 @@ static int	stli_breakctl(struct tty_struct *tty, int state);
 static void	stli_waituntilsent(struct tty_struct *tty, int timeout);
 static void	stli_sendxchar(struct tty_struct *tty, char ch);
 static void	stli_hangup(struct tty_struct *tty);
+static int	stli_portinfo(struct stlibrd *brdp, struct stliport *portp, int portnr, char *pos);
 
 static int	stli_brdinit(struct stlibrd *brdp);
 static int	stli_startbrd(struct stlibrd *brdp);
 static ssize_t	stli_memread(struct file *fp, char __user *buf, size_t count, loff_t *offp);
 static ssize_t	stli_memwrite(struct file *fp, const char __user *buf, size_t count, loff_t *offp);
-static long	stli_memioctl(struct file *fp, unsigned int cmd, unsigned long arg);
+static int	stli_memioctl(struct inode *ip, struct file *fp, unsigned int cmd, unsigned long arg);
 static void	stli_brdpoll(struct stlibrd *brdp, cdkhdr_t __iomem *hdrp);
 static void	stli_poll(unsigned long arg);
 static int	stli_hostcmd(struct stlibrd *brdp, struct stliport *portp);
@@ -703,7 +702,7 @@ static const struct file_operations	stli_fsiomem = {
 	.owner		= THIS_MODULE,
 	.read		= stli_memread,
 	.write		= stli_memwrite,
-	.unlocked_ioctl	= stli_memioctl,
+	.ioctl		= stli_memioctl,
 };
 
 /*****************************************************************************/
@@ -782,32 +781,13 @@ static int stli_parsebrd(struct stlconf *confp, char **argp)
 
 /*****************************************************************************/
 
-/*
- *	On the first open of the device setup the port hardware, and
- *	initialize the per port data structure. Since initializing the port
- *	requires several commands to the board we will need to wait for any
- *	other open that is already initializing the port.
- *
- *	Locking: protected by the port mutex.
- */
-
-static int stli_activate(struct tty_port *port, struct tty_struct *tty)
-{
-	struct stliport *portp = container_of(port, struct stliport, port);
-	struct stlibrd *brdp = stli_brds[portp->brdnr];
-	int rc;
-
-	if ((rc = stli_initopen(tty, brdp, portp)) >= 0)
-		clear_bit(TTY_IO_ERROR, &tty->flags);
-	wake_up_interruptible(&portp->raw_wait);
-	return rc;
-}
-
 static int stli_open(struct tty_struct *tty, struct file *filp)
 {
 	struct stlibrd *brdp;
 	struct stliport *portp;
+	struct tty_port *port;
 	unsigned int minordev, brdnr, portnr;
+	int rc;
 
 	minordev = tty->index;
 	brdnr = MINOR2BRD(minordev);
@@ -816,7 +796,7 @@ static int stli_open(struct tty_struct *tty, struct file *filp)
 	brdp = stli_brds[brdnr];
 	if (brdp == NULL)
 		return -ENODEV;
-	if (!test_bit(BST_STARTED, &brdp->state))
+	if ((brdp->state & BST_STARTED) == 0)
 		return -ENODEV;
 	portnr = MINOR2PORT(minordev);
 	if (portnr > brdp->nrports)
@@ -827,58 +807,95 @@ static int stli_open(struct tty_struct *tty, struct file *filp)
 		return -ENODEV;
 	if (portp->devnr < 1)
 		return -ENODEV;
+	port = &portp->port;
 
+/*
+ *	On the first open of the device setup the port hardware, and
+ *	initialize the per port data structure. Since initializing the port
+ *	requires several commands to the board we will need to wait for any
+ *	other open that is already initializing the port.
+ *
+ *	Review - locking
+ */
+	tty_port_tty_set(port, tty);
 	tty->driver_data = portp;
-	return tty_port_open(&portp->port, tty, filp);
-}
+	port->count++;
 
+	wait_event_interruptible(portp->raw_wait,
+			!test_bit(ST_INITIALIZING, &portp->state));
+	if (signal_pending(current))
+		return -ERESTARTSYS;
+
+	if ((portp->port.flags & ASYNC_INITIALIZED) == 0) {
+		set_bit(ST_INITIALIZING, &portp->state);
+		if ((rc = stli_initopen(tty, brdp, portp)) >= 0) {
+			/* Locking */
+			port->flags |= ASYNC_INITIALIZED;
+			clear_bit(TTY_IO_ERROR, &tty->flags);
+		}
+		clear_bit(ST_INITIALIZING, &portp->state);
+		wake_up_interruptible(&portp->raw_wait);
+		if (rc < 0)
+			return rc;
+	}
+	return tty_port_block_til_ready(&portp->port, tty, filp);
+}
 
 /*****************************************************************************/
 
-static void stli_shutdown(struct tty_port *port)
-{
-	struct stlibrd *brdp;
-	unsigned long ftype;
-	unsigned long flags;
-	struct stliport *portp = container_of(port, struct stliport, port);
-
-	if (portp->brdnr >= stli_nrbrds)
-		return;
-	brdp = stli_brds[portp->brdnr];
-	if (brdp == NULL)
-		return;
-
-	/*
-	 *	May want to wait for data to drain before closing. The BUSY
-	 *	flag keeps track of whether we are still transmitting or not.
-	 *	It is updated by messages from the slave - indicating when all
-	 *	chars really have drained.
-	 */
-
-	if (!test_bit(ST_CLOSING, &portp->state))
-		stli_rawclose(brdp, portp, 0, 0);
-
- 	spin_lock_irqsave(&stli_lock, flags);
-	clear_bit(ST_TXBUSY, &portp->state);
-	clear_bit(ST_RXSTOP, &portp->state);
-	spin_unlock_irqrestore(&stli_lock, flags);
-
-	ftype = FLUSHTX | FLUSHRX;
-	stli_cmdwait(brdp, portp, A_FLUSH, &ftype, sizeof(u32), 0);
-}
-
 static void stli_close(struct tty_struct *tty, struct file *filp)
 {
-	struct stliport *portp = tty->driver_data;
+	struct stlibrd *brdp;
+	struct stliport *portp;
+	struct tty_port *port;
 	unsigned long flags;
+
+	portp = tty->driver_data;
 	if (portp == NULL)
 		return;
+	port = &portp->port;
+
+	if (tty_port_close_start(port, tty, filp) == 0)
+		return;
+
+/*
+ *	May want to wait for data to drain before closing. The BUSY flag
+ *	keeps track of whether we are still transmitting or not. It is
+ *	updated by messages from the slave - indicating when all chars
+ *	really have drained.
+ */
  	spin_lock_irqsave(&stli_lock, flags);
-	/*	Flush any internal buffering out first */
 	if (tty == stli_txcooktty)
 		stli_flushchars(tty);
 	spin_unlock_irqrestore(&stli_lock, flags);
-	tty_port_close(&portp->port, tty, filp);
+
+	/* We end up doing this twice for the moment. This needs looking at
+	   eventually. Note we still use portp->closing_wait as a result */
+	if (portp->closing_wait != ASYNC_CLOSING_WAIT_NONE)
+		tty_wait_until_sent(tty, portp->closing_wait);
+
+	/* FIXME: port locking here needs attending to */
+	port->flags &= ~ASYNC_INITIALIZED;
+
+	brdp = stli_brds[portp->brdnr];
+	stli_rawclose(brdp, portp, 0, 0);
+	if (tty->termios->c_cflag & HUPCL) {
+		stli_mkasysigs(&portp->asig, 0, 0);
+		if (test_bit(ST_CMDING, &portp->state))
+			set_bit(ST_DOSIGS, &portp->state);
+		else
+			stli_sendcmd(brdp, portp, A_SETSIGNALS, &portp->asig,
+				sizeof(asysigs_t), 0);
+	}
+	clear_bit(ST_TXBUSY, &portp->state);
+	clear_bit(ST_RXSTOP, &portp->state);
+	set_bit(TTY_IO_ERROR, &tty->flags);
+	tty_ldisc_flush(tty);
+	set_bit(ST_DOFLUSHRX, &portp->state);
+	stli_flushbuffer(tty);
+
+	tty_port_close_end(port, tty);
+	tty_port_tty_set(port, NULL);
 }
 
 /*****************************************************************************/
@@ -954,7 +971,7 @@ static int stli_rawopen(struct stlibrd *brdp, struct stliport *portp, unsigned l
  *	order of opens and closes may not be preserved across shared
  *	memory, so we must wait until it is complete.
  */
-	wait_event_interruptible_tty(portp->raw_wait,
+	wait_event_interruptible(portp->raw_wait,
 			!test_bit(ST_CLOSING, &portp->state));
 	if (signal_pending(current)) {
 		return -ERESTARTSYS;
@@ -989,7 +1006,7 @@ static int stli_rawopen(struct stlibrd *brdp, struct stliport *portp, unsigned l
 	set_bit(ST_OPENING, &portp->state);
 	spin_unlock_irqrestore(&brd_lock, flags);
 
-	wait_event_interruptible_tty(portp->raw_wait,
+	wait_event_interruptible(portp->raw_wait,
 			!test_bit(ST_OPENING, &portp->state));
 	if (signal_pending(current))
 		rc = -ERESTARTSYS;
@@ -1020,7 +1037,7 @@ static int stli_rawclose(struct stlibrd *brdp, struct stliport *portp, unsigned 
  *	occurs on this port.
  */
 	if (wait) {
-		wait_event_interruptible_tty(portp->raw_wait,
+		wait_event_interruptible(portp->raw_wait,
 				!test_bit(ST_CLOSING, &portp->state));
 		if (signal_pending(current)) {
 			return -ERESTARTSYS;
@@ -1052,7 +1069,7 @@ static int stli_rawclose(struct stlibrd *brdp, struct stliport *portp, unsigned 
  *	to come back.
  */
 	rc = 0;
-	wait_event_interruptible_tty(portp->raw_wait,
+	wait_event_interruptible(portp->raw_wait,
 			!test_bit(ST_CLOSING, &portp->state));
 	if (signal_pending(current))
 		rc = -ERESTARTSYS;
@@ -1073,10 +1090,6 @@ static int stli_rawclose(struct stlibrd *brdp, struct stliport *portp, unsigned 
 
 static int stli_cmdwait(struct stlibrd *brdp, struct stliport *portp, unsigned long cmd, void *arg, int size, int copyback)
 {
-	/*
-	 * no need for wait_event_tty because clearing ST_CMDING cannot block
-	 * on BTM
-	 */
 	wait_event_interruptible(portp->raw_wait,
 			!test_bit(ST_CMDING, &portp->state));
 	if (signal_pending(current))
@@ -1127,14 +1140,14 @@ static int stli_carrier_raised(struct tty_port *port)
 	return (portp->sigs & TIOCM_CD) ? 1 : 0;
 }
 
-static void stli_dtr_rts(struct tty_port *port, int on)
+static void stli_raise_dtr_rts(struct tty_port *port)
 {
 	struct stliport *portp = container_of(port, struct stliport, port);
 	struct stlibrd *brdp = stli_brds[portp->brdnr];
-	stli_mkasysigs(&portp->asig, on, on);
+	stli_mkasysigs(&portp->asig, 1, 1);
 	if (stli_cmdwait(brdp, portp, A_SETSIGNALS, &portp->asig,
 		sizeof(asysigs_t), 0) < 0)
-			printk(KERN_WARNING "istallion: dtr set failed.\n");
+			printk(KERN_WARNING "istallion: dtr raise failed.\n");
 }
 
 
@@ -1709,7 +1722,6 @@ static void stli_start(struct tty_struct *tty)
 
 /*****************************************************************************/
 
-
 /*
  *	Hangup this port. This is pretty much like closing the port, only
  *	a little more brutal. No waiting for data to drain. Shutdown the
@@ -1719,8 +1731,47 @@ static void stli_start(struct tty_struct *tty)
 
 static void stli_hangup(struct tty_struct *tty)
 {
-	struct stliport *portp = tty->driver_data;
-	tty_port_hangup(&portp->port);
+	struct stliport *portp;
+	struct stlibrd *brdp;
+	struct tty_port *port;
+	unsigned long flags;
+
+	portp = tty->driver_data;
+	if (portp == NULL)
+		return;
+	if (portp->brdnr >= stli_nrbrds)
+		return;
+	brdp = stli_brds[portp->brdnr];
+	if (brdp == NULL)
+		return;
+	port = &portp->port;
+
+	spin_lock_irqsave(&port->lock, flags);
+	port->flags &= ~ASYNC_INITIALIZED;
+	spin_unlock_irqrestore(&port->lock, flags);
+
+	if (!test_bit(ST_CLOSING, &portp->state))
+		stli_rawclose(brdp, portp, 0, 0);
+
+	spin_lock_irqsave(&stli_lock, flags);
+	if (tty->termios->c_cflag & HUPCL) {
+		stli_mkasysigs(&portp->asig, 0, 0);
+		if (test_bit(ST_CMDING, &portp->state)) {
+			set_bit(ST_DOSIGS, &portp->state);
+			set_bit(ST_DOFLUSHTX, &portp->state);
+			set_bit(ST_DOFLUSHRX, &portp->state);
+		} else {
+			stli_sendcmd(brdp, portp, A_SETSIGNALSF,
+				&portp->asig, sizeof(asysigs_t), 0);
+		}
+	}
+
+	clear_bit(ST_TXBUSY, &portp->state);
+	clear_bit(ST_RXSTOP, &portp->state);
+	set_bit(TTY_IO_ERROR, &tty->flags);
+	spin_unlock_irqrestore(&stli_lock, flags);
+
+	tty_port_hangup(port);
 }
 
 /*****************************************************************************/
@@ -1842,65 +1893,69 @@ static void stli_sendxchar(struct tty_struct *tty, char ch)
 	stli_cmdwait(brdp, portp, A_PORTCTRL, &actrl, sizeof(asyctrl_t), 0);
 }
 
-static void stli_portinfo(struct seq_file *m, struct stlibrd *brdp, struct stliport *portp, int portnr)
+/*****************************************************************************/
+
+#define	MAXLINE		80
+
+/*
+ *	Format info for a specified port. The line is deliberately limited
+ *	to 80 characters. (If it is too long it will be truncated, if too
+ *	short then padded with spaces).
+ */
+
+static int stli_portinfo(struct stlibrd *brdp, struct stliport *portp, int portnr, char *pos)
 {
-	char *uart;
-	int rc;
+	char *sp, *uart;
+	int rc, cnt;
 
 	rc = stli_portcmdstats(NULL, portp);
 
 	uart = "UNKNOWN";
-	if (test_bit(BST_STARTED, &brdp->state)) {
+	if (brdp->state & BST_STARTED) {
 		switch (stli_comstats.hwid) {
 		case 0:	uart = "2681"; break;
 		case 1:	uart = "SC26198"; break;
 		default:uart = "CD1400"; break;
 		}
 	}
-	seq_printf(m, "%d: uart:%s ", portnr, uart);
 
-	if (test_bit(BST_STARTED, &brdp->state) && rc >= 0) {
-		char sep;
+	sp = pos;
+	sp += sprintf(sp, "%d: uart:%s ", portnr, uart);
 
-		seq_printf(m, "tx:%d rx:%d", (int) stli_comstats.txtotal,
+	if ((brdp->state & BST_STARTED) && (rc >= 0)) {
+		sp += sprintf(sp, "tx:%d rx:%d", (int) stli_comstats.txtotal,
 			(int) stli_comstats.rxtotal);
 
 		if (stli_comstats.rxframing)
-			seq_printf(m, " fe:%d",
+			sp += sprintf(sp, " fe:%d",
 				(int) stli_comstats.rxframing);
 		if (stli_comstats.rxparity)
-			seq_printf(m, " pe:%d",
+			sp += sprintf(sp, " pe:%d",
 				(int) stli_comstats.rxparity);
 		if (stli_comstats.rxbreaks)
-			seq_printf(m, " brk:%d",
+			sp += sprintf(sp, " brk:%d",
 				(int) stli_comstats.rxbreaks);
 		if (stli_comstats.rxoverrun)
-			seq_printf(m, " oe:%d",
+			sp += sprintf(sp, " oe:%d",
 				(int) stli_comstats.rxoverrun);
 
-		sep = ' ';
-		if (stli_comstats.signals & TIOCM_RTS) {
-			seq_printf(m, "%c%s", sep, "RTS");
-			sep = '|';
-		}
-		if (stli_comstats.signals & TIOCM_CTS) {
-			seq_printf(m, "%c%s", sep, "CTS");
-			sep = '|';
-		}
-		if (stli_comstats.signals & TIOCM_DTR) {
-			seq_printf(m, "%c%s", sep, "DTR");
-			sep = '|';
-		}
-		if (stli_comstats.signals & TIOCM_CD) {
-			seq_printf(m, "%c%s", sep, "DCD");
-			sep = '|';
-		}
-		if (stli_comstats.signals & TIOCM_DSR) {
-			seq_printf(m, "%c%s", sep, "DSR");
-			sep = '|';
-		}
+		cnt = sprintf(sp, "%s%s%s%s%s ",
+			(stli_comstats.signals & TIOCM_RTS) ? "|RTS" : "",
+			(stli_comstats.signals & TIOCM_CTS) ? "|CTS" : "",
+			(stli_comstats.signals & TIOCM_DTR) ? "|DTR" : "",
+			(stli_comstats.signals & TIOCM_CD) ? "|DCD" : "",
+			(stli_comstats.signals & TIOCM_DSR) ? "|DSR" : "");
+		*sp = ' ';
+		sp += cnt;
 	}
-	seq_putc(m, '\n');
+
+	for (cnt = (sp - pos); (cnt < (MAXLINE - 1)); cnt++)
+		*sp++ = ' ';
+	if (cnt >= MAXLINE)
+		pos[(MAXLINE - 2)] = '+';
+	pos[(MAXLINE - 1)] = '\n';
+
+	return(MAXLINE);
 }
 
 /*****************************************************************************/
@@ -1909,15 +1964,26 @@ static void stli_portinfo(struct seq_file *m, struct stlibrd *brdp, struct stlip
  *	Port info, read from the /proc file system.
  */
 
-static int stli_proc_show(struct seq_file *m, void *v)
+static int stli_readproc(char *page, char **start, off_t off, int count, int *eof, void *data)
 {
 	struct stlibrd *brdp;
 	struct stliport *portp;
 	unsigned int brdnr, portnr, totalport;
+	int curoff, maxoff;
+	char *pos;
 
+	pos = page;
 	totalport = 0;
+	curoff = 0;
 
-	seq_printf(m, "%s: version %s\n", stli_drvtitle, stli_drvversion);
+	if (off == 0) {
+		pos += sprintf(pos, "%s: version %s", stli_drvtitle,
+			stli_drvversion);
+		while (pos < (page + MAXLINE - 1))
+			*pos++ = ' ';
+		*pos++ = '\n';
+	}
+	curoff =  MAXLINE;
 
 /*
  *	We scan through for each board, panel and port. The offset is
@@ -1930,30 +1996,32 @@ static int stli_proc_show(struct seq_file *m, void *v)
 		if (brdp->state == 0)
 			continue;
 
+		maxoff = curoff + (brdp->nrports * MAXLINE);
+		if (off >= maxoff) {
+			curoff = maxoff;
+			continue;
+		}
+
 		totalport = brdnr * STL_MAXPORTS;
 		for (portnr = 0; (portnr < brdp->nrports); portnr++,
 		    totalport++) {
 			portp = brdp->ports[portnr];
 			if (portp == NULL)
 				continue;
-			stli_portinfo(m, brdp, portp, totalport);
+			if (off >= (curoff += MAXLINE))
+				continue;
+			if ((pos - page + MAXLINE) > count)
+				goto stli_readdone;
+			pos += stli_portinfo(brdp, portp, totalport, pos);
 		}
 	}
-	return 0;
-}
 
-static int stli_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, stli_proc_show, NULL);
-}
+	*eof = 1;
 
-static const struct file_operations stli_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= stli_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+stli_readdone:
+	*start = page;
+	return(pos - page);
+}
 
 /*****************************************************************************/
 
@@ -2359,7 +2427,7 @@ static void stli_poll(unsigned long arg)
 		brdp = stli_brds[brdnr];
 		if (brdp == NULL)
 			continue;
-		if (!test_bit(BST_STARTED, &brdp->state))
+		if ((brdp->state & BST_STARTED) == 0)
 			continue;
 
 		spin_lock(&brd_lock);
@@ -3144,7 +3212,7 @@ static int stli_initecp(struct stlibrd *brdp)
 	}
 
 
-	set_bit(BST_FOUND, &brdp->state);
+	brdp->state |= BST_FOUND;
 	return 0;
 err_unmap:
 	iounmap(brdp->membase);
@@ -3301,7 +3369,7 @@ static int stli_initonb(struct stlibrd *brdp)
 	brdp->panels[0] = brdp->nrports;
 
 
-	set_bit(BST_FOUND, &brdp->state);
+	brdp->state |= BST_FOUND;
 	return 0;
 err_unmap:
 	iounmap(brdp->membase);
@@ -3411,7 +3479,7 @@ stli_donestartup:
 	spin_unlock_irqrestore(&brd_lock, flags);
 
 	if (rc == 0)
-		set_bit(BST_STARTED, &brdp->state);
+		brdp->state |= BST_STARTED;
 
 	if (! stli_timeron) {
 		stli_timeron++;
@@ -3714,7 +3782,7 @@ static int __devinit stli_pciprobe(struct pci_dev *pdev,
 	if (retval)
 		goto err_null;
 
-	set_bit(BST_PROBED, &brdp->state);
+	brdp->state |= BST_PROBED;
 	pci_set_drvdata(pdev, brdp);
 
 	EBRDENABLE(brdp);
@@ -3734,7 +3802,7 @@ err:
 	return retval;
 }
 
-static void __devexit stli_pciremove(struct pci_dev *pdev)
+static void stli_pciremove(struct pci_dev *pdev)
 {
 	struct stlibrd *brdp = pci_get_drvdata(pdev);
 
@@ -3845,7 +3913,7 @@ static int __init stli_initbrds(void)
 			brdp = stli_brds[i];
 			if (brdp == NULL)
 				continue;
-			if (test_bit(BST_FOUND, &brdp->state)) {
+			if (brdp->state & BST_FOUND) {
 				EBRDENABLE(brdp);
 				brdp->enable = NULL;
 				brdp->disable = NULL;
@@ -4015,7 +4083,6 @@ static int stli_getbrdstats(combrd_t __user *bp)
 		return -ENODEV;
 
 	memset(&stli_brdstats, 0, sizeof(combrd_t));
-
 	stli_brdstats.brd = brdp->brdnr;
 	stli_brdstats.type = brdp->brdtype;
 	stli_brdstats.hwid = 0;
@@ -4081,13 +4148,10 @@ static int stli_portcmdstats(struct tty_struct *tty, struct stliport *portp)
 	if (brdp == NULL)
 		return -ENODEV;
 
-	mutex_lock(&portp->port.mutex);
-	if (test_bit(BST_STARTED, &brdp->state)) {
+	if (brdp->state & BST_STARTED) {
 		if ((rc = stli_cmdwait(brdp, portp, A_GETSTATS,
-		    &stli_cdkstats, sizeof(asystats_t), 1)) < 0) {
-			mutex_unlock(&portp->port.mutex);
+		    &stli_cdkstats, sizeof(asystats_t), 1)) < 0)
 			return rc;
-		}
 	} else {
 		memset(&stli_cdkstats, 0, sizeof(asystats_t));
 	}
@@ -4132,7 +4196,6 @@ static int stli_portcmdstats(struct tty_struct *tty, struct stliport *portp)
 	stli_comstats.modem = stli_cdkstats.dcdcnt;
 	stli_comstats.hwid = stli_cdkstats.hwid;
 	stli_comstats.signals = stli_mktiocm(stli_cdkstats.signals);
-	mutex_unlock(&portp->port.mutex);
 
 	return 0;
 }
@@ -4195,20 +4258,15 @@ static int stli_clrportstats(struct stliport *portp, comstats_t __user *cp)
 	if (!brdp)
 		return -ENODEV;
 
-	mutex_lock(&portp->port.mutex);
-
-	if (test_bit(BST_STARTED, &brdp->state)) {
-		if ((rc = stli_cmdwait(brdp, portp, A_CLEARSTATS, NULL, 0, 0)) < 0) {
-			mutex_unlock(&portp->port.mutex);
+	if (brdp->state & BST_STARTED) {
+		if ((rc = stli_cmdwait(brdp, portp, A_CLEARSTATS, NULL, 0, 0)) < 0)
 			return rc;
-		}
 	}
 
 	memset(&stli_comstats, 0, sizeof(comstats_t));
 	stli_comstats.brd = portp->brdnr;
 	stli_comstats.panel = portp->panelnr;
 	stli_comstats.port = portp->portnr;
-	mutex_unlock(&portp->port.mutex);
 
 	if (copy_to_user(cp, &stli_comstats, sizeof(comstats_t)))
 		return -EFAULT;
@@ -4268,7 +4326,7 @@ static int stli_getbrdstruct(struct stlibrd __user *arg)
  *	reset it, and start/stop it.
  */
 
-static long stli_memioctl(struct file *fp, unsigned int cmd, unsigned long arg)
+static int stli_memioctl(struct inode *ip, struct file *fp, unsigned int cmd, unsigned long arg)
 {
 	struct stlibrd *brdp;
 	int brdnr, rc, done;
@@ -4279,6 +4337,8 @@ static long stli_memioctl(struct file *fp, unsigned int cmd, unsigned long arg)
  */
 	done = 0;
 	rc = 0;
+
+	lock_kernel();
 
 	switch (cmd) {
 	case COM_GETPORTSTATS:
@@ -4302,6 +4362,8 @@ static long stli_memioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 		done++;
 		break;
 	}
+	unlock_kernel();
+
 	if (done)
 		return rc;
 
@@ -4309,7 +4371,7 @@ static long stli_memioctl(struct file *fp, unsigned int cmd, unsigned long arg)
  *	Now handle the board specific ioctls. These all depend on the
  *	minor number of the device they were called from.
  */
-	brdnr = iminor(fp->f_dentry->d_inode);
+	brdnr = iminor(ip);
 	if (brdnr >= STL_MAXBRDS)
 		return -ENODEV;
 	brdp = stli_brds[brdnr];
@@ -4317,6 +4379,8 @@ static long stli_memioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 		return -ENODEV;
 	if (brdp->state == 0)
 		return -ENODEV;
+
+	lock_kernel();
 
 	switch (cmd) {
 	case STL_BINTR:
@@ -4326,10 +4390,10 @@ static long stli_memioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 		rc = stli_startbrd(brdp);
 		break;
 	case STL_BSTOP:
-		clear_bit(BST_STARTED, &brdp->state);
+		brdp->state &= ~BST_STARTED;
 		break;
 	case STL_BRESET:
-		clear_bit(BST_STARTED, &brdp->state);
+		brdp->state &= ~BST_STARTED;
 		EBRDRESET(brdp);
 		if (stli_shared == 0) {
 			if (brdp->reenable != NULL)
@@ -4340,6 +4404,7 @@ static long stli_memioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 		rc = -ENOIOCTLCMD;
 		break;
 	}
+	unlock_kernel();
 	return rc;
 }
 
@@ -4362,16 +4427,14 @@ static const struct tty_operations stli_ops = {
 	.break_ctl = stli_breakctl,
 	.wait_until_sent = stli_waituntilsent,
 	.send_xchar = stli_sendxchar,
+	.read_proc = stli_readproc,
 	.tiocmget = stli_tiocmget,
 	.tiocmset = stli_tiocmset,
-	.proc_fops = &stli_proc_fops,
 };
 
 static const struct tty_port_operations stli_port_ops = {
 	.carrier_raised = stli_carrier_raised,
-	.dtr_rts = stli_dtr_rts,
-	.activate = stli_activate,
-	.shutdown = stli_shutdown,
+	.raise_dtr_rts = stli_raise_dtr_rts,
 };
 
 /*****************************************************************************/
@@ -4385,8 +4448,7 @@ static void istallion_cleanup_isa(void)
 	unsigned int j;
 
 	for (j = 0; (j < stli_nrbrds); j++) {
-		if ((brdp = stli_brds[j]) == NULL ||
-				test_bit(BST_PROBED, &brdp->state))
+		if ((brdp = stli_brds[j]) == NULL || (brdp->state & BST_PROBED))
 			continue;
 
 		stli_cleanup_ports(brdp);

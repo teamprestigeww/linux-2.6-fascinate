@@ -16,6 +16,8 @@
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 
+#include <mach/hardware.h>
+#include <mach/pxa-regs.h>
 #include <mach/eseries-gpio.h>
 
 #include <asm/irq.h>
@@ -38,7 +40,7 @@ static struct pcmcia_irqs cd_irqs[] = {
 
 static int e740_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 {
-	skt->socket.pci_irq = skt->nr == 0 ? IRQ_GPIO(GPIO_E740_PCMCIA_RDY0) :
+	skt->irq = skt->nr == 0 ? IRQ_GPIO(GPIO_E740_PCMCIA_RDY0) :
 				IRQ_GPIO(GPIO_E740_PCMCIA_RDY1);
 
 	return soc_pcmcia_request_irqs(skt, &cd_irqs[skt->nr], 1);

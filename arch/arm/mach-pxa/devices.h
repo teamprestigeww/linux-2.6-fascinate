@@ -1,4 +1,3 @@
-extern struct platform_device pxa_device_pmu;
 extern struct platform_device pxa_device_mci;
 extern struct platform_device pxa3xx_device_mci2;
 extern struct platform_device pxa3xx_device_mci3;
@@ -35,7 +34,5 @@ extern struct platform_device pxa27x_device_pwm1;
 
 extern struct platform_device pxa3xx_device_nand;
 extern struct platform_device pxa3xx_device_i2c_power;
-
-extern struct platform_device pxa3xx_device_gcu;
 
 void __init pxa_register_device(struct platform_device *dev, void *data);

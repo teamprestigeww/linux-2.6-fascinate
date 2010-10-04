@@ -36,8 +36,6 @@ struct memory_block {
 	struct sys_device sysdev;
 };
 
-int arch_get_memory_phys_device(unsigned long start_pfn);
-
 /* These states are exposed to userspace as text strings in sysfs */
 #define	MEM_ONLINE		(1<<0) /* exposed to userspace */
 #define	MEM_GOING_OFFLINE	(1<<1) /* exposed to userspace */
@@ -50,19 +48,6 @@ struct memory_notify {
 	unsigned long start_pfn;
 	unsigned long nr_pages;
 	int status_change_nid;
-};
-
-/*
- * During pageblock isolation, count the number of pages within the
- * range [start_pfn, start_pfn + nr_pages) which are owned by code
- * in the notifier chain.
- */
-#define MEM_ISOLATE_COUNT	(1<<0)
-
-struct memory_isolate_notify {
-	unsigned long start_pfn;	/* Start of range to check */
-	unsigned int nr_pages;		/* # pages in range to check */
-	unsigned int pages_found;	/* # pages owned found by callbacks */
 };
 
 struct notifier_block;
@@ -91,28 +76,14 @@ static inline int memory_notify(unsigned long val, void *v)
 {
 	return 0;
 }
-static inline int register_memory_isolate_notifier(struct notifier_block *nb)
-{
-	return 0;
-}
-static inline void unregister_memory_isolate_notifier(struct notifier_block *nb)
-{
-}
-static inline int memory_isolate_notify(unsigned long val, void *v)
-{
-	return 0;
-}
 #else
 extern int register_memory_notifier(struct notifier_block *nb);
 extern void unregister_memory_notifier(struct notifier_block *nb);
-extern int register_memory_isolate_notifier(struct notifier_block *nb);
-extern void unregister_memory_isolate_notifier(struct notifier_block *nb);
 extern int register_new_memory(int, struct mem_section *);
 extern int unregister_memory_section(struct mem_section *);
 extern int memory_dev_init(void);
 extern int remove_memory_block(unsigned long, struct mem_section *, int);
 extern int memory_notify(unsigned long val, void *v);
-extern int memory_isolate_notify(unsigned long val, void *v);
 extern struct memory_block *find_memory_block(struct mem_section *);
 #define CONFIG_MEM_BLOCK_SIZE	(PAGES_PER_SECTION<<PAGE_SHIFT)
 enum mem_add_context { BOOT, HOTPLUG };
@@ -127,22 +98,5 @@ enum mem_add_context { BOOT, HOTPLUG };
 #else
 #define hotplug_memory_notifier(fn, pri) do { } while (0)
 #endif
-
-/*
- * 'struct memory_accessor' is a generic interface to provide
- * in-kernel access to persistent memory such as i2c or SPI EEPROMs
- */
-struct memory_accessor {
-	ssize_t (*read)(struct memory_accessor *, char *buf, off_t offset,
-			size_t count);
-	ssize_t (*write)(struct memory_accessor *, const char *buf,
-			 off_t offset, size_t count);
-};
-
-/*
- * Kernel text modification mutex, used for code patching. Users of this lock
- * can sleep.
- */
-extern struct mutex text_mutex;
 
 #endif /* _LINUX_MEMORY_H_ */

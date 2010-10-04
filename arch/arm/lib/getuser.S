@@ -36,13 +36,8 @@ ENTRY(__get_user_1)
 ENDPROC(__get_user_1)
 
 ENTRY(__get_user_2)
-#ifdef CONFIG_THUMB2_KERNEL
-2:	ldrbt	r2, [r0]
-3:	ldrbt	r3, [r0, #1]
-#else
 2:	ldrbt	r2, [r0], #1
 3:	ldrbt	r3, [r0]
-#endif
 #ifndef __ARMEB__
 	orr	r2, r2, r3, lsl #8
 #else
@@ -64,9 +59,9 @@ __get_user_bad:
 	mov	pc, lr
 ENDPROC(__get_user_bad)
 
-.pushsection __ex_table, "a"
+.section __ex_table, "a"
 	.long	1b, __get_user_bad
 	.long	2b, __get_user_bad
 	.long	3b, __get_user_bad
 	.long	4b, __get_user_bad
-.popsection
+.previous

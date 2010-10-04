@@ -40,8 +40,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <linux/slab.h>
-
 #include "ehca_classes.h"
 #include "ehca_iverbs.h"
 #include "ehca_mrmw.h"
@@ -97,7 +95,7 @@ static void ehca_mm_close(struct vm_area_struct *vma)
 		     vma->vm_start, vma->vm_end, *count);
 }
 
-static const struct vm_operations_struct vm_ops = {
+static struct vm_operations_struct vm_ops = {
 	.open =	ehca_mm_open,
 	.close = ehca_mm_close,
 };

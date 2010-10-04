@@ -6,7 +6,7 @@ musb_hdrc-objs := musb_core.o
 
 obj-$(CONFIG_USB_MUSB_HDRC)	+= musb_hdrc.o
 
-ifeq ($(CONFIG_ARCH_DAVINCI_DMx),y)
+ifeq ($(CONFIG_ARCH_DAVINCI),y)
 	musb_hdrc-objs	+= davinci.o
 endif
 
@@ -20,10 +20,6 @@ endif
 
 ifeq ($(CONFIG_ARCH_OMAP3430),y)
 	musb_hdrc-objs	+= omap2430.o
-endif
-
-ifeq ($(CONFIG_ARCH_OMAP4),y)
-	musb_hdrc-objs  += omap2430.o
 endif
 
 ifeq ($(CONFIG_BF54x),y)
@@ -40,10 +36,6 @@ endif
 
 ifeq ($(CONFIG_USB_MUSB_HDRC_HCD),y)
 	musb_hdrc-objs		+= musb_virthub.o musb_host.o
-endif
-
-ifeq ($(CONFIG_DEBUG_FS),y)
-	musb_hdrc-objs		+= musb_debugfs.o
 endif
 
 # the kconfig must guarantee that only one of the
@@ -71,6 +63,12 @@ endif
 
 
 ################################################################################
+
+# FIXME remove all these extra "-DMUSB_* things, stick to CONFIG_*
+
+ifeq ($(CONFIG_USB_INVENTRA_MUSB_HAS_AHB_ID),y)
+	EXTRA_CFLAGS += -DMUSB_AHB_ID
+endif
 
 # Debugging
 

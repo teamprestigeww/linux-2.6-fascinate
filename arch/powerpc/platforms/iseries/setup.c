@@ -256,7 +256,7 @@ static unsigned long iSeries_process_mainstore_vpd(struct MemoryBlock *mb_array,
 		mem_blocks = iSeries_process_Condor_mainstore_vpd(mb_array,
 				max_entries);
 
-	printk("Mainstore_VPD: numMemoryBlocks = %ld\n", mem_blocks);
+	printk("Mainstore_VPD: numMemoryBlocks = %ld \n", mem_blocks);
 	for (i = 0; i < mem_blocks; ++i) {
 		printk("Mainstore_VPD: block %3ld logical chunks %016lx - %016lx\n"
 		       "                             abs chunks %016lx - %016lx\n",
@@ -617,7 +617,7 @@ static void iseries_dedicated_idle(void)
 }
 
 static void __iomem *iseries_ioremap(phys_addr_t address, unsigned long size,
-				     unsigned long flags, void *caller)
+				     unsigned long flags)
 {
 	return (void __iomem *)address;
 }

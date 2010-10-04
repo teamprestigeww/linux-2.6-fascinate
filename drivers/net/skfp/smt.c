@@ -55,6 +55,16 @@ static const struct fddi_addr SMT_Unknown = {
 } ;
 
 /*
+ * external variables
+ */
+extern const struct fddi_addr fddi_broadcast ;
+
+/*
+ * external functions
+ */
+int pcm_status_twisted(struct s_smc *smc);
+
+/*
  * function prototypes
  */
 #ifdef	LITTLE_ENDIAN
@@ -574,7 +584,7 @@ void smt_received_pack(struct s_smc *smc, SMbuf *mb, int fs)
 		if (smt_check_para(smc,sm,plist_nif)) {
 			DB_SMT("SMT: NIF with para problem, ignoring\n",0,0) ;
 			break ;
-		}
+		} ;
 		switch (sm->smt_type) {
 		case SMT_ANNOUNCE :
 		case SMT_REQUEST :

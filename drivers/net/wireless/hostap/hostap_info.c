@@ -1,8 +1,5 @@
 /* Host AP driver Info Frame processing (part of hostap.o module) */
 
-#include <linux/if_arp.h>
-#include <linux/sched.h>
-#include <linux/slab.h>
 #include "hostap_wlan.h"
 #include "hostap.h"
 #include "hostap_ap.h"

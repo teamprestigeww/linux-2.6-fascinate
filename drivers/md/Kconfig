@@ -100,8 +100,8 @@ config MD_RAID1
 	  If unsure, say Y.
 
 config MD_RAID10
-	tristate "RAID-10 (mirrored striping) mode"
-	depends on BLK_DEV_MD
+	tristate "RAID-10 (mirrored striping) mode (EXPERIMENTAL)"
+	depends on BLK_DEV_MD && EXPERIMENTAL
 	---help---
 	  RAID-10 provides a combination of striping (RAID-0) and
 	  mirroring (RAID-1) with easier configuration and more flexible
@@ -121,11 +121,8 @@ config MD_RAID10
 config MD_RAID456
 	tristate "RAID-4/RAID-5/RAID-6 mode"
 	depends on BLK_DEV_MD
-	select RAID6_PQ
 	select ASYNC_MEMCPY
 	select ASYNC_XOR
-	select ASYNC_PQ
-	select ASYNC_RAID6_RECOV
 	---help---
 	  A RAID-5 set of N drives with a capacity of C MB per drive provides
 	  the capacity of C * (N - 1) MB, and protects against a failure
@@ -154,25 +151,44 @@ config MD_RAID456
 
 	  If unsure, say Y.
 
-config MULTICORE_RAID456
-	bool "RAID-4/RAID-5/RAID-6 Multicore processing (EXPERIMENTAL)"
+config MD_RAID5_RESHAPE
+	bool "Support adding drives to a raid-5 array"
 	depends on MD_RAID456
-	depends on SMP
-	depends on EXPERIMENTAL
+	default y
 	---help---
-	  Enable the raid456 module to dispatch per-stripe raid operations to a
-	  thread pool.
+	  A RAID-5 set can be expanded by adding extra drives. This
+	  requires "restriping" the array which means (almost) every
+	  block must be written to a different place.
 
-	  If unsure, say N.
+          This option allows such restriping to be done while the array
+	  is online.
+
+	  You will need mdadm version 2.4.1 or later to use this
+	  feature safely.  During the early stage of reshape there is
+	  a critical section where live data is being over-written.  A
+	  crash during this time needs extra care for recovery.  The
+	  newer mdadm takes a copy of the data in the critical section
+	  and will restore it, if necessary, after a crash.
+
+	  The mdadm usage is e.g.
+	       mdadm --grow /dev/md1 --raid-disks=6
+	  to grow '/dev/md1' to having 6 disks.
+
+	  Note: The array can only be expanded, not contracted.
+	  There should be enough spares already present to make the new
+	  array workable.
+
+	  If unsure, say Y.
 
 config MD_MULTIPATH
 	tristate "Multipath I/O support"
 	depends on BLK_DEV_MD
 	help
-	  MD_MULTIPATH provides a simple multi-path personality for use
-	  the MD framework.  It is not under active development.  New
-	  projects should consider using DM_MULTIPATH which has more
-	  features and more testing.
+	  Multipath-IO is the ability of certain devices to address the same
+	  physical disk over multiple 'IO paths'. The code ensures that such
+	  paths can be defined and handled at runtime, and ensures that a
+	  transparent failover to the backup path(s) happens if a IO errors
+	  arrives on the primary path.
 
 	  If unsure, say N.
 
@@ -240,17 +256,6 @@ config DM_MIRROR
          Allow volume managers to mirror logical volumes, also
          needed for live data migration tools such as 'pvmove'.
 
-config DM_LOG_USERSPACE
-	tristate "Mirror userspace logging (EXPERIMENTAL)"
-	depends on DM_MIRROR && EXPERIMENTAL && NET
-	select CONNECTOR
-	---help---
-	  The userspace logging module provides a mechanism for
-	  relaying the dm-dirty-log API to userspace.  Log designs
-	  which are more suited to userspace implementation (e.g.
-	  shared storage logs) or experimental logs can be implemented
-	  by leveraging this framework.
-
 config DM_ZERO
 	tristate "Zero target"
 	depends on BLK_DEV_DM
@@ -268,25 +273,6 @@ config DM_MULTIPATH
 	depends on SCSI_DH || !SCSI_DH
 	---help---
 	  Allow volume managers to support multipath hardware.
-
-config DM_MULTIPATH_QL
-	tristate "I/O Path Selector based on the number of in-flight I/Os"
-	depends on DM_MULTIPATH
-	---help---
-	  This path selector is a dynamic load balancer which selects
-	  the path with the least number of in-flight I/Os.
-
-	  If unsure, say N.
-
-config DM_MULTIPATH_ST
-	tristate "I/O Path Selector based on the service time"
-	depends on DM_MULTIPATH
-	---help---
-	  This path selector is a dynamic load balancer which selects
-	  the path expected to complete the incoming I/O in the shortest
-	  time.
-
-	  If unsure, say N.
 
 config DM_DELAY
 	tristate "I/O delaying target (EXPERIMENTAL)"

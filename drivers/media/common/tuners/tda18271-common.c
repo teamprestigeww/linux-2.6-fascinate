@@ -210,8 +210,7 @@ int tda18271_write_regs(struct dvb_frontend *fe, int idx, int len)
 	tda18271_i2c_gate_ctrl(fe, 0);
 
 	if (ret != 1)
-		tda_err("ERROR: idx = 0x%x, len = %d, "
-			"i2c_transfer returned: %d\n", idx, len, ret);
+		tda_err("ERROR: i2c_transfer returned: %d\n", ret);
 
 	return (ret == 1 ? 0 : ret);
 }
@@ -326,24 +325,12 @@ int tda18271_init_regs(struct dvb_frontend *fe)
 	regs[R_EB22] = 0x48;
 	regs[R_EB23] = 0xb0;
 
-	switch (priv->small_i2c) {
-	case TDA18271_08_BYTE_CHUNK_INIT:
-		tda18271_write_regs(fe, 0x00, 0x08);
-		tda18271_write_regs(fe, 0x08, 0x08);
-		tda18271_write_regs(fe, 0x10, 0x08);
-		tda18271_write_regs(fe, 0x18, 0x08);
-		tda18271_write_regs(fe, 0x20, 0x07);
-		break;
-	case TDA18271_16_BYTE_CHUNK_INIT:
+	if (priv->small_i2c) {
 		tda18271_write_regs(fe, 0x00, 0x10);
 		tda18271_write_regs(fe, 0x10, 0x10);
 		tda18271_write_regs(fe, 0x20, 0x07);
-		break;
-	case TDA18271_39_BYTE_CHUNK_INIT:
-	default:
+	} else
 		tda18271_write_regs(fe, 0x00, TDA18271_NUM_REGS);
-		break;
-	}
 
 	/* setup agc1 gain */
 	regs[R_EB17] = 0x00;
@@ -503,9 +490,9 @@ int tda18271_set_standby_mode(struct dvb_frontend *fe,
 		tda_dbg("sm = %d, sm_lt = %d, sm_xt = %d\n", sm, sm_lt, sm_xt);
 
 	regs[R_EP3]  &= ~0xe0; /* clear sm, sm_lt, sm_xt */
-	regs[R_EP3]  |= (sm    ? (1 << 7) : 0) |
-			(sm_lt ? (1 << 6) : 0) |
-			(sm_xt ? (1 << 5) : 0);
+	regs[R_EP3]  |= sm    ? (1 << 7) : 0 |
+			sm_lt ? (1 << 6) : 0 |
+			sm_xt ? (1 << 5) : 0;
 
 	return tda18271_write_regs(fe, R_EP3, 1);
 }

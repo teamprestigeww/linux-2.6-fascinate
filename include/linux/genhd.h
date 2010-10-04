@@ -90,8 +90,6 @@ struct disk_stats {
 struct hd_struct {
 	sector_t start_sect;
 	sector_t nr_sects;
-	sector_t alignment_offset;
-	unsigned int discard_alignment;
 	struct device __dev;
 	struct kobject *holder_dir;
 	int policy, partno;
@@ -99,9 +97,9 @@ struct hd_struct {
 	int make_it_fail;
 #endif
 	unsigned long stamp;
-	int in_flight[2];
+	int in_flight;
 #ifdef	CONFIG_SMP
-	struct disk_stats __percpu *dkstats;
+	struct disk_stats *dkstats;
 #else
 	struct disk_stats dkstats;
 #endif
@@ -109,13 +107,12 @@ struct hd_struct {
 };
 
 #define GENHD_FL_REMOVABLE			1
-/* 2 is unused */
+#define GENHD_FL_DRIVERFS			2
 #define GENHD_FL_MEDIA_CHANGE_NOTIFY		4
 #define GENHD_FL_CD				8
 #define GENHD_FL_UP				16
 #define GENHD_FL_SUPPRESS_PARTITION_INFO	32
 #define GENHD_FL_EXT_DEVT			64 /* allow extended devt */
-#define GENHD_FL_NATIVE_CAPACITY		128
 
 #define BLK_SCSI_MAX_CMDS	(256)
 #define BLK_SCSI_CMD_PER_LONG	(BLK_SCSI_MAX_CMDS / (sizeof(long) * 8))
@@ -143,7 +140,7 @@ struct gendisk {
                                          * disks that can't be partitioned. */
 
 	char disk_name[DISK_NAME_LEN];	/* name of major driver */
-	char *(*devnode)(struct gendisk *gd, mode_t *mode);
+
 	/* Array of pointers to partitions indexed by partno.
 	 * Protected with matching bdev lock but stat and other
 	 * non-critical accesses use RCU.  Always access through
@@ -152,7 +149,7 @@ struct gendisk {
 	struct disk_part_tbl *part_tbl;
 	struct hd_struct part0;
 
-	const struct block_device_operations *fops;
+	struct block_device_operations *fops;
 	struct request_queue *queue;
 	void *private_data;
 
@@ -217,7 +214,6 @@ static inline void disk_put_part(struct hd_struct *part)
 #define DISK_PITER_REVERSE	(1 << 0) /* iterate in the reverse direction */
 #define DISK_PITER_INCL_EMPTY	(1 << 1) /* include 0-sized parts */
 #define DISK_PITER_INCL_PART0	(1 << 2) /* include partition 0 */
-#define DISK_PITER_INCL_EMPTY_PART0 (1 << 3) /* include empty partition 0 */
 
 struct disk_part_iter {
 	struct gendisk		*disk;
@@ -256,9 +252,9 @@ extern struct hd_struct *disk_map_sector_rcu(struct gendisk *disk,
 #define part_stat_read(part, field)					\
 ({									\
 	typeof((part)->dkstats->field) res = 0;				\
-	unsigned int _cpu;						\
-	for_each_possible_cpu(_cpu)					\
-		res += per_cpu_ptr((part)->dkstats, _cpu)->field;	\
+	int i;								\
+	for_each_possible_cpu(i)					\
+		res += per_cpu_ptr((part)->dkstats, i)->field;		\
 	res;								\
 })
 
@@ -323,29 +319,25 @@ static inline void free_part_stats(struct hd_struct *part)
 #define part_stat_sub(cpu, gendiskp, field, subnd)			\
 	part_stat_add(cpu, gendiskp, field, -subnd)
 
-static inline void part_inc_in_flight(struct hd_struct *part, int rw)
+static inline void part_inc_in_flight(struct hd_struct *part)
 {
-	part->in_flight[rw]++;
+	part->in_flight++;
 	if (part->partno)
-		part_to_disk(part)->part0.in_flight[rw]++;
+		part_to_disk(part)->part0.in_flight++;
 }
 
-static inline void part_dec_in_flight(struct hd_struct *part, int rw)
+static inline void part_dec_in_flight(struct hd_struct *part)
 {
-	part->in_flight[rw]--;
+	part->in_flight--;
 	if (part->partno)
-		part_to_disk(part)->part0.in_flight[rw]--;
+		part_to_disk(part)->part0.in_flight--;
 }
 
-static inline int part_in_flight(struct hd_struct *part)
-{
-	return part->in_flight[0] + part->in_flight[1];
-}
-
-/* block/blk-core.c */
+/* drivers/block/ll_rw_blk.c */
 extern void part_round_stats(int cpu, struct hd_struct *part);
 
-/* block/genhd.c */
+/* drivers/block/genhd.c */
+extern int get_blkdev_list(char *, int);
 extern void add_disk(struct gendisk *disk);
 extern void del_gendisk(struct gendisk *gp);
 extern void unlink_gendisk(struct gendisk *gp);
@@ -551,8 +543,6 @@ extern void blk_unregister_region(dev_t devt, unsigned long range);
 extern ssize_t part_size_show(struct device *dev,
 			      struct device_attribute *attr, char *buf);
 extern ssize_t part_stat_show(struct device *dev,
-			      struct device_attribute *attr, char *buf);
-extern ssize_t part_inflight_show(struct device *dev,
 			      struct device_attribute *attr, char *buf);
 #ifdef CONFIG_FAIL_MAKE_REQUEST
 extern ssize_t part_fail_show(struct device *dev,

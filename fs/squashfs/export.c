@@ -39,7 +39,7 @@
 #include <linux/vfs.h>
 #include <linux/dcache.h>
 #include <linux/exportfs.h>
-#include <linux/slab.h>
+#include <linux/zlib.h>
 
 #include "squashfs_fs.h"
 #include "squashfs_fs_sb.h"

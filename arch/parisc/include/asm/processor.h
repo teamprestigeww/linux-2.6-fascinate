@@ -18,7 +18,6 @@
 #include <asm/types.h>
 #include <asm/system.h>
 #include <asm/percpu.h>
-
 #endif /* __ASSEMBLY__ */
 
 #define KERNEL_STACK_SIZE 	(4*PAGE_SIZE)
@@ -127,8 +126,6 @@ struct thread_struct {
 	unsigned long  map_base;
 	unsigned long  flags;
 }; 
-
-#define task_pt_regs(tsk) ((struct pt_regs *)&((tsk)->thread.regs))
 
 /* Thread struct flags. */
 #define PARISC_UAC_NOPRINT	(1UL << 0)	/* see prctl and unaligned.c */

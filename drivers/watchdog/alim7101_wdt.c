@@ -238,7 +238,7 @@ static long fop_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	void __user *argp = (void __user *)arg;
 	int __user *p = argp;
-	static const struct watchdog_info ident = {
+	static struct watchdog_info ident = {
 		.options = WDIOF_KEEPALIVEPING | WDIOF_SETTIMEOUT
 							| WDIOF_MAGICCLOSE,
 		.firmware_version = 1,
@@ -322,8 +322,7 @@ static int wdt_notify_sys(struct notifier_block *this,
 		 * watchdog on reboot with no heartbeat
 		 */
 		wdt_change(WDT_ENABLE);
-		printk(KERN_INFO PFX "Watchdog timer is now enabled "
-			"with no heartbeat - should reboot in ~1 second.\n");
+		printk(KERN_INFO PFX "Watchdog timer is now enabled with no heartbeat - should reboot in ~1 second.\n");
 	}
 	return NOTIFY_DONE;
 }
@@ -356,8 +355,7 @@ static int __init alim7101_wdt_init(void)
 	alim7101_pmu = pci_get_device(PCI_VENDOR_ID_AL, PCI_DEVICE_ID_AL_M7101,
 		NULL);
 	if (!alim7101_pmu) {
-		printk(KERN_INFO PFX
-			"ALi M7101 PMU not present - WDT not set\n");
+		printk(KERN_INFO PFX "ALi M7101 PMU not present - WDT not set\n");
 		return -EBUSY;
 	}
 
@@ -375,17 +373,12 @@ static int __init alim7101_wdt_init(void)
 	pci_dev_put(ali1543_south);
 	if ((tmp & 0x1e) == 0x00) {
 		if (!use_gpio) {
-			printk(KERN_INFO PFX
-				"Detected old alim7101 revision 'a1d'.  "
-				"If this is a cobalt board, set the 'use_gpio' "
-				"module parameter.\n");
+			printk(KERN_INFO PFX "Detected old alim7101 revision 'a1d'.  If this is a cobalt board, set the 'use_gpio' module parameter.\n");
 			goto err_out;
 		}
 		nowayout = 1;
 	} else if ((tmp & 0x1e) != 0x12 && (tmp & 0x1e) != 0x00) {
-		printk(KERN_INFO PFX
-			"ALi 1543 South-Bridge does not have the correct "
-			"revision number (???1001?) - WDT not set\n");
+		printk(KERN_INFO PFX "ALi 1543 South-Bridge does not have the correct revision number (???1001?) - WDT not set\n");
 		goto err_out;
 	}
 
@@ -406,8 +399,7 @@ static int __init alim7101_wdt_init(void)
 
 	rc = misc_register(&wdt_miscdev);
 	if (rc) {
-		printk(KERN_ERR PFX
-			"cannot register miscdev on minor=%d (err=%d)\n",
+		printk(KERN_ERR PFX "cannot register miscdev on minor=%d (err=%d)\n",
 			wdt_miscdev.minor, rc);
 		goto err_out_reboot;
 	}
@@ -415,8 +407,7 @@ static int __init alim7101_wdt_init(void)
 	if (nowayout)
 		__module_get(THIS_MODULE);
 
-	printk(KERN_INFO PFX "WDT driver for ALi M7101 initialised. "
-					"timeout=%d sec (nowayout=%d)\n",
+	printk(KERN_INFO PFX "WDT driver for ALi M7101 initialised. timeout=%d sec (nowayout=%d)\n",
 		timeout, nowayout);
 	return 0;
 

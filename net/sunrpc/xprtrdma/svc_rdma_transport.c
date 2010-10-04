@@ -42,8 +42,6 @@
 #include <linux/sunrpc/svc_xprt.h>
 #include <linux/sunrpc/debug.h>
 #include <linux/sunrpc/rpc_rdma.h>
-#include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/rdma_cm.h>
@@ -502,8 +500,8 @@ int svc_rdma_post_recv(struct svcxprt_rdma *xprt)
 		BUG_ON(sge_no >= xprt->sc_max_sge);
 		page = svc_rdma_get_page();
 		ctxt->pages[sge_no] = page;
-		pa = ib_dma_map_single(xprt->sc_cm_id->device,
-				     page_address(page), PAGE_SIZE,
+		pa = ib_dma_map_page(xprt->sc_cm_id->device,
+				     page, 0, PAGE_SIZE,
 				     DMA_FROM_DEVICE);
 		if (ib_dma_mapping_error(xprt->sc_cm_id->device, pa))
 			goto err_put_ctxt;
@@ -522,9 +520,8 @@ int svc_rdma_post_recv(struct svcxprt_rdma *xprt)
 	svc_xprt_get(&xprt->sc_xprt);
 	ret = ib_post_recv(xprt->sc_qp, &recv_wr, &bad_recv_wr);
 	if (ret) {
-		svc_rdma_unmap_dma(ctxt);
-		svc_rdma_put_context(ctxt, 1);
 		svc_xprt_put(&xprt->sc_xprt);
+		svc_rdma_put_context(ctxt, 1);
 	}
 	return ret;
 
@@ -679,10 +676,7 @@ static struct svc_xprt *svc_rdma_create(struct svc_serv *serv,
 	int ret;
 
 	dprintk("svcrdma: Creating RDMA socket\n");
-	if (sa->sa_family != AF_INET) {
-		dprintk("svcrdma: Address family %d is not supported.\n", sa->sa_family);
-		return ERR_PTR(-EAFNOSUPPORT);
-	}
+
 	cma_xprt = rdma_create_xprt(serv, 1);
 	if (!cma_xprt)
 		return ERR_PTR(-ENOMEM);
@@ -735,12 +729,12 @@ static struct svc_rdma_fastreg_mr *rdma_alloc_frmr(struct svcxprt_rdma *xprt)
 		goto err;
 
 	mr = ib_alloc_fast_reg_mr(xprt->sc_pd, RPCSVC_MAXPAGES);
-	if (IS_ERR(mr))
+	if (!mr)
 		goto err_free_frmr;
 
 	pl = ib_alloc_fast_reg_page_list(xprt->sc_cm_id->device,
 					 RPCSVC_MAXPAGES);
-	if (IS_ERR(pl))
+	if (!pl)
 		goto err_free_mr;
 
 	frmr->mr = mr;
@@ -1320,8 +1314,8 @@ void svc_rdma_send_error(struct svcxprt_rdma *xprt, struct rpcrdma_msg *rmsgp,
 	length = svc_rdma_xdr_encode_error(xprt, rmsgp, err, va);
 
 	/* Prepare SGE for local address */
-	sge.addr = ib_dma_map_single(xprt->sc_cm_id->device,
-				   page_address(p), PAGE_SIZE, DMA_FROM_DEVICE);
+	sge.addr = ib_dma_map_page(xprt->sc_cm_id->device,
+				   p, 0, PAGE_SIZE, DMA_FROM_DEVICE);
 	if (ib_dma_mapping_error(xprt->sc_cm_id->device, sge.addr)) {
 		put_page(p);
 		return;
@@ -1348,7 +1342,7 @@ void svc_rdma_send_error(struct svcxprt_rdma *xprt, struct rpcrdma_msg *rmsgp,
 	if (ret) {
 		dprintk("svcrdma: Error %d posting send for protocol error\n",
 			ret);
-		ib_dma_unmap_single(xprt->sc_cm_id->device,
+		ib_dma_unmap_page(xprt->sc_cm_id->device,
 				  sge.addr, PAGE_SIZE,
 				  DMA_FROM_DEVICE);
 		svc_rdma_put_context(ctxt, 1);

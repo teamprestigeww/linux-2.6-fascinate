@@ -12,7 +12,6 @@
 
 #include <linux/kernel.h>
 #include <linux/pci.h>
-#include <linux/slab.h>
 #include <linux/mbus.h>
 #include <asm/irq.h>
 #include <asm/mach/pci.h>
@@ -197,7 +196,6 @@ static int __init pcie_setup(struct pci_sys_data *sys)
 /*****************************************************************************
  * PCI controller
  ****************************************************************************/
-#define ORION5X_PCI_REG(x)	(ORION5X_PCI_VIRT_BASE | (x))
 #define PCI_MODE		ORION5X_PCI_REG(0xd00)
 #define PCI_CMD			ORION5X_PCI_REG(0xc00)
 #define PCI_P2P_CONF		ORION5X_PCI_REG(0x1d14)
@@ -464,7 +462,7 @@ static void __init orion5x_setup_pci_wins(struct mbus_dram_target_info *dram)
 	writel(win_enable, PCI_BAR_ENABLE);
 
 	/*
-	 * Disable automatic update of address remapping when writing to BARs.
+	 * Disable automatic update of address remaping when writing to BARs.
 	 */
 	orion5x_setbits(PCI_ADDR_DECODE_CTRL, 1);
 }

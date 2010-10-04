@@ -132,14 +132,14 @@ struct us_data {
 	/* SCSI interfaces */
 	struct scsi_cmnd	*srb;		 /* current srb		*/
 	unsigned int		tag;		 /* current dCBWTag	*/
-	char			scsi_name[32];	 /* scsi_host name	*/
 
 	/* control and bulk communications data */
 	struct urb		*current_urb;	 /* USB requests	 */
 	struct usb_ctrlrequest	*cr;		 /* control requests	 */
 	struct usb_sg_request	current_sg;	 /* scatter-gather req.  */
 	unsigned char		*iobuf;		 /* I/O buffer		 */
-	dma_addr_t		iobuf_dma;	 /* buffer DMA addresses */
+	dma_addr_t		cr_dma;		 /* buffer DMA addresses */
+	dma_addr_t		iobuf_dma;
 	struct task_struct	*ctl_thread;	 /* the control thread   */
 
 	/* mutual exclusion and synchronization structures */
@@ -176,26 +176,5 @@ extern void fill_inquiry_response(struct us_data *us,
  * single queue element srb for write access */
 #define scsi_unlock(host)	spin_unlock_irq(host->host_lock)
 #define scsi_lock(host)		spin_lock_irq(host->host_lock)
-
-/* General routines provided by the usb-storage standard core */
-#ifdef CONFIG_PM
-extern int usb_stor_suspend(struct usb_interface *iface, pm_message_t message);
-extern int usb_stor_resume(struct usb_interface *iface);
-extern int usb_stor_reset_resume(struct usb_interface *iface);
-#else
-#define usb_stor_suspend	NULL
-#define usb_stor_resume		NULL
-#define usb_stor_reset_resume	NULL
-#endif
-
-extern int usb_stor_pre_reset(struct usb_interface *iface);
-extern int usb_stor_post_reset(struct usb_interface *iface);
-
-extern int usb_stor_probe1(struct us_data **pus,
-		struct usb_interface *intf,
-		const struct usb_device_id *id,
-		struct us_unusual_dev *unusual_dev);
-extern int usb_stor_probe2(struct us_data *us);
-extern void usb_stor_disconnect(struct usb_interface *intf);
 
 #endif

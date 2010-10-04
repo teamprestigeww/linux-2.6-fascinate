@@ -14,6 +14,8 @@
 #ifndef _ASM_FIXMAP_H
 #define _ASM_FIXMAP_H
 
+extern unsigned long FIXADDR_TOP;
+
 #ifndef __ASSEMBLY__
 #include <linux/kernel.h>
 #include <asm/page.h>
@@ -21,8 +23,6 @@
 #include <linux/threads.h>
 #include <asm/kmap_types.h>
 #endif
-
-#define FIXADDR_TOP	((unsigned long)(-PAGE_SIZE))
 
 /*
  * Here we define all the compile-time 'special' virtual
@@ -44,9 +44,6 @@
  */
 enum fixed_addresses {
 	FIX_HOLE,
-	/* reserve the top 128K for early debugging purposes */
-	FIX_EARLY_DEBUG_TOP = FIX_HOLE,
-	FIX_EARLY_DEBUG_BASE = FIX_EARLY_DEBUG_TOP+((128*1024)/PAGE_SIZE)-1,
 #ifdef CONFIG_HIGHMEM
 	FIX_KMAP_BEGIN,	/* reserved pte's for temporary kernel mappings */
 	FIX_KMAP_END = FIX_KMAP_BEGIN+(KM_TYPE_NR*NR_CPUS)-1,
@@ -64,7 +61,7 @@ extern void __set_fixmap (enum fixed_addresses idx,
  * Some hardware wants to get fixmapped without caching.
  */
 #define set_fixmap_nocache(idx, phys) \
-		__set_fixmap(idx, phys, PAGE_KERNEL_NCG)
+		__set_fixmap(idx, phys, PAGE_KERNEL_NOCACHE)
 
 #define clear_fixmap(idx) \
 		__set_fixmap(idx, 0, __pgprot(0))

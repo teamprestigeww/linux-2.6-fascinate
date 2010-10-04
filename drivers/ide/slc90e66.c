@@ -18,8 +18,9 @@
 
 static DEFINE_SPINLOCK(slc90e66_lock);
 
-static void slc90e66_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void slc90e66_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	int is_slave		= drive->dn & 1;
 	int master_port		= hwif->channel ? 0x42 : 0x40;
@@ -28,8 +29,6 @@ static void slc90e66_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	u16 master_data;
 	u8 slave_data;
 	int control = 0;
-	const u8 pio = drive->pio_mode - XFER_PIO_0;
-
 				     /* ISP  RTC */
 	static const u8 timings[][2] = {
 					{ 0, 0 },
@@ -45,7 +44,7 @@ static void slc90e66_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 		control |= 1;	/* Programmable timing on */
 	if (drive->media == ide_disk)
 		control |= 4;	/* Prefetch, post write */
-	if (ide_pio_need_iordy(drive, pio))
+	if (pio > 2)
 		control |= 2;	/* IORDY */
 	if (is_slave) {
 		master_data |=  0x4000;
@@ -72,14 +71,14 @@ static void slc90e66_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	spin_unlock_irqrestore(&slc90e66_lock, flags);
 }
 
-static void slc90e66_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void slc90e66_set_dma_mode(ide_drive_t *drive, const u8 speed)
 {
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	u8 maslave		= hwif->channel ? 0x42 : 0x40;
 	int sitre = 0, a_speed	= 7 << (drive->dn * 4);
 	int u_speed = 0, u_flag = 1 << drive->dn;
 	u16			reg4042, reg44, reg48, reg4a;
-	const u8 speed		= drive->dma_mode;
 
 	pci_read_config_word(dev, maslave, &reg4042);
 	sitre = (reg4042 & 0x4000) ? 1 : 0;
@@ -92,13 +91,15 @@ static void slc90e66_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 
 		if (!(reg48 & u_flag))
 			pci_write_config_word(dev, 0x48, reg48|u_flag);
-		if ((reg4a & a_speed) != u_speed) {
+		/* FIXME: (reg4a & a_speed) ? */
+		if ((reg4a & u_speed) != u_speed) {
 			pci_write_config_word(dev, 0x4a, reg4a & ~a_speed);
 			pci_read_config_word(dev, 0x4a, &reg4a);
 			pci_write_config_word(dev, 0x4a, reg4a|u_speed);
 		}
 	} else {
 		const u8 mwdma_to_pio[] = { 0, 3, 4 };
+		u8 pio;
 
 		if (reg48 & u_flag)
 			pci_write_config_word(dev, 0x48, reg48 & ~u_flag);
@@ -106,12 +107,11 @@ static void slc90e66_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 			pci_write_config_word(dev, 0x4a, reg4a & ~a_speed);
 
 		if (speed >= XFER_MW_DMA_0)
-			drive->pio_mode =
-				mwdma_to_pio[speed - XFER_MW_DMA_0] + XFER_PIO_0;
+			pio = mwdma_to_pio[speed - XFER_MW_DMA_0];
 		else
-			drive->pio_mode = XFER_PIO_2; /* for SWDMA2 */
+			pio = 2; /* only SWDMA2 is allowed */
 
-		slc90e66_set_pio_mode(hwif, drive);
+		slc90e66_set_pio_mode(drive, pio);
 	}
 }
 
@@ -136,6 +136,7 @@ static const struct ide_port_info slc90e66_chipset __devinitdata = {
 	.name		= DRV_NAME,
 	.enablebits	= { {0x41, 0x80, 0x80}, {0x43, 0x80, 0x80} },
 	.port_ops	= &slc90e66_port_ops,
+	.host_flags	= IDE_HFLAG_LEGACY_IRQS,
 	.pio_mask	= ATA_PIO4,
 	.swdma_mask	= ATA_SWDMA2_ONLY,
 	.mwdma_mask	= ATA_MWDMA12_ONLY,

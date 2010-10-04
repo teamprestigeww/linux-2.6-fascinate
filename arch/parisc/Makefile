@@ -56,9 +56,7 @@ cflags-y	+= -mdisable-fpregs
 
 # Without this, "ld -r" results in .text sections that are too big
 # (> 0x40000) for branches to reach stubs.
-ifndef CONFIG_FUNCTION_TRACER
-  cflags-y	+= -ffunction-sections
-endif
+cflags-y	+= -ffunction-sections
 
 # select which processor to optimise for
 cflags-$(CONFIG_PA7100)		+= -march=1.1 -mschedule=7100
@@ -118,8 +116,8 @@ define archhelp
 	@echo  '* vmlinux	- Uncompressed kernel image (./vmlinux)'
 	@echo  '  palo		- Bootable image (./lifimage)'
 	@echo  '  install	- Install kernel using'
-	@echo  '		  (your) ~/bin/$(INSTALLKERNEL) or'
-	@echo  '		  (distribution) /sbin/$(INSTALLKERNEL) or'
+	@echo  '		  (your) ~/bin/installkernel or'
+	@echo  '		  (distribution) /sbin/installkernel or'
 	@echo  '		  copy to $$(INSTALL_PATH)'
 endef
 

@@ -30,7 +30,6 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
-#include <linux/slab.h>
 #include <linux/pci.h>
 #include <linux/workqueue.h>
 #include "../pci.h"
@@ -286,8 +285,17 @@ static int board_added(struct slot *p_slot)
 		return WRONG_BUS_FREQUENCY;
 	}
 
-	bsp = ctrl->pci_dev->bus->cur_bus_speed;
-	msp = ctrl->pci_dev->bus->max_bus_speed;
+	rc = p_slot->hpc_ops->get_cur_bus_speed(p_slot, &bsp);
+	if (rc) {
+		ctrl_err(ctrl, "Can't get bus operation speed\n");
+		return WRONG_BUS_FREQUENCY;
+	}
+
+	rc = p_slot->hpc_ops->get_max_bus_speed(p_slot, &msp);
+	if (rc) {
+		ctrl_err(ctrl, "Can't get max bus operation speed\n");
+		msp = bsp;
+	}
 
 	/* Check if there are other slots or devices on the same bus */
 	if (!list_empty(&ctrl->pci_dev->subordinate->devices))
@@ -454,7 +462,6 @@ void shpchp_queue_pushbutton_work(struct work_struct *work)
 		p_slot->state = POWERON_STATE;
 		break;
 	default:
-		kfree(info);
 		goto out;
 	}
 	queue_work(shpchp_wq, &info->work);

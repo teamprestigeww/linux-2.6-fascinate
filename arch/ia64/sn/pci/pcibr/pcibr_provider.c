@@ -8,7 +8,6 @@
 
 #include <linux/interrupt.h>
 #include <linux/types.h>
-#include <linux/slab.h>
 #include <linux/pci.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/geo.h>
@@ -80,7 +79,7 @@ static int sal_pcibr_error_interrupt(struct pcibus_info *soft)
 
 u16 sn_ioboard_to_pci_bus(struct pci_bus *pci_bus)
 {
-	long rc;
+	s64 rc;
 	u16 uninitialized_var(ioboard);		/* GCC be quiet */
 	nasid_t nasid = NASID_GET(SN_PCIBUS_BUSSOFT(pci_bus)->bs_base);
 

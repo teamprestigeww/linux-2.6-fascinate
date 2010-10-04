@@ -1171,7 +1171,7 @@ static int __devinit add_card(struct pci_dev *dev,
 
         error = -ENXIO;
 
-        if (pci_set_dma_mask(dev, DMA_BIT_MASK(32)))
+        if (pci_set_dma_mask(dev, DMA_32BIT_MASK))
                 FAIL("DMA address limits not supported for PCILynx hardware");
         if (pci_enable_device(dev))
                 FAIL("failed to enable PCILynx hardware");
@@ -1452,7 +1452,7 @@ static int __devinit add_card(struct pci_dev *dev,
                                 PRINT(KERN_ERR, lynx->id, "unable to read bus info block from i2c");
                         } else {
                                 PRINT(KERN_INFO, lynx->id, "got bus info block from serial eeprom");
-				/* FIXME: probably we should rewrite the max_rec, max_ROM(1394a),
+				/* FIXME: probably we shoud rewrite the max_rec, max_ROM(1394a),
 				 * generation(1394a) and link_spd(1394a) field and recalculate
 				 * the CRC */
 

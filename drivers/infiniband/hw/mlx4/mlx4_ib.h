@@ -86,7 +86,6 @@ struct mlx4_ib_mr {
 
 struct mlx4_ib_fast_reg_page_list {
 	struct ib_fast_reg_page_list	ibfrpl;
-	__be64			       *mapped_page_list;
 	dma_addr_t			map;
 };
 
@@ -175,7 +174,6 @@ struct mlx4_ib_dev {
 	spinlock_t		sm_lock;
 
 	struct mutex		cap_mask_mutex;
-	bool			ib_active;
 };
 
 static inline struct mlx4_ib_dev *to_mdev(struct ib_device *ibdev)

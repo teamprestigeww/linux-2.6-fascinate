@@ -27,9 +27,8 @@
 #include <linux/device.h>
 #include <linux/i2c.h>
 #include <linux/firmware.h>
-#include <linux/mutex.h>
+#include <linux/semaphore.h>
 #include <linux/uaccess.h>
-#include <linux/slab.h>
 #include <asm/system.h>
 #include <linux/videodev2.h>
 #include <media/tuner.h>
@@ -50,7 +49,7 @@ int go7007_read_interrupt(struct go7007 *go, u16 *value, u16 *data)
 	go->hpi_ops->read_interrupt(go);
 	if (wait_event_timeout(go->interrupt_waitq,
 				go->interrupt_available, 5*HZ) < 0) {
-		v4l2_err(&go->v4l2_dev, "timeout waiting for read interrupt\n");
+		printk(KERN_ERR "go7007: timeout waiting for read interrupt\n");
 		return -1;
 	}
 	if (!go->interrupt_available)
@@ -98,12 +97,13 @@ static int go7007_load_encoder(struct go7007 *go)
 	u16 intr_val, intr_data;
 
 	if (request_firmware(&fw_entry, fw_name, go->dev)) {
-		v4l2_err(go, "unable to load firmware from file "
-			"\"%s\"\n", fw_name);
+		printk(KERN_ERR
+			"go7007: unable to load firmware from file \"%s\"\n",
+			fw_name);
 		return -1;
 	}
 	if (fw_entry->size < 16 || memcmp(fw_entry->data, "WISGO7007FW", 11)) {
-		v4l2_err(go, "file \"%s\" does not appear to be "
+		printk(KERN_ERR "go7007: file \"%s\" does not appear to be "
 				"go7007 firmware\n", fw_name);
 		release_firmware(fw_entry);
 		return -1;
@@ -111,7 +111,7 @@ static int go7007_load_encoder(struct go7007 *go)
 	fw_len = fw_entry->size - 16;
 	bounce = kmalloc(fw_len, GFP_KERNEL);
 	if (bounce == NULL) {
-		v4l2_err(go, "unable to allocate %d bytes for "
+		printk(KERN_ERR "go7007: unable to allocate %d bytes for "
 				"firmware transfer\n", fw_len);
 		release_firmware(fw_entry);
 		return -1;
@@ -122,14 +122,12 @@ static int go7007_load_encoder(struct go7007 *go)
 			go7007_send_firmware(go, bounce, fw_len) < 0 ||
 			go7007_read_interrupt(go, &intr_val, &intr_data) < 0 ||
 			(intr_val & ~0x1) != 0x5a5a) {
-		v4l2_err(go, "error transferring firmware\n");
+		printk(KERN_ERR "go7007: error transferring firmware\n");
 		rv = -1;
 	}
 	kfree(bounce);
 	return rv;
 }
-
-MODULE_FIRMWARE("go7007fw.bin");
 
 /*
  * Boot the encoder and register the I2C adapter if requested.  Do the
@@ -142,9 +140,9 @@ int go7007_boot_encoder(struct go7007 *go, int init_i2c)
 {
 	int ret;
 
-	mutex_lock(&go->hw_lock);
+	down(&go->hw_lock);
 	ret = go7007_load_encoder(go);
-	mutex_unlock(&go->hw_lock);
+	up(&go->hw_lock);
 	if (ret < 0)
 		return -1;
 	if (!init_i2c)
@@ -193,11 +191,8 @@ int go7007_reset_encoder(struct go7007 *go)
 /*
  * Attempt to instantiate an I2C client by ID, probably loading a module.
  */
-static int init_i2c_module(struct i2c_adapter *adapter, const char *type,
-			   int id, int addr)
+static int init_i2c_module(struct i2c_adapter *adapter, int id, int addr)
 {
-	struct go7007 *go = i2c_get_adapdata(adapter);
-	struct v4l2_device *v4l2_dev = &go->v4l2_dev;
 	char *modname;
 
 	switch (id) {
@@ -223,16 +218,16 @@ static int init_i2c_module(struct i2c_adapter *adapter, const char *type,
 		modname = "wis-ov7640";
 		break;
 	case I2C_DRIVERID_S2250:
-		modname = "s2250";
+		modname = "s2250-board";
 		break;
 	default:
 		modname = NULL;
 		break;
 	}
-
-	if (v4l2_i2c_new_subdev(v4l2_dev, adapter, modname, type, addr, NULL))
+	if (modname != NULL)
+		request_module(modname);
+	if (wis_i2c_probe_device(adapter, id, addr) == 1)
 		return 0;
-
 	if (modname != NULL)
 		printk(KERN_INFO
 			"go7007: probing for module %s failed\n", modname);
@@ -256,16 +251,11 @@ int go7007_register_encoder(struct go7007 *go)
 
 	printk(KERN_INFO "go7007: registering new %s\n", go->name);
 
-	mutex_lock(&go->hw_lock);
+	down(&go->hw_lock);
 	ret = go7007_init_encoder(go);
-	mutex_unlock(&go->hw_lock);
+	up(&go->hw_lock);
 	if (ret < 0)
 		return -1;
-
-	/* v4l2 init must happen before i2c subdevs */
-	ret = go7007_v4l2_init(go);
-	if (ret < 0)
-		return ret;
 
 	if (!go->i2c_adapter_online &&
 			go->board_info->flags & GO7007_BOARD_USE_ONBOARD_I2C) {
@@ -276,9 +266,23 @@ int go7007_register_encoder(struct go7007 *go)
 	if (go->i2c_adapter_online) {
 		for (i = 0; i < go->board_info->num_i2c_devs; ++i)
 			init_i2c_module(&go->i2c_adapter,
-					go->board_info->i2c_devs[i].type,
 					go->board_info->i2c_devs[i].id,
 					go->board_info->i2c_devs[i].addr);
+#ifdef TUNER_SET_TYPE_ADDR
+		if (go->tuner_type >= 0) {
+			struct tuner_setup tun_setup = {
+				.mode_mask	= T_ANALOG_TV,
+				.addr		= ADDR_UNSET,
+				.type		= go->tuner_type
+			};
+			i2c_clients_command(&go->i2c_adapter,
+				TUNER_SET_TYPE_ADDR, &tun_setup);
+		}
+#else
+		if (go->tuner_type >= 0)
+			i2c_clients_command(&go->i2c_adapter,
+				TUNER_SET_TYPE, &go->tuner_type);
+#endif
 		if (go->board_id == GO7007_BOARDID_ADLINK_MPG24)
 			i2c_clients_command(&go->i2c_adapter,
 				DECODER_SET_CHANNEL, &go->channel_number);
@@ -287,7 +291,7 @@ int go7007_register_encoder(struct go7007 *go)
 		go->audio_enabled = 1;
 		go7007_snd_init(go);
 	}
-	return 0;
+	return go7007_v4l2_init(go);
 }
 EXPORT_SYMBOL(go7007_register_encoder);
 
@@ -320,7 +324,7 @@ int go7007_start_encoder(struct go7007 *go)
 
 	if (go7007_send_firmware(go, fw, fw_len) < 0 ||
 			go7007_read_interrupt(go, &intr_val, &intr_data) < 0) {
-		v4l2_err(&go->v4l2_dev, "error transferring firmware\n");
+		printk(KERN_ERR "go7007: error transferring firmware\n");
 		rv = -1;
 		goto start_error;
 	}
@@ -329,7 +333,7 @@ int go7007_start_encoder(struct go7007 *go)
 	go->parse_length = 0;
 	go->seen_frame = 0;
 	if (go7007_stream_start(go) < 0) {
-		v4l2_err(&go->v4l2_dev, "error starting stream transfer\n");
+		printk(KERN_ERR "go7007: error starting stream transfer\n");
 		rv = -1;
 		goto start_error;
 	}
@@ -425,7 +429,7 @@ void go7007_parse_video_stream(struct go7007 *go, u8 *buf, int length)
 	for (i = 0; i < length; ++i) {
 		if (go->active_buf != NULL &&
 			    go->active_buf->bytesused >= GO7007_BUF_SIZE - 3) {
-			v4l2_info(&go->v4l2_dev, "dropping oversized frame\n");
+			printk(KERN_DEBUG "go7007: dropping oversized frame\n");
 			go->active_buf->offset -= go->active_buf->bytesused;
 			go->active_buf->bytesused = 0;
 			go->active_buf->modet_active = 0;
@@ -608,7 +612,7 @@ struct go7007 *go7007_alloc(struct go7007_board_info *board, struct device *dev)
 	go->tuner_type = -1;
 	go->channel_number = 0;
 	go->name[0] = 0;
-	mutex_init(&go->hw_lock);
+	init_MUTEX(&go->hw_lock);
 	init_waitqueue_head(&go->frame_waitq);
 	spin_lock_init(&go->spinlock);
 	go->video_dev = NULL;
@@ -673,8 +677,8 @@ void go7007_remove(struct go7007 *go)
 		if (i2c_del_adapter(&go->i2c_adapter) == 0)
 			go->i2c_adapter_online = 0;
 		else
-			v4l2_err(&go->v4l2_dev,
-				"error removing I2C adapter!\n");
+			printk(KERN_ERR
+				"go7007: error removing I2C adapter!\n");
 	}
 
 	if (go->audio_enabled)

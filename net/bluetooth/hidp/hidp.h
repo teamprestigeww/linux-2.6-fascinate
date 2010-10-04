@@ -126,8 +126,6 @@ int hidp_get_conninfo(struct hidp_conninfo *ci);
 struct hidp_session {
 	struct list_head list;
 
-	struct hci_conn *conn;
-
 	struct socket *ctrl_sock;
 	struct socket *intr_sock;
 
@@ -154,9 +152,7 @@ struct hidp_session {
 	struct sk_buff_head ctrl_transmit;
 	struct sk_buff_head intr_transmit;
 
-	/* Report descriptor */
-	__u8 *rd_data;
-	uint rd_size;
+	struct hidp_connadd_req *req;
 };
 
 static inline void hidp_schedule(struct hidp_session *session)
@@ -164,8 +160,8 @@ static inline void hidp_schedule(struct hidp_session *session)
 	struct sock *ctrl_sk = session->ctrl_sock->sk;
 	struct sock *intr_sk = session->intr_sock->sk;
 
-	wake_up_interruptible(sk_sleep(ctrl_sk));
-	wake_up_interruptible(sk_sleep(intr_sk));
+	wake_up_interruptible(ctrl_sk->sk_sleep);
+	wake_up_interruptible(intr_sk->sk_sleep);
 }
 
 /* HIDP init defines */

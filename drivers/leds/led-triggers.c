@@ -21,7 +21,6 @@
 #include <linux/timer.h>
 #include <linux/rwsem.h>
 #include <linux/leds.h>
-#include <linux/slab.h>
 #include "leds.h"
 
 /*
@@ -157,20 +156,12 @@ EXPORT_SYMBOL_GPL(led_trigger_set_default);
 int led_trigger_register(struct led_trigger *trigger)
 {
 	struct led_classdev *led_cdev;
-	struct led_trigger *trig;
 
 	rwlock_init(&trigger->leddev_list_lock);
 	INIT_LIST_HEAD(&trigger->led_cdevs);
 
-	down_write(&triggers_list_lock);
-	/* Make sure the trigger's name isn't already in use */
-	list_for_each_entry(trig, &trigger_list, next_trig) {
-		if (!strcmp(trig->name, trigger->name)) {
-			up_write(&triggers_list_lock);
-			return -EEXIST;
-		}
-	}
 	/* Add to the list of led triggers */
+	down_write(&triggers_list_lock);
 	list_add_tail(&trigger->next_trig, &trigger_list);
 	up_write(&triggers_list_lock);
 

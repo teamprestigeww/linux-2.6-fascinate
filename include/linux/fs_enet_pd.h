@@ -17,7 +17,6 @@
 #define FS_ENET_PD_H
 
 #include <linux/string.h>
-#include <linux/of_mdio.h>
 #include <asm/types.h>
 
 #define FS_ENET_NAME	"fs_enet"
@@ -131,7 +130,10 @@ struct fs_platform_info {
 	
 	u32 device_flags;
 
-	struct device_node *phy_node;
+	int phy_addr;		/* the phy address (-1 no phy) */
+	char bus_id[16];
+	int phy_irq;		/* the phy irq (if it exists)  */
+
 	const struct fs_mii_bus_info *bus_info;
 
 	int rx_ring, tx_ring;	/* number of buffers on rx     */

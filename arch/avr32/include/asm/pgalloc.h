@@ -83,7 +83,7 @@ static inline void pte_free(struct mm_struct *mm, pgtable_t pte)
 	quicklist_free_page(QUICK_PT, NULL, pte);
 }
 
-#define __pte_free_tlb(tlb,pte,addr)			\
+#define __pte_free_tlb(tlb,pte)				\
 do {							\
 	pgtable_page_dtor(pte);				\
 	tlb_remove_page((tlb), pte);			\

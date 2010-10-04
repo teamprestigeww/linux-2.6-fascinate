@@ -5,7 +5,8 @@
 
 #define NF_NAT_MAPPING_TYPE_MAX_NAMELEN 16
 
-enum nf_nat_manip_type {
+enum nf_nat_manip_type
+{
 	IP_NAT_MANIP_SRC,
 	IP_NAT_MANIP_DST
 };
@@ -17,7 +18,6 @@ enum nf_nat_manip_type {
 #define IP_NAT_RANGE_MAP_IPS 1
 #define IP_NAT_RANGE_PROTO_SPECIFIED 2
 #define IP_NAT_RANGE_PROTO_RANDOM 4
-#define IP_NAT_RANGE_PERSISTENT 8
 
 /* NAT sequence number modifications */
 struct nf_nat_seq {
@@ -29,7 +29,8 @@ struct nf_nat_seq {
 };
 
 /* Single range specification. */
-struct nf_nat_range {
+struct nf_nat_range
+{
 	/* Set to OR of flags above. */
 	unsigned int flags;
 
@@ -41,7 +42,8 @@ struct nf_nat_range {
 };
 
 /* For backwards compat: don't use in modern code. */
-struct nf_nat_multi_range_compat {
+struct nf_nat_multi_range_compat
+{
 	unsigned int rangesize; /* Must be 1. */
 
 	/* hangs off end. */
@@ -54,7 +56,8 @@ struct nf_nat_multi_range_compat {
 #include <net/netfilter/nf_conntrack_extend.h>
 
 /* per conntrack: nat application helper private data */
-union nf_conntrack_nat_help {
+union nf_conntrack_nat_help
+{
 	/* insert nat helper private data here */
 	struct nf_nat_pptp nat_pptp_info;
 };
@@ -62,7 +65,8 @@ union nf_conntrack_nat_help {
 struct nf_conn;
 
 /* The structure embedded in the conntrack structure. */
-struct nf_conn_nat {
+struct nf_conn_nat
+{
 	struct hlist_node bysource;
 	struct nf_nat_seq seq[IP_CT_DIR_MAX];
 	struct nf_conn *ct;

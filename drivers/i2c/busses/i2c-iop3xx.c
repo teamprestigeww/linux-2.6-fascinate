@@ -38,7 +38,8 @@
 #include <linux/errno.h>
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
-#include <linux/io.h>
+
+#include <asm/io.h>
 
 #include "i2c-iop3xx.h"
 
@@ -54,6 +55,12 @@ iic_cook_addr(struct i2c_msg *msg)
 
 	if (msg->flags & I2C_M_RD)
 		addr |= 1;
+
+	/*
+	 * Read or Write?
+	 */
+	if (msg->flags & I2C_M_REV_DIR_ADDR)
+		addr ^= 1;
 
 	return addr;   
 }
@@ -481,7 +488,7 @@ iop3xx_i2c_probe(struct platform_device *pdev)
 	/*
 	 * Default values...should these come in from board code?
 	 */
-	new_adapter->timeout = HZ;
+	new_adapter->timeout = 100;	
 	new_adapter->algo = &iop3xx_i2c_algo;
 
 	init_waitqueue_head(&adapter_data->waitq);

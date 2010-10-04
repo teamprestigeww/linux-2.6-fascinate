@@ -1,5 +1,5 @@
 /*
- * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
+ * Copyright 2008 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
  *
  * This program is free software; you may redistribute it and/or modify
@@ -98,15 +98,20 @@ enum vnic_devcmd_cmd {
 	/* set Rx packet filter: (u32)a0=filters (see CMD_PFILTER_*) */
 	CMD_PACKET_FILTER	= _CMDCNW(_CMD_DIR_WRITE, _CMD_VTYPE_ENET, 7),
 
-	/* set Rx packet filter for all: (u32)a0=filters (see CMD_PFILTER_*) */
-	CMD_PACKET_FILTER_ALL   = _CMDCNW(_CMD_DIR_WRITE, _CMD_VTYPE_ALL, 7),
-
 	/* hang detection notification */
 	CMD_HANG_NOTIFY         = _CMDC(_CMD_DIR_NONE, _CMD_VTYPE_ALL, 8),
 
 	/* MAC address in (u48)a0 */
 	CMD_MAC_ADDR            = _CMDC(_CMD_DIR_READ,
 					_CMD_VTYPE_ENET | _CMD_VTYPE_FC, 9),
+
+	/* disable/enable promisc mode: (u8)a0=0/1 */
+/***** XXX DEPRECATED *****/
+	CMD_PROMISC_MODE        = _CMDCNW(_CMD_DIR_WRITE, _CMD_VTYPE_ENET, 10),
+
+	/* disable/enable all-multi mode: (u8)a0=0/1 */
+/***** XXX DEPRECATED *****/
+	CMD_ALLMULTI_MODE       = _CMDCNW(_CMD_DIR_WRITE, _CMD_VTYPE_ENET, 11),
 
 	/* add addr from (u48)a0 */
 	CMD_ADDR_ADD            = _CMDCNW(_CMD_DIR_WRITE,
@@ -174,15 +179,10 @@ enum vnic_devcmd_cmd {
 	/* enable virtual link */
 	CMD_ENABLE		= _CMDCNW(_CMD_DIR_WRITE, _CMD_VTYPE_ALL, 28),
 
-	/* enable virtual link, waiting variant. */
-	CMD_ENABLE_WAIT		= _CMDC(_CMD_DIR_WRITE, _CMD_VTYPE_ALL, 28),
-
 	/* disable virtual link */
 	CMD_DISABLE		= _CMDC(_CMD_DIR_NONE, _CMD_VTYPE_ALL, 29),
 
-	/* stats dump sum of all vnic stats on same uplink in mem:
-	 *     (u64)a0=paddr
-	 *     (u16)a1=sizeof stats area */
+	/* stats dump all vnics on uplink in mem: (u64)a0=paddr (u32)a1=uif */
 	CMD_STATS_DUMP_ALL	= _CMDC(_CMD_DIR_WRITE, _CMD_VTYPE_ALL, 30),
 
 	/* init status:
@@ -191,7 +191,7 @@ enum vnic_devcmd_cmd {
 	CMD_INIT_STATUS		= _CMDC(_CMD_DIR_READ, _CMD_VTYPE_ALL, 31),
 
 	/* INT13 API: (u64)a0=paddr to vnic_int13_params struct
-	 *            (u32)a1=INT13_CMD_xxx */
+	 *            (u8)a1=INT13_CMD_xxx */
 	CMD_INT13               = _CMDC(_CMD_DIR_WRITE, _CMD_VTYPE_FC, 32),
 
 	/* logical uplink enable/disable: (u64)a0: 0/1=disable/enable */
@@ -207,37 +207,6 @@ enum vnic_devcmd_cmd {
 	 * in:  (u32)a0=cmd
 	 * out: (u32)a0=errno, 0:valid cmd, a1=supported VNIC_STF_* bits */
 	CMD_CAPABILITY		= _CMDC(_CMD_DIR_RW, _CMD_VTYPE_ALL, 36),
-
-	/* persistent binding info
-	 * in:  (u64)a0=paddr of arg
-	 *      (u32)a1=CMD_PERBI_XXX */
-	CMD_PERBI		= _CMDC(_CMD_DIR_RW, _CMD_VTYPE_FC, 37),
-
-	/* Interrupt Assert Register functionality
-	 * in: (u16)a0=interrupt number to assert
-	 */
-	CMD_IAR			= _CMDCNW(_CMD_DIR_WRITE, _CMD_VTYPE_ALL, 38),
-
-	/* initiate hangreset, like softreset after hang detected */
-	CMD_HANG_RESET		= _CMDC(_CMD_DIR_NONE, _CMD_VTYPE_ALL, 39),
-
-	/* hangreset status:
-	 *    out: a0=0 reset complete, a0=1 reset in progress */
-	CMD_HANG_RESET_STATUS   = _CMDC(_CMD_DIR_READ, _CMD_VTYPE_ALL, 40),
-
-	/*
-	 * Set hw ingress packet vlan rewrite mode:
-	 * in:  (u32)a0=new vlan rewrite mode
-	 * out: (u32)a0=old vlan rewrite mode */
-	CMD_IG_VLAN_REWRITE_MODE = _CMDC(_CMD_DIR_RW, _CMD_VTYPE_ENET, 41),
-
-	/*
-	 * in:  (u16)a0=bdf of target vnic
-	 *      (u32)a1=cmd to proxy
-	 *      a2-a15=args to cmd in a1
-	 * out: (u32)a0=status of proxied cmd
-	 *      a1-a15=out args of proxied cmd */
-	CMD_PROXY_BY_BDF =	_CMDC(_CMD_DIR_RW, _CMD_VTYPE_ALL, 42),
 };
 
 /* flags for CMD_OPEN */
@@ -252,12 +221,6 @@ enum vnic_devcmd_cmd {
 #define CMD_PFILTER_BROADCAST		0x04
 #define CMD_PFILTER_PROMISCUOUS		0x08
 #define CMD_PFILTER_ALL_MULTICAST	0x10
-
-/* rewrite modes for CMD_IG_VLAN_REWRITE_MODE */
-#define IG_VLAN_REWRITE_MODE_DEFAULT_TRUNK              0
-#define IG_VLAN_REWRITE_MODE_UNTAG_DEFAULT_VLAN         1
-#define IG_VLAN_REWRITE_MODE_PRIORITY_TAG_DEFAULT_VLAN  2
-#define IG_VLAN_REWRITE_MODE_PASS_THRU                  3
 
 enum vnic_devcmd_status {
 	STAT_NONE = 0,
@@ -276,7 +239,6 @@ enum vnic_devcmd_error {
 	ERR_ENOMEM = 7,
 	ERR_ETIMEDOUT = 8,
 	ERR_ELINKDOWN = 9,
-	ERR_EMAXRES = 10,
 };
 
 struct vnic_devcmd_fw_info {
@@ -297,7 +259,6 @@ struct vnic_devcmd_notify {
 	u32 status;		/* status bits (see VNIC_STF_*) */
 	u32 error;		/* error code (see ERR_*) for first ERR */
 	u32 link_down_cnt;	/* running count of link down transitions */
-	u32 perbi_rebuild_cnt;	/* running count of perbi rebuilds */
 };
 #define VNIC_STF_FATAL_ERR	0x0001	/* fatal fw error */
 #define VNIC_STF_STD_PAUSE	0x0002	/* standard link-level pause on */

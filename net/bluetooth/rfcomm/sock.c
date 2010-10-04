@@ -40,8 +40,6 @@
 #include <linux/skbuff.h>
 #include <linux/list.h>
 #include <linux/device.h>
-#include <linux/debugfs.h>
-#include <linux/seq_file.h>
 #include <net/sock.h>
 
 #include <asm/system.h>
@@ -325,8 +323,7 @@ static struct sock *rfcomm_sock_alloc(struct net *net, struct socket *sock, int 
 	return sk;
 }
 
-static int rfcomm_sock_create(struct net *net, struct socket *sock,
-			      int protocol, int kern)
+static int rfcomm_sock_create(struct net *net, struct socket *sock, int protocol)
 {
 	struct sock *sk;
 
@@ -397,8 +394,7 @@ static int rfcomm_sock_connect(struct socket *sock, struct sockaddr *addr, int a
 
 	BT_DBG("sk %p", sk);
 
-	if (alen < sizeof(struct sockaddr_rc) ||
-	    addr->sa_family != AF_BLUETOOTH)
+	if (addr->sa_family != AF_BLUETOOTH || alen < sizeof(struct sockaddr_rc))
 		return -EINVAL;
 
 	lock_sock(sk);
@@ -503,7 +499,7 @@ static int rfcomm_sock_accept(struct socket *sock, struct socket *newsock, int f
 	BT_DBG("sk %p timeo %ld", sk, timeo);
 
 	/* Wait for an incoming connection. (wake-one). */
-	add_wait_queue_exclusive(sk_sleep(sk), &wait);
+	add_wait_queue_exclusive(sk->sk_sleep, &wait);
 	while (!(nsk = bt_accept_dequeue(sk, newsock))) {
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (!timeo) {
@@ -526,7 +522,7 @@ static int rfcomm_sock_accept(struct socket *sock, struct socket *newsock, int f
 		}
 	}
 	set_current_state(TASK_RUNNING);
-	remove_wait_queue(sk_sleep(sk), &wait);
+	remove_wait_queue(sk->sk_sleep, &wait);
 
 	if (err)
 		goto done;
@@ -621,7 +617,7 @@ static long rfcomm_sock_data_wait(struct sock *sk, long timeo)
 {
 	DECLARE_WAITQUEUE(wait, current);
 
-	add_wait_queue(sk_sleep(sk), &wait);
+	add_wait_queue(sk->sk_sleep, &wait);
 	for (;;) {
 		set_current_state(TASK_INTERRUPTIBLE);
 
@@ -640,7 +636,7 @@ static long rfcomm_sock_data_wait(struct sock *sk, long timeo)
 	}
 
 	__set_current_state(TASK_RUNNING);
-	remove_wait_queue(sk_sleep(sk), &wait);
+	remove_wait_queue(sk->sk_sleep, &wait);
 	return timeo;
 }
 
@@ -707,7 +703,7 @@ static int rfcomm_sock_recvmsg(struct kiocb *iocb, struct socket *sock,
 		copied += chunk;
 		size   -= chunk;
 
-		sock_recv_ts_and_drops(msg, sk, skb);
+		sock_recv_timestamp(msg, sk, skb);
 
 		if (!(flags & MSG_PEEK)) {
 			atomic_sub(chunk, &sk->sk_rmem_alloc);
@@ -734,7 +730,7 @@ out:
 	return copied ? : err;
 }
 
-static int rfcomm_sock_setsockopt_old(struct socket *sock, int optname, char __user *optval, unsigned int optlen)
+static int rfcomm_sock_setsockopt_old(struct socket *sock, int optname, char __user *optval, int optlen)
 {
 	struct sock *sk = sock->sk;
 	int err = 0;
@@ -770,7 +766,7 @@ static int rfcomm_sock_setsockopt_old(struct socket *sock, int optname, char __u
 	return err;
 }
 
-static int rfcomm_sock_setsockopt(struct socket *sock, int level, int optname, char __user *optval, unsigned int optlen)
+static int rfcomm_sock_setsockopt(struct socket *sock, int level, int optname, char __user *optval, int optlen)
 {
 	struct sock *sk = sock->sk;
 	struct bt_security sec;
@@ -1064,38 +1060,26 @@ done:
 	return result;
 }
 
-static int rfcomm_sock_debugfs_show(struct seq_file *f, void *p)
+static ssize_t rfcomm_sock_sysfs_show(struct class *dev, char *buf)
 {
 	struct sock *sk;
 	struct hlist_node *node;
+	char *str = buf;
 
 	read_lock_bh(&rfcomm_sk_list.lock);
 
 	sk_for_each(sk, node, &rfcomm_sk_list.head) {
-		seq_printf(f, "%s %s %d %d\n",
-				batostr(&bt_sk(sk)->src),
-				batostr(&bt_sk(sk)->dst),
+		str += sprintf(str, "%s %s %d %d\n",
+				batostr(&bt_sk(sk)->src), batostr(&bt_sk(sk)->dst),
 				sk->sk_state, rfcomm_pi(sk)->channel);
 	}
 
 	read_unlock_bh(&rfcomm_sk_list.lock);
 
-	return 0;
+	return (str - buf);
 }
 
-static int rfcomm_sock_debugfs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, rfcomm_sock_debugfs_show, inode->i_private);
-}
-
-static const struct file_operations rfcomm_sock_debugfs_fops = {
-	.open		= rfcomm_sock_debugfs_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static struct dentry *rfcomm_sock_debugfs;
+static CLASS_ATTR(rfcomm, S_IRUGO, rfcomm_sock_sysfs_show, NULL);
 
 static const struct proto_ops rfcomm_sock_ops = {
 	.family		= PF_BLUETOOTH,
@@ -1117,7 +1101,7 @@ static const struct proto_ops rfcomm_sock_ops = {
 	.mmap		= sock_no_mmap
 };
 
-static const struct net_proto_family rfcomm_sock_family_ops = {
+static struct net_proto_family rfcomm_sock_family_ops = {
 	.family		= PF_BLUETOOTH,
 	.owner		= THIS_MODULE,
 	.create		= rfcomm_sock_create
@@ -1135,12 +1119,8 @@ int __init rfcomm_init_sockets(void)
 	if (err < 0)
 		goto error;
 
-	if (bt_debugfs) {
-		rfcomm_sock_debugfs = debugfs_create_file("rfcomm", 0444,
-				bt_debugfs, NULL, &rfcomm_sock_debugfs_fops);
-		if (!rfcomm_sock_debugfs)
-			BT_ERR("Failed to create RFCOMM debug file");
-	}
+	if (class_create_file(bt_class, &class_attr_rfcomm) < 0)
+		BT_ERR("Failed to create RFCOMM info file");
 
 	BT_INFO("RFCOMM socket layer initialized");
 
@@ -1154,7 +1134,7 @@ error:
 
 void __exit rfcomm_cleanup_sockets(void)
 {
-	debugfs_remove(rfcomm_sock_debugfs);
+	class_remove_file(bt_class, &class_attr_rfcomm);
 
 	if (bt_sock_unregister(BTPROTO_RFCOMM) < 0)
 		BT_ERR("RFCOMM socket layer unregistration failed");

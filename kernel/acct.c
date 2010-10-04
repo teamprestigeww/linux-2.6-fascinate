@@ -122,7 +122,7 @@ static int check_free_space(struct bsd_acct_struct *acct, struct file *file)
 	spin_unlock(&acct_lock);
 
 	/* May block */
-	if (vfs_statfs(&file->f_path, &sbuf))
+	if (vfs_statfs(file->f_path.dentry, &sbuf))
 		return res;
 	suspend = sbuf.f_blocks * SUSPEND;
 	resume = sbuf.f_blocks * RESUME;
@@ -215,7 +215,7 @@ static void acct_file_reopen(struct bsd_acct_struct *acct, struct file *file,
 static int acct_on(char *name)
 {
 	struct file *file;
-	struct vfsmount *mnt;
+	int error;
 	struct pid_namespace *ns;
 	struct bsd_acct_struct *acct = NULL;
 
@@ -243,18 +243,24 @@ static int acct_on(char *name)
 		}
 	}
 
+	error = security_acct(file);
+	if (error) {
+		kfree(acct);
+		filp_close(file, NULL);
+		return error;
+	}
+
 	spin_lock(&acct_lock);
 	if (ns->bacct == NULL) {
 		ns->bacct = acct;
 		acct = NULL;
 	}
 
-	mnt = file->f_path.mnt;
-	mnt_pin(mnt);
+	mnt_pin(file->f_path.mnt);
 	acct_file_reopen(ns->bacct, file, ns);
 	spin_unlock(&acct_lock);
 
-	mntput(mnt); /* it's pinned, now give up active reference */
+	mntput(file->f_path.mnt); /* it's pinned, now give up active reference */
 	kfree(acct);
 
 	return 0;
@@ -273,7 +279,7 @@ static int acct_on(char *name)
  */
 SYSCALL_DEFINE1(acct, const char __user *, name)
 {
-	int error = 0;
+	int error;
 
 	if (!capable(CAP_SYS_PACCT))
 		return -EPERM;
@@ -291,11 +297,13 @@ SYSCALL_DEFINE1(acct, const char __user *, name)
 		if (acct == NULL)
 			return 0;
 
-		spin_lock(&acct_lock);
-		acct_file_reopen(acct, NULL, NULL);
-		spin_unlock(&acct_lock);
+		error = security_acct(NULL);
+		if (!error) {
+			spin_lock(&acct_lock);
+			acct_file_reopen(acct, NULL, NULL);
+			spin_unlock(&acct_lock);
+		}
 	}
-
 	return error;
 }
 
@@ -343,18 +351,17 @@ restart:
 
 void acct_exit_ns(struct pid_namespace *ns)
 {
-	struct bsd_acct_struct *acct = ns->bacct;
+	struct bsd_acct_struct *acct;
 
-	if (acct == NULL)
-		return;
-
-	del_timer_sync(&acct->timer);
 	spin_lock(&acct_lock);
-	if (acct->file != NULL)
-		acct_file_reopen(acct, NULL, NULL);
-	spin_unlock(&acct_lock);
+	acct = ns->bacct;
+	if (acct != NULL) {
+		if (acct->file != NULL)
+			acct_file_reopen(acct, NULL, NULL);
 
-	kfree(acct);
+		kfree(acct);
+	}
+	spin_unlock(&acct_lock);
 }
 
 /*
@@ -482,17 +489,13 @@ static void do_acct_process(struct bsd_acct_struct *acct,
 	u64 run_time;
 	struct timespec uptime;
 	struct tty_struct *tty;
-	const struct cred *orig_cred;
-
-	/* Perform file operations on behalf of whoever enabled accounting */
-	orig_cred = override_creds(file->f_cred);
 
 	/*
 	 * First check to see if there is enough free_space to continue
 	 * the process accounting system.
 	 */
 	if (!check_free_space(acct, file))
-		goto out;
+		return;
 
 	/*
 	 * Fill the accounting struct with the needed info as recorded
@@ -527,8 +530,7 @@ static void do_acct_process(struct bsd_acct_struct *acct,
 	do_div(elapsed, AHZ);
 	ac.ac_btime = get_seconds() - elapsed;
 	/* we really need to bite the bullet and change layout */
-	ac.ac_uid = orig_cred->uid;
-	ac.ac_gid = orig_cred->gid;
+	current_uid_gid(&ac.ac_uid, &ac.ac_gid);
 #if ACCT_VERSION==2
 	ac.ac_ahz = AHZ;
 #endif
@@ -574,8 +576,16 @@ static void do_acct_process(struct bsd_acct_struct *acct,
 			       sizeof(acct_t), &file->f_pos);
 	current->signal->rlim[RLIMIT_FSIZE].rlim_cur = flim;
 	set_fs(fs);
-out:
-	revert_creds(orig_cred);
+}
+
+/**
+ * acct_init_pacct - initialize a new pacct_struct
+ * @pacct: per-process accounting info struct to initialize
+ */
+void acct_init_pacct(struct pacct_struct *pacct)
+{
+	memset(pacct, 0, sizeof(struct pacct_struct));
+	pacct->ac_utime = pacct->ac_stime = cputime_zero;
 }
 
 /**

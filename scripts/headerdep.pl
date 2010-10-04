@@ -19,7 +19,7 @@ my $opt_graph;
 	version	=> \&version,
 
 	all	=> \$opt_all,
-	"I=s"	=> \@opt_include,
+	I	=> \@opt_include,
 	graph	=> \$opt_graph,
 );
 
@@ -80,7 +80,8 @@ sub search {
 		my $path = "$i/$filename";
 		return $path if -f $path;
 	}
-	return;
+
+	return undef;
 }
 
 sub parse_all {

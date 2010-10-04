@@ -237,7 +237,7 @@ struct priv
 	void *tmdbounce[TMDNUM];
 	int tmdbouncenum;
 	int lock,xmit_queued;
-
+	struct net_device_stats stats;
 	void *self;
 	int cmdr_addr;
 	int cardno;
@@ -252,12 +252,12 @@ static void ni65_xmit_intr(struct net_device *dev,int);
 static int  ni65_open(struct net_device *dev);
 static int  ni65_lance_reinit(struct net_device *dev);
 static void ni65_init_lance(struct priv *p,unsigned char*,int,int);
-static netdev_tx_t ni65_send_packet(struct sk_buff *skb,
-				    struct net_device *dev);
+static int  ni65_send_packet(struct sk_buff *skb, struct net_device *dev);
 static void  ni65_timeout(struct net_device *dev);
 static int  ni65_close(struct net_device *dev);
 static int  ni65_alloc_buffer(struct net_device *dev);
 static void ni65_free_buffer(struct priv *p);
+static struct net_device_stats *ni65_get_stats(struct net_device *);
 static void set_multicast_list(struct net_device *dev);
 
 static int irqtab[] __initdata = { 9,12,15,5 }; /* irq config-translate */
@@ -294,7 +294,7 @@ static void ni65_set_performance(struct priv *p)
 static int ni65_open(struct net_device *dev)
 {
 	struct priv *p = dev->ml_priv;
-	int irqval = request_irq(dev->irq, ni65_interrupt,0,
+	int irqval = request_irq(dev->irq, &ni65_interrupt,0,
                         cards[p->cardno].cardname,dev);
 	if (irqval) {
 		printk(KERN_ERR "%s: unable to get IRQ %d (irqval=%d).\n",
@@ -401,17 +401,6 @@ out:
 	return ERR_PTR(err);
 }
 
-static const struct net_device_ops ni65_netdev_ops = {
-	.ndo_open		= ni65_open,
-	.ndo_stop		= ni65_close,
-	.ndo_start_xmit		= ni65_send_packet,
-	.ndo_tx_timeout		= ni65_timeout,
-	.ndo_set_multicast_list = set_multicast_list,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_mac_address 	= eth_mac_addr,
-	.ndo_validate_addr	= eth_validate_addr,
-};
-
 /*
  * this is the real card probe ..
  */
@@ -492,9 +481,8 @@ static int __init ni65_probe1(struct net_device *dev,int ioaddr)
 	else {
 		if(dev->dma == 0) {
 		/* 'stuck test' from lance.c */
-			unsigned long dma_channels =
-				((inb(DMA1_STAT_REG) >> 4) & 0x0f)
-				| (inb(DMA2_STAT_REG) & 0xf0);
+			long dma_channels = ((inb(DMA1_STAT_REG) >> 4) & 0x0f) |
+					    (inb(DMA2_STAT_REG) & 0xf0);
 			for(i=1;i<5;i++) {
 				int dma = dmatab[i];
 				if(test_bit(dma,&dma_channels) || request_dma(dma,"ni6510"))
@@ -560,9 +548,13 @@ static int __init ni65_probe1(struct net_device *dev,int ioaddr)
 	}
 
 	dev->base_addr = ioaddr;
-	dev->netdev_ops = &ni65_netdev_ops;
+	dev->open		= ni65_open;
+	dev->stop		= ni65_close;
+	dev->hard_start_xmit	= ni65_send_packet;
+	dev->tx_timeout		= ni65_timeout;
 	dev->watchdog_timeo	= HZ/2;
-
+	dev->get_stats		= ni65_get_stats;
+	dev->set_multicast_list = set_multicast_list;
 	return 0; /* everything is OK */
 }
 
@@ -784,7 +776,7 @@ static void ni65_stop_start(struct net_device *dev,struct priv *p)
 		if(!p->lock)
 			if (p->tmdnum || !p->xmit_queued)
 				netif_wake_queue(dev);
-		dev->trans_start = jiffies; /* prevent tx timeout */
+		dev->trans_start = jiffies;
 	}
 	else
 		writedatareg(CSR0_STRT | csr0);
@@ -849,7 +841,7 @@ static int ni65_lance_reinit(struct net_device *dev)
 
 	 if(dev->flags & IFF_PROMISC)
 		 ni65_init_lance(p,dev->dev_addr,0x00,M_PROM);
-	 else if (netdev_mc_count(dev) || dev->flags & IFF_ALLMULTI)
+	 else if(dev->mc_count || dev->flags & IFF_ALLMULTI)
 		 ni65_init_lance(p,dev->dev_addr,0xff,0x0);
 	 else
 		 ni65_init_lance(p,dev->dev_addr,0x00,0x00);
@@ -905,16 +897,17 @@ static irqreturn_t ni65_interrupt(int irq, void * dev_id)
 
 		if(csr0 & CSR0_ERR)
 		{
+			struct priv *p = dev->ml_priv;
 			if(debuglevel > 1)
 				printk(KERN_ERR "%s: general error: %04x.\n",dev->name,csr0);
 			if(csr0 & CSR0_BABL)
-				dev->stats.tx_errors++;
+				p->stats.tx_errors++;
 			if(csr0 & CSR0_MISS) {
 				int i;
 				for(i=0;i<RMDNUM;i++)
 					printk("%02x ",p->rmdhead[i].u.s.status);
 				printk("\n");
-				dev->stats.rx_errors++;
+				p->stats.rx_errors++;
 			}
 			if(csr0 & CSR0_MERR) {
 				if(debuglevel > 1)
@@ -929,7 +922,8 @@ static irqreturn_t ni65_interrupt(int irq, void * dev_id)
  int j;
  for(j=0;j<RMDNUM;j++)
  {
-	int i, num2;
+	struct priv *p = dev->ml_priv;
+	int i,k,num1,num2;
 	for(i=RMDNUM-1;i>0;i--) {
 		 num2 = (p->rmdnum + i) & (RMDNUM-1);
 		 if(!(p->rmdhead[num2].u.s.status & RCV_OWN))
@@ -937,7 +931,6 @@ static irqreturn_t ni65_interrupt(int irq, void * dev_id)
 	}
 
 	if(i) {
-		int k, num1;
 		for(k=0;k<RMDNUM;k++) {
 			num1 = (p->rmdnum + k) & (RMDNUM-1);
 			if(!(p->rmdhead[num1].u.s.status & RCV_OWN))
@@ -949,6 +942,7 @@ static irqreturn_t ni65_interrupt(int irq, void * dev_id)
 		if(debuglevel > 0)
 		{
 			char buf[256],*buf1;
+			int k;
 			buf1 = buf;
 			for(k=0;k<RMDNUM;k++) {
 				sprintf(buf1,"%02x ",(p->rmdhead[k].u.s.status)); /* & RCV_OWN) ); */
@@ -1004,12 +998,12 @@ static void ni65_xmit_intr(struct net_device *dev,int csr0)
 #endif
 		 /* checking some errors */
 			if(tmdp->status2 & XMIT_RTRY)
-				dev->stats.tx_aborted_errors++;
+				p->stats.tx_aborted_errors++;
 			if(tmdp->status2 & XMIT_LCAR)
-				dev->stats.tx_carrier_errors++;
+				p->stats.tx_carrier_errors++;
 			if(tmdp->status2 & (XMIT_BUFF | XMIT_UFLO )) {
 		/* this stops the xmitter */
-				dev->stats.tx_fifo_errors++;
+				p->stats.tx_fifo_errors++;
 				if(debuglevel > 0)
 					printk(KERN_ERR "%s: Xmit FIFO/BUFF error\n",dev->name);
 				if(p->features & INIT_RING_BEFORE_START) {
@@ -1023,12 +1017,12 @@ static void ni65_xmit_intr(struct net_device *dev,int csr0)
 			if(debuglevel > 2)
 				printk(KERN_ERR "%s: xmit-error: %04x %02x-%04x\n",dev->name,csr0,(int) tmdstat,(int) tmdp->status2);
 			if(!(csr0 & CSR0_BABL)) /* don't count errors twice */
-				dev->stats.tx_errors++;
+				p->stats.tx_errors++;
 			tmdp->status2 = 0;
 		}
 		else {
-			dev->stats.tx_bytes -= (short)(tmdp->blen);
-			dev->stats.tx_packets++;
+			p->stats.tx_bytes -= (short)(tmdp->blen);
+			p->stats.tx_packets++;
 		}
 
 #ifdef XMT_VIA_SKB
@@ -1064,7 +1058,7 @@ static void ni65_recv_intr(struct net_device *dev,int csr0)
 			if(!(rmdstat & RCV_ERR)) {
 				if(rmdstat & RCV_START)
 				{
-					dev->stats.rx_length_errors++;
+					p->stats.rx_length_errors++;
 					printk(KERN_ERR "%s: recv, packet too long: %d\n",dev->name,rmdp->mlen & 0x0fff);
 				}
 			}
@@ -1073,16 +1067,16 @@ static void ni65_recv_intr(struct net_device *dev,int csr0)
 					printk(KERN_ERR "%s: receive-error: %04x, lance-status: %04x/%04x\n",
 									dev->name,(int) rmdstat,csr0,(int) inw(PORT+L_DATAREG) );
 				if(rmdstat & RCV_FRAM)
-					dev->stats.rx_frame_errors++;
+					p->stats.rx_frame_errors++;
 				if(rmdstat & RCV_OFLO)
-					dev->stats.rx_over_errors++;
+					p->stats.rx_over_errors++;
 				if(rmdstat & RCV_CRC)
-					dev->stats.rx_crc_errors++;
+					p->stats.rx_crc_errors++;
 				if(rmdstat & RCV_BUF_ERR)
-					dev->stats.rx_fifo_errors++;
+					p->stats.rx_fifo_errors++;
 			}
 			if(!(csr0 & CSR0_MISS)) /* don't count errors twice */
-				dev->stats.rx_errors++;
+				p->stats.rx_errors++;
 		}
 		else if( (len = (rmdp->mlen & 0x0fff) - 4) >= 60)
 		{
@@ -1113,20 +1107,20 @@ static void ni65_recv_intr(struct net_device *dev,int csr0)
 				skb_put(skb,len);
 				skb_copy_to_linear_data(skb, (unsigned char *) p->recvbounce[p->rmdnum],len);
 #endif
-				dev->stats.rx_packets++;
-				dev->stats.rx_bytes += len;
+				p->stats.rx_packets++;
+				p->stats.rx_bytes += len;
 				skb->protocol=eth_type_trans(skb,dev);
 				netif_rx(skb);
 			}
 			else
 			{
 				printk(KERN_ERR "%s: can't alloc new sk_buff\n",dev->name);
-				dev->stats.rx_dropped++;
+				p->stats.rx_dropped++;
 			}
 		}
 		else {
 			printk(KERN_INFO "%s: received runt packet\n",dev->name);
-			dev->stats.rx_errors++;
+			p->stats.rx_errors++;
 		}
 		rmdp->blen = -(R_BUF_SIZE-8);
 		rmdp->mlen = 0;
@@ -1150,7 +1144,7 @@ static void ni65_timeout(struct net_device *dev)
 		printk("%02x ",p->tmdhead[i].u.s.status);
 	printk("\n");
 	ni65_lance_reinit(dev);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	dev->trans_start = jiffies;
 	netif_wake_queue(dev);
 }
 
@@ -1158,8 +1152,7 @@ static void ni65_timeout(struct net_device *dev)
  *	Send a packet
  */
 
-static netdev_tx_t ni65_send_packet(struct sk_buff *skb,
-				    struct net_device *dev)
+static int ni65_send_packet(struct sk_buff *skb, struct net_device *dev)
 {
 	struct priv *p = dev->ml_priv;
 
@@ -1167,7 +1160,7 @@ static netdev_tx_t ni65_send_packet(struct sk_buff *skb,
 
 	if (test_and_set_bit(0, (void*)&p->lock)) {
 		printk(KERN_ERR "%s: Queue was locked.\n", dev->name);
-		return NETDEV_TX_BUSY;
+		return 1;
 	}
 
 	{
@@ -1213,11 +1206,29 @@ static netdev_tx_t ni65_send_packet(struct sk_buff *skb,
 			netif_wake_queue(dev);
 
 		p->lock = 0;
+		dev->trans_start = jiffies;
 
 		spin_unlock_irqrestore(&p->ring_lock, flags);
 	}
 
-	return NETDEV_TX_OK;
+	return 0;
+}
+
+static struct net_device_stats *ni65_get_stats(struct net_device *dev)
+{
+
+#if 0
+	int i;
+	struct priv *p = dev->ml_priv;
+	for(i=0;i<RMDNUM;i++)
+	{
+		struct rmd *rmdp = p->rmdhead + ((p->rmdnum + i) & (RMDNUM-1));
+		printk("%02x ",rmdp->u.s.status);
+	}
+	printk("\n");
+#endif
+
+	return &((struct priv *)dev->ml_priv)->stats;
 }
 
 static void set_multicast_list(struct net_device *dev)

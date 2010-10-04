@@ -41,7 +41,6 @@
 #include <linux/tty.h>
 #include <linux/kmod.h>
 #include <linux/spinlock.h>
-#include <linux/slab.h>
 
 #include <asm/ioctls.h>
 #include <asm/uaccess.h>
@@ -150,14 +149,13 @@ int irda_device_is_receiving(struct net_device *dev)
 
 	IRDA_DEBUG(2, "%s()\n", __func__);
 
-	if (!dev->netdev_ops->ndo_do_ioctl) {
+	if (!dev->do_ioctl) {
 		IRDA_ERROR("%s: do_ioctl not impl. by device driver\n",
 			   __func__);
 		return -1;
 	}
 
-	ret = (dev->netdev_ops->ndo_do_ioctl)(dev, (struct ifreq *) &req,
-					      SIOCGRECEIVING);
+	ret = dev->do_ioctl(dev, (struct ifreq *) &req, SIOCGRECEIVING);
 	if (ret < 0)
 		return ret;
 

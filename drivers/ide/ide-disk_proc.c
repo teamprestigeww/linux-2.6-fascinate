@@ -1,155 +1,109 @@
 #include <linux/kernel.h>
 #include <linux/ide.h>
-#include <linux/slab.h>
-#include <linux/seq_file.h>
+#include <linux/hdreg.h>
 
 #include "ide-disk.h"
 
 static int smart_enable(ide_drive_t *drive)
 {
-	struct ide_cmd cmd;
-	struct ide_taskfile *tf = &cmd.tf;
+	ide_task_t args;
+	struct ide_taskfile *tf = &args.tf;
 
-	memset(&cmd, 0, sizeof(cmd));
+	memset(&args, 0, sizeof(ide_task_t));
 	tf->feature = ATA_SMART_ENABLE;
 	tf->lbam    = ATA_SMART_LBAM_PASS;
 	tf->lbah    = ATA_SMART_LBAH_PASS;
 	tf->command = ATA_CMD_SMART;
-	cmd.valid.out.tf = IDE_VALID_OUT_TF | IDE_VALID_DEVICE;
-	cmd.valid.in.tf  = IDE_VALID_IN_TF  | IDE_VALID_DEVICE;
-
-	return ide_no_data_taskfile(drive, &cmd);
+	args.tf_flags = IDE_TFLAG_TF | IDE_TFLAG_DEVICE;
+	return ide_no_data_taskfile(drive, &args);
 }
 
 static int get_smart_data(ide_drive_t *drive, u8 *buf, u8 sub_cmd)
 {
-	struct ide_cmd cmd;
-	struct ide_taskfile *tf = &cmd.tf;
+	ide_task_t args;
+	struct ide_taskfile *tf = &args.tf;
 
-	memset(&cmd, 0, sizeof(cmd));
+	memset(&args, 0, sizeof(ide_task_t));
 	tf->feature = sub_cmd;
 	tf->nsect   = 0x01;
 	tf->lbam    = ATA_SMART_LBAM_PASS;
 	tf->lbah    = ATA_SMART_LBAH_PASS;
 	tf->command = ATA_CMD_SMART;
-	cmd.valid.out.tf = IDE_VALID_OUT_TF | IDE_VALID_DEVICE;
-	cmd.valid.in.tf  = IDE_VALID_IN_TF  | IDE_VALID_DEVICE;
-	cmd.protocol = ATA_PROT_PIO;
-
-	return ide_raw_taskfile(drive, &cmd, buf, 1);
+	args.tf_flags	= IDE_TFLAG_TF | IDE_TFLAG_DEVICE;
+	args.data_phase	= TASKFILE_IN;
+	(void) smart_enable(drive);
+	return ide_raw_taskfile(drive, &args, buf, 1);
 }
 
-static int idedisk_cache_proc_show(struct seq_file *m, void *v)
+static int proc_idedisk_read_cache
+	(char *page, char **start, off_t off, int count, int *eof, void *data)
 {
-	ide_drive_t	*drive = (ide_drive_t *) m->private;
+	ide_drive_t	*drive = (ide_drive_t *) data;
+	char		*out = page;
+	int		len;
 
 	if (drive->dev_flags & IDE_DFLAG_ID_READ)
-		seq_printf(m, "%i\n", drive->id[ATA_ID_BUF_SIZE] / 2);
+		len = sprintf(out, "%i\n", drive->id[ATA_ID_BUF_SIZE] / 2);
 	else
-		seq_printf(m, "(none)\n");
-	return 0;
+		len = sprintf(out, "(none)\n");
+
+	PROC_IDE_READ_RETURN(page, start, off, count, eof, len);
 }
 
-static int idedisk_cache_proc_open(struct inode *inode, struct file *file)
+static int proc_idedisk_read_capacity
+	(char *page, char **start, off_t off, int count, int *eof, void *data)
 {
-	return single_open(file, idedisk_cache_proc_show, PDE(inode)->data);
+	ide_drive_t*drive = (ide_drive_t *)data;
+	int len;
+
+	len = sprintf(page, "%llu\n", (long long)ide_gd_capacity(drive));
+
+	PROC_IDE_READ_RETURN(page, start, off, count, eof, len);
 }
 
-static const struct file_operations idedisk_cache_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= idedisk_cache_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int idedisk_capacity_proc_show(struct seq_file *m, void *v)
+static int proc_idedisk_read_smart(char *page, char **start, off_t off,
+				   int count, int *eof, void *data, u8 sub_cmd)
 {
-	ide_drive_t*drive = (ide_drive_t *)m->private;
+	ide_drive_t	*drive = (ide_drive_t *)data;
+	int		len = 0, i = 0;
 
-	seq_printf(m, "%llu\n", (long long)ide_gd_capacity(drive));
-	return 0;
-}
+	if (get_smart_data(drive, page, sub_cmd) == 0) {
+		unsigned short *val = (unsigned short *) page;
+		char *out = (char *)val + SECTOR_SIZE;
 
-static int idedisk_capacity_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, idedisk_capacity_proc_show, PDE(inode)->data);
-}
-
-static const struct file_operations idedisk_capacity_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= idedisk_capacity_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int __idedisk_proc_show(struct seq_file *m, ide_drive_t *drive, u8 sub_cmd)
-{
-	u8 *buf;
-
-	buf = kmalloc(SECTOR_SIZE, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	(void)smart_enable(drive);
-
-	if (get_smart_data(drive, buf, sub_cmd) == 0) {
-		__le16 *val = (__le16 *)buf;
-		int i;
-
-		for (i = 0; i < SECTOR_SIZE / 2; i++) {
-			seq_printf(m, "%04x%c", le16_to_cpu(val[i]),
-					(i % 8) == 7 ? '\n' : ' ');
-		}
+		page = out;
+		do {
+			out += sprintf(out, "%04x%c", le16_to_cpu(*val),
+				       (++i & 7) ? ' ' : '\n');
+			val += 1;
+		} while (i < SECTOR_SIZE / 2);
+		len = out - page;
 	}
-	kfree(buf);
-	return 0;
+
+	PROC_IDE_READ_RETURN(page, start, off, count, eof, len);
 }
 
-static int idedisk_sv_proc_show(struct seq_file *m, void *v)
+static int proc_idedisk_read_sv
+	(char *page, char **start, off_t off, int count, int *eof, void *data)
 {
-	return __idedisk_proc_show(m, m->private, ATA_SMART_READ_VALUES);
+	return proc_idedisk_read_smart(page, start, off, count, eof, data,
+				       ATA_SMART_READ_VALUES);
 }
 
-static int idedisk_sv_proc_open(struct inode *inode, struct file *file)
+static int proc_idedisk_read_st
+	(char *page, char **start, off_t off, int count, int *eof, void *data)
 {
-	return single_open(file, idedisk_sv_proc_show, PDE(inode)->data);
+	return proc_idedisk_read_smart(page, start, off, count, eof, data,
+				       ATA_SMART_READ_THRESHOLDS);
 }
-
-static const struct file_operations idedisk_sv_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= idedisk_sv_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int idedisk_st_proc_show(struct seq_file *m, void *v)
-{
-	return __idedisk_proc_show(m, m->private, ATA_SMART_READ_THRESHOLDS);
-}
-
-static int idedisk_st_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, idedisk_st_proc_show, PDE(inode)->data);
-}
-
-static const struct file_operations idedisk_st_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= idedisk_st_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 
 ide_proc_entry_t ide_disk_proc[] = {
-	{ "cache",	  S_IFREG|S_IRUGO, &idedisk_cache_proc_fops	},
-	{ "capacity",	  S_IFREG|S_IRUGO, &idedisk_capacity_proc_fops	},
-	{ "geometry",	  S_IFREG|S_IRUGO, &ide_geometry_proc_fops	},
-	{ "smart_values", S_IFREG|S_IRUSR, &idedisk_sv_proc_fops	},
-	{ "smart_thresholds", S_IFREG|S_IRUSR, &idedisk_st_proc_fops	},
-	{}
+	{ "cache",	  S_IFREG|S_IRUGO, proc_idedisk_read_cache,    NULL },
+	{ "capacity",	  S_IFREG|S_IRUGO, proc_idedisk_read_capacity, NULL },
+	{ "geometry",	  S_IFREG|S_IRUGO, proc_ide_read_geometry,     NULL },
+	{ "smart_values", S_IFREG|S_IRUSR, proc_idedisk_read_sv,       NULL },
+	{ "smart_thresholds", S_IFREG|S_IRUSR, proc_idedisk_read_st,   NULL },
+	{ NULL, 0, NULL, NULL }
 };
 
 ide_devset_rw_field(bios_cyl, bios_cyl);

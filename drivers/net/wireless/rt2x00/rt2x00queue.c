@@ -1,6 +1,5 @@
 /*
-	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
-	Copyright (C) 2004 - 2009 Gertjan van Wingerde <gwingerde@gmail.com>
+	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -24,7 +23,6 @@
 	Abstract: rt2x00 queue specific routines.
  */
 
-#include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
@@ -100,8 +98,21 @@ void rt2x00queue_map_txskb(struct rt2x00_dev *rt2x00dev, struct sk_buff *skb)
 {
 	struct skb_frame_desc *skbdesc = get_skb_frame_desc(skb);
 
+	/*
+	 * If device has requested headroom, we should make sure that
+	 * is also mapped to the DMA so it can be used for transfering
+	 * additional descriptor information to the hardware.
+	 */
+	skb_push(skb, rt2x00dev->hw->extra_tx_headroom);
+
 	skbdesc->skb_dma =
 	    dma_map_single(rt2x00dev->dev, skb->data, skb->len, DMA_TO_DEVICE);
+
+	/*
+	 * Restore data pointer to original location again.
+	 */
+	skb_pull(skb, rt2x00dev->hw->extra_tx_headroom);
+
 	skbdesc->flags |= SKBDESC_DMA_MAPPED_TX;
 }
 EXPORT_SYMBOL_GPL(rt2x00queue_map_txskb);
@@ -117,12 +128,16 @@ void rt2x00queue_unmap_skb(struct rt2x00_dev *rt2x00dev, struct sk_buff *skb)
 	}
 
 	if (skbdesc->flags & SKBDESC_DMA_MAPPED_TX) {
-		dma_unmap_single(rt2x00dev->dev, skbdesc->skb_dma, skb->len,
+		/*
+		 * Add headroom to the skb length, it has been removed
+		 * by the driver, but it was actually mapped to DMA.
+		 */
+		dma_unmap_single(rt2x00dev->dev, skbdesc->skb_dma,
+				 skb->len + rt2x00dev->hw->extra_tx_headroom,
 				 DMA_TO_DEVICE);
 		skbdesc->flags &= ~SKBDESC_DMA_MAPPED_TX;
 	}
 }
-EXPORT_SYMBOL_GPL(rt2x00queue_unmap_skb);
 
 void rt2x00queue_free_skb(struct rt2x00_dev *rt2x00dev, struct sk_buff *skb)
 {
@@ -133,178 +148,20 @@ void rt2x00queue_free_skb(struct rt2x00_dev *rt2x00dev, struct sk_buff *skb)
 	dev_kfree_skb_any(skb);
 }
 
-void rt2x00queue_align_frame(struct sk_buff *skb)
-{
-	unsigned int frame_length = skb->len;
-	unsigned int align = ALIGN_SIZE(skb, 0);
-
-	if (!align)
-		return;
-
-	skb_push(skb, align);
-	memmove(skb->data, skb->data + align, frame_length);
-	skb_trim(skb, frame_length);
-}
-
-void rt2x00queue_align_payload(struct sk_buff *skb, unsigned int header_length)
-{
-	unsigned int frame_length = skb->len;
-	unsigned int align = ALIGN_SIZE(skb, header_length);
-
-	if (!align)
-		return;
-
-	skb_push(skb, align);
-	memmove(skb->data, skb->data + align, frame_length);
-	skb_trim(skb, frame_length);
-}
-
-void rt2x00queue_insert_l2pad(struct sk_buff *skb, unsigned int header_length)
-{
-	unsigned int payload_length = skb->len - header_length;
-	unsigned int header_align = ALIGN_SIZE(skb, 0);
-	unsigned int payload_align = ALIGN_SIZE(skb, header_length);
-	unsigned int l2pad = payload_length ? L2PAD_SIZE(header_length) : 0;
-
-	/*
-	 * Adjust the header alignment if the payload needs to be moved more
-	 * than the header.
-	 */
-	if (payload_align > header_align)
-		header_align += 4;
-
-	/* There is nothing to do if no alignment is needed */
-	if (!header_align)
-		return;
-
-	/* Reserve the amount of space needed in front of the frame */
-	skb_push(skb, header_align);
-
-	/*
-	 * Move the header.
-	 */
-	memmove(skb->data, skb->data + header_align, header_length);
-
-	/* Move the payload, if present and if required */
-	if (payload_length && payload_align)
-		memmove(skb->data + header_length + l2pad,
-			skb->data + header_length + l2pad + payload_align,
-			payload_length);
-
-	/* Trim the skb to the correct size */
-	skb_trim(skb, header_length + l2pad + payload_length);
-}
-
-void rt2x00queue_remove_l2pad(struct sk_buff *skb, unsigned int header_length)
-{
-	unsigned int l2pad = L2PAD_SIZE(header_length);
-
-	if (!l2pad)
-		return;
-
-	memmove(skb->data + l2pad, skb->data, header_length);
-	skb_pull(skb, l2pad);
-}
-
-static void rt2x00queue_create_tx_descriptor_seq(struct queue_entry *entry,
-						 struct txentry_desc *txdesc)
-{
-	struct ieee80211_tx_info *tx_info = IEEE80211_SKB_CB(entry->skb);
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)entry->skb->data;
-	struct rt2x00_intf *intf = vif_to_intf(tx_info->control.vif);
-	unsigned long irqflags;
-
-	if (!(tx_info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ) ||
-	    unlikely(!tx_info->control.vif))
-		return;
-
-	/*
-	 * Hardware should insert sequence counter.
-	 * FIXME: We insert a software sequence counter first for
-	 * hardware that doesn't support hardware sequence counting.
-	 *
-	 * This is wrong because beacons are not getting sequence
-	 * numbers assigned properly.
-	 *
-	 * A secondary problem exists for drivers that cannot toggle
-	 * sequence counting per-frame, since those will override the
-	 * sequence counter given by mac80211.
-	 */
-	spin_lock_irqsave(&intf->seqlock, irqflags);
-
-	if (test_bit(ENTRY_TXD_FIRST_FRAGMENT, &txdesc->flags))
-		intf->seqno += 0x10;
-	hdr->seq_ctrl &= cpu_to_le16(IEEE80211_SCTL_FRAG);
-	hdr->seq_ctrl |= cpu_to_le16(intf->seqno);
-
-	spin_unlock_irqrestore(&intf->seqlock, irqflags);
-
-	__set_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
-}
-
-static void rt2x00queue_create_tx_descriptor_plcp(struct queue_entry *entry,
-						  struct txentry_desc *txdesc,
-						  const struct rt2x00_rate *hwrate)
-{
-	struct rt2x00_dev *rt2x00dev = entry->queue->rt2x00dev;
-	struct ieee80211_tx_info *tx_info = IEEE80211_SKB_CB(entry->skb);
-	struct ieee80211_tx_rate *txrate = &tx_info->control.rates[0];
-	unsigned int data_length;
-	unsigned int duration;
-	unsigned int residual;
-
-	/* Data length + CRC + Crypto overhead (IV/EIV/ICV/MIC) */
-	data_length = entry->skb->len + 4;
-	data_length += rt2x00crypto_tx_overhead(rt2x00dev, entry->skb);
-
-	/*
-	 * PLCP setup
-	 * Length calculation depends on OFDM/CCK rate.
-	 */
-	txdesc->signal = hwrate->plcp;
-	txdesc->service = 0x04;
-
-	if (hwrate->flags & DEV_RATE_OFDM) {
-		txdesc->length_high = (data_length >> 6) & 0x3f;
-		txdesc->length_low = data_length & 0x3f;
-	} else {
-		/*
-		 * Convert length to microseconds.
-		 */
-		residual = GET_DURATION_RES(data_length, hwrate->bitrate);
-		duration = GET_DURATION(data_length, hwrate->bitrate);
-
-		if (residual != 0) {
-			duration++;
-
-			/*
-			 * Check if we need to set the Length Extension
-			 */
-			if (hwrate->bitrate == 110 && residual <= 30)
-				txdesc->service |= 0x80;
-		}
-
-		txdesc->length_high = (duration >> 8) & 0xff;
-		txdesc->length_low = duration & 0xff;
-
-		/*
-		 * When preamble is enabled we should set the
-		 * preamble bit for the signal.
-		 */
-		if (txrate->flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE)
-			txdesc->signal |= 0x08;
-	}
-}
-
 static void rt2x00queue_create_tx_descriptor(struct queue_entry *entry,
 					     struct txentry_desc *txdesc)
 {
 	struct rt2x00_dev *rt2x00dev = entry->queue->rt2x00dev;
 	struct ieee80211_tx_info *tx_info = IEEE80211_SKB_CB(entry->skb);
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)entry->skb->data;
+	struct ieee80211_tx_rate *txrate = &tx_info->control.rates[0];
 	struct ieee80211_rate *rate =
 	    ieee80211_get_tx_rate(rt2x00dev->hw, tx_info);
 	const struct rt2x00_rate *hwrate;
+	unsigned int data_length;
+	unsigned int duration;
+	unsigned int residual;
+	unsigned long irqflags;
 
 	memset(txdesc, 0, sizeof(*txdesc));
 
@@ -316,17 +173,26 @@ static void rt2x00queue_create_tx_descriptor(struct queue_entry *entry,
 	txdesc->cw_max = entry->queue->cw_max;
 	txdesc->aifs = entry->queue->aifs;
 
-	/*
-	 * Header and frame information.
-	 */
-	txdesc->length = entry->skb->len;
-	txdesc->header_length = ieee80211_get_hdrlen_from_skb(entry->skb);
+	/* Data length + CRC */
+	data_length = entry->skb->len + 4;
 
 	/*
 	 * Check whether this frame is to be acked.
 	 */
 	if (!(tx_info->flags & IEEE80211_TX_CTL_NO_ACK))
 		__set_bit(ENTRY_TXD_ACK, &txdesc->flags);
+
+	if (test_bit(CONFIG_SUPPORT_HW_CRYPTO, &rt2x00dev->flags) &&
+	    !entry->skb->do_not_encrypt) {
+		/* Apply crypto specific descriptor information */
+		rt2x00crypto_create_tx_descriptor(entry, txdesc);
+
+		/*
+		 * Extend frame length to include all encryption overhead
+		 * that will be added by the hardware.
+		 */
+		data_length += rt2x00crypto_tx_overhead(tx_info);
+	}
 
 	/*
 	 * Check if this is a RTS/CTS frame
@@ -359,20 +225,11 @@ static void rt2x00queue_create_tx_descriptor(struct queue_entry *entry,
 	}
 
 	/*
-	 * Check if more frames (!= fragments) are pending
-	 */
-	if (tx_info->flags & IEEE80211_TX_CTL_MORE_FRAMES)
-		__set_bit(ENTRY_TXD_BURST, &txdesc->flags);
-
-	/*
 	 * Beacons and probe responses require the tsf timestamp
-	 * to be inserted into the frame, except for a frame that has been injected
-	 * through a monitor interface. This latter is needed for testing a
-	 * monitor interface.
+	 * to be inserted into the frame.
 	 */
-	if ((ieee80211_is_beacon(hdr->frame_control) ||
-	    ieee80211_is_probe_resp(hdr->frame_control)) &&
-	    (!(tx_info->flags & IEEE80211_TX_CTL_INJECTED)))
+	if (ieee80211_is_beacon(hdr->frame_control) ||
+	    ieee80211_is_probe_resp(hdr->frame_control))
 		__set_bit(ENTRY_TXD_REQ_TIMESTAMP, &txdesc->flags);
 
 	/*
@@ -380,68 +237,86 @@ static void rt2x00queue_create_tx_descriptor(struct queue_entry *entry,
 	 * Set ifs to IFS_SIFS when the this is not the first fragment,
 	 * or this fragment came after RTS/CTS.
 	 */
-	if ((tx_info->flags & IEEE80211_TX_CTL_FIRST_FRAGMENT) &&
-	    !test_bit(ENTRY_TXD_RTS_FRAME, &txdesc->flags)) {
+	if (test_bit(ENTRY_TXD_RTS_FRAME, &txdesc->flags)) {
+		txdesc->ifs = IFS_SIFS;
+	} else if (tx_info->flags & IEEE80211_TX_CTL_FIRST_FRAGMENT) {
 		__set_bit(ENTRY_TXD_FIRST_FRAGMENT, &txdesc->flags);
 		txdesc->ifs = IFS_BACKOFF;
-	} else
+	} else {
 		txdesc->ifs = IFS_SIFS;
-
-	/*
-	 * Determine rate modulation.
-	 */
-	hwrate = rt2x00_get_rate(rate->hw_value);
-	txdesc->rate_mode = RATE_MODE_CCK;
-	if (hwrate->flags & DEV_RATE_OFDM)
-		txdesc->rate_mode = RATE_MODE_OFDM;
-
-	/*
-	 * Apply TX descriptor handling by components
-	 */
-	rt2x00crypto_create_tx_descriptor(entry, txdesc);
-	rt2x00ht_create_tx_descriptor(entry, txdesc, hwrate);
-	rt2x00queue_create_tx_descriptor_seq(entry, txdesc);
-	rt2x00queue_create_tx_descriptor_plcp(entry, txdesc, hwrate);
-}
-
-static int rt2x00queue_write_tx_data(struct queue_entry *entry,
-				     struct txentry_desc *txdesc)
-{
-	struct rt2x00_dev *rt2x00dev = entry->queue->rt2x00dev;
-
-	/*
-	 * This should not happen, we already checked the entry
-	 * was ours. When the hardware disagrees there has been
-	 * a queue corruption!
-	 */
-	if (unlikely(rt2x00dev->ops->lib->get_entry_state &&
-		     rt2x00dev->ops->lib->get_entry_state(entry))) {
-		ERROR(rt2x00dev,
-		      "Corrupt queue %d, accessing entry which is not ours.\n"
-		      "Please file bug report to %s.\n",
-		      entry->queue->qid, DRV_PROJECT);
-		return -EINVAL;
 	}
 
 	/*
-	 * Add the requested extra tx headroom in front of the skb.
+	 * Hardware should insert sequence counter.
+	 * FIXME: We insert a software sequence counter first for
+	 * hardware that doesn't support hardware sequence counting.
+	 *
+	 * This is wrong because beacons are not getting sequence
+	 * numbers assigned properly.
+	 *
+	 * A secondary problem exists for drivers that cannot toggle
+	 * sequence counting per-frame, since those will override the
+	 * sequence counter given by mac80211.
 	 */
-	skb_push(entry->skb, rt2x00dev->ops->extra_tx_headroom);
-	memset(entry->skb->data, 0, rt2x00dev->ops->extra_tx_headroom);
+	if (tx_info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ) {
+		if (likely(tx_info->control.vif)) {
+			struct rt2x00_intf *intf;
+
+			intf = vif_to_intf(tx_info->control.vif);
+
+			spin_lock_irqsave(&intf->seqlock, irqflags);
+
+			if (test_bit(ENTRY_TXD_FIRST_FRAGMENT, &txdesc->flags))
+				intf->seqno += 0x10;
+			hdr->seq_ctrl &= cpu_to_le16(IEEE80211_SCTL_FRAG);
+			hdr->seq_ctrl |= cpu_to_le16(intf->seqno);
+
+			spin_unlock_irqrestore(&intf->seqlock, irqflags);
+
+			__set_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
+		}
+	}
 
 	/*
-	 * Call the driver's write_tx_data function, if it exists.
+	 * PLCP setup
+	 * Length calculation depends on OFDM/CCK rate.
 	 */
-	if (rt2x00dev->ops->lib->write_tx_data)
-		rt2x00dev->ops->lib->write_tx_data(entry, txdesc);
+	hwrate = rt2x00_get_rate(rate->hw_value);
+	txdesc->signal = hwrate->plcp;
+	txdesc->service = 0x04;
 
-	/*
-	 * Map the skb to DMA.
-	 */
-	if (test_bit(DRIVER_REQUIRE_DMA, &rt2x00dev->flags))
-		rt2x00queue_map_txskb(rt2x00dev, entry->skb);
+	if (hwrate->flags & DEV_RATE_OFDM) {
+		__set_bit(ENTRY_TXD_OFDM_RATE, &txdesc->flags);
 
-	return 0;
+		txdesc->length_high = (data_length >> 6) & 0x3f;
+		txdesc->length_low = data_length & 0x3f;
+	} else {
+		/*
+		 * Convert length to microseconds.
+		 */
+		residual = GET_DURATION_RES(data_length, hwrate->bitrate);
+		duration = GET_DURATION(data_length, hwrate->bitrate);
+
+		if (residual != 0) {
+			duration++;
+
+			/*
+			 * Check if we need to set the Length Extension
+			 */
+			if (hwrate->bitrate == 110 && residual <= 30)
+				txdesc->service |= 0x80;
+		}
+
+		txdesc->length_high = (duration >> 8) & 0xff;
+		txdesc->length_low = duration & 0xff;
+
+		/*
+		 * When preamble is enabled we should set the
+		 * preamble bit for the signal.
+		 */
+		if (txrate->flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE)
+			txdesc->signal |= 0x08;
+	}
 }
 
 static void rt2x00queue_write_tx_descriptor(struct queue_entry *entry,
@@ -457,35 +332,32 @@ static void rt2x00queue_write_tx_descriptor(struct queue_entry *entry,
 	 * it is now ready to be dumped to userspace through debugfs.
 	 */
 	rt2x00debug_dump_frame(rt2x00dev, DUMP_FRAME_TX, entry->skb);
-}
-
-static void rt2x00queue_kick_tx_queue(struct queue_entry *entry,
-				      struct txentry_desc *txdesc)
-{
-	struct data_queue *queue = entry->queue;
-	struct rt2x00_dev *rt2x00dev = queue->rt2x00dev;
 
 	/*
 	 * Check if we need to kick the queue, there are however a few rules
-	 *	1) Don't kick unless this is the last in frame in a burst.
+	 *	1) Don't kick beacon queue
+	 *	2) Don't kick unless this is the last in frame in a burst.
 	 *	   When the burst flag is set, this frame is always followed
 	 *	   by another frame which in some way are related to eachother.
 	 *	   This is true for fragments, RTS or CTS-to-self frames.
-	 *	2) Rule 1 can be broken when the available entries
+	 *	3) Rule 2 can be broken when the available entries
 	 *	   in the queue are less then a certain threshold.
 	 */
+	if (entry->queue->qid == QID_BEACON)
+		return;
+
 	if (rt2x00queue_threshold(queue) ||
 	    !test_bit(ENTRY_TXD_BURST, &txdesc->flags))
 		rt2x00dev->ops->lib->kick_tx_queue(rt2x00dev, queue->qid);
 }
 
-int rt2x00queue_write_tx_frame(struct data_queue *queue, struct sk_buff *skb,
-			       bool local)
+int rt2x00queue_write_tx_frame(struct data_queue *queue, struct sk_buff *skb)
 {
 	struct ieee80211_tx_info *tx_info;
 	struct queue_entry *entry = rt2x00queue_get_entry(queue, Q_INDEX);
 	struct txentry_desc txdesc;
 	struct skb_frame_desc *skbdesc;
+	unsigned int iv_len = 0;
 	u8 rate_idx, rate_flags;
 
 	if (unlikely(rt2x00queue_full(queue)))
@@ -507,6 +379,9 @@ int rt2x00queue_write_tx_frame(struct data_queue *queue, struct sk_buff *skb,
 	entry->skb = skb;
 	rt2x00queue_create_tx_descriptor(entry, &txdesc);
 
+	if (IEEE80211_SKB_CB(skb)->control.hw_key != NULL)
+		iv_len = IEEE80211_SKB_CB(skb)->control.hw_key->iv_len;
+
 	/*
 	 * All information is retrieved from the skb->cb array,
 	 * now we should claim ownership of the driver part of that
@@ -521,85 +396,55 @@ int rt2x00queue_write_tx_frame(struct data_queue *queue, struct sk_buff *skb,
 	skbdesc->tx_rate_idx = rate_idx;
 	skbdesc->tx_rate_flags = rate_flags;
 
-	if (local)
-		skbdesc->flags |= SKBDESC_NOT_MAC80211;
-
 	/*
 	 * When hardware encryption is supported, and this frame
 	 * is to be encrypted, we should strip the IV/EIV data from
-	 * the frame so we can provide it to the driver separately.
+	 * the frame so we can provide it to the driver seperately.
 	 */
 	if (test_bit(ENTRY_TXD_ENCRYPT, &txdesc.flags) &&
 	    !test_bit(ENTRY_TXD_ENCRYPT_IV, &txdesc.flags)) {
-		if (test_bit(DRIVER_REQUIRE_COPY_IV, &queue->rt2x00dev->flags))
-			rt2x00crypto_tx_copy_iv(skb, &txdesc);
+		if (test_bit(CONFIG_CRYPTO_COPY_IV, &queue->rt2x00dev->flags))
+			rt2x00crypto_tx_copy_iv(skb, iv_len);
 		else
-			rt2x00crypto_tx_remove_iv(skb, &txdesc);
+			rt2x00crypto_tx_remove_iv(skb, iv_len);
 	}
-
-	/*
-	 * When DMA allocation is required we should guarentee to the
-	 * driver that the DMA is aligned to a 4-byte boundary.
-	 * However some drivers require L2 padding to pad the payload
-	 * rather then the header. This could be a requirement for
-	 * PCI and USB devices, while header alignment only is valid
-	 * for PCI devices.
-	 */
-	if (test_bit(DRIVER_REQUIRE_L2PAD, &queue->rt2x00dev->flags))
-		rt2x00queue_insert_l2pad(entry->skb, txdesc.header_length);
-	else if (test_bit(DRIVER_REQUIRE_DMA, &queue->rt2x00dev->flags))
-		rt2x00queue_align_frame(entry->skb);
 
 	/*
 	 * It could be possible that the queue was corrupted and this
 	 * call failed. Since we always return NETDEV_TX_OK to mac80211,
 	 * this frame will simply be dropped.
 	 */
-	if (unlikely(rt2x00queue_write_tx_data(entry, &txdesc))) {
+	if (unlikely(queue->rt2x00dev->ops->lib->write_tx_data(entry))) {
 		clear_bit(ENTRY_OWNER_DEVICE_DATA, &entry->flags);
 		entry->skb = NULL;
 		return -EIO;
 	}
 
+	if (test_bit(DRIVER_REQUIRE_DMA, &queue->rt2x00dev->flags))
+		rt2x00queue_map_txskb(queue->rt2x00dev, skb);
+
 	set_bit(ENTRY_DATA_PENDING, &entry->flags);
 
 	rt2x00queue_index_inc(queue, Q_INDEX);
 	rt2x00queue_write_tx_descriptor(entry, &txdesc);
-	rt2x00queue_kick_tx_queue(entry, &txdesc);
 
 	return 0;
 }
 
 int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
-			      struct ieee80211_vif *vif,
-			      const bool enable_beacon)
+			      struct ieee80211_vif *vif)
 {
 	struct rt2x00_intf *intf = vif_to_intf(vif);
 	struct skb_frame_desc *skbdesc;
 	struct txentry_desc txdesc;
+	__le32 desc[16];
 
 	if (unlikely(!intf->beacon))
 		return -ENOBUFS;
 
-	mutex_lock(&intf->beacon_skb_mutex);
-
-	/*
-	 * Clean up the beacon skb.
-	 */
-	rt2x00queue_free_skb(rt2x00dev, intf->beacon->skb);
-	intf->beacon->skb = NULL;
-
-	if (!enable_beacon) {
-		rt2x00dev->ops->lib->kill_tx_queue(rt2x00dev, QID_BEACON);
-		mutex_unlock(&intf->beacon_skb_mutex);
-		return 0;
-	}
-
 	intf->beacon->skb = ieee80211_beacon_get(rt2x00dev->hw, vif);
-	if (!intf->beacon->skb) {
-		mutex_unlock(&intf->beacon_skb_mutex);
+	if (!intf->beacon->skb)
 		return -ENOMEM;
-	}
 
 	/*
 	 * Copy all TX descriptor information into txdesc,
@@ -609,18 +454,33 @@ int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
 	rt2x00queue_create_tx_descriptor(intf->beacon, &txdesc);
 
 	/*
+	 * For the descriptor we use a local array from where the
+	 * driver can move it to the correct location required for
+	 * the hardware.
+	 */
+	memset(desc, 0, sizeof(desc));
+
+	/*
 	 * Fill in skb descriptor
 	 */
 	skbdesc = get_skb_frame_desc(intf->beacon->skb);
 	memset(skbdesc, 0, sizeof(*skbdesc));
+	skbdesc->desc = desc;
+	skbdesc->desc_len = intf->beacon->queue->desc_size;
 	skbdesc->entry = intf->beacon;
 
 	/*
-	 * Send beacon to hardware and enable beacon genaration..
+	 * Write TX descriptor into reserved room in front of the beacon.
 	 */
-	rt2x00dev->ops->lib->write_beacon(intf->beacon, &txdesc);
+	rt2x00queue_write_tx_descriptor(intf->beacon, &txdesc);
 
-	mutex_unlock(&intf->beacon_skb_mutex);
+	/*
+	 * Send beacon to hardware.
+	 * Also enable beacon generation, which might have been disabled
+	 * by the driver during the config_beacon() callback function.
+	 */
+	rt2x00dev->ops->lib->write_beacon(intf->beacon);
+	rt2x00dev->ops->lib->kick_tx_queue(rt2x00dev, QID_BEACON);
 
 	return 0;
 }
@@ -629,9 +489,6 @@ struct data_queue *rt2x00queue_get_queue(struct rt2x00_dev *rt2x00dev,
 					 const enum data_queue_qid queue)
 {
 	int atim = test_bit(DRIVER_REQUIRE_ATIM_QUEUE, &rt2x00dev->flags);
-
-	if (queue == QID_RX)
-		return rt2x00dev->rx;
 
 	if (queue < rt2x00dev->ops->tx_queues && rt2x00dev->tx)
 		return &rt2x00dev->tx[queue];
@@ -688,11 +545,9 @@ void rt2x00queue_index_inc(struct data_queue *queue, enum queue_index index)
 
 	if (index == Q_INDEX) {
 		queue->length++;
-		queue->last_index = jiffies;
 	} else if (index == Q_INDEX_DONE) {
 		queue->length--;
 		queue->count++;
-		queue->last_index_done = jiffies;
 	}
 
 	spin_unlock_irqrestore(&queue->lock, irqflags);
@@ -706,19 +561,9 @@ static void rt2x00queue_reset(struct data_queue *queue)
 
 	queue->count = 0;
 	queue->length = 0;
-	queue->last_index = jiffies;
-	queue->last_index_done = jiffies;
 	memset(queue->index, 0, sizeof(queue->index));
 
 	spin_unlock_irqrestore(&queue->lock, irqflags);
-}
-
-void rt2x00queue_stop_queues(struct rt2x00_dev *rt2x00dev)
-{
-	struct data_queue *queue;
-
-	txall_queue_for_each(rt2x00dev, queue)
-		rt2x00dev->ops->lib->kill_tx_queue(rt2x00dev, queue->qid);
 }
 
 void rt2x00queue_init_queues(struct rt2x00_dev *rt2x00dev)

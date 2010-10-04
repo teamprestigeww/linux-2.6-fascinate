@@ -17,9 +17,9 @@
 #include <linux/fs.h>
 #include <linux/jbd.h>
 #include <linux/errno.h>
+#include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
-#include <linux/bio.h>
 
 /*
  * Default IO end handler for temporary BJ_IO buffer_heads.
@@ -119,6 +119,7 @@ static int journal_write_commit_record(journal_t *journal,
 	struct buffer_head *bh;
 	journal_header_t *header;
 	int ret;
+	int barrier_done = 0;
 
 	if (is_journal_aborted(journal))
 		return 0;
@@ -136,51 +137,48 @@ static int journal_write_commit_record(journal_t *journal,
 
 	JBUFFER_TRACE(descriptor, "write commit block");
 	set_buffer_dirty(bh);
-
 	if (journal->j_flags & JFS_BARRIER) {
-		ret = __sync_dirty_buffer(bh, WRITE_SYNC | WRITE_BARRIER);
+		set_buffer_ordered(bh);
+		barrier_done = 1;
+	}
+	ret = sync_dirty_buffer(bh);
+	if (barrier_done)
+		clear_buffer_ordered(bh);
+	/* is it possible for another commit to fail at roughly
+	 * the same time as this one?  If so, we don't want to
+	 * trust the barrier flag in the super, but instead want
+	 * to remember if we sent a barrier request
+	 */
+	if (ret == -EOPNOTSUPP && barrier_done) {
+		char b[BDEVNAME_SIZE];
 
-		/*
-		 * Is it possible for another commit to fail at roughly
-		 * the same time as this one?  If so, we don't want to
-		 * trust the barrier flag in the super, but instead want
-		 * to remember if we sent a barrier request
-		 */
-		if (ret == -EOPNOTSUPP) {
-			char b[BDEVNAME_SIZE];
+		printk(KERN_WARNING
+			"JBD: barrier-based sync failed on %s - "
+			"disabling barriers\n",
+			bdevname(journal->j_dev, b));
+		spin_lock(&journal->j_state_lock);
+		journal->j_flags &= ~JFS_BARRIER;
+		spin_unlock(&journal->j_state_lock);
 
-			printk(KERN_WARNING
-				"JBD: barrier-based sync failed on %s - "
-				"disabling barriers\n",
-				bdevname(journal->j_dev, b));
-			spin_lock(&journal->j_state_lock);
-			journal->j_flags &= ~JFS_BARRIER;
-			spin_unlock(&journal->j_state_lock);
-
-			/* And try again, without the barrier */
-			set_buffer_uptodate(bh);
-			set_buffer_dirty(bh);
-			ret = sync_dirty_buffer(bh);
-		}
-	} else {
+		/* And try again, without the barrier */
+		set_buffer_uptodate(bh);
+		set_buffer_dirty(bh);
 		ret = sync_dirty_buffer(bh);
 	}
-
 	put_bh(bh);		/* One for getblk() */
 	journal_put_journal_head(descriptor);
 
 	return (ret == -EIO);
 }
 
-static void journal_do_submit_data(struct buffer_head **wbuf, int bufs,
-				   int write_op)
+static void journal_do_submit_data(struct buffer_head **wbuf, int bufs)
 {
 	int i;
 
 	for (i = 0; i < bufs; i++) {
 		wbuf[i]->b_end_io = end_buffer_write_sync;
 		/* We use-up our safety reference in submit_bh() */
-		submit_bh(write_op, wbuf[i]);
+		submit_bh(WRITE, wbuf[i]);
 	}
 }
 
@@ -188,8 +186,7 @@ static void journal_do_submit_data(struct buffer_head **wbuf, int bufs,
  *  Submit all the data buffers to disk
  */
 static int journal_submit_data_buffers(journal_t *journal,
-				       transaction_t *commit_transaction,
-				       int write_op)
+				transaction_t *commit_transaction)
 {
 	struct journal_head *jh;
 	struct buffer_head *bh;
@@ -228,7 +225,7 @@ write_out_data:
 				BUFFER_TRACE(bh, "needs blocking lock");
 				spin_unlock(&journal->j_list_lock);
 				/* Write out all data to prevent deadlocks */
-				journal_do_submit_data(wbuf, bufs, write_op);
+				journal_do_submit_data(wbuf, bufs);
 				bufs = 0;
 				lock_buffer(bh);
 				spin_lock(&journal->j_list_lock);
@@ -241,7 +238,7 @@ write_out_data:
 			spin_lock(&journal->j_list_lock);
 		}
 		/* Someone already cleaned up the buffer? */
-		if (!buffer_jbd(bh) || bh2jh(bh) != jh
+		if (!buffer_jbd(bh)
 			|| jh->b_transaction != commit_transaction
 			|| jh->b_jlist != BJ_SyncData) {
 			jbd_unlock_bh_state(bh);
@@ -259,7 +256,7 @@ write_out_data:
 			jbd_unlock_bh_state(bh);
 			if (bufs == journal->j_wbufsize) {
 				spin_unlock(&journal->j_list_lock);
-				journal_do_submit_data(wbuf, bufs, write_op);
+				journal_do_submit_data(wbuf, bufs);
 				bufs = 0;
 				goto write_out_data;
 			}
@@ -289,7 +286,7 @@ write_out_data:
 		}
 	}
 	spin_unlock(&journal->j_list_lock);
-	journal_do_submit_data(wbuf, bufs, write_op);
+	journal_do_submit_data(wbuf, bufs);
 
 	return err;
 }
@@ -308,7 +305,7 @@ void journal_commit_transaction(journal_t *journal)
 	int bufs;
 	int flags;
 	int err;
-	unsigned int blocknr;
+	unsigned long blocknr;
 	ktime_t start_time;
 	u64 commit_time;
 	char *tagp = NULL;
@@ -318,7 +315,6 @@ void journal_commit_transaction(journal_t *journal)
 	int first_tag = 0;
 	int tag_flag;
 	int i;
-	int write_op = WRITE;
 
 	/*
 	 * First job: lock down the current transaction and wait for
@@ -351,13 +347,6 @@ void journal_commit_transaction(journal_t *journal)
 	spin_lock(&journal->j_state_lock);
 	commit_transaction->t_state = T_LOCKED;
 
-	/*
-	 * Use plugged writes here, since we want to submit several before
-	 * we unplug the device. We don't do explicit unplugging in here,
-	 * instead we rely on sync_buffer() doing the unplug for us.
-	 */
-	if (commit_transaction->t_synchronous_commit)
-		write_op = WRITE_SYNC_PLUG;
 	spin_lock(&commit_transaction->t_handle_lock);
 	while (commit_transaction->t_updates) {
 		DEFINE_WAIT(wait);
@@ -442,8 +431,7 @@ void journal_commit_transaction(journal_t *journal)
 	 * Now start flushing things to disk, in the order they appear
 	 * on the transaction lists.  Data blocks go first.
 	 */
-	err = journal_submit_data_buffers(journal, commit_transaction,
-					  write_op);
+	err = journal_submit_data_buffers(journal, commit_transaction);
 
 	/*
 	 * Wait for all previously submitted IO to complete.
@@ -478,9 +466,7 @@ void journal_commit_transaction(journal_t *journal)
 			spin_lock(&journal->j_list_lock);
 			continue;
 		}
-		if (buffer_jbd(bh) && bh2jh(bh) == jh &&
-		    jh->b_transaction == commit_transaction &&
-		    jh->b_jlist == BJ_Locked) {
+		if (buffer_jbd(bh) && jh->b_jlist == BJ_Locked) {
 			__journal_unfile_buffer(jh);
 			jbd_unlock_bh_state(bh);
 			journal_remove_journal_head(bh);
@@ -504,7 +490,7 @@ void journal_commit_transaction(journal_t *journal)
 		err = 0;
 	}
 
-	journal_write_revoke_records(journal, commit_transaction, write_op);
+	journal_write_revoke_records(journal, commit_transaction);
 
 	/*
 	 * If we found any dirty or locked buffers, then we should have
@@ -674,7 +660,7 @@ start_journal_io:
 				clear_buffer_dirty(bh);
 				set_buffer_uptodate(bh);
 				bh->b_end_io = journal_end_buffer_io_sync;
-				submit_bh(write_op, bh);
+				submit_bh(WRITE, bh);
 			}
 			cond_resched();
 
@@ -787,12 +773,6 @@ wait_for_iobuf:
 
 	jbd_debug(3, "JBD: commit phase 6\n");
 
-	/* All metadata is written, now write commit record and do cleanup */
-	spin_lock(&journal->j_state_lock);
-	J_ASSERT(commit_transaction->t_state == T_COMMIT);
-	commit_transaction->t_state = T_COMMIT_RECORD;
-	spin_unlock(&journal->j_state_lock);
-
 	if (journal_write_commit_record(journal, commit_transaction))
 		err = -EIO;
 
@@ -868,12 +848,12 @@ restart_loop:
 		/* A buffer which has been freed while still being
 		 * journaled by a previous transaction may end up still
 		 * being dirty here, but we want to avoid writing back
-		 * that buffer in the future after the "add to orphan"
-		 * operation been committed,  That's not only a performance
-		 * gain, it also stops aliasing problems if the buffer is
-		 * left behind for writeback and gets reallocated for another
+		 * that buffer in the future now that the last use has
+		 * been committed.  That's not only a performance gain,
+		 * it also stops aliasing problems if the buffer is left
+		 * behind for writeback and gets reallocated for another
 		 * use in a different page. */
-		if (buffer_freed(bh) && !jh->b_next_transaction) {
+		if (buffer_freed(bh)) {
 			clear_buffer_freed(bh);
 			clear_buffer_jbddirty(bh);
 		}
@@ -930,7 +910,7 @@ restart_loop:
 
 	jbd_debug(3, "JBD: commit phase 8\n");
 
-	J_ASSERT(commit_transaction->t_state == T_COMMIT_RECORD);
+	J_ASSERT(commit_transaction->t_state == T_COMMIT);
 
 	commit_transaction->t_state = T_FINISHED;
 	J_ASSERT(commit_transaction == journal->j_committing_transaction);

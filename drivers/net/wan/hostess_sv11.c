@@ -30,7 +30,6 @@
 #include <linux/delay.h>
 #include <linux/hdlc.h>
 #include <linux/ioport.h>
-#include <linux/slab.h>
 #include <net/arp.h>
 
 #include <asm/irq.h>
@@ -157,8 +156,7 @@ static int hostess_ioctl(struct net_device *d, struct ifreq *ifr, int cmd)
  *	Passed network frames, fire them downwind.
  */
 
-static netdev_tx_t hostess_queue_xmit(struct sk_buff *skb,
-					    struct net_device *d)
+static int hostess_queue_xmit(struct sk_buff *skb, struct net_device *d)
 {
 	return z8530_queue_xmit(&dev_to_sv(d)->chanA, skb);
 }
@@ -174,14 +172,6 @@ static int hostess_attach(struct net_device *dev, unsigned short encoding,
 /*
  *	Description block for a Comtrol Hostess SV11 card
  */
-
-static const struct net_device_ops hostess_ops = {
-	.ndo_open       = hostess_open,
-	.ndo_stop       = hostess_close,
-	.ndo_change_mtu = hdlc_change_mtu,
-	.ndo_start_xmit = hdlc_start_xmit,
-	.ndo_do_ioctl   = hostess_ioctl,
-};
 
 static struct z8530_dev *sv11_init(int iobase, int irq)
 {
@@ -219,7 +209,7 @@ static struct z8530_dev *sv11_init(int iobase, int irq)
 	/* We want a fast IRQ for this device. Actually we'd like an even faster
 	   IRQ ;) - This is one driver RtLinux is made for */
 
-	if (request_irq(irq, z8530_interrupt, IRQF_DISABLED,
+	if (request_irq(irq, &z8530_interrupt, IRQF_DISABLED,
 			"Hostess SV11", sv) < 0) {
 		printk(KERN_WARNING "hostess: IRQ %d already in use.\n", irq);
 		goto err_irq;
@@ -277,7 +267,9 @@ static struct z8530_dev *sv11_init(int iobase, int irq)
 
 	dev_to_hdlc(netdev)->attach = hostess_attach;
 	dev_to_hdlc(netdev)->xmit = hostess_queue_xmit;
-	netdev->netdev_ops = &hostess_ops;
+	netdev->open = hostess_open;
+	netdev->stop = hostess_close;
+	netdev->do_ioctl = hostess_ioctl;
 	netdev->base_addr = iobase;
 	netdev->irq = irq;
 

@@ -31,7 +31,6 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/spinlock.h>
-#include <linux/slab.h>
 
 #include "sound_config.h"
 #include "sound_firmware.h"
@@ -158,7 +157,7 @@ static void sb_intr (sb_devc *devc)
 				break;
 
 			default:
-				/* printk(KERN_WARNING "Sound Blaster: Unexpected interrupt\n"); */
+				/* printk(KERN_WARN "Sound Blaster: Unexpected interrupt\n"); */
 				;
 		}
 	}
@@ -178,7 +177,7 @@ static void sb_intr (sb_devc *devc)
 				break;
 
 			default:
-				/* printk(KERN_WARNING "Sound Blaster: Unexpected interrupt\n"); */
+				/* printk(KERN_WARN "Sound Blaster: Unexpected interrupt\n"); */
 				;
 		}
 	}

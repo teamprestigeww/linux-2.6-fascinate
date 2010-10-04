@@ -60,7 +60,7 @@ enum {
 	VX_PCI_VX222_NEW
 };
 
-static DEFINE_PCI_DEVICE_TABLE(snd_vx222_ids) = {
+static struct pci_device_id snd_vx222_ids[] = {
 	{ 0x10b5, 0x9050, 0x1369, PCI_ANY_ID, 0, 0, VX_PCI_VX222_OLD, },   /* PLX */
 	{ 0x10b5, 0x9030, 0x1369, PCI_ANY_ID, 0, 0, VX_PCI_VX222_NEW, },   /* PLX */
 	{ 0, }
@@ -204,9 +204,9 @@ static int __devinit snd_vx222_probe(struct pci_dev *pci,
 		return -ENOENT;
 	}
 
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
-	if (err < 0)
-		return err;
+	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
+	if (card == NULL)
+		return -ENOMEM;
 
 	switch ((int)pci_id->driver_data) {
 	case VX_PCI_VX222_OLD:

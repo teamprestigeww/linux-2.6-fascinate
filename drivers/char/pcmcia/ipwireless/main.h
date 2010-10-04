@@ -21,6 +21,7 @@
 #include <linux/sched.h>
 #include <linux/types.h>
 
+#include <pcmcia/cs_types.h>
 #include <pcmcia/cs.h>
 #include <pcmcia/cistpl.h>
 #include <pcmcia/ds.h>
@@ -53,6 +54,7 @@ struct ipw_dev {
 	void __iomem *common_memory;
 	win_req_t request_common_memory;
 
+	dev_node_t nodes[2];
 	/* Reference to attribute memory, containing CIS data */
 	void *attribute_memory;
 

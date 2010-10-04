@@ -44,7 +44,7 @@
 #define HIDDEV_MINOR_BASE	96
 #define HIDDEV_MINORS		16
 #endif
-#define HIDDEV_BUFFER_SIZE	2048
+#define HIDDEV_BUFFER_SIZE	64
 
 struct hiddev {
 	int exist;
@@ -67,7 +67,7 @@ struct hiddev_list {
 	struct mutex thread_lock;
 };
 
-static struct usb_driver hiddev_driver;
+static struct hiddev *hiddev_table[HIDDEV_MINORS];
 
 /*
  * Find a report, given the report's type and ID.  The ID can be specified
@@ -227,9 +227,12 @@ void hiddev_report_event(struct hid_device *hid, struct hid_report *report)
  */
 static int hiddev_fasync(int fd, struct file *file, int on)
 {
+	int retval;
 	struct hiddev_list *list = file->private_data;
 
-	return fasync_helper(fd, file, on, &list->fasync);
+	retval = fasync_helper(fd, file, on, &list->fasync);
+
+	return retval < 0 ? retval : 0;
 }
 
 
@@ -246,12 +249,10 @@ static int hiddev_release(struct inode * inode, struct file * file)
 	spin_unlock_irqrestore(&list->hiddev->list_lock, flags);
 
 	if (!--list->hiddev->open) {
-		if (list->hiddev->exist) {
+		if (list->hiddev->exist)
 			usbhid_close(list->hiddev->hid);
-			usbhid_put_power(list->hiddev->hid);
-		} else {
+		else
 			kfree(list->hiddev);
-		}
 	}
 
 	kfree(list);
@@ -265,21 +266,20 @@ static int hiddev_release(struct inode * inode, struct file * file)
 static int hiddev_open(struct inode *inode, struct file *file)
 {
 	struct hiddev_list *list;
-	struct usb_interface *intf;
-	struct hid_device *hid;
-	struct hiddev *hiddev;
 	int res;
 
-	intf = usbhid_find_interface(iminor(inode));
-	if (!intf)
+	int i = iminor(inode) - HIDDEV_MINOR_BASE;
+
+	if (i >= HIDDEV_MINORS || i < 0 || !hiddev_table[i])
 		return -ENODEV;
-	hid = usb_get_intfdata(intf);
-	hiddev = hid->hiddev;
 
 	if (!(list = kzalloc(sizeof(struct hiddev_list), GFP_KERNEL)))
 		return -ENOMEM;
 	mutex_init(&list->thread_lock);
-	list->hiddev = hiddev;
+
+	list->hiddev = hiddev_table[i];
+
+
 	file->private_data = list;
 
 	/*
@@ -288,7 +288,7 @@ static int hiddev_open(struct inode *inode, struct file *file)
 	 */
 	if (list->hiddev->exist) {
 		if (!list->hiddev->open++) {
-			res = usbhid_open(hiddev->hid);
+			res = usbhid_open(hiddev_table[i]->hid);
 			if (res < 0) {
 				res = -EIO;
 				goto bail;
@@ -300,19 +300,9 @@ static int hiddev_open(struct inode *inode, struct file *file)
 	}
 
 	spin_lock_irq(&list->hiddev->list_lock);
-	list_add_tail(&list->node, &hiddev->list);
+	list_add_tail(&list->node, &hiddev_table[i]->list);
 	spin_unlock_irq(&list->hiddev->list_lock);
 
-	if (!list->hiddev->open++)
-		if (list->hiddev->exist) {
-			struct hid_device *hid = hiddev->hid;
-			res = usbhid_get_power(hid);
-			if (res < 0) {
-				res = -EIO;
-				goto bail;
-			}
-			usbhid_open(hid);
-		}
 	return 0;
 bail:
 	file->private_data = NULL;
@@ -450,6 +440,7 @@ static noinline int hiddev_ioctl_usage(struct hiddev *hiddev, unsigned int cmd, 
 	uref_multi = kmalloc(sizeof(struct hiddev_usage_ref_multi), GFP_KERNEL);
 	if (!uref_multi)
 		return -ENOMEM;
+	lock_kernel();
 	uref = &uref_multi->uref;
 	if (cmd == HIDIOCGUSAGES || cmd == HIDIOCSUSAGES) {
 		if (copy_from_user(uref_multi, user_arg,
@@ -526,9 +517,8 @@ static noinline int hiddev_ioctl_usage(struct hiddev *hiddev, unsigned int cmd, 
 			goto goodreturn;
 
 		case HIDIOCGCOLLECTIONINDEX:
-			i = field->usage[uref->usage_index].collection_index;
 			kfree(uref_multi);
-			return i;
+			return field->usage[uref->usage_index].collection_index;
 		case HIDIOCGUSAGES:
 			for (i = 0; i < uref_multi->num_values; i++)
 				uref_multi->values[i] =
@@ -545,12 +535,15 @@ static noinline int hiddev_ioctl_usage(struct hiddev *hiddev, unsigned int cmd, 
 		}
 
 goodreturn:
+		unlock_kernel();
 		kfree(uref_multi);
 		return 0;
 fault:
+		unlock_kernel();
 		kfree(uref_multi);
 		return -EFAULT;
 inval:
+		unlock_kernel();
 		kfree(uref_multi);
 		return -EINVAL;
 	}
@@ -589,7 +582,7 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	struct hiddev_list *list = file->private_data;
 	struct hiddev *hiddev = list->hiddev;
 	struct hid_device *hid = hiddev->hid;
-	struct usb_device *dev;
+	struct usb_device *dev = hid_to_usb_dev(hid);
 	struct hiddev_collection_info cinfo;
 	struct hiddev_report_info rinfo;
 	struct hiddev_field_info finfo;
@@ -603,10 +596,8 @@ static long hiddev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	/* Called without BKL by compat methods so no BKL taken */
 
 	/* FIXME: Who or what stop this racing with a disconnect ?? */
-	if (!hiddev->exist || !hid)
+	if (!hiddev->exist)
 		return -EIO;
-
-	dev = hid_to_usb_dev(hid);
 
 	switch (cmd) {
 
@@ -849,14 +840,8 @@ static const struct file_operations hiddev_fops = {
 #endif
 };
 
-static char *hiddev_devnode(struct device *dev, mode_t *mode)
-{
-	return kasprintf(GFP_KERNEL, "usb/%s", dev_name(dev));
-}
-
 static struct usb_class_driver hiddev_class = {
 	.name =		"hiddev%d",
-	.devnode =	hiddev_devnode,
 	.fops =		&hiddev_fops,
 	.minor_base =	HIDDEV_MINOR_BASE,
 };
@@ -892,13 +877,18 @@ int hiddev_connect(struct hid_device *hid, unsigned int force)
 	hid->hiddev = hiddev;
 	hiddev->hid = hid;
 	hiddev->exist = 1;
+
 	retval = usb_register_dev(usbhid->intf, &hiddev_class);
 	if (retval) {
 		err_hid("Not able to get a minor for this device.");
 		hid->hiddev = NULL;
 		kfree(hiddev);
 		return -1;
+	} else {
+		hid->minor = usbhid->intf->minor;
+		hiddev_table[usbhid->intf->minor - HIDDEV_MINOR_BASE] = hiddev;
 	}
+
 	return 0;
 }
 
@@ -916,6 +906,7 @@ void hiddev_disconnect(struct hid_device *hid)
 	hiddev->exist = 0;
 	mutex_unlock(&hiddev->existancelock);
 
+	hiddev_table[hiddev->hid->minor - HIDDEV_MINOR_BASE] = NULL;
 	usb_deregister_dev(usbhid->intf, &hiddev_class);
 
 	if (hiddev->open) {
@@ -948,6 +939,7 @@ static int hiddev_usbd_probe(struct usb_interface *intf,
 {
 	return -ENODEV;
 }
+
 
 static /* const */ struct usb_driver hiddev_driver = {
 	.name =		"hiddev",

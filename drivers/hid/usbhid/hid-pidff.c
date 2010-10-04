@@ -25,7 +25,6 @@
 #define debug(format, arg...) pr_debug("hid-pidff: " format "\n" , ## arg)
 
 #include <linux/input.h>
-#include <linux/slab.h>
 #include <linux/usb.h>
 
 #include <linux/hid.h>
@@ -1182,11 +1181,12 @@ static void pidff_reset(struct pidff_device *pidff)
 	usbhid_wait_io(hid);
 
 	if (pidff->pool[PID_SIMULTANEOUS_MAX].value) {
-		while (pidff->pool[PID_SIMULTANEOUS_MAX].value[0] < 2) {
+		int sim_effects = pidff->pool[PID_SIMULTANEOUS_MAX].value[0];
+		while (sim_effects < 2) {
 			if (i++ > 20) {
 				printk(KERN_WARNING "hid-pidff: device reports "
 				       "%d simultaneous effects\n",
-				       pidff->pool[PID_SIMULTANEOUS_MAX].value[0]);
+				       sim_effects);
 				break;
 			}
 			debug("pid_pool requested again");

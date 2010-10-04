@@ -81,7 +81,7 @@ nwpserial_console_write(struct console *co, const char *s, unsigned int count)
 
 	uart_console_write(&up->port, s, count, nwpserial_console_putchar);
 
-	/* wait for transmitter to become empty */
+	/* wait for transmitter to become emtpy */
 	while ((dcr_read(up->dcr_host, UART_LSR) & UART_LSR_THRE) == 0)
 		cpu_relax();
 
@@ -126,7 +126,7 @@ static void nwpserial_config_port(struct uart_port *port, int flags)
 static irqreturn_t nwpserial_interrupt(int irq, void *dev_id)
 {
 	struct nwpserial_port *up = dev_id;
-	struct tty_struct *tty = up->port.state->port.tty;
+	struct tty_struct *tty = up->port.info->port.tty;
 	irqreturn_t ret;
 	unsigned int iir;
 	unsigned char ch;
@@ -145,13 +145,11 @@ static irqreturn_t nwpserial_interrupt(int irq, void *dev_id)
 		ch = dcr_read(up->dcr_host, UART_RX);
 		if (up->port.ignore_status_mask != NWPSERIAL_STATUS_RXVALID)
 			tty_insert_flip_char(tty, ch, TTY_NORMAL);
-	} while (dcr_read(up->dcr_host, UART_LSR) & UART_LSR_DR);
+	} while (dcr_read(up->dcr_host, UART_RX) & UART_LSR_DR);
 
 	tty_flip_buffer_push(tty);
 	ret = IRQ_HANDLED;
 
-	/* clear interrupt */
-	dcr_write(up->dcr_host, UART_IIR, 1);
 out:
 	spin_unlock(&up->port.lock);
 	return ret;
@@ -261,7 +259,7 @@ static void nwpserial_start_tx(struct uart_port *port)
 	struct nwpserial_port *up;
 	struct circ_buf *xmit;
 	up = container_of(port, struct nwpserial_port, port);
-	xmit  = &up->port.state->xmit;
+	xmit  = &up->port.info->xmit;
 
 	if (port->x_char) {
 		nwpserial_putchar(up, up->port.x_char);
@@ -344,7 +342,7 @@ int nwpserial_register_port(struct uart_port *port)
 
 	mutex_lock(&nwpserial_mutex);
 
-	dn = port->dev->of_node;
+	dn = to_of_device(port->dev)->node;
 	if (dn == NULL)
 		goto out;
 

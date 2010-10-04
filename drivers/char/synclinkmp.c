@@ -50,7 +50,6 @@
 #include <linux/ptrace.h>
 #include <linux/ioport.h>
 #include <linux/mm.h>
-#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
@@ -521,6 +520,7 @@ static void tx_hold(struct tty_struct *tty);
 static void tx_release(struct tty_struct *tty);
 
 static int  ioctl(struct tty_struct *tty, struct file *file, unsigned int cmd, unsigned long arg);
+static int  read_proc(char *page, char **start, off_t off, int count,int *eof, void *data);
 static int  chars_in_buffer(struct tty_struct *tty);
 static void throttle(struct tty_struct * tty);
 static void unthrottle(struct tty_struct * tty);
@@ -812,15 +812,13 @@ static void close(struct tty_struct *tty, struct file *filp)
 
 	if (tty_port_close_start(&info->port, tty, filp) == 0)
 		goto cleanup;
-
-	mutex_lock(&info->port.mutex);
+		
  	if (info->port.flags & ASYNC_INITIALIZED)
  		wait_until_sent(tty, info->timeout);
 
 	flush_buffer(tty);
 	tty_ldisc_flush(tty);
 	shutdown(info);
-	mutex_unlock(&info->port.mutex);
 
 	tty_port_close_end(&info->port, tty);
 	info->port.tty = NULL;
@@ -836,7 +834,6 @@ cleanup:
 static void hangup(struct tty_struct *tty)
 {
 	SLMP_INFO *info = tty->driver_data;
-	unsigned long flags;
 
 	if (debug_level >= DEBUG_LEVEL_INFO)
 		printk("%s(%d):%s hangup()\n",
@@ -845,16 +842,12 @@ static void hangup(struct tty_struct *tty)
 	if (sanity_check(info, tty->name, "hangup"))
 		return;
 
-	mutex_lock(&info->port.mutex);
 	flush_buffer(tty);
 	shutdown(info);
 
-	spin_lock_irqsave(&info->port.lock, flags);
 	info->port.count = 0;
 	info->port.flags &= ~ASYNC_NORMAL_ACTIVE;
 	info->port.tty = NULL;
-	spin_unlock_irqrestore(&info->port.lock, flags);
-	mutex_unlock(&info->port.mutex);
 
 	wake_up_interruptible(&info->port.open_wait);
 }
@@ -1068,7 +1061,9 @@ static void wait_until_sent(struct tty_struct *tty, int timeout)
 	if (sanity_check(info, tty->name, "wait_until_sent"))
 		return;
 
-	if (!test_bit(ASYNCB_INITIALIZED, &info->port.flags))
+	lock_kernel();
+
+	if (!(info->port.flags & ASYNC_INITIALIZED))
 		goto exit;
 
 	orig_jiffies = jiffies;
@@ -1098,10 +1093,8 @@ static void wait_until_sent(struct tty_struct *tty, int timeout)
 				break;
 		}
 	} else {
-		/*
-		 * TODO: determine if there is something similar to USC16C32
-		 * 	 TXSTATUS_ALL_SENT status
-		 */
+		//TODO: determine if there is something similar to USC16C32
+		// 	TXSTATUS_ALL_SENT status
 		while ( info->tx_active && info->tx_enabled) {
 			msleep_interruptible(jiffies_to_msecs(char_time));
 			if (signal_pending(current))
@@ -1112,6 +1105,7 @@ static void wait_until_sent(struct tty_struct *tty, int timeout)
 	}
 
 exit:
+	unlock_kernel();
 	if (debug_level >= DEBUG_LEVEL_INFO)
 		printk("%s(%d):%s wait_until_sent() exit\n",
 			 __FILE__,__LINE__, info->device_name );
@@ -1127,6 +1121,7 @@ static int write_room(struct tty_struct *tty)
 	if (sanity_check(info, tty->name, "write_room"))
 		return 0;
 
+	lock_kernel();
 	if (info->params.mode == MGSL_MODE_HDLC) {
 		ret = (info->tx_active) ? 0 : HDLC_MAX_FRAME_SIZE;
 	} else {
@@ -1134,6 +1129,7 @@ static int write_room(struct tty_struct *tty)
 		if (ret < 0)
 			ret = 0;
 	}
+	unlock_kernel();
 
 	if (debug_level >= DEBUG_LEVEL_INFO)
 		printk("%s(%d):%s write_room()=%d\n",
@@ -1254,7 +1250,7 @@ static void tx_release(struct tty_struct *tty)
  *
  * Return Value:	0 if success, otherwise error code
  */
-static int ioctl(struct tty_struct *tty, struct file *file,
+static int do_ioctl(struct tty_struct *tty, struct file *file,
 		 unsigned int cmd, unsigned long arg)
 {
 	SLMP_INFO *info = tty->driver_data;
@@ -1344,16 +1340,27 @@ static int ioctl(struct tty_struct *tty, struct file *file,
 	return 0;
 }
 
+static int ioctl(struct tty_struct *tty, struct file *file,
+		 unsigned int cmd, unsigned long arg)
+{
+	int ret;
+	lock_kernel();
+	ret = do_ioctl(tty, file, cmd, arg);
+	unlock_kernel();
+	return ret;
+}
+
 /*
  * /proc fs routines....
  */
 
-static inline void line_info(struct seq_file *m, SLMP_INFO *info)
+static inline int line_info(char *buf, SLMP_INFO *info)
 {
 	char	stat_buf[30];
+	int	ret;
 	unsigned long flags;
 
-	seq_printf(m, "%s: SCABase=%08x Mem=%08X StatusControl=%08x LCR=%08X\n"
+	ret = sprintf(buf, "%s: SCABase=%08x Mem=%08X StatusControl=%08x LCR=%08X\n"
 		       "\tIRQ=%d MaxFrameSize=%u\n",
 		info->device_name,
 		info->phys_sca_base,
@@ -1384,69 +1391,74 @@ static inline void line_info(struct seq_file *m, SLMP_INFO *info)
 		strcat(stat_buf, "|RI");
 
 	if (info->params.mode == MGSL_MODE_HDLC) {
-		seq_printf(m, "\tHDLC txok:%d rxok:%d",
+		ret += sprintf(buf+ret, "\tHDLC txok:%d rxok:%d",
 			      info->icount.txok, info->icount.rxok);
 		if (info->icount.txunder)
-			seq_printf(m, " txunder:%d", info->icount.txunder);
+			ret += sprintf(buf+ret, " txunder:%d", info->icount.txunder);
 		if (info->icount.txabort)
-			seq_printf(m, " txabort:%d", info->icount.txabort);
+			ret += sprintf(buf+ret, " txabort:%d", info->icount.txabort);
 		if (info->icount.rxshort)
-			seq_printf(m, " rxshort:%d", info->icount.rxshort);
+			ret += sprintf(buf+ret, " rxshort:%d", info->icount.rxshort);
 		if (info->icount.rxlong)
-			seq_printf(m, " rxlong:%d", info->icount.rxlong);
+			ret += sprintf(buf+ret, " rxlong:%d", info->icount.rxlong);
 		if (info->icount.rxover)
-			seq_printf(m, " rxover:%d", info->icount.rxover);
+			ret += sprintf(buf+ret, " rxover:%d", info->icount.rxover);
 		if (info->icount.rxcrc)
-			seq_printf(m, " rxlong:%d", info->icount.rxcrc);
+			ret += sprintf(buf+ret, " rxlong:%d", info->icount.rxcrc);
 	} else {
-		seq_printf(m, "\tASYNC tx:%d rx:%d",
+		ret += sprintf(buf+ret, "\tASYNC tx:%d rx:%d",
 			      info->icount.tx, info->icount.rx);
 		if (info->icount.frame)
-			seq_printf(m, " fe:%d", info->icount.frame);
+			ret += sprintf(buf+ret, " fe:%d", info->icount.frame);
 		if (info->icount.parity)
-			seq_printf(m, " pe:%d", info->icount.parity);
+			ret += sprintf(buf+ret, " pe:%d", info->icount.parity);
 		if (info->icount.brk)
-			seq_printf(m, " brk:%d", info->icount.brk);
+			ret += sprintf(buf+ret, " brk:%d", info->icount.brk);
 		if (info->icount.overrun)
-			seq_printf(m, " oe:%d", info->icount.overrun);
+			ret += sprintf(buf+ret, " oe:%d", info->icount.overrun);
 	}
 
 	/* Append serial signal status to end */
-	seq_printf(m, " %s\n", stat_buf+1);
+	ret += sprintf(buf+ret, " %s\n", stat_buf+1);
 
-	seq_printf(m, "\ttxactive=%d bh_req=%d bh_run=%d pending_bh=%x\n",
+	ret += sprintf(buf+ret, "\ttxactive=%d bh_req=%d bh_run=%d pending_bh=%x\n",
 	 info->tx_active,info->bh_requested,info->bh_running,
 	 info->pending_bh);
+
+	return ret;
 }
 
 /* Called to print information about devices
  */
-static int synclinkmp_proc_show(struct seq_file *m, void *v)
+static int read_proc(char *page, char **start, off_t off, int count,
+	      int *eof, void *data)
 {
+	int len = 0, l;
+	off_t	begin = 0;
 	SLMP_INFO *info;
 
-	seq_printf(m, "synclinkmp driver:%s\n", driver_version);
+	len += sprintf(page, "synclinkmp driver:%s\n", driver_version);
 
 	info = synclinkmp_device_list;
 	while( info ) {
-		line_info(m, info);
+		l = line_info(page + len, info);
+		len += l;
+		if (len+begin > off+count)
+			goto done;
+		if (len+begin < off) {
+			begin += len;
+			len = 0;
+		}
 		info = info->next_device;
 	}
-	return 0;
-}
 
-static int synclinkmp_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, synclinkmp_proc_show, NULL);
+	*eof = 1;
+done:
+	if (off >= len+begin)
+		return 0;
+	*start = page + (off-begin);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
-
-static const struct file_operations synclinkmp_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= synclinkmp_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 
 /* Return the count of bytes in transmit buffer
  */
@@ -1601,9 +1613,10 @@ static int hdlcdev_attach(struct net_device *dev, unsigned short encoding,
  *
  * skb  socket buffer containing HDLC frame
  * dev  pointer to network device structure
+ *
+ * returns 0 if success, otherwise error code
  */
-static netdev_tx_t hdlcdev_xmit(struct sk_buff *skb,
-				      struct net_device *dev)
+static int hdlcdev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	SLMP_INFO *info = dev_to_port(dev);
 	unsigned long flags;
@@ -1634,7 +1647,7 @@ static netdev_tx_t hdlcdev_xmit(struct sk_buff *skb,
 	 	tx_start(info);
 	spin_unlock_irqrestore(&info->lock,flags);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /**
@@ -1894,16 +1907,9 @@ static void hdlcdev_rx(SLMP_INFO *info, char *buf, int size)
 	dev->stats.rx_bytes += size;
 
 	netif_rx(skb);
-}
 
-static const struct net_device_ops hdlcdev_ops = {
-	.ndo_open       = hdlcdev_open,
-	.ndo_stop       = hdlcdev_close,
-	.ndo_change_mtu = hdlc_change_mtu,
-	.ndo_start_xmit = hdlc_start_xmit,
-	.ndo_do_ioctl   = hdlcdev_ioctl,
-	.ndo_tx_timeout = hdlcdev_tx_timeout,
-};
+	dev->last_rx = jiffies;
+}
 
 /**
  * called by device driver when adding device instance
@@ -1932,8 +1938,11 @@ static int hdlcdev_init(SLMP_INFO *info)
 	dev->irq       = info->irq_level;
 
 	/* network layer callbacks and settings */
-	dev->netdev_ops	    = &hdlcdev_ops;
-	dev->watchdog_timeo = 10 * HZ;
+	dev->do_ioctl       = hdlcdev_ioctl;
+	dev->open           = hdlcdev_open;
+	dev->stop           = hdlcdev_close;
+	dev->tx_timeout     = hdlcdev_tx_timeout;
+	dev->watchdog_timeo = 10*HZ;
 	dev->tx_queue_len   = 50;
 
 	/* generic HDLC layer callbacks and settings */
@@ -2876,9 +2885,7 @@ static int get_stats(SLMP_INFO * info, struct mgsl_icount __user *user_icount)
 	if (!user_icount) {
 		memset(&info->icount, 0, sizeof(info->icount));
 	} else {
-		mutex_lock(&info->port.mutex);
 		COPY_TO_USER(err, user_icount, &info->icount, sizeof(struct mgsl_icount));
-		mutex_unlock(&info->port.mutex);
 		if (err)
 			return -EFAULT;
 	}
@@ -2893,9 +2900,7 @@ static int get_params(SLMP_INFO * info, MGSL_PARAMS __user *user_params)
 		printk("%s(%d):%s get_params()\n",
 			 __FILE__,__LINE__, info->device_name);
 
-	mutex_lock(&info->port.mutex);
 	COPY_TO_USER(err,user_params, &info->params, sizeof(MGSL_PARAMS));
-	mutex_unlock(&info->port.mutex);
 	if (err) {
 		if ( debug_level >= DEBUG_LEVEL_INFO )
 			printk( "%s(%d):%s get_params() user buffer copy failed\n",
@@ -2923,13 +2928,11 @@ static int set_params(SLMP_INFO * info, MGSL_PARAMS __user *new_params)
 		return -EFAULT;
 	}
 
-	mutex_lock(&info->port.mutex);
 	spin_lock_irqsave(&info->lock,flags);
 	memcpy(&info->params,&tmp_params,sizeof(MGSL_PARAMS));
 	spin_unlock_irqrestore(&info->lock,flags);
 
  	change_params(info);
-	mutex_unlock(&info->port.mutex);
 
 	return 0;
 }
@@ -3276,16 +3279,13 @@ static int carrier_raised(struct tty_port *port)
 	return (info->serial_signals & SerialSignal_DCD) ? 1 : 0;
 }
 
-static void dtr_rts(struct tty_port *port, int on)
+static void raise_dtr_rts(struct tty_port *port)
 {
 	SLMP_INFO *info = container_of(port, SLMP_INFO, port);
 	unsigned long flags;
 
 	spin_lock_irqsave(&info->lock,flags);
-	if (on)
-		info->serial_signals |= SerialSignal_RTS + SerialSignal_DTR;
-	else
-		info->serial_signals &= ~(SerialSignal_RTS + SerialSignal_DTR);
+	info->serial_signals |= SerialSignal_RTS + SerialSignal_DTR;
  	set_signals(info);
 	spin_unlock_irqrestore(&info->lock,flags);
 }
@@ -3365,9 +3365,7 @@ static int block_til_ready(struct tty_struct *tty, struct file *filp,
 			printk("%s(%d):%s block_til_ready() count=%d\n",
 				 __FILE__,__LINE__, tty->driver->name, port->count );
 
-		tty_unlock();
 		schedule();
-		tty_lock();
 	}
 
 	set_current_state(TASK_RUNNING);
@@ -3750,7 +3748,7 @@ static void add_device(SLMP_INFO *info)
 
 static const struct tty_port_operations port_ops = {
 	.carrier_raised = carrier_raised,
-	.dtr_rts = dtr_rts,
+	.raise_dtr_rts = raise_dtr_rts,
 };
 
 /* Allocate and initialize a device instance structure
@@ -3903,13 +3901,13 @@ static const struct tty_operations ops = {
 	.send_xchar = send_xchar,
 	.break_ctl = set_break,
 	.wait_until_sent = wait_until_sent,
+ 	.read_proc = read_proc,
 	.set_termios = set_termios,
 	.stop = tx_hold,
 	.start = tx_release,
 	.hangup = hangup,
 	.tiocmget = tiocmget,
 	.tiocmset = tiocmset,
-	.proc_fops = &synclinkmp_proc_fops,
 };
 
 

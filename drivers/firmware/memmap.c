@@ -20,7 +20,6 @@
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/bootmem.h>
-#include <linux/slab.h>
 
 /*
  * Data types ------------------------------------------------------------------
@@ -32,12 +31,8 @@
  * information is necessary as for the resource tree.
  */
 struct firmware_map_entry {
-	/*
-	 * start and end must be u64 rather than resource_size_t, because e820
-	 * resources can lie at addresses above 4G.
-	 */
-	u64			start;	/* start of the memory range */
-	u64			end;	/* end of the memory range (incl.) */
+	resource_size_t		start;	/* start of the memory range */
+	resource_size_t		end;	/* end of the memory range (incl.) */
 	const char		*type;	/* type of the memory range */
 	struct list_head	list;	/* entry for the linked list */
 	struct kobject		kobj;   /* kobject for each entry */
@@ -75,7 +70,7 @@ static struct attribute *def_attrs[] = {
 	NULL
 };
 
-static const struct sysfs_ops memmap_attr_ops = {
+static struct sysfs_ops memmap_attr_ops = {
 	.show = memmap_attr_show,
 };
 
@@ -106,7 +101,7 @@ static LIST_HEAD(map_entries);
  * Common implementation of firmware_map_add() and firmware_map_add_early()
  * which expects a pre-allocated struct firmware_map_entry.
  **/
-static int firmware_map_add_entry(u64 start, u64 end,
+static int firmware_map_add_entry(resource_size_t start, resource_size_t end,
 				  const char *type,
 				  struct firmware_map_entry *entry)
 {
@@ -123,53 +118,30 @@ static int firmware_map_add_entry(u64 start, u64 end,
 	return 0;
 }
 
-/*
- * Add memmap entry on sysfs
- */
-static int add_sysfs_fw_map_entry(struct firmware_map_entry *entry)
-{
-	static int map_entries_nr;
-	static struct kset *mmap_kset;
-
-	if (!mmap_kset) {
-		mmap_kset = kset_create_and_add("memmap", NULL, firmware_kobj);
-		if (!mmap_kset)
-			return -ENOMEM;
-	}
-
-	entry->kobj.kset = mmap_kset;
-	if (kobject_add(&entry->kobj, NULL, "%d", map_entries_nr++))
-		kobject_put(&entry->kobj);
-
-	return 0;
-}
-
 /**
- * firmware_map_add_hotplug() - Adds a firmware mapping entry when we do
- * memory hotplug.
+ * firmware_map_add() - Adds a firmware mapping entry.
  * @start: Start of the memory range.
  * @end:   End of the memory range (inclusive).
  * @type:  Type of the memory range.
  *
- * Adds a firmware mapping entry. This function is for memory hotplug, it is
- * similar to function firmware_map_add_early(). The only difference is that
- * it will create the syfs entry dynamically.
+ * This function uses kmalloc() for memory
+ * allocation. Use firmware_map_add_early() if you want to use the bootmem
+ * allocator.
+ *
+ * That function must be called before late_initcall.
  *
  * Returns 0 on success, or -ENOMEM if no memory could be allocated.
  **/
-int __meminit firmware_map_add_hotplug(u64 start, u64 end, const char *type)
+int firmware_map_add(resource_size_t start, resource_size_t end,
+		     const char *type)
 {
 	struct firmware_map_entry *entry;
 
-	entry = kzalloc(sizeof(struct firmware_map_entry), GFP_ATOMIC);
+	entry = kmalloc(sizeof(struct firmware_map_entry), GFP_ATOMIC);
 	if (!entry)
 		return -ENOMEM;
 
-	firmware_map_add_entry(start, end, type, entry);
-	/* create the memmap entry */
-	add_sysfs_fw_map_entry(entry);
-
-	return 0;
+	return firmware_map_add_entry(start, end, type, entry);
 }
 
 /**
@@ -179,17 +151,18 @@ int __meminit firmware_map_add_hotplug(u64 start, u64 end, const char *type)
  * @type:  Type of the memory range.
  *
  * Adds a firmware mapping entry. This function uses the bootmem allocator
- * for memory allocation.
+ * for memory allocation. Use firmware_map_add() if you want to use kmalloc().
  *
  * That function must be called before late_initcall.
  *
  * Returns 0 on success, or -ENOMEM if no memory could be allocated.
  **/
-int __init firmware_map_add_early(u64 start, u64 end, const char *type)
+int __init firmware_map_add_early(resource_size_t start, resource_size_t end,
+				  const char *type)
 {
 	struct firmware_map_entry *entry;
 
-	entry = alloc_bootmem(sizeof(struct firmware_map_entry));
+	entry = alloc_bootmem_low(sizeof(struct firmware_map_entry));
 	if (WARN_ON(!entry))
 		return -ENOMEM;
 
@@ -239,10 +212,19 @@ static ssize_t memmap_attr_show(struct kobject *kobj,
  */
 static int __init memmap_init(void)
 {
+	int i = 0;
 	struct firmware_map_entry *entry;
+	struct kset *memmap_kset;
 
-	list_for_each_entry(entry, &map_entries, list)
-		add_sysfs_fw_map_entry(entry);
+	memmap_kset = kset_create_and_add("memmap", NULL, firmware_kobj);
+	if (WARN_ON(!memmap_kset))
+		return -ENOMEM;
+
+	list_for_each_entry(entry, &map_entries, list) {
+		entry->kobj.kset = memmap_kset;
+		if (kobject_add(&entry->kobj, NULL, "%d", i++))
+			kobject_put(&entry->kobj);
+	}
 
 	return 0;
 }

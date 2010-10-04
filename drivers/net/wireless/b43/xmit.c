@@ -50,7 +50,7 @@ static int b43_plcp_get_bitrate_idx_cck(struct b43_plcp_hdr6 *plcp)
 }
 
 /* Extract the bitrate index out of an OFDM PLCP header. */
-static int b43_plcp_get_bitrate_idx_ofdm(struct b43_plcp_hdr6 *plcp, bool aphy)
+static u8 b43_plcp_get_bitrate_idx_ofdm(struct b43_plcp_hdr6 *plcp, bool aphy)
 {
 	int base = aphy ? 0 : 4;
 
@@ -118,6 +118,7 @@ u8 b43_plcp_get_ratecode_ofdm(const u8 bitrate)
 void b43_generate_plcp_hdr(struct b43_plcp_hdr4 *plcp,
 			   const u16 octets, const u8 bitrate)
 {
+	__le32 *data = &(plcp->data);
 	__u8 *raw = plcp->raw;
 
 	if (b43_is_ofdm_rate(bitrate)) {
@@ -126,7 +127,7 @@ void b43_generate_plcp_hdr(struct b43_plcp_hdr4 *plcp,
 		d = b43_plcp_get_ratecode_ofdm(bitrate);
 		B43_WARN_ON(octets & 0xF000);
 		d |= (octets << 5);
-		plcp->data = cpu_to_le32(d);
+		*data = cpu_to_le32(d);
 	} else {
 		u32 plen;
 
@@ -140,7 +141,7 @@ void b43_generate_plcp_hdr(struct b43_plcp_hdr4 *plcp,
 				raw[1] = 0x04;
 		} else
 			raw[1] = 0x04;
-		plcp->data |= cpu_to_le32(plen << 16);
+		*data |= cpu_to_le32(plen << 16);
 		raw[0] = b43_plcp_get_ratecode_cck(bitrate);
 	}
 }
@@ -180,12 +181,11 @@ static u8 b43_calc_fallback_rate(u8 bitrate)
 /* Generate a TX data header. */
 int b43_generate_txhdr(struct b43_wldev *dev,
 		       u8 *_txhdr,
-		       struct sk_buff *skb_frag,
+		       const unsigned char *fragment_data,
+		       unsigned int fragment_len,
 		       struct ieee80211_tx_info *info,
 		       u16 cookie)
 {
-	const unsigned char *fragment_data = skb_frag->data;
-	unsigned int fragment_len = skb_frag->len;
 	struct b43_txhdr *txhdr = (struct b43_txhdr *)_txhdr;
 	const struct b43_phy *phy = &dev->phy;
 	const struct ieee80211_hdr *wlhdr =
@@ -238,7 +238,7 @@ int b43_generate_txhdr(struct b43_wldev *dev,
 		int wlhdr_len;
 		size_t iv_len;
 
-		B43_WARN_ON(key_idx >= ARRAY_SIZE(dev->key));
+		B43_WARN_ON(key_idx >= dev->max_nr_keys);
 		key = &(dev->key[key_idx]);
 
 		if (unlikely(!key->keyconf)) {
@@ -259,26 +259,9 @@ int b43_generate_txhdr(struct b43_wldev *dev,
 		mac_ctl |= (key->algorithm << B43_TXH_MAC_KEYALG_SHIFT) &
 			   B43_TXH_MAC_KEYALG;
 		wlhdr_len = ieee80211_hdrlen(fctl);
-		if (key->algorithm == B43_SEC_ALGO_TKIP) {
-			u16 phase1key[5];
-			int i;
-			/* we give the phase1key and iv16 here, the key is stored in
-			 * shm. With that the hardware can do phase 2 and encryption.
-			 */
-			ieee80211_get_tkip_key(info->control.hw_key, skb_frag,
-					IEEE80211_TKIP_P1_KEY, (u8*)phase1key);
-			/* phase1key is in host endian. Copy to little-endian txhdr->iv. */
-			for (i = 0; i < 5; i++) {
-				txhdr->iv[i * 2 + 0] = phase1key[i];
-				txhdr->iv[i * 2 + 1] = phase1key[i] >> 8;
-			}
-			/* iv16 */
-			memcpy(txhdr->iv + 10, ((u8 *) wlhdr) + wlhdr_len, 3);
-		} else {
-			iv_len = min((size_t) info->control.hw_key->iv_len,
-				     ARRAY_SIZE(txhdr->iv));
-			memcpy(txhdr->iv, ((u8 *) wlhdr) + wlhdr_len, iv_len);
-		}
+		iv_len = min((size_t) info->control.hw_key->iv_len,
+			     ARRAY_SIZE(txhdr->iv));
+		memcpy(txhdr->iv, ((u8 *) wlhdr) + wlhdr_len, iv_len);
 	}
 	if (b43_is_old_txhdr_format(dev)) {
 		b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)(&txhdr->old_format.plcp),
@@ -555,14 +538,8 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 	chanstat = le16_to_cpu(rxhdr->channel);
 	phytype = chanstat & B43_RX_CHAN_PHYTYPE;
 
-	if (unlikely(macstat & B43_RX_MAC_FCSERR)) {
+	if (macstat & B43_RX_MAC_FCSERR)
 		dev->wl->ieee_stats.dot11FCSErrorCount++;
-		status.flag |= RX_FLAG_FAILED_FCS_CRC;
-	}
-	if (unlikely(phystat0 & (B43_RX_PHYST0_PLCPHCF | B43_RX_PHYST0_PLCPFV)))
-		status.flag |= RX_FLAG_FAILED_PLCP_CRC;
-	if (phystat0 & B43_RX_PHYST0_SHORTPRMBL)
-		status.flag |= RX_FLAG_SHORTPRE;
 	if (macstat & B43_RX_MAC_DECERR) {
 		/* Decryption with the given key failed.
 		 * Drop the packet. We also won't be able to decrypt it with
@@ -596,7 +573,7 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 		 * key index, but the ucode passed it slightly different.
 		 */
 		keyidx = b43_kidx_to_raw(dev, keyidx);
-		B43_WARN_ON(keyidx >= ARRAY_SIZE(dev->key));
+		B43_WARN_ON(keyidx >= dev->max_nr_keys);
 
 		if (dev->key[keyidx].algorithm != B43_SEC_ALGO_NONE) {
 			wlhdr_len = ieee80211_hdrlen(fctl);
@@ -610,6 +587,7 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 	}
 
 	/* Link quality statistics */
+	status.noise = dev->stats.link_noise;
 	if ((chanstat & B43_RX_CHAN_PHYTYPE) == B43_PHYTYPE_N) {
 //		s8 rssi = max(rxhdr->power0, rxhdr->power1);
 		//TODO: Find out what the rssi value is (dBm or percentage?)
@@ -620,6 +598,7 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 						  (phystat0 & B43_RX_PHYST0_OFDM),
 						  (phystat0 & B43_RX_PHYST0_GAINCTL),
 						  (phystat3 & B43_RX_PHYST3_TRSTATE));
+		status.qual = (rxhdr->jssi * 100) / B43_RX_MAX_SSI;
 	}
 
 	if (phystat0 & B43_RX_PHYST0_OFDM)
@@ -627,12 +606,8 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 						phytype == B43_PHYTYPE_A);
 	else
 		status.rate_idx = b43_plcp_get_bitrate_idx_cck(plcp);
-	if (unlikely(status.rate_idx == -1)) {
-		/* PLCP seems to be corrupted.
-		 * Drop the frame, if we are not interested in corrupted frames. */
-		if (!(dev->wl->filter_flags & FIF_PLCPFAIL))
-			goto drop;
-	}
+	if (unlikely(status.rate_idx == -1))
+		goto drop;
 	status.antenna = !!(phystat0 & B43_RX_PHYST0_ANT);
 
 	/*
@@ -671,7 +646,6 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 		status.freq = chanid + 2400;
 		break;
 	case B43_PHYTYPE_N:
-	case B43_PHYTYPE_LP:
 		/* chanid is the SHM channel cookie. Which is the plain
 		 * channel number in b43. */
 		if (chanstat & B43_RX_CHAN_5GHZ) {
@@ -687,12 +661,9 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 		goto drop;
 	}
 
-	memcpy(IEEE80211_SKB_RXCB(skb), &status, sizeof(status));
-	ieee80211_rx_ni(dev->wl->hw, skb);
+	dev->stats.last_rx = jiffies;
+	ieee80211_rx_irqsafe(dev->wl->hw, skb, &status);
 
-#if B43_DEBUG
-	dev->rx_count++;
-#endif
 	return;
 drop:
 	b43dbg(dev->wl, "RX: Packet dropped\n");

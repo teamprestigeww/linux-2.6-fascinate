@@ -31,7 +31,6 @@
  */
 #include <linux/module.h>
 #include <linux/list.h>
-#include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/skbuff.h>
 #include <linux/timer.h>
@@ -102,9 +101,12 @@ static unsigned int cong_flavor = 1;
 module_param(cong_flavor, uint, 0644);
 MODULE_PARM_DESC(cong_flavor, "TCP Congestion control flavor (default=1)");
 
+static void process_work(struct work_struct *work);
 static struct workqueue_struct *workq;
+static DECLARE_WORK(skb_work, process_work);
 
 static struct sk_buff_head rxq;
+static cxgb3_cpl_handler_func work_handlers[NUM_CPL_CMDS];
 
 static struct sk_buff *get_skb(struct sk_buff *skb, int len, gfp_t gfp);
 static void ep_timeout(unsigned long arg);
@@ -137,38 +139,6 @@ static void stop_ep_timer(struct iwch_ep *ep)
 	put_ep(&ep->com);
 }
 
-static int iwch_l2t_send(struct t3cdev *tdev, struct sk_buff *skb, struct l2t_entry *l2e)
-{
-	int	error = 0;
-	struct cxio_rdev *rdev;
-
-	rdev = (struct cxio_rdev *)tdev->ulp;
-	if (cxio_fatal_error(rdev)) {
-		kfree_skb(skb);
-		return -EIO;
-	}
-	error = l2t_send(tdev, skb, l2e);
-	if (error < 0)
-		kfree_skb(skb);
-	return error;
-}
-
-int iwch_cxgb3_ofld_send(struct t3cdev *tdev, struct sk_buff *skb)
-{
-	int	error = 0;
-	struct cxio_rdev *rdev;
-
-	rdev = (struct cxio_rdev *)tdev->ulp;
-	if (cxio_fatal_error(rdev)) {
-		kfree_skb(skb);
-		return -EIO;
-	}
-	error = cxgb3_ofld_send(tdev, skb);
-	if (error < 0)
-		kfree_skb(skb);
-	return error;
-}
-
 static void release_tid(struct t3cdev *tdev, u32 hwtid, struct sk_buff *skb)
 {
 	struct cpl_tid_release *req;
@@ -180,7 +150,7 @@ static void release_tid(struct t3cdev *tdev, u32 hwtid, struct sk_buff *skb)
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_TID_RELEASE, hwtid));
 	skb->priority = CPL_PRIORITY_SETUP;
-	iwch_cxgb3_ofld_send(tdev, skb);
+	cxgb3_ofld_send(tdev, skb);
 	return;
 }
 
@@ -202,7 +172,8 @@ int iwch_quiesce_tid(struct iwch_ep *ep)
 	req->val = cpu_to_be64(1 << S_TCB_RX_QUIESCE);
 
 	skb->priority = CPL_PRIORITY_DATA;
-	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
+	return 0;
 }
 
 int iwch_resume_tid(struct iwch_ep *ep)
@@ -223,7 +194,8 @@ int iwch_resume_tid(struct iwch_ep *ep)
 	req->val = 0;
 
 	skb->priority = CPL_PRIORITY_DATA;
-	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
+	return 0;
 }
 
 static void set_emss(struct iwch_ep *ep, u16 opt)
@@ -280,23 +252,40 @@ static void *alloc_ep(int size, gfp_t gfp)
 
 void __free_ep(struct kref *kref)
 {
-	struct iwch_ep *ep;
-	ep = container_of(container_of(kref, struct iwch_ep_common, kref),
-			  struct iwch_ep, com);
-	PDBG("%s ep %p state %s\n", __func__, ep, states[state_read(&ep->com)]);
-	if (test_bit(RELEASE_RESOURCES, &ep->com.flags)) {
-		cxgb3_remove_tid(ep->com.tdev, (void *)ep, ep->hwtid);
-		dst_release(ep->dst);
-		l2t_release(L2DATA(ep->com.tdev), ep->l2t);
-	}
-	kfree(ep);
+	struct iwch_ep_common *epc;
+	epc = container_of(kref, struct iwch_ep_common, kref);
+	PDBG("%s ep %p state %s\n", __func__, epc, states[state_read(epc)]);
+	kfree(epc);
 }
 
 static void release_ep_resources(struct iwch_ep *ep)
 {
 	PDBG("%s ep %p tid %d\n", __func__, ep, ep->hwtid);
-	set_bit(RELEASE_RESOURCES, &ep->com.flags);
+	cxgb3_remove_tid(ep->com.tdev, (void *)ep, ep->hwtid);
+	dst_release(ep->dst);
+	l2t_release(L2DATA(ep->com.tdev), ep->l2t);
 	put_ep(&ep->com);
+}
+
+static void process_work(struct work_struct *work)
+{
+	struct sk_buff *skb = NULL;
+	void *ep;
+	struct t3cdev *tdev;
+	int ret;
+
+	while ((skb = skb_dequeue(&rxq))) {
+		ep = *((void **) (skb->cb));
+		tdev = *((struct t3cdev **) (skb->cb + sizeof(void *)));
+		ret = work_handlers[G_OPCODE(ntohl((__force __be32)skb->csum))](tdev, skb, ep);
+		if (ret & CPL_RET_BUF_DONE)
+			kfree_skb(skb);
+
+		/*
+		 * ep was referenced in sched(), and is freed here.
+		 */
+		put_ep((struct iwch_ep_common *)ep);
+	}
 }
 
 static int status2errno(int status)
@@ -393,7 +382,7 @@ static void abort_arp_failure(struct t3cdev *dev, struct sk_buff *skb)
 
 	PDBG("%s t3cdev %p\n", __func__, dev);
 	req->cmd = CPL_ABORT_NO_RST;
-	iwch_cxgb3_ofld_send(dev, skb);
+	cxgb3_ofld_send(dev, skb);
 }
 
 static int send_halfclose(struct iwch_ep *ep, gfp_t gfp)
@@ -413,7 +402,8 @@ static int send_halfclose(struct iwch_ep *ep, gfp_t gfp)
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_OFLD_CLOSE_CON));
 	req->wr.wr_lo = htonl(V_WR_TID(ep->hwtid));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_CLOSE_CON_REQ, ep->hwtid));
-	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
+	l2t_send(ep->com.tdev, skb, ep->l2t);
+	return 0;
 }
 
 static int send_abort(struct iwch_ep *ep, struct sk_buff *skb, gfp_t gfp)
@@ -434,7 +424,8 @@ static int send_abort(struct iwch_ep *ep, struct sk_buff *skb, gfp_t gfp)
 	req->wr.wr_lo = htonl(V_WR_TID(ep->hwtid));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_ABORT_REQ, ep->hwtid));
 	req->cmd = CPL_ABORT_SEND_RST;
-	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
+	l2t_send(ep->com.tdev, skb, ep->l2t);
+	return 0;
 }
 
 static int send_connect(struct iwch_ep *ep)
@@ -463,8 +454,7 @@ static int send_connect(struct iwch_ep *ep)
 	    V_MSS_IDX(mtu_idx) |
 	    V_L2T_IDX(ep->l2t->idx) | V_TX_CHANNEL(ep->l2t->smt_idx);
 	opt0l = V_TOS((ep->tos >> 2) & M_TOS) | V_RCV_BUFSIZ(rcv_win>>10);
-	opt2 = F_RX_COALESCE_VALID | V_RX_COALESCE(0) | V_FLAVORS_VALID(1) |
-	       V_CONG_CONTROL_FLAVOR(cong_flavor);
+	opt2 = V_FLAVORS_VALID(1) | V_CONG_CONTROL_FLAVOR(cong_flavor);
 	skb->priority = CPL_PRIORITY_SETUP;
 	set_arp_failure_handler(skb, act_open_req_arp_failure);
 
@@ -479,7 +469,8 @@ static int send_connect(struct iwch_ep *ep)
 	req->opt0l = htonl(opt0l);
 	req->params = 0;
 	req->opt2 = htonl(opt2);
-	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
+	l2t_send(ep->com.tdev, skb, ep->l2t);
+	return 0;
 }
 
 static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
@@ -536,7 +527,7 @@ static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
 	req->sndseq = htonl(ep->snd_seq);
 	BUG_ON(ep->mpa_skb);
 	ep->mpa_skb = skb;
-	iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
+	l2t_send(ep->com.tdev, skb, ep->l2t);
 	start_ep_timer(ep);
 	state_set(&ep->com, MPA_REQ_SENT);
 	return;
@@ -587,7 +578,8 @@ static int send_mpa_reject(struct iwch_ep *ep, const void *pdata, u8 plen)
 	req->sndseq = htonl(ep->snd_seq);
 	BUG_ON(ep->mpa_skb);
 	ep->mpa_skb = skb;
-	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
+	l2t_send(ep->com.tdev, skb, ep->l2t);
+	return 0;
 }
 
 static int send_mpa_reply(struct iwch_ep *ep, const void *pdata, u8 plen)
@@ -638,7 +630,8 @@ static int send_mpa_reply(struct iwch_ep *ep, const void *pdata, u8 plen)
 	req->sndseq = htonl(ep->snd_seq);
 	ep->mpa_skb = skb;
 	state_set(&ep->com, MPA_REP_SENT);
-	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
+	l2t_send(ep->com.tdev, skb, ep->l2t);
+	return 0;
 }
 
 static int act_establish(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
@@ -764,12 +757,10 @@ static void connect_request_upcall(struct iwch_ep *ep)
 	event.private_data_len = ep->plen;
 	event.private_data = ep->mpa_pkt + sizeof(struct mpa_message);
 	event.provider_data = ep;
-	if (state_read(&ep->parent_ep->com) != DEAD) {
-		get_ep(&ep->com);
+	if (state_read(&ep->parent_ep->com) != DEAD)
 		ep->parent_ep->com.cm_id->event_handler(
 						ep->parent_ep->com.cm_id,
 						&event);
-	}
 	put_ep(&ep->parent_ep->com);
 	ep->parent_ep = NULL;
 }
@@ -804,7 +795,7 @@ static int update_rx_credits(struct iwch_ep *ep, u32 credits)
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_RX_DATA_ACK, ep->hwtid));
 	req->credit_dack = htonl(V_RX_CREDITS(credits) | V_RX_FORCE_ACK(1));
 	skb->priority = CPL_PRIORITY_ACK;
-	iwch_cxgb3_ofld_send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
 	return credits;
 }
 
@@ -1136,7 +1127,8 @@ static int abort_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	 * We get 2 abort replies from the HW.  The first one must
 	 * be ignored except for scribbling that we need one more.
 	 */
-	if (!test_and_set_bit(ABORT_REQ_IN_PROGRESS, &ep->com.flags)) {
+	if (!(ep->flags & ABORT_REQ_IN_PROGRESS)) {
+		ep->flags |= ABORT_REQ_IN_PROGRESS;
 		return CPL_RET_BUF_DONE;
 	}
 
@@ -1211,7 +1203,8 @@ static int listen_start(struct iwch_listen_ep *ep)
 	req->opt1 = htonl(V_CONN_POLICY(CPL_CONN_POLICY_ASK));
 
 	skb->priority = 1;
-	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
+	return 0;
 }
 
 static int pass_open_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
@@ -1244,7 +1237,8 @@ static int listen_stop(struct iwch_listen_ep *ep)
 	req->cpu_idx = 0;
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_CLOSE_LISTSRV_REQ, ep->stid));
 	skb->priority = 1;
-	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
+	return 0;
 }
 
 static int close_listsrv_rpl(struct t3cdev *tdev, struct sk_buff *skb,
@@ -1281,8 +1275,7 @@ static void accept_cr(struct iwch_ep *ep, __be32 peer_ip, struct sk_buff *skb)
 	    V_MSS_IDX(mtu_idx) |
 	    V_L2T_IDX(ep->l2t->idx) | V_TX_CHANNEL(ep->l2t->smt_idx);
 	opt0l = V_TOS((ep->tos >> 2) & M_TOS) | V_RCV_BUFSIZ(rcv_win>>10);
-	opt2 = F_RX_COALESCE_VALID | V_RX_COALESCE(0) | V_FLAVORS_VALID(1) |
-	       V_CONG_CONTROL_FLAVOR(cong_flavor);
+	opt2 = V_FLAVORS_VALID(1) | V_CONG_CONTROL_FLAVOR(cong_flavor);
 
 	rpl = cplhdr(skb);
 	rpl->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
@@ -1293,7 +1286,7 @@ static void accept_cr(struct iwch_ep *ep, __be32 peer_ip, struct sk_buff *skb)
 	rpl->opt2 = htonl(opt2);
 	rpl->rsvd = rpl->opt2;	/* workaround for HW bug */
 	skb->priority = CPL_PRIORITY_SETUP;
-	iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
+	l2t_send(ep->com.tdev, skb, ep->l2t);
 
 	return;
 }
@@ -1322,7 +1315,7 @@ static void reject_cr(struct t3cdev *tdev, u32 hwtid, __be32 peer_ip,
 		rpl->opt0l_status = htonl(CPL_PASS_OPEN_REJECT);
 		rpl->opt2 = 0;
 		rpl->rsvd = rpl->opt2;
-		iwch_cxgb3_ofld_send(tdev, skb);
+		cxgb3_ofld_send(tdev, skb);
 	}
 }
 
@@ -1350,8 +1343,15 @@ static int pass_accept_req(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	tim.mac_addr = req->dst_mac;
 	tim.vlan_tag = ntohs(req->vlan_tag);
 	if (tdev->ctl(tdev, GET_IFF_FROM_MAC, &tim) < 0 || !tim.dev) {
-		printk(KERN_ERR "%s bad dst mac %pM\n",
-			__func__, req->dst_mac);
+		printk(KERN_ERR
+			"%s bad dst mac %02x %02x %02x %02x %02x %02x\n",
+			__func__,
+			req->dst_mac[0],
+			req->dst_mac[1],
+			req->dst_mac[2],
+			req->dst_mac[3],
+			req->dst_mac[4],
+			req->dst_mac[5]);
 		goto reject;
 	}
 
@@ -1366,7 +1366,7 @@ static int pass_accept_req(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		       __func__);
 		goto reject;
 	}
-	dst = &rt->dst;
+	dst = &rt->u.dst;
 	l2t = t3_l2t_get(tdev, dst->neighbour, dst->neighbour->dev);
 	if (!l2t) {
 		printk(KERN_ERR MOD "%s - failed to allocate l2t entry!\n",
@@ -1450,14 +1450,10 @@ static int peer_close(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		/*
 		 * We're gonna mark this puppy DEAD, but keep
 		 * the reference on it until the ULP accepts or
-		 * rejects the CR. Also wake up anyone waiting
-		 * in rdma connection migration (see iwch_accept_cr()).
+		 * rejects the CR.
 		 */
 		__state_set(&ep->com, CLOSING);
-		ep->com.rpl_done = 1;
-		ep->com.rpl_err = -ECONNRESET;
-		PDBG("waking up ep %p\n", ep);
-		wake_up(&ep->com.waitq);
+		get_ep(&ep->com);
 		break;
 	case MPA_REP_SENT:
 		__state_set(&ep->com, CLOSING);
@@ -1538,7 +1534,8 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	 * We get 2 peer aborts from the HW.  The first one must
 	 * be ignored except for scribbling that we need one more.
 	 */
-	if (!test_and_set_bit(PEER_ABORT_IN_PROGRESS, &ep->com.flags)) {
+	if (!(ep->flags & PEER_ABORT_IN_PROGRESS)) {
+		ep->flags |= PEER_ABORT_IN_PROGRESS;
 		return CPL_RET_BUF_DONE;
 	}
 
@@ -1565,13 +1562,9 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		/*
 		 * We're gonna mark this puppy DEAD, but keep
 		 * the reference on it until the ULP accepts or
-		 * rejects the CR. Also wake up anyone waiting
-		 * in rdma connection migration (see iwch_accept_cr()).
+		 * rejects the CR.
 		 */
-		ep->com.rpl_done = 1;
-		ep->com.rpl_err = -ECONNRESET;
-		PDBG("waking up ep %p\n", ep);
-		wake_up(&ep->com.waitq);
+		get_ep(&ep->com);
 		break;
 	case MORIBUND:
 	case CLOSING:
@@ -1620,7 +1613,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	rpl->wr.wr_lo = htonl(V_WR_TID(ep->hwtid));
 	OPCODE_TID(rpl) = htonl(MK_OPCODE_TID(CPL_ABORT_RPL, ep->hwtid));
 	rpl->cmd = CPL_ABORT_NO_RST;
-	iwch_cxgb3_ofld_send(ep->com.tdev, rpl_skb);
+	cxgb3_ofld_send(ep->com.tdev, rpl_skb);
 out:
 	if (release)
 		release_ep_resources(ep);
@@ -1684,9 +1677,6 @@ static int close_con_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 static int terminate(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 {
 	struct iwch_ep *ep = ctx;
-
-	if (state_read(&ep->com) != FPDU_MODE)
-		return CPL_RET_BUF_DONE;
 
 	PDBG("%s ep %p\n", __func__, ep);
 	skb_pull(skb, sizeof(struct cpl_rdma_terminate));
@@ -1777,7 +1767,6 @@ int iwch_reject_cr(struct iw_cm_id *cm_id, const void *pdata, u8 pdata_len)
 		err = send_mpa_reject(ep, pdata, pdata_len);
 		err = iwch_ep_disconnect(ep, 0, GFP_KERNEL);
 	}
-	put_ep(&ep->com);
 	return 0;
 }
 
@@ -1791,10 +1780,8 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	struct iwch_qp *qp = get_qhp(h, conn_param->qpn);
 
 	PDBG("%s ep %p tid %u\n", __func__, ep, ep->hwtid);
-	if (state_read(&ep->com) == DEAD) {
-		err = -ECONNRESET;
-		goto err;
-	}
+	if (state_read(&ep->com) == DEAD)
+		return -ECONNRESET;
 
 	BUG_ON(state_read(&ep->com) != MPA_REQ_RCVD);
 	BUG_ON(!qp);
@@ -1802,21 +1789,20 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	if ((conn_param->ord > qp->rhp->attr.max_rdma_read_qp_depth) ||
 	    (conn_param->ird > qp->rhp->attr.max_rdma_reads_per_qp)) {
 		abort_connection(ep, NULL, GFP_KERNEL);
-		err = -EINVAL;
-		goto err;
+		return -EINVAL;
 	}
 
 	cm_id->add_ref(cm_id);
 	ep->com.cm_id = cm_id;
 	ep->com.qp = qp;
 
+	ep->com.rpl_done = 0;
+	ep->com.rpl_err = 0;
 	ep->ird = conn_param->ird;
 	ep->ord = conn_param->ord;
-
-	if (peer2peer && ep->ird == 0)
-		ep->ird = 1;
-
 	PDBG("%s %d ird %d ord %d\n", __func__, __LINE__, ep->ird, ep->ord);
+
+	get_ep(&ep->com);
 
 	/* bind QP to EP and move to RTS */
 	attrs.mpa_attr = ep->mpa_attr;
@@ -1835,31 +1821,30 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	err = iwch_modify_qp(ep->com.qp->rhp,
 			     ep->com.qp, mask, &attrs, 1);
 	if (err)
-		goto err1;
+		goto err;
 
 	/* if needed, wait for wr_ack */
 	if (iwch_rqes_posted(qp)) {
 		wait_event(ep->com.waitq, ep->com.rpl_done);
 		err = ep->com.rpl_err;
 		if (err)
-			goto err1;
+			goto err;
 	}
 
 	err = send_mpa_reply(ep, conn_param->private_data,
 			     conn_param->private_data_len);
 	if (err)
-		goto err1;
+		goto err;
 
 
 	state_set(&ep->com, FPDU_MODE);
 	established_upcall(ep);
 	put_ep(&ep->com);
 	return 0;
-err1:
+err:
 	ep->com.cm_id = NULL;
 	ep->com.qp = NULL;
 	cm_id->rem_ref(cm_id);
-err:
 	put_ep(&ep->com);
 	return err;
 }
@@ -1900,10 +1885,6 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 		       conn_param->private_data, ep->plen);
 	ep->ird = conn_param->ird;
 	ep->ord = conn_param->ord;
-
-	if (peer2peer && ep->ord == 0)
-		ep->ord = 1;
-
 	ep->com.tdev = h->rdev.t3cdev_p;
 
 	cm_id->add_ref(cm_id);
@@ -1934,7 +1915,7 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 		err = -EHOSTUNREACH;
 		goto fail3;
 	}
-	ep->dst = &rt->dst;
+	ep->dst = &rt->u.dst;
 
 	/* get a l2t entry */
 	ep->l2t = t3_l2t_get(ep->com.tdev, ep->dst->neighbour,
@@ -2033,11 +2014,8 @@ int iwch_destroy_listen(struct iw_cm_id *cm_id)
 	ep->com.rpl_done = 0;
 	ep->com.rpl_err = 0;
 	err = listen_stop(ep);
-	if (err)
-		goto done;
 	wait_event(ep->com.waitq, ep->com.rpl_done);
 	cxgb3_free_stid(ep->com.tdev, ep->stid);
-done:
 	err = ep->com.rpl_err;
 	cm_id->rem_ref(cm_id);
 	put_ep(&ep->com);
@@ -2049,22 +2027,12 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 	int ret=0;
 	unsigned long flags;
 	int close = 0;
-	int fatal = 0;
-	struct t3cdev *tdev;
-	struct cxio_rdev *rdev;
 
 	spin_lock_irqsave(&ep->com.lock, flags);
 
 	PDBG("%s ep %p state %s, abrupt %d\n", __func__, ep,
 	     states[ep->com.state], abrupt);
 
-	tdev = (struct t3cdev *)ep->com.tdev;
-	rdev = (struct cxio_rdev *)tdev->ulp;
-	if (cxio_fatal_error(rdev)) {
-		fatal = 1;
-		close_complete_upcall(ep);
-		ep->com.state = DEAD;
-	}
 	switch (ep->com.state) {
 	case MPA_REQ_WAIT:
 	case MPA_REQ_SENT:
@@ -2078,17 +2046,14 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 			ep->com.state = CLOSING;
 			start_ep_timer(ep);
 		}
-		set_bit(CLOSE_SENT, &ep->com.flags);
 		break;
 	case CLOSING:
-		if (!test_and_set_bit(CLOSE_SENT, &ep->com.flags)) {
-			close = 1;
-			if (abrupt) {
-				stop_ep_timer(ep);
-				ep->com.state = ABORTING;
-			} else
-				ep->com.state = MORIBUND;
-		}
+		close = 1;
+		if (abrupt) {
+			stop_ep_timer(ep);
+			ep->com.state = ABORTING;
+		} else
+			ep->com.state = MORIBUND;
 		break;
 	case MORIBUND:
 	case ABORTING:
@@ -2107,11 +2072,7 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 			ret = send_abort(ep, NULL, gfp);
 		else
 			ret = send_halfclose(ep, gfp);
-		if (ret)
-			fatal = 1;
 	}
-	if (fatal)
-		release_ep_resources(ep);
 	return ret;
 }
 
@@ -2135,49 +2096,7 @@ int iwch_ep_redirect(void *ctx, struct dst_entry *old, struct dst_entry *new,
 
 /*
  * All the CM events are handled on a work queue to have a safe context.
- * These are the real handlers that are called from the work queue.
  */
-static const cxgb3_cpl_handler_func work_handlers[NUM_CPL_CMDS] = {
-	[CPL_ACT_ESTABLISH]	= act_establish,
-	[CPL_ACT_OPEN_RPL]	= act_open_rpl,
-	[CPL_RX_DATA]		= rx_data,
-	[CPL_TX_DMA_ACK]	= tx_ack,
-	[CPL_ABORT_RPL_RSS]	= abort_rpl,
-	[CPL_ABORT_RPL]		= abort_rpl,
-	[CPL_PASS_OPEN_RPL]	= pass_open_rpl,
-	[CPL_CLOSE_LISTSRV_RPL]	= close_listsrv_rpl,
-	[CPL_PASS_ACCEPT_REQ]	= pass_accept_req,
-	[CPL_PASS_ESTABLISH]	= pass_establish,
-	[CPL_PEER_CLOSE]	= peer_close,
-	[CPL_ABORT_REQ_RSS]	= peer_abort,
-	[CPL_CLOSE_CON_RPL]	= close_con_rpl,
-	[CPL_RDMA_TERMINATE]	= terminate,
-	[CPL_RDMA_EC_STATUS]	= ec_status,
-};
-
-static void process_work(struct work_struct *work)
-{
-	struct sk_buff *skb = NULL;
-	void *ep;
-	struct t3cdev *tdev;
-	int ret;
-
-	while ((skb = skb_dequeue(&rxq))) {
-		ep = *((void **) (skb->cb));
-		tdev = *((struct t3cdev **) (skb->cb + sizeof(void *)));
-		ret = work_handlers[G_OPCODE(ntohl((__force __be32)skb->csum))](tdev, skb, ep);
-		if (ret & CPL_RET_BUF_DONE)
-			kfree_skb(skb);
-
-		/*
-		 * ep was referenced in sched(), and is freed here.
-		 */
-		put_ep((struct iwch_ep_common *)ep);
-	}
-}
-
-static DECLARE_WORK(skb_work, process_work);
-
 static int sched(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 {
 	struct iwch_ep_common *epc = ctx;
@@ -2209,29 +2128,6 @@ static int set_tcb_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	return CPL_RET_BUF_DONE;
 }
 
-/*
- * All upcalls from the T3 Core go to sched() to schedule the
- * processing on a work queue.
- */
-cxgb3_cpl_handler_func t3c_handlers[NUM_CPL_CMDS] = {
-	[CPL_ACT_ESTABLISH]	= sched,
-	[CPL_ACT_OPEN_RPL]	= sched,
-	[CPL_RX_DATA]		= sched,
-	[CPL_TX_DMA_ACK]	= sched,
-	[CPL_ABORT_RPL_RSS]	= sched,
-	[CPL_ABORT_RPL]		= sched,
-	[CPL_PASS_OPEN_RPL]	= sched,
-	[CPL_CLOSE_LISTSRV_RPL]	= sched,
-	[CPL_PASS_ACCEPT_REQ]	= sched,
-	[CPL_PASS_ESTABLISH]	= sched,
-	[CPL_PEER_CLOSE]	= sched,
-	[CPL_CLOSE_CON_RPL]	= sched,
-	[CPL_ABORT_REQ_RSS]	= sched,
-	[CPL_RDMA_TERMINATE]	= sched,
-	[CPL_RDMA_EC_STATUS]	= sched,
-	[CPL_SET_TCB_RPL]	= set_tcb_rpl,
-};
-
 int __init iwch_cm_init(void)
 {
 	skb_queue_head_init(&rxq);
@@ -2240,6 +2136,46 @@ int __init iwch_cm_init(void)
 	if (!workq)
 		return -ENOMEM;
 
+	/*
+	 * All upcalls from the T3 Core go to sched() to
+	 * schedule the processing on a work queue.
+	 */
+	t3c_handlers[CPL_ACT_ESTABLISH] = sched;
+	t3c_handlers[CPL_ACT_OPEN_RPL] = sched;
+	t3c_handlers[CPL_RX_DATA] = sched;
+	t3c_handlers[CPL_TX_DMA_ACK] = sched;
+	t3c_handlers[CPL_ABORT_RPL_RSS] = sched;
+	t3c_handlers[CPL_ABORT_RPL] = sched;
+	t3c_handlers[CPL_PASS_OPEN_RPL] = sched;
+	t3c_handlers[CPL_CLOSE_LISTSRV_RPL] = sched;
+	t3c_handlers[CPL_PASS_ACCEPT_REQ] = sched;
+	t3c_handlers[CPL_PASS_ESTABLISH] = sched;
+	t3c_handlers[CPL_PEER_CLOSE] = sched;
+	t3c_handlers[CPL_CLOSE_CON_RPL] = sched;
+	t3c_handlers[CPL_ABORT_REQ_RSS] = sched;
+	t3c_handlers[CPL_RDMA_TERMINATE] = sched;
+	t3c_handlers[CPL_RDMA_EC_STATUS] = sched;
+	t3c_handlers[CPL_SET_TCB_RPL] = set_tcb_rpl;
+
+	/*
+	 * These are the real handlers that are called from a
+	 * work queue.
+	 */
+	work_handlers[CPL_ACT_ESTABLISH] = act_establish;
+	work_handlers[CPL_ACT_OPEN_RPL] = act_open_rpl;
+	work_handlers[CPL_RX_DATA] = rx_data;
+	work_handlers[CPL_TX_DMA_ACK] = tx_ack;
+	work_handlers[CPL_ABORT_RPL_RSS] = abort_rpl;
+	work_handlers[CPL_ABORT_RPL] = abort_rpl;
+	work_handlers[CPL_PASS_OPEN_RPL] = pass_open_rpl;
+	work_handlers[CPL_CLOSE_LISTSRV_RPL] = close_listsrv_rpl;
+	work_handlers[CPL_PASS_ACCEPT_REQ] = pass_accept_req;
+	work_handlers[CPL_PASS_ESTABLISH] = pass_establish;
+	work_handlers[CPL_PEER_CLOSE] = peer_close;
+	work_handlers[CPL_ABORT_REQ_RSS] = peer_abort;
+	work_handlers[CPL_CLOSE_CON_RPL] = close_con_rpl;
+	work_handlers[CPL_RDMA_TERMINATE] = terminate;
+	work_handlers[CPL_RDMA_EC_STATUS] = ec_status;
 	return 0;
 }
 

@@ -37,6 +37,7 @@ static const char version[] =
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/in.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/delay.h>
@@ -80,8 +81,7 @@ struct net_local {
 static int seeq8005_probe1(struct net_device *dev, int ioaddr);
 static int seeq8005_open(struct net_device *dev);
 static void seeq8005_timeout(struct net_device *dev);
-static netdev_tx_t seeq8005_send_packet(struct sk_buff *skb,
-					struct net_device *dev);
+static int seeq8005_send_packet(struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t seeq8005_interrupt(int irq, void *dev_id);
 static void seeq8005_rx(struct net_device *dev);
 static int seeq8005_close(struct net_device *dev);
@@ -142,17 +142,6 @@ out:
 	free_netdev(dev);
 	return ERR_PTR(err);
 }
-
-static const struct net_device_ops seeq8005_netdev_ops = {
-	.ndo_open		= seeq8005_open,
-	.ndo_stop		= seeq8005_close,
-	.ndo_start_xmit 	= seeq8005_send_packet,
-	.ndo_tx_timeout		= seeq8005_timeout,
-	.ndo_set_multicast_list = set_multicast_list,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_mac_address 	= eth_mac_addr,
-	.ndo_validate_addr	= eth_validate_addr,
-};
 
 /* This is the real probe routine.  Linux has a history of friendly device
    probes on the ISA bus.  A good device probes avoids doing writes, and
@@ -334,7 +323,7 @@ static int __init seeq8005_probe1(struct net_device *dev, int ioaddr)
 
 #if 0
 	{
-		 int irqval = request_irq(dev->irq, seeq8005_interrupt, 0, "seeq8005", dev);
+		 int irqval = request_irq(dev->irq, &seeq8005_interrupt, 0, "seeq8005", dev);
 		 if (irqval) {
 			 printk ("%s: unable to get IRQ %d (irqval=%d).\n", dev->name,
 					 dev->irq, irqval);
@@ -343,8 +332,12 @@ static int __init seeq8005_probe1(struct net_device *dev, int ioaddr)
 		 }
 	}
 #endif
-	dev->netdev_ops = &seeq8005_netdev_ops;
+	dev->open		= seeq8005_open;
+	dev->stop		= seeq8005_close;
+	dev->hard_start_xmit 	= seeq8005_send_packet;
+	dev->tx_timeout		= seeq8005_timeout;
 	dev->watchdog_timeo	= HZ/20;
+	dev->set_multicast_list = set_multicast_list;
 	dev->flags &= ~IFF_MULTICAST;
 
 	return 0;
@@ -366,7 +359,7 @@ static int seeq8005_open(struct net_device *dev)
 	struct net_local *lp = netdev_priv(dev);
 
 	{
-		 int irqval = request_irq(dev->irq, seeq8005_interrupt, 0, "seeq8005", dev);
+		 int irqval = request_irq(dev->irq, &seeq8005_interrupt, 0, "seeq8005", dev);
 		 if (irqval) {
 			 printk ("%s: unable to get IRQ %d (irqval=%d).\n", dev->name,
 					 dev->irq, irqval);
@@ -390,19 +383,18 @@ static void seeq8005_timeout(struct net_device *dev)
 		   tx_done(dev) ? "IRQ conflict" : "network cable problem");
 	/* Try to restart the adaptor. */
 	seeq8005_init(dev, 1);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	dev->trans_start = jiffies;
 	netif_wake_queue(dev);
 }
 
-static netdev_tx_t seeq8005_send_packet(struct sk_buff *skb,
-					struct net_device *dev)
+static int seeq8005_send_packet(struct sk_buff *skb, struct net_device *dev)
 {
 	short length = skb->len;
 	unsigned char *buf;
 
 	if (length < ETH_ZLEN) {
 		if (skb_padto(skb, ETH_ZLEN))
-			return NETDEV_TX_OK;
+			return 0;
 		length = ETH_ZLEN;
 	}
 	buf = skb->data;
@@ -411,11 +403,12 @@ static netdev_tx_t seeq8005_send_packet(struct sk_buff *skb,
 	netif_stop_queue(dev);
 
 	hardware_send_packet(dev, buf, length);
+	dev->trans_start = jiffies;
 	dev->stats.tx_bytes += length;
 	dev_kfree_skb (skb);
 	/* You might need to clean up and record Tx statistics here. */
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -578,6 +571,7 @@ static void seeq8005_rx(struct net_device *dev)
 	/* If any worth-while packets have been received, netif_rx()
 	   has done a mark_bh(NET_BH) for us and will work on them
 	   when we get to the bottom-half routine. */
+	return;
 }
 
 /* The inverse routine to net_open(). */

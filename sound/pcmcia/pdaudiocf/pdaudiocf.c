@@ -91,7 +91,7 @@ static int snd_pdacf_dev_free(struct snd_device *device)
  */
 static int snd_pdacf_probe(struct pcmcia_device *link)
 {
-	int i, err;
+	int i;
 	struct snd_pdacf *pdacf;
 	struct snd_card *card;
 	static struct snd_device_ops ops = {
@@ -112,26 +112,23 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 		return -ENODEV; /* disabled explicitly */
 
 	/* ok, create a card instance */
-	err = snd_card_create(index[i], id[i], THIS_MODULE, 0, &card);
-	if (err < 0) {
+	card = snd_card_new(index[i], id[i], THIS_MODULE, 0);
+	if (card == NULL) {
 		snd_printk(KERN_ERR "pdacf: cannot create a card instance\n");
-		return err;
-	}
-
-	pdacf = snd_pdacf_create(card);
-	if (!pdacf) {
-		snd_card_free(card);
 		return -ENOMEM;
 	}
 
-	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, pdacf, &ops);
-	if (err < 0) {
+	pdacf = snd_pdacf_create(card);
+	if (! pdacf)
+		return -EIO;
+
+	if (snd_device_new(card, SNDRV_DEV_LOWLEVEL, pdacf, &ops) < 0) {
 		kfree(pdacf);
 		snd_card_free(card);
-		return err;
+		return -ENODEV;
 	}
 
-	snd_card_set_dev(card, &link->dev);
+	snd_card_set_dev(card, &handle_to_dev(link));
 
 	pdacf->index = i;
 	card_list[i] = card;
@@ -139,10 +136,16 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 	pdacf->p_dev = link;
 	link->priv = pdacf;
 
-	link->resource[0]->flags |= IO_DATA_PATH_WIDTH_AUTO;
-	link->resource[0]->end = 16;
+	link->io.Attributes1 = IO_DATA_PATH_WIDTH_AUTO;
+	link->io.NumPorts1 = 16;
 
-	link->conf.Attributes = CONF_ENABLE_IRQ | CONF_ENABLE_PULSE_IRQ;
+	link->irq.Attributes = IRQ_TYPE_EXCLUSIVE | IRQ_HANDLE_PRESENT | IRQ_FORCED_PULSE;
+	// link->irq.Attributes = IRQ_TYPE_DYNAMIC_SHARING|IRQ_FIRST_SHARED;
+
+	link->irq.IRQInfo1 = 0 /* | IRQ_LEVEL_ID */;
+	link->irq.Handler = pdacf_interrupt;
+	link->irq.Instance = pdacf;
+	link->conf.Attributes = CONF_ENABLE_IRQ;
 	link->conf.IntType = INT_MEMORY_AND_IO;
 	link->conf.ConfigIndex = 1;
 	link->conf.Present = PRESENT_OPTION;
@@ -211,32 +214,29 @@ static void snd_pdacf_detach(struct pcmcia_device *link)
  * configuration callback
  */
 
+#define CS_CHECK(fn, ret) \
+do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
+
 static int pdacf_config(struct pcmcia_device *link)
 {
 	struct snd_pdacf *pdacf = link->priv;
-	int ret;
+	int last_fn, last_ret;
 
 	snd_printdd(KERN_DEBUG "pdacf_config called\n");
 	link->conf.ConfigIndex = 0x5;
 
-	ret = pcmcia_request_io(link);
-	if (ret)
+	CS_CHECK(RequestIO, pcmcia_request_io(link, &link->io));
+	CS_CHECK(RequestIRQ, pcmcia_request_irq(link, &link->irq));
+	CS_CHECK(RequestConfiguration, pcmcia_request_configuration(link, &link->conf));
+
+	if (snd_pdacf_assign_resources(pdacf, link->io.BasePort1, link->irq.AssignedIRQ) < 0)
 		goto failed;
 
-	ret = pcmcia_request_exclusive_irq(link, pdacf_interrupt);
-	if (ret)
-		goto failed;
-
-	ret = pcmcia_request_configuration(link, &link->conf);
-	if (ret)
-		goto failed;
-
-	if (snd_pdacf_assign_resources(pdacf, link->resource[0]->start,
-					link->irq) < 0)
-		goto failed;
-
+	link->dev_node = &pdacf->node;
 	return 0;
 
+cs_failed:
+	cs_error(link, last_fn, last_ret);
 failed:
 	pcmcia_disable_device(link);
 	return -ENODEV;

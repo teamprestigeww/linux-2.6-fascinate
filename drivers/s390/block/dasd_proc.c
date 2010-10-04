@@ -11,11 +11,7 @@
  *
  */
 
-#define KMSG_COMPONENT "dasd"
-
 #include <linux/ctype.h>
-#include <linux/slab.h>
-#include <linux/string.h>
 #include <linux/seq_file.h>
 #include <linux/vmalloc.h>
 #include <linux/proc_fs.h>
@@ -73,7 +69,7 @@ dasd_devices_show(struct seq_file *m, void *v)
 	/* Print device number. */
 	seq_printf(m, "%s", dev_name(&device->cdev->dev));
 	/* Print discipline string. */
-	if (device->discipline != NULL)
+	if (device != NULL && device->discipline != NULL)
 		seq_printf(m, "(%s)", device->discipline->name);
 	else
 		seq_printf(m, "(none)");
@@ -93,7 +89,10 @@ dasd_devices_show(struct seq_file *m, void *v)
 	substr = (device->features & DASD_FEATURE_READONLY) ? "(ro)" : " ";
 	seq_printf(m, "%4s: ", substr);
 	/* Print device status information. */
-	switch (device->state) {
+	switch ((device != NULL) ? device->state : -1) {
+	case -1:
+		seq_printf(m, "unknown");
+		break;
 	case DASD_STATE_NEW:
 		seq_printf(m, "new");
 		break;
@@ -113,7 +112,7 @@ dasd_devices_show(struct seq_file *m, void *v)
 			seq_printf(m, "n/f	 ");
 		else
 			seq_printf(m,
-				   "at blocksize: %d, %lld blocks, %lld MB",
+				   "at blocksize: %d, %ld blocks, %ld MB",
 				   block->bp_block, block->blocks,
 				   ((block->bp_block >> 9) *
 				    block->blocks) >> 11);
@@ -166,82 +165,99 @@ static const struct file_operations dasd_devices_file_ops = {
 	.release	= seq_release,
 };
 
+static int
+dasd_calc_metrics(char *page, char **start, off_t off,
+		  int count, int *eof, int len)
+{
+	len = (len > off) ? len - off : 0;
+	if (len > count)
+		len = count;
+	if (len < count)
+		*eof = 1;
+	*start = page + off;
+	return len;
+}
+
 #ifdef CONFIG_DASD_PROFILE
-static void dasd_statistics_array(struct seq_file *m, unsigned int *array, int factor)
+static char *
+dasd_statistics_array(char *str, unsigned int *array, int factor)
 {
 	int i;
 
 	for (i = 0; i < 32; i++) {
-		seq_printf(m, "%7d ", array[i] / factor);
+		str += sprintf(str, "%7d ", array[i] / factor);
 		if (i == 15)
-			seq_putc(m, '\n');
+			str += sprintf(str, "\n");
 	}
-	seq_putc(m, '\n');
+	str += sprintf(str,"\n");
+	return str;
 }
 #endif /* CONFIG_DASD_PROFILE */
 
-static int dasd_stats_proc_show(struct seq_file *m, void *v)
+static int
+dasd_statistics_read(char *page, char **start, off_t off,
+		     int count, int *eof, void *data)
 {
+	unsigned long len;
 #ifdef CONFIG_DASD_PROFILE
 	struct dasd_profile_info_t *prof;
+	char *str;
 	int factor;
 
 	/* check for active profiling */
 	if (dasd_profile_level == DASD_PROFILE_OFF) {
-		seq_printf(m, "Statistics are off - they might be "
+		len = sprintf(page, "Statistics are off - they might be "
 				    "switched on using 'echo set on > "
 				    "/proc/dasd/statistics'\n");
-		return 0;
+		return dasd_calc_metrics(page, start, off, count, eof, len);
 	}
 
 	prof = &dasd_global_profile;
-	/* prevent counter 'overflow' on output */
+	/* prevent couter 'overflow' on output */
 	for (factor = 1; (prof->dasd_io_reqs / factor) > 9999999;
 	     factor *= 10);
 
-	seq_printf(m, "%d dasd I/O requests\n", prof->dasd_io_reqs);
-	seq_printf(m, "with %u sectors(512B each)\n",
+	str = page;
+	str += sprintf(str, "%d dasd I/O requests\n", prof->dasd_io_reqs);
+	str += sprintf(str, "with %u sectors(512B each)\n",
 		       prof->dasd_io_sects);
-	seq_printf(m, "Scale Factor is  %d\n", factor);
-	seq_printf(m,
+	str += sprintf(str, "Scale Factor is  %d\n", factor);
+	str += sprintf(str,
 		       "   __<4	   ___8	   __16	   __32	   __64	   _128	"
 		       "   _256	   _512	   __1k	   __2k	   __4k	   __8k	"
 		       "   _16k	   _32k	   _64k	   128k\n");
-	seq_printf(m,
+	str += sprintf(str,
 		       "   _256	   _512	   __1M	   __2M	   __4M	   __8M	"
 		       "   _16M	   _32M	   _64M	   128M	   256M	   512M	"
 		       "   __1G	   __2G	   __4G " "   _>4G\n");
 
-	seq_printf(m, "Histogram of sizes (512B secs)\n");
-	dasd_statistics_array(m, prof->dasd_io_secs, factor);
-	seq_printf(m, "Histogram of I/O times (microseconds)\n");
-	dasd_statistics_array(m, prof->dasd_io_times, factor);
-	seq_printf(m, "Histogram of I/O times per sector\n");
-	dasd_statistics_array(m, prof->dasd_io_timps, factor);
-	seq_printf(m, "Histogram of I/O time till ssch\n");
-	dasd_statistics_array(m, prof->dasd_io_time1, factor);
-	seq_printf(m, "Histogram of I/O time between ssch and irq\n");
-	dasd_statistics_array(m, prof->dasd_io_time2, factor);
-	seq_printf(m, "Histogram of I/O time between ssch "
+	str += sprintf(str, "Histogram of sizes (512B secs)\n");
+	str = dasd_statistics_array(str, prof->dasd_io_secs, factor);
+	str += sprintf(str, "Histogram of I/O times (microseconds)\n");
+	str = dasd_statistics_array(str, prof->dasd_io_times, factor);
+	str += sprintf(str, "Histogram of I/O times per sector\n");
+	str = dasd_statistics_array(str, prof->dasd_io_timps, factor);
+	str += sprintf(str, "Histogram of I/O time till ssch\n");
+	str = dasd_statistics_array(str, prof->dasd_io_time1, factor);
+	str += sprintf(str, "Histogram of I/O time between ssch and irq\n");
+	str = dasd_statistics_array(str, prof->dasd_io_time2, factor);
+	str += sprintf(str, "Histogram of I/O time between ssch "
 			    "and irq per sector\n");
-	dasd_statistics_array(m, prof->dasd_io_time2ps, factor);
-	seq_printf(m, "Histogram of I/O time between irq and end\n");
-	dasd_statistics_array(m, prof->dasd_io_time3, factor);
-	seq_printf(m, "# of req in chanq at enqueuing (1..32) \n");
-	dasd_statistics_array(m, prof->dasd_io_nr_req, factor);
+	str = dasd_statistics_array(str, prof->dasd_io_time2ps, factor);
+	str += sprintf(str, "Histogram of I/O time between irq and end\n");
+	str = dasd_statistics_array(str, prof->dasd_io_time3, factor);
+	str += sprintf(str, "# of req in chanq at enqueuing (1..32) \n");
+	str = dasd_statistics_array(str, prof->dasd_io_nr_req, factor);
+	len = str - page;
 #else
-	seq_printf(m, "Statistics are not activated in this kernel\n");
+	len = sprintf(page, "Statistics are not activated in this kernel\n");
 #endif
-	return 0;
+	return dasd_calc_metrics(page, start, off, count, eof, len);
 }
 
-static int dasd_stats_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, dasd_stats_proc_show, NULL);
-}
-
-static ssize_t dasd_stats_proc_write(struct file *file,
-		const char __user *user_buf, size_t user_len, loff_t *pos)
+static int
+dasd_statistics_write(struct file *file, const char __user *user_buf,
+		      unsigned long user_len, void *data)
 {
 #ifdef CONFIG_DASD_PROFILE
 	char *buffer, *str;
@@ -251,55 +267,46 @@ static ssize_t dasd_stats_proc_write(struct file *file,
 	buffer = dasd_get_user_string(user_buf, user_len);
 	if (IS_ERR(buffer))
 		return PTR_ERR(buffer);
-	DBF_EVENT(DBF_DEBUG, "/proc/dasd/statictics: '%s'\n", buffer);
+	MESSAGE_LOG(KERN_INFO, "/proc/dasd/statictics: '%s'", buffer);
 
 	/* check for valid verbs */
-	str = skip_spaces(buffer);
+	for (str = buffer; isspace(*str); str++);
 	if (strncmp(str, "set", 3) == 0 && isspace(str[3])) {
 		/* 'set xxx' was given */
-		str = skip_spaces(str + 4);
+		for (str = str + 4; isspace(*str); str++);
 		if (strcmp(str, "on") == 0) {
 			/* switch on statistics profiling */
 			dasd_profile_level = DASD_PROFILE_ON;
-			pr_info("The statistics feature has been switched "
-				"on\n");
+			MESSAGE(KERN_INFO, "%s", "Statistics switched on");
 		} else if (strcmp(str, "off") == 0) {
 			/* switch off and reset statistics profiling */
 			memset(&dasd_global_profile,
 			       0, sizeof (struct dasd_profile_info_t));
 			dasd_profile_level = DASD_PROFILE_OFF;
-			pr_info("The statistics feature has been switched "
-				"off\n");
+			MESSAGE(KERN_INFO, "%s", "Statistics switched off");
 		} else
 			goto out_error;
 	} else if (strncmp(str, "reset", 5) == 0) {
 		/* reset the statistics */
 		memset(&dasd_global_profile, 0,
 		       sizeof (struct dasd_profile_info_t));
-		pr_info("The statistics have been reset\n");
+		MESSAGE(KERN_INFO, "%s", "Statistics reset");
 	} else
 		goto out_error;
 	kfree(buffer);
 	return user_len;
 out_error:
-	pr_warning("%s is not a supported value for /proc/dasd/statistics\n",
-		str);
+	MESSAGE(KERN_WARNING, "%s",
+		"/proc/dasd/statistics: only 'set on', 'set off' "
+		"and 'reset' are supported verbs");
 	kfree(buffer);
 	return -EINVAL;
 #else
-	pr_warning("/proc/dasd/statistics: is not activated in this kernel\n");
+	MESSAGE(KERN_WARNING, "%s",
+		"/proc/dasd/statistics: is not activated in this kernel");
 	return user_len;
 #endif				/* CONFIG_DASD_PROFILE */
 }
-
-static const struct file_operations dasd_stats_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= dasd_stats_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-	.write		= dasd_stats_proc_write,
-};
 
 /*
  * Create dasd proc-fs entries.
@@ -311,18 +318,21 @@ dasd_proc_init(void)
 	dasd_proc_root_entry = proc_mkdir("dasd", NULL);
 	if (!dasd_proc_root_entry)
 		goto out_nodasd;
+	dasd_proc_root_entry->owner = THIS_MODULE;
 	dasd_devices_entry = proc_create("devices",
 					 S_IFREG | S_IRUGO | S_IWUSR,
 					 dasd_proc_root_entry,
 					 &dasd_devices_file_ops);
 	if (!dasd_devices_entry)
 		goto out_nodevices;
-	dasd_statistics_entry = proc_create("statistics",
-					    S_IFREG | S_IRUGO | S_IWUSR,
-					    dasd_proc_root_entry,
-					    &dasd_stats_proc_fops);
+	dasd_statistics_entry = create_proc_entry("statistics",
+						  S_IFREG | S_IRUGO | S_IWUSR,
+						  dasd_proc_root_entry);
 	if (!dasd_statistics_entry)
 		goto out_nostatistics;
+	dasd_statistics_entry->read_proc = dasd_statistics_read;
+	dasd_statistics_entry->write_proc = dasd_statistics_write;
+	dasd_statistics_entry->owner = THIS_MODULE;
 	return 0;
 
  out_nostatistics:

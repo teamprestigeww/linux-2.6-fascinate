@@ -32,7 +32,6 @@
 #include <linux/kernel.h>
 #include <linux/phy.h>
 #include <linux/platform_device.h>
-#include <linux/slab.h>
 #include <mach/npe.h>
 #include <mach/qmgr.h>
 
@@ -241,7 +240,7 @@ static inline void memcpy_swab32(u32 *dest, u32 *src, int cnt)
 
 static spinlock_t mdio_lock;
 static struct eth_regs __iomem *mdio_regs; /* mdio command and status only */
-static struct mii_bus *mdio_bus;
+struct mii_bus *mdio_bus;
 static int ports_open;
 static struct port *npe_port_tab[MAX_NPES];
 static struct dma_pool *dma_pool;
@@ -323,7 +322,7 @@ static int ixp4xx_mdio_write(struct mii_bus *bus, int phy_id, int location,
 	ret = ixp4xx_mdio_cmd(bus, phy_id, location, 1, val);
 	spin_unlock_irqrestore(&mdio_lock, flags);
 #if DEBUG_MDIO
-	printk(KERN_DEBUG "%s #%i: MII write [%i] <- 0x%X, err = %i\n",
+	printk(KERN_DEBUG "%s #%i: MII read [%i] <- 0x%X, err = %i\n",
 	       bus->name, phy_id, location, val, ret);
 #endif
 	return ret;
@@ -336,20 +335,11 @@ static int ixp4xx_mdio_register(void)
 	if (!(mdio_bus = mdiobus_alloc()))
 		return -ENOMEM;
 
-	if (cpu_is_ixp43x()) {
-		/* IXP43x lacks NPE-B and uses NPE-C for MII PHY access */
-		if (!(ixp4xx_read_feature_bits() & IXP4XX_FEATURE_NPEC_ETH))
-			return -ENODEV;
-		mdio_regs = (struct eth_regs __iomem *)IXP4XX_EthC_BASE_VIRT;
-	} else {
-		/* All MII PHY accesses use NPE-B Ethernet registers */
-		if (!(ixp4xx_read_feature_bits() & IXP4XX_FEATURE_NPEB_ETH0))
-			return -ENODEV;
-		mdio_regs = (struct eth_regs __iomem *)IXP4XX_EthB_BASE_VIRT;
-	}
-
-	__raw_writel(DEFAULT_CORE_CNTRL, &mdio_regs->core_control);
+	/* All MII PHY accesses use NPE-B Ethernet registers */
 	spin_lock_init(&mdio_lock);
+	mdio_regs = (struct eth_regs __iomem *)IXP4XX_EthB_BASE_VIRT;
+	__raw_writel(DEFAULT_CORE_CNTRL, &mdio_regs->core_control);
+
 	mdio_bus->name = "IXP4xx MII Bus";
 	mdio_bus->read = &ixp4xx_mdio_read;
 	mdio_bus->write = &ixp4xx_mdio_write;
@@ -457,8 +447,7 @@ static inline void queue_put_desc(unsigned int queue, u32 phys,
 	debug_desc(phys, desc);
 	BUG_ON(phys & 0x1F);
 	qmgr_put_entry(queue, phys);
-	/* Don't check for queue overflow here, we've allocated sufficient
-	   length and queues >= 32 don't support this check anyway. */
+	BUG_ON(qmgr_stat_overflow(queue));
 }
 
 
@@ -484,7 +473,7 @@ static void eth_rx_irq(void *pdev)
 	printk(KERN_DEBUG "%s: eth_rx_irq\n", dev->name);
 #endif
 	qmgr_disable_irq(port->plat->rxq);
-	napi_schedule(&port->napi);
+	netif_rx_schedule(&port->napi);
 }
 
 static int eth_poll(struct napi_struct *napi, int budget)
@@ -509,16 +498,16 @@ static int eth_poll(struct napi_struct *napi, int budget)
 
 		if ((n = queue_get_desc(rxq, port, 0)) < 0) {
 #if DEBUG_RX
-			printk(KERN_DEBUG "%s: eth_poll napi_complete\n",
+			printk(KERN_DEBUG "%s: eth_poll netif_rx_complete\n",
 			       dev->name);
 #endif
-			napi_complete(napi);
+			netif_rx_complete(napi);
 			qmgr_enable_irq(rxq);
-			if (!qmgr_stat_below_low_watermark(rxq) &&
-			    napi_reschedule(napi)) { /* not empty again */
+			if (!qmgr_stat_empty(rxq) &&
+			    netif_rx_reschedule(napi)) {
 #if DEBUG_RX
 				printk(KERN_DEBUG "%s: eth_poll"
-				       " napi_reschedule successed\n",
+				       " netif_rx_reschedule successed\n",
 				       dev->name);
 #endif
 				qmgr_disable_irq(rxq);
@@ -563,8 +552,8 @@ static int eth_poll(struct napi_struct *napi, int budget)
 		dma_unmap_single(&dev->dev, desc->data - NET_IP_ALIGN,
 				 RX_BUFF_SIZE, DMA_FROM_DEVICE);
 #else
-		dma_sync_single_for_cpu(&dev->dev, desc->data - NET_IP_ALIGN,
-					RX_BUFF_SIZE, DMA_FROM_DEVICE);
+		dma_sync_single(&dev->dev, desc->data - NET_IP_ALIGN,
+				RX_BUFF_SIZE, DMA_FROM_DEVICE);
 		memcpy_swab32((u32 *)skb->data, (u32 *)port->rx_buff_tab[n],
 			      ALIGN(NET_IP_ALIGN + desc->pkt_len, 4) / 4);
 #endif
@@ -632,9 +621,9 @@ static void eth_txdone_irq(void *unused)
 			port->tx_buff_tab[n_desc] = NULL;
 		}
 
-		start = qmgr_stat_below_low_watermark(port->plat->txreadyq);
+		start = qmgr_stat_empty(port->plat->txreadyq);
 		queue_put_desc(port->plat->txreadyq, phys, desc);
-		if (start) { /* TX-ready queue was empty */
+		if (start) {
 #if DEBUG_TX
 			printk(KERN_DEBUG "%s: eth_txdone_irq xmit ready\n",
 			       port->netdev->name);
@@ -708,15 +697,15 @@ static int eth_xmit(struct sk_buff *skb, struct net_device *dev)
 	/* NPE firmware pads short frames with zeros internally */
 	wmb();
 	queue_put_desc(TX_QUEUE(port->id), tx_desc_phys(port, n), desc);
+	dev->trans_start = jiffies;
 
-	if (qmgr_stat_below_low_watermark(txreadyq)) { /* empty */
+	if (qmgr_stat_empty(txreadyq)) {
 #if DEBUG_TX
 		printk(KERN_DEBUG "%s: eth_xmit queue full\n", dev->name);
 #endif
 		netif_stop_queue(dev);
 		/* we could miss TX ready interrupt */
-		/* really empty in fact */
-		if (!qmgr_stat_below_low_watermark(txreadyq)) {
+		if (!qmgr_stat_empty(txreadyq)) {
 #if DEBUG_TX
 			printk(KERN_DEBUG "%s: eth_xmit ready again\n",
 			       dev->name);
@@ -735,36 +724,22 @@ static int eth_xmit(struct sk_buff *skb, struct net_device *dev)
 static void eth_set_mcast_list(struct net_device *dev)
 {
 	struct port *port = netdev_priv(dev);
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *mclist = dev->mc_list;
 	u8 diffs[ETH_ALEN], *addr;
-	int i;
-	static const u8 allmulti[] = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00 };
+	int cnt = dev->mc_count, i;
 
-	if (dev->flags & IFF_ALLMULTI) {
-		for (i = 0; i < ETH_ALEN; i++) {
-			__raw_writel(allmulti[i], &port->regs->mcast_addr[i]);
-			__raw_writel(allmulti[i], &port->regs->mcast_mask[i]);
-		}
-		__raw_writel(DEFAULT_RX_CNTRL0 | RX_CNTRL0_ADDR_FLTR_EN,
-			&port->regs->rx_control[0]);
-		return;
-	}
-
-	if ((dev->flags & IFF_PROMISC) || netdev_mc_empty(dev)) {
+	if ((dev->flags & IFF_PROMISC) || !mclist || !cnt) {
 		__raw_writel(DEFAULT_RX_CNTRL0 & ~RX_CNTRL0_ADDR_FLTR_EN,
 			     &port->regs->rx_control[0]);
 		return;
 	}
 
 	memset(diffs, 0, ETH_ALEN);
+	addr = mclist->dmi_addr; /* first MAC address */
 
-	addr = NULL;
-	netdev_for_each_mc_addr(ha, dev) {
-		if (!addr)
-			addr = ha->addr; /* first MAC address */
+	while (--cnt && (mclist = mclist->next))
 		for (i = 0; i < ETH_ALEN; i++)
-			diffs[i] |= addr[i] ^ ha->addr[i];
-	}
+			diffs[i] |= addr[i] ^ mclist->dmi_addr[i];
 
 	for (i = 0; i < ETH_ALEN; i++) {
 		__raw_writel(addr[i], &port->regs->mcast_addr[i]);
@@ -782,8 +757,7 @@ static int eth_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
 
 	if (!netif_running(dev))
 		return -EINVAL;
-
-	return phy_mii_ioctl(port->phydev, req, cmd);
+	return phy_mii_ioctl(port->phydev, if_mii(req), cmd);
 }
 
 /* ethtool support */
@@ -817,7 +791,7 @@ static int ixp4xx_nway_reset(struct net_device *dev)
 	return phy_start_aneg(port->phydev);
 }
 
-static const struct ethtool_ops ixp4xx_ethtool_ops = {
+static struct ethtool_ops ixp4xx_ethtool_ops = {
 	.get_drvinfo = ixp4xx_get_drvinfo,
 	.get_settings = ixp4xx_get_settings,
 	.set_settings = ixp4xx_set_settings,
@@ -831,29 +805,29 @@ static int request_queues(struct port *port)
 	int err;
 
 	err = qmgr_request_queue(RXFREE_QUEUE(port->id), RX_DESCS, 0, 0,
-				 "%s:RX-free", port->netdev->name);
+			    "%s:RX-free", port->netdev->name);
 	if (err)
 		return err;
 
 	err = qmgr_request_queue(port->plat->rxq, RX_DESCS, 0, 0,
-				 "%s:RX", port->netdev->name);
+			    "%s:RX", port->netdev->name);
 	if (err)
 		goto rel_rxfree;
 
 	err = qmgr_request_queue(TX_QUEUE(port->id), TX_DESCS, 0, 0,
-				 "%s:TX", port->netdev->name);
+			    "%s:TX", port->netdev->name);
 	if (err)
 		goto rel_rx;
 
 	err = qmgr_request_queue(port->plat->txreadyq, TX_DESCS, 0, 0,
-				 "%s:TX-ready", port->netdev->name);
+			    "%s:TX-ready", port->netdev->name);
 	if (err)
 		goto rel_tx;
 
 	/* TX-done queue handles skbs sent out by the NPEs */
 	if (!ports_open) {
 		err = qmgr_request_queue(TXDONE_QUEUE, TXDONE_QUEUE_LEN, 0, 0,
-					 "%s:TX-done", DRV_NAME);
+				    "%s:TX-done", DRV_NAME);
 		if (err)
 			goto rel_txready;
 	}
@@ -1062,7 +1036,7 @@ static int eth_open(struct net_device *dev)
 	}
 	ports_open++;
 	/* we may already have RX data, enables IRQ */
-	napi_schedule(&port->napi);
+	netif_rx_schedule(&port->napi);
 	return 0;
 }
 
@@ -1157,9 +1131,7 @@ static const struct net_device_ops ixp4xx_netdev_ops = {
 	.ndo_start_xmit = eth_xmit,
 	.ndo_set_multicast_list = eth_set_mcast_list,
 	.ndo_do_ioctl = eth_ioctl,
-	.ndo_change_mtu = eth_change_mtu,
-	.ndo_set_mac_address = eth_mac_addr,
-	.ndo_validate_addr = eth_validate_addr,
+
 };
 
 static int __devinit eth_init_one(struct platform_device *pdev)
@@ -1168,7 +1140,7 @@ static int __devinit eth_init_one(struct platform_device *pdev)
 	struct net_device *dev;
 	struct eth_plat_info *plat = pdev->dev.platform_data;
 	u32 regs_phys;
-	char phy_id[MII_BUS_ID_SIZE + 3];
+	char phy_id[BUS_ID_SIZE];
 	int err;
 
 	if (!(dev = alloc_etherdev(sizeof(struct port))))
@@ -1193,7 +1165,7 @@ static int __devinit eth_init_one(struct platform_device *pdev)
 		regs_phys  = IXP4XX_EthC_BASE_PHYS;
 		break;
 	default:
-		err = -ENODEV;
+		err = -ENOSYS;
 		goto err_free;
 	}
 
@@ -1208,10 +1180,15 @@ static int __devinit eth_init_one(struct platform_device *pdev)
 		goto err_free;
 	}
 
+	if (register_netdev(dev)) {
+		err = -EIO;
+		goto err_npe_rel;
+	}
+
 	port->mem_res = request_mem_region(regs_phys, REGS_SIZE, dev->name);
 	if (!port->mem_res) {
 		err = -EBUSY;
-		goto err_npe_rel;
+		goto err_unreg;
 	}
 
 	port->plat = plat;
@@ -1226,28 +1203,23 @@ static int __devinit eth_init_one(struct platform_device *pdev)
 	__raw_writel(DEFAULT_CORE_CNTRL, &port->regs->core_control);
 	udelay(50);
 
-	snprintf(phy_id, MII_BUS_ID_SIZE + 3, PHY_ID_FMT, "0", plat->phy);
+	snprintf(phy_id, BUS_ID_SIZE, PHY_ID_FMT, "0", plat->phy);
 	port->phydev = phy_connect(dev, phy_id, &ixp4xx_adjust_link, 0,
 				   PHY_INTERFACE_MODE_MII);
-	if ((err = IS_ERR(port->phydev)))
-		goto err_free_mem;
+	if (IS_ERR(port->phydev)) {
+		printk(KERN_ERR "%s: Could not attach to PHY\n", dev->name);
+		return PTR_ERR(port->phydev);
+	}
 
 	port->phydev->irq = PHY_POLL;
-
-	if ((err = register_netdev(dev)))
-		goto err_phy_dis;
 
 	printk(KERN_INFO "%s: MII PHY %i on %s\n", dev->name, plat->phy,
 	       npe_name(port->npe));
 
 	return 0;
 
-err_phy_dis:
-	phy_disconnect(port->phydev);
-err_free_mem:
-	npe_port_tab[NPE_ID(port->id)] = NULL;
-	platform_set_drvdata(pdev, NULL);
-	release_resource(port->mem_res);
+err_unreg:
+	unregister_netdev(dev);
 err_npe_rel:
 	npe_release(port->npe);
 err_free:
@@ -1261,7 +1233,6 @@ static int __devexit eth_remove_one(struct platform_device *pdev)
 	struct port *port = netdev_priv(dev);
 
 	unregister_netdev(dev);
-	phy_disconnect(port->phydev);
 	npe_port_tab[NPE_ID(port->id)] = NULL;
 	platform_set_drvdata(pdev, NULL);
 	npe_release(port->npe);
@@ -1279,6 +1250,9 @@ static struct platform_driver ixp4xx_eth_driver = {
 static int __init eth_init_module(void)
 {
 	int err;
+	if (!(ixp4xx_read_feature_bits() & IXP4XX_FEATURE_NPEB_ETH0))
+		return -ENOSYS;
+
 	if ((err = ixp4xx_mdio_register()))
 		return err;
 	return platform_driver_register(&ixp4xx_eth_driver);

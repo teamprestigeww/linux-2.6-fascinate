@@ -20,6 +20,7 @@
 #include <linux/fs.h>
 #include <linux/jbd.h>
 #include <linux/errno.h>
+#include <linux/slab.h>
 #endif
 
 /*
@@ -69,7 +70,7 @@ static int do_readahead(journal_t *journal, unsigned int start)
 {
 	int err;
 	unsigned int max, nbufs, next;
-	unsigned int blocknr;
+	unsigned long blocknr;
 	struct buffer_head *bh;
 
 	struct buffer_head * bufs[MAXBUF];
@@ -131,7 +132,7 @@ static int jread(struct buffer_head **bhp, journal_t *journal,
 		 unsigned int offset)
 {
 	int err;
-	unsigned int blocknr;
+	unsigned long blocknr;
 	struct buffer_head *bh;
 
 	*bhp = NULL;
@@ -283,9 +284,12 @@ int journal_recover(journal_t *journal)
 int journal_skip_recovery(journal_t *journal)
 {
 	int			err;
+	journal_superblock_t *	sb;
+
 	struct recovery_info	info;
 
 	memset (&info, 0, sizeof(info));
+	sb = journal->j_superblock;
 
 	err = do_one_pass(journal, &info, PASS_SCAN);
 
@@ -294,8 +298,7 @@ int journal_skip_recovery(journal_t *journal)
 		++journal->j_transaction_sequence;
 	} else {
 #ifdef CONFIG_JBD_DEBUG
-		int dropped = info.end_transaction -
-			      be32_to_cpu(journal->j_superblock->s_sequence);
+		int dropped = info.end_transaction - be32_to_cpu(sb->s_sequence);
 #endif
 		jbd_debug(1,
 			  "JBD: ignoring %d transaction%s from the journal.\n",
@@ -311,13 +314,18 @@ static int do_one_pass(journal_t *journal,
 			struct recovery_info *info, enum passtype pass)
 {
 	unsigned int		first_commit_ID, next_commit_ID;
-	unsigned int		next_log_block;
+	unsigned long		next_log_block;
 	int			err, success = 0;
 	journal_superblock_t *	sb;
 	journal_header_t *	tmp;
 	struct buffer_head *	bh;
 	unsigned int		sequence;
 	int			blocktype;
+
+	/* Precompute the maximum metadata descriptors in a descriptor block */
+	int			MAX_BLOCKS_PER_DESC;
+	MAX_BLOCKS_PER_DESC = ((journal->j_blocksize-sizeof(journal_header_t))
+			       / sizeof(journal_block_tag_t));
 
 	/*
 	 * First thing is to establish what we expect to find in the log
@@ -359,14 +367,14 @@ static int do_one_pass(journal_t *journal,
 			if (tid_geq(next_commit_ID, info->end_transaction))
 				break;
 
-		jbd_debug(2, "Scanning for sequence ID %u at %u/%u\n",
+		jbd_debug(2, "Scanning for sequence ID %u at %lu/%lu\n",
 			  next_commit_ID, next_log_block, journal->j_last);
 
 		/* Skip over each chunk of the transaction looking
 		 * either the next descriptor block or the final commit
 		 * record. */
 
-		jbd_debug(3, "JBD: checking block %u\n", next_log_block);
+		jbd_debug(3, "JBD: checking block %ld\n", next_log_block);
 		err = jread(&bh, journal, next_log_block);
 		if (err)
 			goto failed;
@@ -421,7 +429,7 @@ static int do_one_pass(journal_t *journal,
 			tagp = &bh->b_data[sizeof(journal_header_t)];
 			while ((tagp - bh->b_data +sizeof(journal_block_tag_t))
 			       <= journal->j_blocksize) {
-				unsigned int io_block;
+				unsigned long io_block;
 
 				tag = (journal_block_tag_t *) tagp;
 				flags = be32_to_cpu(tag->t_flags);
@@ -435,10 +443,10 @@ static int do_one_pass(journal_t *journal,
 					success = err;
 					printk (KERN_ERR
 						"JBD: IO error %d recovering "
-						"block %u in log\n",
+						"block %ld in log\n",
 						err, io_block);
 				} else {
-					unsigned int blocknr;
+					unsigned long blocknr;
 
 					J_ASSERT(obh != NULL);
 					blocknr = be32_to_cpu(tag->t_blocknr);
@@ -573,7 +581,7 @@ static int scan_revoke_records(journal_t *journal, struct buffer_head *bh,
 	max = be32_to_cpu(header->r_count);
 
 	while (offset < max) {
-		unsigned int blocknr;
+		unsigned long blocknr;
 		int err;
 
 		blocknr = be32_to_cpu(* ((__be32 *) (bh->b_data+offset)));

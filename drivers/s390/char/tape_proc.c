@@ -11,9 +11,6 @@
  * PROCFS Functions
  */
 
-#define KMSG_COMPONENT "tape"
-#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
-
 #include <linux/module.h>
 #include <linux/vmalloc.h>
 #include <linux/seq_file.h>
@@ -22,6 +19,8 @@
 #define TAPE_DBF_AREA	tape_core_dbf
 
 #include "tape.h"
+
+#define PRINTK_HEADER "TAPE_PROC: "
 
 static const char *tape_med_st_verbose[MS_SIZE] =
 {
@@ -48,7 +47,7 @@ static int tape_proc_show(struct seq_file *m, void *v)
 		seq_printf(m, "TapeNo\tBusID      CuType/Model\t"
 			"DevType/Model\tBlkSize\tState\tOp\tMedState\n");
 	}
-	device = tape_find_device(n);
+	device = tape_get_device(n);
 	if (IS_ERR(device))
 		return 0;
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
@@ -129,6 +128,7 @@ tape_proc_init(void)
 		proc_create("tapedevices", S_IFREG | S_IRUGO | S_IWUSR, NULL,
 			    &tape_proc_ops);
 	if (tape_proc_devices == NULL) {
+		PRINT_WARN("tape: Cannot register procfs entry tapedevices\n");
 		return;
 	}
 }

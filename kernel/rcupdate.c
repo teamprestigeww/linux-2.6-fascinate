@@ -19,7 +19,7 @@
  *
  * Authors: Dipankar Sarma <dipankar@in.ibm.com>
  *	    Manfred Spraul <manfred@colorfullife.com>
- *
+ * 
  * Based on the original work by Paul McKenney <paulmck@us.ibm.com>
  * and inputs from Rusty Russell, Andrea Arcangeli and Andi Kleen.
  * Papers:
@@ -27,7 +27,7 @@
  * http://lse.sourceforge.net/locking/rclock_OLS.2001.05.01c.sc.pdf (OLS2001)
  *
  * For detailed explanation of Read-Copy Update mechanism see -
- *		http://lse.sourceforge.net/locking/rcupdate.html
+ * 		http://lse.sourceforge.net/locking/rcupdate.html
  *
  */
 #include <linux/types.h>
@@ -44,53 +44,19 @@
 #include <linux/cpu.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
-#include <linux/hardirq.h>
+#include <linux/kernel_stat.h>
 
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-static struct lock_class_key rcu_lock_key;
-struct lockdep_map rcu_lock_map =
-	STATIC_LOCKDEP_MAP_INIT("rcu_read_lock", &rcu_lock_key);
-EXPORT_SYMBOL_GPL(rcu_lock_map);
+enum rcu_barrier {
+	RCU_BARRIER_STD,
+	RCU_BARRIER_BH,
+	RCU_BARRIER_SCHED,
+};
 
-static struct lock_class_key rcu_bh_lock_key;
-struct lockdep_map rcu_bh_lock_map =
-	STATIC_LOCKDEP_MAP_INIT("rcu_read_lock_bh", &rcu_bh_lock_key);
-EXPORT_SYMBOL_GPL(rcu_bh_lock_map);
-
-static struct lock_class_key rcu_sched_lock_key;
-struct lockdep_map rcu_sched_lock_map =
-	STATIC_LOCKDEP_MAP_INIT("rcu_read_lock_sched", &rcu_sched_lock_key);
-EXPORT_SYMBOL_GPL(rcu_sched_lock_map);
-#endif
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-
-int debug_lockdep_rcu_enabled(void)
-{
-	return rcu_scheduler_active && debug_locks &&
-	       current->lockdep_recursion == 0;
-}
-EXPORT_SYMBOL_GPL(debug_lockdep_rcu_enabled);
-
-/**
- * rcu_read_lock_bh_held - might we be in RCU-bh read-side critical section?
- *
- * Check for bottom half being disabled, which covers both the
- * CONFIG_PROVE_RCU and not cases.  Note that if someone uses
- * rcu_read_lock_bh(), but then later enables BH, lockdep (if enabled)
- * will show the situation.
- *
- * Check debug_lockdep_rcu_enabled() to prevent false positives during boot.
- */
-int rcu_read_lock_bh_held(void)
-{
-	if (!debug_lockdep_rcu_enabled())
-		return 1;
-	return in_softirq();
-}
-EXPORT_SYMBOL_GPL(rcu_read_lock_bh_held);
-
-#endif /* #ifdef CONFIG_DEBUG_LOCK_ALLOC */
+static DEFINE_PER_CPU(struct rcu_head, rcu_barrier_head) = {NULL};
+static atomic_t rcu_barrier_cpu_count;
+static DEFINE_MUTEX(rcu_barrier_mutex);
+static struct completion rcu_barrier_completion;
+int rcu_scheduler_active __read_mostly;
 
 /*
  * Awaken the corresponding synchronize_rcu() instance now that a
@@ -104,173 +70,120 @@ void wakeme_after_rcu(struct rcu_head  *head)
 	complete(&rcu->completion);
 }
 
-#ifdef CONFIG_PROVE_RCU
-/*
- * wrapper function to avoid #include problems.
+/**
+ * synchronize_rcu - wait until a grace period has elapsed.
+ *
+ * Control will return to the caller some time after a full grace
+ * period has elapsed, in other words after all currently executing RCU
+ * read-side critical sections have completed.  RCU read-side critical
+ * sections are delimited by rcu_read_lock() and rcu_read_unlock(),
+ * and may be nested.
  */
-int rcu_my_thread_group_empty(void)
+void synchronize_rcu(void)
 {
-	return thread_group_empty(current);
-}
-EXPORT_SYMBOL_GPL(rcu_my_thread_group_empty);
-#endif /* #ifdef CONFIG_PROVE_RCU */
+	struct rcu_synchronize rcu;
 
-#ifdef CONFIG_DEBUG_OBJECTS_RCU_HEAD
-static inline void debug_init_rcu_head(struct rcu_head *head)
-{
-	debug_object_init(head, &rcuhead_debug_descr);
-}
+	if (rcu_blocking_is_gp())
+		return;
 
-static inline void debug_rcu_head_free(struct rcu_head *head)
+	init_completion(&rcu.completion);
+	/* Will wake me after RCU finished. */
+	call_rcu(&rcu.head, wakeme_after_rcu);
+	/* Wait for it. */
+	wait_for_completion(&rcu.completion);
+}
+EXPORT_SYMBOL_GPL(synchronize_rcu);
+
+static void rcu_barrier_callback(struct rcu_head *notused)
 {
-	debug_object_free(head, &rcuhead_debug_descr);
+	if (atomic_dec_and_test(&rcu_barrier_cpu_count))
+		complete(&rcu_barrier_completion);
 }
 
 /*
- * fixup_init is called when:
- * - an active object is initialized
+ * Called with preemption disabled, and from cross-cpu IRQ context.
  */
-static int rcuhead_fixup_init(void *addr, enum debug_obj_state state)
+static void rcu_barrier_func(void *type)
 {
-	struct rcu_head *head = addr;
+	int cpu = smp_processor_id();
+	struct rcu_head *head = &per_cpu(rcu_barrier_head, cpu);
 
-	switch (state) {
-	case ODEBUG_STATE_ACTIVE:
-		/*
-		 * Ensure that queued callbacks are all executed.
-		 * If we detect that we are nested in a RCU read-side critical
-		 * section, we should simply fail, otherwise we would deadlock.
-		 */
-		if (rcu_preempt_depth() != 0 || preempt_count() != 0 ||
-		    irqs_disabled()) {
-			WARN_ON(1);
-			return 0;
-		}
-		rcu_barrier();
-		rcu_barrier_sched();
-		rcu_barrier_bh();
-		debug_object_init(head, &rcuhead_debug_descr);
-		return 1;
-	default:
-		return 0;
+	atomic_inc(&rcu_barrier_cpu_count);
+	switch ((enum rcu_barrier)type) {
+	case RCU_BARRIER_STD:
+		call_rcu(head, rcu_barrier_callback);
+		break;
+	case RCU_BARRIER_BH:
+		call_rcu_bh(head, rcu_barrier_callback);
+		break;
+	case RCU_BARRIER_SCHED:
+		call_rcu_sched(head, rcu_barrier_callback);
+		break;
 	}
 }
 
 /*
- * fixup_activate is called when:
- * - an active object is activated
- * - an unknown object is activated (might be a statically initialized object)
- * Activation is performed internally by call_rcu().
+ * Orchestrate the specified type of RCU barrier, waiting for all
+ * RCU callbacks of the specified type to complete.
  */
-static int rcuhead_fixup_activate(void *addr, enum debug_obj_state state)
+static void _rcu_barrier(enum rcu_barrier type)
 {
-	struct rcu_head *head = addr;
-
-	switch (state) {
-
-	case ODEBUG_STATE_NOTAVAILABLE:
-		/*
-		 * This is not really a fixup. We just make sure that it is
-		 * tracked in the object tracker.
-		 */
-		debug_object_init(head, &rcuhead_debug_descr);
-		debug_object_activate(head, &rcuhead_debug_descr);
-		return 0;
-
-	case ODEBUG_STATE_ACTIVE:
-		/*
-		 * Ensure that queued callbacks are all executed.
-		 * If we detect that we are nested in a RCU read-side critical
-		 * section, we should simply fail, otherwise we would deadlock.
-		 */
-		if (rcu_preempt_depth() != 0 || preempt_count() != 0 ||
-		    irqs_disabled()) {
-			WARN_ON(1);
-			return 0;
-		}
-		rcu_barrier();
-		rcu_barrier_sched();
-		rcu_barrier_bh();
-		debug_object_activate(head, &rcuhead_debug_descr);
-		return 1;
-	default:
-		return 0;
-	}
-}
-
-/*
- * fixup_free is called when:
- * - an active object is freed
- */
-static int rcuhead_fixup_free(void *addr, enum debug_obj_state state)
-{
-	struct rcu_head *head = addr;
-
-	switch (state) {
-	case ODEBUG_STATE_ACTIVE:
-		/*
-		 * Ensure that queued callbacks are all executed.
-		 * If we detect that we are nested in a RCU read-side critical
-		 * section, we should simply fail, otherwise we would deadlock.
-		 */
-#ifndef CONFIG_PREEMPT
-		WARN_ON(1);
-		return 0;
-#else
-		if (rcu_preempt_depth() != 0 || preempt_count() != 0 ||
-		    irqs_disabled()) {
-			WARN_ON(1);
-			return 0;
-		}
-		rcu_barrier();
-		rcu_barrier_sched();
-		rcu_barrier_bh();
-		debug_object_free(head, &rcuhead_debug_descr);
-		return 1;
-#endif
-	default:
-		return 0;
-	}
+	BUG_ON(in_interrupt());
+	/* Take cpucontrol mutex to protect against CPU hotplug */
+	mutex_lock(&rcu_barrier_mutex);
+	init_completion(&rcu_barrier_completion);
+	/*
+	 * Initialize rcu_barrier_cpu_count to 1, then invoke
+	 * rcu_barrier_func() on each CPU, so that each CPU also has
+	 * incremented rcu_barrier_cpu_count.  Only then is it safe to
+	 * decrement rcu_barrier_cpu_count -- otherwise the first CPU
+	 * might complete its grace period before all of the other CPUs
+	 * did their increment, causing this function to return too
+	 * early.
+	 */
+	atomic_set(&rcu_barrier_cpu_count, 1);
+	on_each_cpu(rcu_barrier_func, (void *)type, 1);
+	if (atomic_dec_and_test(&rcu_barrier_cpu_count))
+		complete(&rcu_barrier_completion);
+	wait_for_completion(&rcu_barrier_completion);
+	mutex_unlock(&rcu_barrier_mutex);
 }
 
 /**
- * init_rcu_head_on_stack() - initialize on-stack rcu_head for debugobjects
- * @head: pointer to rcu_head structure to be initialized
- *
- * This function informs debugobjects of a new rcu_head structure that
- * has been allocated as an auto variable on the stack.  This function
- * is not required for rcu_head structures that are statically defined or
- * that are dynamically allocated on the heap.  This function has no
- * effect for !CONFIG_DEBUG_OBJECTS_RCU_HEAD kernel builds.
+ * rcu_barrier - Wait until all in-flight call_rcu() callbacks complete.
  */
-void init_rcu_head_on_stack(struct rcu_head *head)
+void rcu_barrier(void)
 {
-	debug_object_init_on_stack(head, &rcuhead_debug_descr);
+	_rcu_barrier(RCU_BARRIER_STD);
 }
-EXPORT_SYMBOL_GPL(init_rcu_head_on_stack);
+EXPORT_SYMBOL_GPL(rcu_barrier);
 
 /**
- * destroy_rcu_head_on_stack() - destroy on-stack rcu_head for debugobjects
- * @head: pointer to rcu_head structure to be initialized
- *
- * This function informs debugobjects that an on-stack rcu_head structure
- * is about to go out of scope.  As with init_rcu_head_on_stack(), this
- * function is not required for rcu_head structures that are statically
- * defined or that are dynamically allocated on the heap.  Also as with
- * init_rcu_head_on_stack(), this function has no effect for
- * !CONFIG_DEBUG_OBJECTS_RCU_HEAD kernel builds.
+ * rcu_barrier_bh - Wait until all in-flight call_rcu_bh() callbacks complete.
  */
-void destroy_rcu_head_on_stack(struct rcu_head *head)
+void rcu_barrier_bh(void)
 {
-	debug_object_free(head, &rcuhead_debug_descr);
+	_rcu_barrier(RCU_BARRIER_BH);
 }
-EXPORT_SYMBOL_GPL(destroy_rcu_head_on_stack);
+EXPORT_SYMBOL_GPL(rcu_barrier_bh);
 
-struct debug_obj_descr rcuhead_debug_descr = {
-	.name = "rcu_head",
-	.fixup_init = rcuhead_fixup_init,
-	.fixup_activate = rcuhead_fixup_activate,
-	.fixup_free = rcuhead_fixup_free,
-};
-EXPORT_SYMBOL_GPL(rcuhead_debug_descr);
-#endif /* #ifdef CONFIG_DEBUG_OBJECTS_RCU_HEAD */
+/**
+ * rcu_barrier_sched - Wait for in-flight call_rcu_sched() callbacks.
+ */
+void rcu_barrier_sched(void)
+{
+	_rcu_barrier(RCU_BARRIER_SCHED);
+}
+EXPORT_SYMBOL_GPL(rcu_barrier_sched);
+
+void __init rcu_init(void)
+{
+	__rcu_init();
+}
+
+void rcu_scheduler_starting(void)
+{
+	WARN_ON(num_online_cpus() != 1);
+	WARN_ON(nr_context_switches() > 0);
+	rcu_scheduler_active = 1;
+}

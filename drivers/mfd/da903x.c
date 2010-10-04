@@ -18,7 +18,6 @@
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
 #include <linux/mfd/da903x.h>
-#include <linux/slab.h>
 
 #define DA9030_CHIP_ID		0x00
 #define DA9030_EVENT_A		0x01
@@ -414,7 +413,7 @@ static void da903x_irq_work(struct work_struct *work)
 	enable_irq(chip->client->irq);
 }
 
-static irqreturn_t da903x_irq_handler(int irq, void *data)
+static int da903x_irq_handler(int irq, void *data)
 {
 	struct da903x_chip *chip = data;
 
@@ -534,6 +533,7 @@ static int __devinit da903x_probe(struct i2c_client *client,
 out_free_irq:
 	free_irq(client->irq, chip);
 out_free_chip:
+	i2c_set_clientdata(client, NULL);
 	kfree(chip);
 	return ret;
 }
@@ -561,7 +561,7 @@ static int __init da903x_init(void)
 {
 	return i2c_add_driver(&da903x_driver);
 }
-subsys_initcall(da903x_init);
+module_init(da903x_init);
 
 static void __exit da903x_exit(void)
 {

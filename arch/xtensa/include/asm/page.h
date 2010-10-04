@@ -14,7 +14,6 @@
 #include <asm/processor.h>
 #include <asm/types.h>
 #include <asm/cache.h>
-#include <platform/hardware.h>
 
 /*
  * Fixed TLB translations in the processor.
@@ -33,14 +32,8 @@
 #define PAGE_SIZE		(__XTENSA_UL_CONST(1) << PAGE_SHIFT)
 #define PAGE_MASK		(~(PAGE_SIZE-1))
 
-#ifdef CONFIG_MMU
 #define PAGE_OFFSET		XCHAL_KSEG_CACHED_VADDR
 #define MAX_MEM_PFN		XCHAL_KSEG_SIZE
-#else
-#define PAGE_OFFSET		0
-#define MAX_MEM_PFN		(PLATFORM_DEFAULT_MEM_START + PLATFORM_DEFAULT_MEM_SIZE)
-#endif
-
 #define PGTABLE_START		0x80000000
 
 /*
@@ -129,7 +122,7 @@ static inline __attribute_const__ int get_order(unsigned long size)
 
 #else
 
-# include <asm-generic/getorder.h>
+# include <asm-generic/page.h>
 
 #endif
 
@@ -157,11 +150,9 @@ extern void copy_user_page(void*, void*, unsigned long, struct page*);
  * addresses.
  */
 
-#define ARCH_PFN_OFFSET		(PLATFORM_DEFAULT_MEM_START >> PAGE_SHIFT)
-
 #define __pa(x)			((unsigned long) (x) - PAGE_OFFSET)
 #define __va(x)			((void *)((unsigned long) (x) + PAGE_OFFSET))
-#define pfn_valid(pfn)		((pfn) >= ARCH_PFN_OFFSET && ((pfn) - ARCH_PFN_OFFSET) < max_mapnr)
+#define pfn_valid(pfn)		((unsigned long)pfn < max_mapnr)
 #ifdef CONFIG_DISCONTIGMEM
 # error CONFIG_DISCONTIGMEM not supported
 #endif
@@ -171,9 +162,8 @@ extern void copy_user_page(void*, void*, unsigned long, struct page*);
 #define virt_addr_valid(kaddr)	pfn_valid(__pa(kaddr) >> PAGE_SHIFT)
 #define page_to_phys(page)	(page_to_pfn(page) << PAGE_SHIFT)
 
-#ifdef CONFIG_MMU
 #define WANT_PAGE_VIRTUAL
-#endif
+
 
 #endif /* __ASSEMBLY__ */
 

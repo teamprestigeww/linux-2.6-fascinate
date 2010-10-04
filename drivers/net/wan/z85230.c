@@ -47,7 +47,6 @@
 #include <linux/hdlc.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
-#include <linux/gfp.h>
 #include <asm/dma.h>
 #include <asm/io.h>
 #define RT_LOCK
@@ -1728,14 +1727,15 @@ static inline int spans_boundary(struct sk_buff *skb)
  *	point.
  */
 
-netdev_tx_t z8530_queue_xmit(struct z8530_channel *c, struct sk_buff *skb)
+int z8530_queue_xmit(struct z8530_channel *c, struct sk_buff *skb)
 {
 	unsigned long flags;
 	
 	netif_stop_queue(c->netdevice);
 	if(c->tx_next_skb)
-		return NETDEV_TX_BUSY;
-
+	{
+		return 1;
+	}
 	
 	/* PC SPECIFIC - DMA limits */
 	
@@ -1767,7 +1767,7 @@ netdev_tx_t z8530_queue_xmit(struct z8530_channel *c, struct sk_buff *skb)
 	z8530_tx_begin(c);
 	spin_unlock_irqrestore(c->lock, flags);
 	
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 EXPORT_SYMBOL(z8530_queue_xmit);
@@ -1775,8 +1775,7 @@ EXPORT_SYMBOL(z8530_queue_xmit);
 /*
  *	Module support
  */
-static const char banner[] __initdata =
-	KERN_INFO "Generic Z85C30/Z85230 interface driver v0.02\n";
+static char banner[] __initdata = KERN_INFO "Generic Z85C30/Z85230 interface driver v0.02\n";
 
 static int __init z85230_init_driver(void)
 {

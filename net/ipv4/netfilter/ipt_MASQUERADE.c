@@ -8,7 +8,7 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/types.h>
 #include <linux/inetdevice.h>
 #include <linux/ip.h>
@@ -27,24 +27,27 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Netfilter Core Team <coreteam@netfilter.org>");
 MODULE_DESCRIPTION("Xtables: automatic-address SNAT");
 
+/* Lock protects masq region inside conntrack */
+static DEFINE_RWLOCK(masq_lock);
+
 /* FIXME: Multiple targets. --RR */
-static int masquerade_tg_check(const struct xt_tgchk_param *par)
+static bool masquerade_tg_check(const struct xt_tgchk_param *par)
 {
 	const struct nf_nat_multi_range_compat *mr = par->targinfo;
 
 	if (mr->range[0].flags & IP_NAT_RANGE_MAP_IPS) {
-		pr_debug("bad MAP_IPS.\n");
-		return -EINVAL;
+		pr_debug("masquerade_check: bad MAP_IPS.\n");
+		return false;
 	}
 	if (mr->rangesize != 1) {
-		pr_debug("bad rangesize %u\n", mr->rangesize);
-		return -EINVAL;
+		pr_debug("masquerade_check: bad rangesize %u\n", mr->rangesize);
+		return false;
 	}
-	return 0;
+	return true;
 }
 
 static unsigned int
-masquerade_tg(struct sk_buff *skb, const struct xt_action_param *par)
+masquerade_tg(struct sk_buff *skb, const struct xt_target_param *par)
 {
 	struct nf_conn *ct;
 	struct nf_conn_nat *nat;
@@ -59,8 +62,8 @@ masquerade_tg(struct sk_buff *skb, const struct xt_action_param *par)
 	ct = nf_ct_get(skb, &ctinfo);
 	nat = nfct_nat(ct);
 
-	NF_CT_ASSERT(ct && (ctinfo == IP_CT_NEW || ctinfo == IP_CT_RELATED ||
-			    ctinfo == IP_CT_RELATED + IP_CT_IS_REPLY));
+	NF_CT_ASSERT(ct && (ctinfo == IP_CT_NEW || ctinfo == IP_CT_RELATED
+			    || ctinfo == IP_CT_RELATED + IP_CT_IS_REPLY));
 
 	/* Source address is 0.0.0.0 - locally generated packet that is
 	 * probably not supposed to be masqueraded.
@@ -69,14 +72,16 @@ masquerade_tg(struct sk_buff *skb, const struct xt_action_param *par)
 		return NF_ACCEPT;
 
 	mr = par->targinfo;
-	rt = skb_rtable(skb);
+	rt = skb->rtable;
 	newsrc = inet_select_addr(par->out, rt->rt_gateway, RT_SCOPE_UNIVERSE);
 	if (!newsrc) {
-		pr_info("%s ate my IP address\n", par->out->name);
+		printk("MASQUERADE: %s ate my IP address\n", par->out->name);
 		return NF_DROP;
 	}
 
+	write_lock_bh(&masq_lock);
 	nat->masq_index = par->out->ifindex;
+	write_unlock_bh(&masq_lock);
 
 	/* Transfer from original range. */
 	newrange = ((struct nf_nat_range)
@@ -92,11 +97,16 @@ static int
 device_cmp(struct nf_conn *i, void *ifindex)
 {
 	const struct nf_conn_nat *nat = nfct_nat(i);
+	int ret;
 
 	if (!nat)
 		return 0;
 
-	return nat->masq_index == (int)(long)ifindex;
+	read_lock_bh(&masq_lock);
+	ret = (nat->masq_index == (int)(long)ifindex);
+	read_unlock_bh(&masq_lock);
+
+	return ret;
 }
 
 static int masq_device_event(struct notifier_block *this,

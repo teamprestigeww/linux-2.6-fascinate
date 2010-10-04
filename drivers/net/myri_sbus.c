@@ -14,6 +14,7 @@ static char version[] =
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/in.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -24,8 +25,6 @@ static char version[] =
 #include <linux/dma-mapping.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/firmware.h>
-#include <linux/gfp.h>
 
 #include <net/dst.h>
 #include <net/arp.h>
@@ -44,6 +43,7 @@ static char version[] =
 #include <asm/irq.h>
 
 #include "myri_sbus.h"
+#include "myri_code.h"
 
 /* #define DEBUG_DETECT */
 /* #define DEBUG_IRQ */
@@ -80,9 +80,6 @@ static char version[] =
 #else
 #define DHDR(x)
 #endif
-
-/* Firmware name */
-#define FWNAME		"myricom/lanai.bin"
 
 static void myri_reset_off(void __iomem *lp, void __iomem *cregs)
 {
@@ -174,11 +171,10 @@ static int myri_do_handshake(struct myri_eth *mp)
 
 static int __devinit myri_load_lanai(struct myri_eth *mp)
 {
-	const struct firmware	*fw;
 	struct net_device	*dev = mp->dev;
 	struct myri_shmem __iomem *shmem = mp->shmem;
 	void __iomem		*rptr;
-	int 			i, lanai4_data_size;
+	int 			i;
 
 	myri_disable_irq(mp->lregs, mp->cregs);
 	myri_reset_on(mp->cregs);
@@ -190,27 +186,13 @@ static int __devinit myri_load_lanai(struct myri_eth *mp)
 	if (mp->eeprom.cpuvers >= CPUVERS_3_0)
 		sbus_writel(mp->eeprom.cval, mp->lregs + LANAI_CVAL);
 
-	i = request_firmware(&fw, FWNAME, &mp->myri_op->dev);
-	if (i) {
-		printk(KERN_ERR "Failed to load image \"%s\" err %d\n",
-		       FWNAME, i);
-		return i;
-	}
-	if (fw->size < 2) {
-		printk(KERN_ERR "Bogus length %zu in image \"%s\"\n",
-		       fw->size, FWNAME);
-		release_firmware(fw);
-		return -EINVAL;
-	}
-	lanai4_data_size = fw->data[0] << 8 | fw->data[1];
-
 	/* Load executable code. */
-	for (i = 2; i < fw->size; i++)
-		sbus_writeb(fw->data[i], rptr++);
+	for (i = 0; i < sizeof(lanai4_code); i++)
+		sbus_writeb(lanai4_code[i], rptr + (lanai4_code_off * 2) + i);
 
 	/* Load data segment. */
-	for (i = 0; i < lanai4_data_size; i++)
-		sbus_writeb(0, rptr++);
+	for (i = 0; i < sizeof(lanai4_data); i++)
+		sbus_writeb(lanai4_data[i], rptr + (lanai4_data_off * 2) + i);
 
 	/* Set device address. */
 	sbus_writeb(0, &shmem->addr[0]);
@@ -246,7 +228,6 @@ static int __devinit myri_load_lanai(struct myri_eth *mp)
 	if (mp->eeprom.cpuvers == CPUVERS_4_0)
 		sbus_writel(0, mp->lregs + LANAI_VERS);
 
-	release_firmware(fw);
 	return i;
 }
 
@@ -640,7 +621,7 @@ static int myri_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	if (!TX_BUFFS_AVAIL(head, tail)) {
 		DTX(("no buffs available, returning 1\n"));
-		return NETDEV_TX_BUSY;
+		return 1;
 	}
 
 	spin_lock_irqsave(&mp->irq_lock, flags);
@@ -692,7 +673,7 @@ static int myri_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	DTX(("tbusy=0, returning 0\n"));
 	netif_start_queue(dev);
 	spin_unlock_irqrestore(&mp->irq_lock, flags);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /* Create the MyriNet MAC header for an arbitrary protocol layer
@@ -716,10 +697,10 @@ static int myri_header(struct sk_buff *skb, struct net_device *dev,
 	pad[0] = MYRI_PAD_LEN;
 	pad[1] = 0xab;
 
-	/* Set the protocol type. For a packet of type ETH_P_802_3/2 we put the
-	 * length in here instead.
+	/* Set the protocol type. For a packet of type ETH_P_802_3 we put the length
+	 * in here instead. It is up to the 802.2 layer to carry protocol information.
 	 */
-	if (type != ETH_P_802_3 && type != ETH_P_802_2)
+	if (type != ETH_P_802_3)
 		eth->h_proto = htons(type);
 	else
 		eth->h_proto = htons(len);
@@ -767,7 +748,7 @@ static int myri_rebuild_header(struct sk_buff *skb)
 	switch (eth->h_proto)
 	{
 #ifdef CONFIG_INET
-	case cpu_to_be16(ETH_P_IP):
+	case __constant_htons(ETH_P_IP):
  		return arp_find(eth->h_dest, skb);
 #endif
 
@@ -865,7 +846,7 @@ static inline void determine_reg_space_size(struct myri_eth *mp)
 		printk("myricom: AIEEE weird cpu version %04x assuming pre4.0\n",
 		       mp->eeprom.cpuvers);
 		mp->reg_size = (3 * 128 * 1024) + 4096;
-	}
+	};
 }
 
 #ifdef DEBUG_DETECT
@@ -915,20 +896,9 @@ static const struct header_ops myri_header_ops = {
 	.cache_update	= myri_header_cache_update,
 };
 
-static const struct net_device_ops myri_ops = {
-	.ndo_open		= myri_open,
-	.ndo_stop		= myri_close,
-	.ndo_start_xmit		= myri_start_xmit,
-	.ndo_set_multicast_list	= myri_set_multicast,
-	.ndo_tx_timeout		= myri_tx_timeout,
-	.ndo_change_mtu		= myri_change_mtu,
-	.ndo_set_mac_address	= eth_mac_addr,
-	.ndo_validate_addr	= eth_validate_addr,
-};
-
-static int __devinit myri_sbus_probe(struct platform_device *op, const struct of_device_id *match)
+static int __devinit myri_sbus_probe(struct of_device *op, const struct of_device_id *match)
 {
-	struct device_node *dp = op->dev.of_node;
+	struct device_node *dp = op->node;
 	static unsigned version_printed;
 	struct net_device *dev;
 	struct myri_eth *mp;
@@ -1078,29 +1048,31 @@ static int __devinit myri_sbus_probe(struct platform_device *op, const struct of
 	sbus_writel((1 << i), mp->cregs + MYRICTRL_IRQLVL);
 
 	mp->dev = dev;
+	dev->open = &myri_open;
+	dev->stop = &myri_close;
+	dev->hard_start_xmit = &myri_start_xmit;
+	dev->tx_timeout = &myri_tx_timeout;
 	dev->watchdog_timeo = 5*HZ;
-	dev->irq = op->archdata.irqs[0];
-	dev->netdev_ops = &myri_ops;
+	dev->set_multicast_list = &myri_set_multicast;
+	dev->irq = op->irqs[0];
 
 	/* Register interrupt handler now. */
 	DET(("Requesting MYRIcom IRQ line.\n"));
-	if (request_irq(dev->irq, myri_interrupt,
+	if (request_irq(dev->irq, &myri_interrupt,
 			IRQF_SHARED, "MyriCOM Ethernet", (void *) dev)) {
 		printk("MyriCOM: Cannot register interrupt handler.\n");
 		goto err;
 	}
 
 	dev->mtu		= MYRINET_MTU;
+	dev->change_mtu		= myri_change_mtu;
 	dev->header_ops		= &myri_header_ops;
 
 	dev->hard_header_len	= (ETH_HLEN + MYRI_PAD_LEN);
 
 	/* Load code onto the LANai. */
 	DET(("Loading LANAI firmware\n"));
-	if (myri_load_lanai(mp)) {
-		printk(KERN_ERR "MyriCOM: Cannot Load LANAI firmware.\n");
-		goto err_free_irq;
-	}
+	myri_load_lanai(mp);
 
 	if (register_netdev(dev)) {
 		printk("MyriCOM: Cannot register device.\n");
@@ -1124,7 +1096,7 @@ err:
 	return -ENODEV;
 }
 
-static int __devexit myri_sbus_remove(struct platform_device *op)
+static int __devexit myri_sbus_remove(struct of_device *op)
 {
 	struct myri_eth *mp = dev_get_drvdata(&op->dev);
 	struct net_device *net_dev = mp->dev;
@@ -1161,27 +1133,23 @@ static const struct of_device_id myri_sbus_match[] = {
 MODULE_DEVICE_TABLE(of, myri_sbus_match);
 
 static struct of_platform_driver myri_sbus_driver = {
-	.driver = {
-		.name = "myri",
-		.owner = THIS_MODULE,
-		.of_match_table = myri_sbus_match,
-	},
+	.name		= "myri",
+	.match_table	= myri_sbus_match,
 	.probe		= myri_sbus_probe,
 	.remove		= __devexit_p(myri_sbus_remove),
 };
 
 static int __init myri_sbus_init(void)
 {
-	return of_register_platform_driver(&myri_sbus_driver);
+	return of_register_driver(&myri_sbus_driver, &of_bus_type);
 }
 
 static void __exit myri_sbus_exit(void)
 {
-	of_unregister_platform_driver(&myri_sbus_driver);
+	of_unregister_driver(&myri_sbus_driver);
 }
 
 module_init(myri_sbus_init);
 module_exit(myri_sbus_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_FIRMWARE(FWNAME);

@@ -5,14 +5,15 @@
  * Zero a page. 	
  * rdi	page
  */			
-ENTRY(clear_page_c)
+	ALIGN
+clear_page_c:
 	CFI_STARTPROC
 	movl $4096/8,%ecx
 	xorl %eax,%eax
 	rep stosq
 	ret
 	CFI_ENDPROC
-ENDPROC(clear_page_c)
+ENDPROC(clear_page)
 
 ENTRY(clear_page)
 	CFI_STARTPROC
@@ -52,7 +53,7 @@ ENDPROC(clear_page)
 	.align 8
 	.quad clear_page
 	.quad 1b
-	.word X86_FEATURE_REP_GOOD
+	.byte X86_FEATURE_REP_GOOD
 	.byte .Lclear_page_end - clear_page
 	.byte 2b - 1b
 	.previous

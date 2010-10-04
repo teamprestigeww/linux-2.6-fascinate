@@ -129,6 +129,7 @@ static int xcvr[NUM_UNITS]; 			/* The data transfer mode. */
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/in.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -198,8 +199,7 @@ static int net_open(struct net_device *dev);
 static void hardware_init(struct net_device *dev);
 static void write_packet(long ioaddr, int length, unsigned char *packet, int pad, int mode);
 static void trigger_send(long ioaddr, int length);
-static netdev_tx_t atp_send_packet(struct sk_buff *skb,
-				   struct net_device *dev);
+static int	atp_send_packet(struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t atp_interrupt(int irq, void *dev_id);
 static void net_rx(struct net_device *dev);
 static void read_block(long ioaddr, int length, unsigned char *buffer, int data_mode);
@@ -436,7 +436,7 @@ static int net_open(struct net_device *dev)
 	/* The interrupt line is turned off (tri-stated) when the device isn't in
 	   use.  That's especially important for "attached" interfaces where the
 	   port or interrupt may be shared. */
-	ret = request_irq(dev->irq, atp_interrupt, 0, dev->name, dev);
+	ret = request_irq(dev->irq, &atp_interrupt, 0, dev->name, dev);
 	if (ret)
 		return ret;
 
@@ -547,13 +547,12 @@ static void tx_timeout(struct net_device *dev)
 	dev->stats.tx_errors++;
 	/* Try to restart the adapter. */
 	hardware_init(dev);
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	dev->trans_start = jiffies;
 	netif_wake_queue(dev);
 	dev->stats.tx_errors++;
 }
 
-static netdev_tx_t atp_send_packet(struct sk_buff *skb,
-				   struct net_device *dev)
+static int atp_send_packet(struct sk_buff *skb, struct net_device *dev)
 {
 	struct net_local *lp = netdev_priv(dev);
 	long ioaddr = dev->base_addr;
@@ -586,8 +585,9 @@ static netdev_tx_t atp_send_packet(struct sk_buff *skb,
 	write_reg(ioaddr, IMR, ISR_RxOK | ISR_TxErr | ISR_TxOK);
 	write_reg_high(ioaddr, IMR, ISRh_RxErr);
 
+	dev->trans_start = jiffies;
 	dev_kfree_skb (skb);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 
@@ -671,8 +671,8 @@ static irqreturn_t atp_interrupt(int irq, void *dev_instance)
 				netif_wake_queue(dev);	/* Inform upper layers. */
 			}
 			num_tx_since_rx++;
-		} else if (num_tx_since_rx > 8 &&
-			   time_after(jiffies, dev->last_rx + HZ)) {
+		} else if (num_tx_since_rx > 8
+				   && time_after(jiffies, dev->last_rx + HZ)) {
 			if (net_debug > 2)
 				printk(KERN_DEBUG "%s: Missed packet? No Rx after %d Tx and "
 					   "%ld jiffies status %02x  CMR1 %02x.\n", dev->name,
@@ -802,6 +802,7 @@ static void net_rx(struct net_device *dev)
  done:
 	write_reg(ioaddr, CMR1, CMR1_NextPkt);
 	lp->last_rx_time = jiffies;
+	return;
 }
 
 static void read_block(long ioaddr, int length, unsigned char *p, int data_mode)
@@ -858,7 +859,7 @@ static void set_rx_mode_8002(struct net_device *dev)
 	struct net_local *lp = netdev_priv(dev);
 	long ioaddr = dev->base_addr;
 
-	if (!netdev_mc_empty(dev) || (dev->flags & (IFF_ALLMULTI|IFF_PROMISC)))
+	if (dev->mc_count > 0 || (dev->flags & (IFF_ALLMULTI|IFF_PROMISC)))
 		lp->addr_mode = CMR2h_PROMISC;
 	else
 		lp->addr_mode = CMR2h_Normal;
@@ -874,17 +875,18 @@ static void set_rx_mode_8012(struct net_device *dev)
 
 	if (dev->flags & IFF_PROMISC) {			/* Set promiscuous. */
 		new_mode = CMR2h_PROMISC;
-	} else if ((netdev_mc_count(dev) > 1000) ||
-		   (dev->flags & IFF_ALLMULTI)) {
+	} else if ((dev->mc_count > 1000)  ||  (dev->flags & IFF_ALLMULTI)) {
 		/* Too many to filter perfectly -- accept all multicasts. */
 		memset(mc_filter, 0xff, sizeof(mc_filter));
 		new_mode = CMR2h_Normal;
 	} else {
-		struct netdev_hw_addr *ha;
+		struct dev_mc_list *mclist;
 
 		memset(mc_filter, 0, sizeof(mc_filter));
-		netdev_for_each_mc_addr(ha, dev) {
-			int filterbit = ether_crc_le(ETH_ALEN, ha->addr) & 0x3f;
+		for (i = 0, mclist = dev->mc_list; mclist && i < dev->mc_count;
+			 i++, mclist = mclist->next)
+		{
+			int filterbit = ether_crc_le(ETH_ALEN, mclist->dmi_addr) & 0x3f;
 			mc_filter[filterbit >> 5] |= 1 << (filterbit & 31);
 		}
 		new_mode = CMR2h_Normal;

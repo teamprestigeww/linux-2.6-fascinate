@@ -6,7 +6,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -67,7 +67,7 @@
 ACPI_MODULE_NAME("exutils")
 
 /* Local prototypes */
-static u32 acpi_ex_digits_needed(u64 value, u32 base);
+static u32 acpi_ex_digits_needed(acpi_integer value, u32 base);
 
 #ifndef ACPI_NO_METHOD_EXECUTION
 /*******************************************************************************
@@ -109,7 +109,7 @@ void acpi_ex_enter_interpreter(void)
  *
  * DESCRIPTION: Reacquire the interpreter execution region from within the
  *              interpreter code. Failure to enter the interpreter region is a
- *              fatal system error. Used in  conjunction with
+ *              fatal system error. Used in  conjuction with
  *              relinquish_interpreter
  *
  ******************************************************************************/
@@ -221,7 +221,7 @@ void acpi_ex_truncate_for32bit_table(union acpi_operand_object *obj_desc)
 	 */
 	if ((!obj_desc) ||
 	    (ACPI_GET_DESCRIPTOR_TYPE(obj_desc) != ACPI_DESC_TYPE_OPERAND) ||
-	    (obj_desc->common.type != ACPI_TYPE_INTEGER)) {
+	    (ACPI_GET_OBJECT_TYPE(obj_desc) != ACPI_TYPE_INTEGER)) {
 		return;
 	}
 
@@ -230,7 +230,7 @@ void acpi_ex_truncate_for32bit_table(union acpi_operand_object *obj_desc)
 		 * We are running a method that exists in a 32-bit ACPI table.
 		 * Truncate the value to 32 bits by zeroing out the upper 32-bit field
 		 */
-		obj_desc->integer.value &= (u64) ACPI_UINT32_MAX;
+		obj_desc->integer.value &= (acpi_integer) ACPI_UINT32_MAX;
 	}
 }
 
@@ -327,14 +327,14 @@ void acpi_ex_release_global_lock(u32 field_flags)
  *
  ******************************************************************************/
 
-static u32 acpi_ex_digits_needed(u64 value, u32 base)
+static u32 acpi_ex_digits_needed(acpi_integer value, u32 base)
 {
 	u32 num_digits;
-	u64 current_value;
+	acpi_integer current_value;
 
 	ACPI_FUNCTION_TRACE(ex_digits_needed);
 
-	/* u64 is unsigned, so we don't worry about a '-' prefix */
+	/* acpi_integer is unsigned, so we don't worry about a '-' prefix */
 
 	if (value == 0) {
 		return_UINT32(1);
@@ -358,67 +358,50 @@ static u32 acpi_ex_digits_needed(u64 value, u32 base)
  *
  * FUNCTION:    acpi_ex_eisa_id_to_string
  *
- * PARAMETERS:  compressed_id   - EISAID to be converted
+ * PARAMETERS:  numeric_id      - EISA ID to be converted
  *              out_string      - Where to put the converted string (8 bytes)
  *
  * RETURN:      None
  *
- * DESCRIPTION: Convert a numeric EISAID to string representation. Return
- *              buffer must be large enough to hold the string. The string
- *              returned is always exactly of length ACPI_EISAID_STRING_SIZE
- *              (includes null terminator). The EISAID is always 32 bits.
+ * DESCRIPTION: Convert a numeric EISA ID to string representation
  *
  ******************************************************************************/
 
-void acpi_ex_eisa_id_to_string(char *out_string, u64 compressed_id)
+void acpi_ex_eisa_id_to_string(u32 numeric_id, char *out_string)
 {
-	u32 swapped_id;
+	u32 eisa_id;
 
 	ACPI_FUNCTION_ENTRY();
 
-	/* The EISAID should be a 32-bit integer */
-
-	if (compressed_id > ACPI_UINT32_MAX) {
-		ACPI_WARNING((AE_INFO,
-			      "Expected EISAID is larger than 32 bits: 0x%8.8X%8.8X, truncating",
-			      ACPI_FORMAT_UINT64(compressed_id)));
-	}
-
 	/* Swap ID to big-endian to get contiguous bits */
 
-	swapped_id = acpi_ut_dword_byte_swap((u32)compressed_id);
+	eisa_id = acpi_ut_dword_byte_swap(numeric_id);
 
-	/* First 3 bytes are uppercase letters. Next 4 bytes are hexadecimal */
-
-	out_string[0] =
-	    (char)(0x40 + (((unsigned long)swapped_id >> 26) & 0x1F));
-	out_string[1] = (char)(0x40 + ((swapped_id >> 21) & 0x1F));
-	out_string[2] = (char)(0x40 + ((swapped_id >> 16) & 0x1F));
-	out_string[3] = acpi_ut_hex_to_ascii_char((u64) swapped_id, 12);
-	out_string[4] = acpi_ut_hex_to_ascii_char((u64) swapped_id, 8);
-	out_string[5] = acpi_ut_hex_to_ascii_char((u64) swapped_id, 4);
-	out_string[6] = acpi_ut_hex_to_ascii_char((u64) swapped_id, 0);
+	out_string[0] = (char)('@' + (((unsigned long)eisa_id >> 26) & 0x1f));
+	out_string[1] = (char)('@' + ((eisa_id >> 21) & 0x1f));
+	out_string[2] = (char)('@' + ((eisa_id >> 16) & 0x1f));
+	out_string[3] = acpi_ut_hex_to_ascii_char((acpi_integer) eisa_id, 12);
+	out_string[4] = acpi_ut_hex_to_ascii_char((acpi_integer) eisa_id, 8);
+	out_string[5] = acpi_ut_hex_to_ascii_char((acpi_integer) eisa_id, 4);
+	out_string[6] = acpi_ut_hex_to_ascii_char((acpi_integer) eisa_id, 0);
 	out_string[7] = 0;
 }
 
 /*******************************************************************************
  *
- * FUNCTION:    acpi_ex_integer_to_string
+ * FUNCTION:    acpi_ex_unsigned_integer_to_string
  *
- * PARAMETERS:  out_string      - Where to put the converted string. At least
- *                                21 bytes are needed to hold the largest
- *                                possible 64-bit integer.
- *              Value           - Value to be converted
+ * PARAMETERS:  Value           - Value to be converted
+ *              out_string      - Where to put the converted string (8 bytes)
  *
  * RETURN:      None, string
  *
- * DESCRIPTION: Convert a 64-bit integer to decimal string representation.
- *              Assumes string buffer is large enough to hold the string. The
- *              largest string is (ACPI_MAX64_DECIMAL_DIGITS + 1).
+ * DESCRIPTION: Convert a number to string representation. Assumes string
+ *              buffer is large enough to hold the string.
  *
  ******************************************************************************/
 
-void acpi_ex_integer_to_string(char *out_string, u64 value)
+void acpi_ex_unsigned_integer_to_string(acpi_integer value, char *out_string)
 {
 	u32 count;
 	u32 digits_needed;

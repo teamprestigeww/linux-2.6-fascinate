@@ -50,6 +50,7 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/kref.h>
 #include <linux/usb.h>
 #include <linux/device.h>
 #include <linux/crc32.h>
@@ -434,6 +435,8 @@ static void mcs_unwrap_mir(struct mcs_cb *mcs, __u8 *buf, int len)
 
 	mcs->netdev->stats.rx_packets++;
 	mcs->netdev->stats.rx_bytes += new_len;
+
+	return;
 }
 
 /* Unwrap received packets at FIR speed.  A 32 bit crc_ccitt checksum is
@@ -485,6 +488,8 @@ static void mcs_unwrap_fir(struct mcs_cb *mcs, __u8 *buf, int len)
 
 	mcs->netdev->stats.rx_packets++;
 	mcs->netdev->stats.rx_bytes += new_len;
+
+	return;
 }
 
 
@@ -812,13 +817,16 @@ static void mcs_send_irq(struct urb *urb)
 }
 
 /* Transmit callback funtion.  */
-static netdev_tx_t mcs_hard_xmit(struct sk_buff *skb,
-				       struct net_device *ndev)
+static int mcs_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	unsigned long flags;
 	struct mcs_cb *mcs;
 	int wraplen;
 	int ret = 0;
+
+
+	if (skb == NULL || ndev == NULL)
+		return -EINVAL;
 
 	netif_stop_queue(ndev);
 	mcs = netdev_priv(ndev);
@@ -862,15 +870,8 @@ static netdev_tx_t mcs_hard_xmit(struct sk_buff *skb,
 
 	dev_kfree_skb(skb);
 	spin_unlock_irqrestore(&mcs->lock, flags);
-	return NETDEV_TX_OK;
+	return ret;
 }
-
-static const struct net_device_ops mcs_netdev_ops = {
-	.ndo_open = mcs_net_open,
-	.ndo_stop = mcs_net_close,
-	.ndo_start_xmit = mcs_hard_xmit,
-	.ndo_do_ioctl = mcs_net_ioctl,
-};
 
 /*
  * This function is called by the USB subsystem for each new device in the
@@ -918,7 +919,11 @@ static int mcs_probe(struct usb_interface *intf,
 	/* Speed change work initialisation*/
 	INIT_WORK(&mcs->work, mcs_speed_work);
 
-	ndev->netdev_ops = &mcs_netdev_ops;
+	/* Override the network functions we need to use */
+	ndev->hard_start_xmit = mcs_hard_xmit;
+	ndev->open = mcs_net_open;
+	ndev->stop = mcs_net_close;
+	ndev->do_ioctl = mcs_net_ioctl;
 
 	if (!intf->cur_altsetting)
 		goto error2;

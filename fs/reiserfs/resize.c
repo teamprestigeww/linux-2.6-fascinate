@@ -1,8 +1,8 @@
-/*
+/* 
  * Copyright 2000 by Hans Reiser, licensing governed by reiserfs/README
  */
 
-/*
+/* 
  * Written by Alexander Zarochentcev.
  *
  * The kernel part of the (on-line) reiserfs resizer.
@@ -82,6 +82,7 @@ int reiserfs_resize(struct super_block *s, unsigned long block_count_new)
 		if (reiserfs_allocate_list_bitmaps(s, jbitmap, bmap_nr_new) < 0) {
 			printk
 			    ("reiserfs_resize: unable to allocate memory for journal bitmaps\n");
+			unlock_super(s);
 			return -ENOMEM;
 		}
 		/* the new journal bitmaps are zero filled, now we copy in the bitmap
@@ -100,7 +101,7 @@ int reiserfs_resize(struct super_block *s, unsigned long block_count_new)
 			memcpy(jbitmap[i].bitmaps, jb->bitmaps, copy_size);
 
 			/* just in case vfree schedules on us, copy the new
-			 ** pointer into the journal struct before freeing the
+			 ** pointer into the journal struct before freeing the 
 			 ** old one
 			 */
 			node_tmp = jb->bitmaps;
@@ -141,9 +142,7 @@ int reiserfs_resize(struct super_block *s, unsigned long block_count_new)
 
 			set_buffer_uptodate(bh);
 			mark_buffer_dirty(bh);
-			reiserfs_write_unlock(s);
 			sync_dirty_buffer(bh);
-			reiserfs_write_lock(s);
 			// update bitmap_info stuff
 			bitmap[i].free_count = sb_blocksize(sb) * 8 - 1;
 			brelse(bh);

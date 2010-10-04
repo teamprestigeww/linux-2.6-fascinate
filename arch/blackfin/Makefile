@@ -14,12 +14,8 @@ OBJCOPYFLAGS     := -O binary -R .note -R .comment -S
 GZFLAGS          := -9
 
 KBUILD_CFLAGS           += $(call cc-option,-mno-fdpic)
-ifeq ($(CONFIG_ROMKERNEL),y)
-KBUILD_CFLAGS           += -mlong-calls
-endif
 KBUILD_AFLAGS           += $(call cc-option,-mno-fdpic)
-KBUILD_CFLAGS_MODULE    += -mlong-calls
-KBUILD_LDFLAGS_MODULE   += -m elf32bfin
+CFLAGS_MODULE    += -mlong-calls
 KALLSYMS         += --symbol-prefix=_
 
 KBUILD_DEFCONFIG := BF537-STAMP_defconfig
@@ -133,6 +129,7 @@ KBUILD_CFLAGS += -Iarch/$(ARCH)/mach-$(MACHINE)/include
 KBUILD_CPPFLAGS	+= $(patsubst %,-I$(srctree)/%include,$(machdirs))
 
 CLEAN_FILES += \
+	arch/$(ARCH)/include/asm/asm-offsets.h \
 	arch/$(ARCH)/kernel/asm-offsets.s \
 
 archclean:
@@ -140,7 +137,7 @@ archclean:
 
 INSTALL_PATH ?= /tftpboot
 boot := arch/$(ARCH)/boot
-BOOT_TARGETS = vmImage vmImage.bin vmImage.bz2 vmImage.gz vmImage.lzma vmImage.lzo vmImage.xip
+BOOT_TARGETS = vmImage
 PHONY += $(BOOT_TARGETS) install
 KBUILD_IMAGE := $(boot)/vmImage
 
@@ -153,15 +150,9 @@ install:
 	$(Q)$(MAKE) $(build)=$(boot) BOOTIMAGE=$(KBUILD_IMAGE) install
 
 define archhelp
-  echo  '* vmImage         - Alias to selected kernel format (vmImage.gz by default)'
-  echo  '  vmImage.bin     - Uncompressed Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.bin)'
-  echo  '  vmImage.bz2     - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.bz2)'
-  echo  '* vmImage.gz      - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.gz)'
-  echo  '  vmImage.lzma    - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.lzma)'
-  echo  '  vmImage.lzo     - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.lzo)'
-  echo  '  vmImage.xip     - XIP Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.xip)'
+  echo  '* vmImage         - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage)'
   echo  '  install         - Install kernel using'
-  echo  '                     (your) ~/bin/$(INSTALLKERNEL) or'
-  echo  '                     (distribution) PATH: $(INSTALLKERNEL) or'
+  echo  '                     (your) ~/bin/$(CROSS_COMPILE)installkernel or'
+  echo  '                     (distribution) PATH: $(CROSS_COMPILE)installkernel or'
   echo  '                     install to $$(INSTALL_PATH)'
 endef

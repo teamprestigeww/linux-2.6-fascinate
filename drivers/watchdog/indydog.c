@@ -83,6 +83,7 @@ static int indydog_open(struct inode *inode, struct file *file)
 	indydog_start();
 	indydog_ping();
 
+	indydog_alive = 1;
 	printk(KERN_INFO "Started watchdog timer.\n");
 
 	return nonseekable_open(inode, file);
@@ -111,8 +112,9 @@ static long indydog_ioctl(struct file *file, unsigned int cmd,
 							unsigned long arg)
 {
 	int options, retval = -EINVAL;
-	static const struct watchdog_info ident = {
-		.options		= WDIOF_KEEPALIVEPING,
+	static struct watchdog_info ident = {
+		.options		= WDIOF_KEEPALIVEPING |
+					  WDIOF_MAGICCLOSE,
 		.firmware_version	= 0,
 		.identity		= "Hardware Watchdog for SGI IP22",
 	};

@@ -40,6 +40,18 @@
 #define DBG(fmt, args...)
 #endif
 
+static const char *pdc_quirk_drives[] = {
+	"QUANTUM FIREBALLlct08 08",
+	"QUANTUM FIREBALLP KA6.4",
+	"QUANTUM FIREBALLP KA9.1",
+	"QUANTUM FIREBALLP LM20.4",
+	"QUANTUM FIREBALLP KX13.6",
+	"QUANTUM FIREBALLP KX20.5",
+	"QUANTUM FIREBALLP KX27.3",
+	"QUANTUM FIREBALLP LM20.5",
+	NULL
+};
+
 static u8 max_dma_rate(struct pci_dev *pdev)
 {
 	u8 mode;
@@ -129,11 +141,11 @@ static struct udma_timing {
 	{ 0x1a, 0x01, 0xcb },	/* UDMA mode 6 */
 };
 
-static void pdcnew_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void pdcnew_set_dma_mode(ide_drive_t *drive, const u8 speed)
 {
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	u8 adj			= (drive->dn & 1) ? 0x08 : 0x00;
-	const u8 speed		= drive->dma_mode;
 
 	/*
 	 * IDE core issues SETFEATURES_XFER to the drive first (thanks to
@@ -167,11 +179,11 @@ static void pdcnew_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
  	}
 }
 
-static void pdcnew_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void pdcnew_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
+	ide_hwif_t *hwif = drive->hwif;
 	struct pci_dev *dev = to_pci_dev(hwif->dev);
 	u8 adj = (drive->dn & 1) ? 0x08 : 0x00;
-	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 	if (max_dma_rate(dev) == 4) {
 		set_indexed_reg(hwif, 0x0c + adj, pio_timings[pio].reg0c);
@@ -186,6 +198,19 @@ static u8 pdcnew_cable_detect(ide_hwif_t *hwif)
 		return ATA_CBL_PATA40;
 	else
 		return ATA_CBL_PATA80;
+}
+
+static void pdcnew_quirkproc(ide_drive_t *drive)
+{
+	const char **list, *m = (char *)&drive->id[ATA_ID_PROD];
+
+	for (list = pdc_quirk_drives; *list != NULL; list++)
+		if (strstr(m, *list) != NULL) {
+			drive->quirk_list = 2;
+			return;
+		}
+
+	drive->quirk_list = 0;
 }
 
 static void pdcnew_reset(ide_drive_t *drive)
@@ -300,7 +325,7 @@ static void apple_kiwi_init(struct pci_dev *pdev)
 }
 #endif /* CONFIG_PPC_PMAC */
 
-static int init_chipset_pdcnew(struct pci_dev *dev)
+static unsigned int init_chipset_pdcnew(struct pci_dev *dev)
 {
 	const char *name = DRV_NAME;
 	unsigned long dma_base = pci_resource_start(dev, 4);
@@ -419,7 +444,7 @@ static int init_chipset_pdcnew(struct pci_dev *dev)
 #endif
 
  out:
-	return 0;
+	return dev->irq;
 }
 
 static struct pci_dev * __devinit pdc20270_get_dev2(struct pci_dev *dev)
@@ -448,6 +473,7 @@ static struct pci_dev * __devinit pdc20270_get_dev2(struct pci_dev *dev)
 static const struct ide_port_ops pdcnew_port_ops = {
 	.set_pio_mode		= pdcnew_set_pio_mode,
 	.set_dma_mode		= pdcnew_set_dma_mode,
+	.quirkproc		= pdcnew_quirkproc,
 	.resetproc		= pdcnew_reset,
 	.cable_detect		= pdcnew_cable_detect,
 };

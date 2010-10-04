@@ -37,7 +37,6 @@
 
 #include <linux/module.h>
 #include <linux/stat.h>
-#include <linux/slab.h>
 #include <linux/ioctl.h>
 #include <linux/capability.h>
 #include <linux/uaccess.h>
@@ -114,8 +113,7 @@ static int vol_cdev_open(struct inode *inode, struct file *file)
 	else
 		mode = UBI_READONLY;
 
-	dbg_gen("open device %d, volume %d, mode %d",
-	        ubi_num, vol_id, mode);
+	dbg_gen("open volume %d, mode %d", vol_id, mode);
 
 	desc = ubi_open_volume(ubi_num, vol_id, mode);
 	if (IS_ERR(desc))
@@ -130,8 +128,7 @@ static int vol_cdev_release(struct inode *inode, struct file *file)
 	struct ubi_volume_desc *desc = file->private_data;
 	struct ubi_volume *vol = desc->vol;
 
-	dbg_gen("release device %d, volume %d, mode %d",
-		vol->ubi->ubi_num, vol->vol_id, desc->mode);
+	dbg_gen("release volume %d, mode %d", vol->vol_id, desc->mode);
 
 	if (vol->updating) {
 		ubi_warn("update of volume %d not finished, volume is damaged",
@@ -188,15 +185,6 @@ static loff_t vol_cdev_llseek(struct file *file, loff_t offset, int origin)
 	file->f_pos = new_offset;
 	return new_offset;
 }
-
-static int vol_cdev_fsync(struct file *file, int datasync)
-{
-	struct ubi_volume_desc *desc = file->private_data;
-	struct ubi_device *ubi = desc->vol->ubi;
-
-	return ubi_sync(ubi->ubi_num);
-}
-
 
 static ssize_t vol_cdev_read(struct file *file, __user char *buf, size_t count,
 			     loff_t *offp)
@@ -395,7 +383,7 @@ static ssize_t vol_cdev_write(struct file *file, const char __user *buf,
 			vol->corrupted = 1;
 		}
 		vol->checked = 1;
-		ubi_volume_notify(ubi, vol, UBI_VOLUME_UPDATED);
+		ubi_gluebi_updated(vol);
 		revoke_exclusive(desc, UBI_READWRITE);
 	}
 
@@ -560,7 +548,7 @@ static long vol_cdev_ioctl(struct file *file, unsigned int cmd,
 		break;
 	}
 
-	/* Set volume property command */
+	/* Set volume property command*/
 	case UBI_IOCSETPROP:
 	{
 		struct ubi_set_prop_req req;
@@ -573,9 +561,9 @@ static long vol_cdev_ioctl(struct file *file, unsigned int cmd,
 		}
 		switch (req.property) {
 		case UBI_PROP_DIRECT_WRITE:
-			mutex_lock(&ubi->device_mutex);
+			mutex_lock(&ubi->volumes_mutex);
 			desc->vol->direct_writes = !!req.value;
-			mutex_unlock(&ubi->device_mutex);
+			mutex_unlock(&ubi->volumes_mutex);
 			break;
 		default:
 			err = -EINVAL;
@@ -798,23 +786,23 @@ static int rename_volumes(struct ubi_device *ubi,
 			goto out_free;
 		}
 
-		re1 = kzalloc(sizeof(struct ubi_rename_entry), GFP_KERNEL);
-		if (!re1) {
+		re = kzalloc(sizeof(struct ubi_rename_entry), GFP_KERNEL);
+		if (!re) {
 			err = -ENOMEM;
 			ubi_close_volume(desc);
 			goto out_free;
 		}
 
-		re1->remove = 1;
-		re1->desc = desc;
-		list_add(&re1->list, &rename_list);
+		re->remove = 1;
+		re->desc = desc;
+		list_add(&re->list, &rename_list);
 		dbg_msg("will remove volume %d, name \"%s\"",
-			re1->desc->vol->vol_id, re1->desc->vol->name);
+			re->desc->vol->vol_id, re->desc->vol->name);
 	}
 
-	mutex_lock(&ubi->device_mutex);
+	mutex_lock(&ubi->volumes_mutex);
 	err = ubi_rename_volumes(ubi, &rename_list);
-	mutex_unlock(&ubi->device_mutex);
+	mutex_unlock(&ubi->volumes_mutex);
 
 out_free:
 	list_for_each_entry_safe(re, re1, &rename_list, list) {
@@ -853,13 +841,14 @@ static long ubi_cdev_ioctl(struct file *file, unsigned int cmd,
 			break;
 		}
 
+		req.name[req.name_len] = '\0';
 		err = verify_mkvol_req(ubi, &req);
 		if (err)
 			break;
 
-		mutex_lock(&ubi->device_mutex);
+		mutex_lock(&ubi->volumes_mutex);
 		err = ubi_create_volume(ubi, &req);
-		mutex_unlock(&ubi->device_mutex);
+		mutex_unlock(&ubi->volumes_mutex);
 		if (err)
 			break;
 
@@ -888,9 +877,9 @@ static long ubi_cdev_ioctl(struct file *file, unsigned int cmd,
 			break;
 		}
 
-		mutex_lock(&ubi->device_mutex);
+		mutex_lock(&ubi->volumes_mutex);
 		err = ubi_remove_volume(desc, 0);
-		mutex_unlock(&ubi->device_mutex);
+		mutex_unlock(&ubi->volumes_mutex);
 
 		/*
 		 * The volume is deleted (unless an error occurred), and the
@@ -927,9 +916,9 @@ static long ubi_cdev_ioctl(struct file *file, unsigned int cmd,
 		pebs = div_u64(req.bytes + desc->vol->usable_leb_size - 1,
 			       desc->vol->usable_leb_size);
 
-		mutex_lock(&ubi->device_mutex);
+		mutex_lock(&ubi->volumes_mutex);
 		err = ubi_resize_volume(desc, pebs);
-		mutex_unlock(&ubi->device_mutex);
+		mutex_unlock(&ubi->volumes_mutex);
 		ubi_close_volume(desc);
 		break;
 	}
@@ -953,7 +942,9 @@ static long ubi_cdev_ioctl(struct file *file, unsigned int cmd,
 			break;
 		}
 
+		mutex_lock(&ubi->mult_mutex);
 		err = rename_volumes(ubi, req);
+		mutex_unlock(&ubi->mult_mutex);
 		kfree(req);
 		break;
 	}
@@ -1082,7 +1073,6 @@ const struct file_operations ubi_vol_cdev_operations = {
 	.llseek         = vol_cdev_llseek,
 	.read           = vol_cdev_read,
 	.write          = vol_cdev_write,
-	.fsync		= vol_cdev_fsync,
 	.unlocked_ioctl = vol_cdev_ioctl,
 	.compat_ioctl   = vol_cdev_compat_ioctl,
 };

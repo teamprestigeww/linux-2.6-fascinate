@@ -538,8 +538,7 @@ u16_t zfRateCtrlGetTxRate(zdev_t* dev, struct zsRcCell* rcCell, u16_t* probing)
             ((rcCell->currentRate <= 16) &&
             ((wd->PER[rcCell->currentRate]/2) <= ZM_RATE_PROBING_THRESHOLD)))
         {
-            newRate = zfRateCtrlGetHigherRate(rcCell);
-            if (newRate != rcCell->currentRate)
+            if ((newRate=zfRateCtrlGetHigherRate(rcCell)) != rcCell->currentRate)
             {
                 *probing = 1;
                 wd->probeCount++;

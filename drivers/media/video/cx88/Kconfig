@@ -6,7 +6,7 @@ config VIDEO_CX88
 	select VIDEOBUF_DMA_SG
 	select VIDEO_TUNER
 	select VIDEO_TVEEPROM
-	depends on VIDEO_IR
+	select VIDEO_IR
 	select VIDEO_WM8775 if VIDEO_HELPER_CHIPS_AUTO
 	---help---
 	  This is a video4linux driver for Conexant 2388x based
@@ -61,8 +61,6 @@ config VIDEO_CX88_DVB
 	select DVB_STV0299 if !DVB_FE_CUSTOMISE
 	select DVB_STV0288 if !DVB_FE_CUSTOMISE
 	select DVB_STB6000 if !DVB_FE_CUSTOMISE
-	select DVB_STV0900 if !DVB_FE_CUSTOMISE
-	select DVB_STB6100 if !DVB_FE_CUSTOMISE
 	select MEDIA_TUNER_SIMPLE if !MEDIA_TUNER_CUSTOMISE
 	---help---
 	  This adds support for DVB/ATSC cards based on the

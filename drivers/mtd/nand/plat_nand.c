@@ -30,21 +30,11 @@ struct plat_nand_data {
 /*
  * Probe for the NAND device.
  */
-static int __devinit plat_nand_probe(struct platform_device *pdev)
+static int __init plat_nand_probe(struct platform_device *pdev)
 {
 	struct platform_nand_data *pdata = pdev->dev.platform_data;
 	struct plat_nand_data *data;
-	struct resource *res;
-	int err = 0;
-
-	if (pdata->chip.nr_chips < 1) {
-		dev_err(&pdev->dev, "invalid number of chips specified\n");
-		return -EINVAL;
-	}
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -ENXIO;
+	int res = 0;
 
 	/* Allocate memory for the device structure (and zero it) */
 	data = kzalloc(sizeof(struct plat_nand_data), GFP_KERNEL);
@@ -53,18 +43,12 @@ static int __devinit plat_nand_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	if (!request_mem_region(res->start, resource_size(res),
-				dev_name(&pdev->dev))) {
-		dev_err(&pdev->dev, "request_mem_region failed\n");
-		err = -EBUSY;
-		goto out_free;
-	}
-
-	data->io_base = ioremap(res->start, resource_size(res));
+	data->io_base = ioremap(pdev->resource[0].start,
+				pdev->resource[0].end - pdev->resource[0].start + 1);
 	if (data->io_base == NULL) {
 		dev_err(&pdev->dev, "ioremap failed\n");
-		err = -EIO;
-		goto out_release_io;
+		kfree(data);
+		return -EIO;
 	}
 
 	data->chip.priv = &data;
@@ -77,8 +61,6 @@ static int __devinit plat_nand_probe(struct platform_device *pdev)
 	data->chip.cmd_ctrl = pdata->ctrl.cmd_ctrl;
 	data->chip.dev_ready = pdata->ctrl.dev_ready;
 	data->chip.select_chip = pdata->ctrl.select_chip;
-	data->chip.write_buf = pdata->ctrl.write_buf;
-	data->chip.read_buf = pdata->ctrl.read_buf;
 	data->chip.chip_delay = pdata->chip.chip_delay;
 	data->chip.options |= pdata->chip.options;
 
@@ -88,53 +70,39 @@ static int __devinit plat_nand_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 
-	/* Handle any platform specific setup */
-	if (pdata->ctrl.probe) {
-		err = pdata->ctrl.probe(pdev);
-		if (err)
-			goto out;
-	}
-
 	/* Scan to find existance of the device */
-	if (nand_scan(&data->mtd, pdata->chip.nr_chips)) {
-		err = -ENXIO;
+	if (nand_scan(&data->mtd, 1)) {
+		res = -ENXIO;
 		goto out;
 	}
 
 #ifdef CONFIG_MTD_PARTITIONS
 	if (pdata->chip.part_probe_types) {
-		err = parse_mtd_partitions(&data->mtd,
+		res = parse_mtd_partitions(&data->mtd,
 					pdata->chip.part_probe_types,
 					&data->parts, 0);
-		if (err > 0) {
-			add_mtd_partitions(&data->mtd, data->parts, err);
+		if (res > 0) {
+			add_mtd_partitions(&data->mtd, data->parts, res);
 			return 0;
 		}
 	}
-	if (pdata->chip.set_parts)
-		pdata->chip.set_parts(data->mtd.size, &pdata->chip);
 	if (pdata->chip.partitions) {
 		data->parts = pdata->chip.partitions;
-		err = add_mtd_partitions(&data->mtd, data->parts,
+		res = add_mtd_partitions(&data->mtd, data->parts,
 			pdata->chip.nr_partitions);
 	} else
 #endif
-	err = add_mtd_device(&data->mtd);
+	res = add_mtd_device(&data->mtd);
 
-	if (!err)
-		return err;
+	if (!res)
+		return res;
 
 	nand_release(&data->mtd);
 out:
-	if (pdata->ctrl.remove)
-		pdata->ctrl.remove(pdev);
 	platform_set_drvdata(pdev, NULL);
 	iounmap(data->io_base);
-out_release_io:
-	release_mem_region(res->start, resource_size(res));
-out_free:
 	kfree(data);
-	return err;
+	return res;
 }
 
 /*
@@ -143,20 +111,16 @@ out_free:
 static int __devexit plat_nand_remove(struct platform_device *pdev)
 {
 	struct plat_nand_data *data = platform_get_drvdata(pdev);
+#ifdef CONFIG_MTD_PARTITIONS
 	struct platform_nand_data *pdata = pdev->dev.platform_data;
-	struct resource *res;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+#endif
 
 	nand_release(&data->mtd);
 #ifdef CONFIG_MTD_PARTITIONS
 	if (data->parts && data->parts != pdata->chip.partitions)
 		kfree(data->parts);
 #endif
-	if (pdata->ctrl.remove)
-		pdata->ctrl.remove(pdev);
 	iounmap(data->io_base);
-	release_mem_region(res->start, resource_size(res));
 	kfree(data);
 
 	return 0;
@@ -164,7 +128,7 @@ static int __devexit plat_nand_remove(struct platform_device *pdev)
 
 static struct platform_driver plat_nand_driver = {
 	.probe		= plat_nand_probe,
-	.remove		= __devexit_p(plat_nand_remove),
+	.remove		= plat_nand_remove,
 	.driver		= {
 		.name	= "gen_nand",
 		.owner	= THIS_MODULE,

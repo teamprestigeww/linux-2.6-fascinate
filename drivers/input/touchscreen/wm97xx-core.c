@@ -48,7 +48,6 @@
 #include <linux/wm97xx.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
-#include <linux/slab.h>
 
 #define TS_NAME			"wm97xx"
 #define WM_CORE_VERSION		"1.00"
@@ -200,12 +199,12 @@ void wm97xx_set_gpio(struct wm97xx *wm, u32 gpio,
 	mutex_lock(&wm->codec_mutex);
 	reg = wm97xx_reg_read(wm, AC97_GPIO_STATUS);
 
-	if (status == WM97XX_GPIO_HIGH)
+	if (status & WM97XX_GPIO_HIGH)
 		reg |= gpio;
 	else
 		reg &= ~gpio;
 
-	if (wm->id == WM9712_ID2 && wm->variant != WM97xx_WM1613)
+	if (wm->id == WM9712_ID2)
 		wm97xx_reg_write(wm, AC97_GPIO_STATUS, reg << 1);
 	else
 		wm97xx_reg_write(wm, AC97_GPIO_STATUS, reg);
@@ -308,7 +307,7 @@ static void wm97xx_pen_irq_worker(struct work_struct *work)
 					 WM97XX_GPIO_13);
 		}
 
-		if (wm->id == WM9712_ID2 && wm->variant != WM97xx_WM1613)
+		if (wm->id == WM9712_ID2)
 			wm97xx_reg_write(wm, AC97_GPIO_STATUS, (status &
 						~WM97XX_GPIO_13) << 1);
 		else
@@ -371,7 +370,8 @@ static int wm97xx_init_pen_irq(struct wm97xx *wm)
 	 * provided. */
 	BUG_ON(!wm->mach_ops->irq_enable);
 
-	if (request_irq(wm->pen_irq, wm97xx_pen_interrupt, IRQF_SHARED,
+	if (request_irq(wm->pen_irq, wm97xx_pen_interrupt,
+			IRQF_SHARED | IRQF_SAMPLE_RANDOM,
 			"wm97xx-pen", wm)) {
 		dev_err(wm->dev,
 			"Failed to register pen down interrupt, polling");
@@ -409,7 +409,6 @@ static int wm97xx_read_samples(struct wm97xx *wm)
 			wm->pen_is_down = 0;
 			dev_dbg(wm->dev, "pen up\n");
 			input_report_abs(wm->input_dev, ABS_PRESSURE, 0);
-			input_report_key(wm->input_dev, BTN_TOUCH, 0);
 			input_sync(wm->input_dev);
 		} else if (!(rc & RC_AGAIN)) {
 			/* We need high frequency updates only while
@@ -434,7 +433,6 @@ static int wm97xx_read_samples(struct wm97xx *wm)
 		input_report_abs(wm->input_dev, ABS_X, data.x & 0xfff);
 		input_report_abs(wm->input_dev, ABS_Y, data.y & 0xfff);
 		input_report_abs(wm->input_dev, ABS_PRESSURE, data.p & 0xfff);
-		input_report_key(wm->input_dev, BTN_TOUCH, 1);
 		input_sync(wm->input_dev);
 		wm->pen_is_down = 1;
 		wm->ts_reader_interval = wm->ts_reader_min_interval;
@@ -562,7 +560,6 @@ static void wm97xx_ts_input_close(struct input_dev *idev)
 static int wm97xx_probe(struct device *dev)
 {
 	struct wm97xx *wm;
-	struct wm97xx_pdata *pdata = dev->platform_data;
 	int ret = 0, id = 0;
 
 	wm = kzalloc(sizeof(struct wm97xx), GFP_KERNEL);
@@ -571,7 +568,7 @@ static int wm97xx_probe(struct device *dev)
 	mutex_init(&wm->codec_mutex);
 
 	wm->dev = dev;
-	dev_set_drvdata(dev, wm);
+	dev->driver_data = wm;
 	wm->ac97 = to_ac97_t(dev);
 
 	/* check that we have a supported codec */
@@ -583,8 +580,6 @@ static int wm97xx_probe(struct device *dev)
 	}
 
 	wm->id = wm97xx_reg_read(wm, AC97_VENDOR_ID2);
-
-	wm->variant = WM97xx_GENERIC;
 
 	dev_info(wm->dev, "detected a wm97%02x codec\n", wm->id & 0xff);
 
@@ -633,21 +628,18 @@ static int wm97xx_probe(struct device *dev)
 	wm->input_dev->phys = "wm97xx";
 	wm->input_dev->open = wm97xx_ts_input_open;
 	wm->input_dev->close = wm97xx_ts_input_close;
-
-	__set_bit(EV_ABS, wm->input_dev->evbit);
-	__set_bit(EV_KEY, wm->input_dev->evbit);
-	__set_bit(BTN_TOUCH, wm->input_dev->keybit);
-
+	set_bit(EV_ABS, wm->input_dev->evbit);
+	set_bit(ABS_X, wm->input_dev->absbit);
+	set_bit(ABS_Y, wm->input_dev->absbit);
+	set_bit(ABS_PRESSURE, wm->input_dev->absbit);
 	input_set_abs_params(wm->input_dev, ABS_X, abs_x[0], abs_x[1],
 			     abs_x[2], 0);
 	input_set_abs_params(wm->input_dev, ABS_Y, abs_y[0], abs_y[1],
 			     abs_y[2], 0);
 	input_set_abs_params(wm->input_dev, ABS_PRESSURE, abs_p[0], abs_p[1],
 			     abs_p[2], 0);
-
 	input_set_drvdata(wm->input_dev, wm);
 	wm->input_dev->dev.parent = dev;
-
 	ret = input_register_device(wm->input_dev);
 	if (ret < 0)
 		goto dev_alloc_err;
@@ -660,7 +652,6 @@ static int wm97xx_probe(struct device *dev)
 	}
 	platform_set_drvdata(wm->battery_dev, wm);
 	wm->battery_dev->dev.parent = dev;
-	wm->battery_dev->dev.platform_data = pdata;
 	ret = platform_device_add(wm->battery_dev);
 	if (ret < 0)
 		goto batt_reg_err;
@@ -674,7 +665,6 @@ static int wm97xx_probe(struct device *dev)
 	}
 	platform_set_drvdata(wm->touch_dev, wm);
 	wm->touch_dev->dev.parent = dev;
-	wm->touch_dev->dev.platform_data = pdata;
 	ret = platform_device_add(wm->touch_dev);
 	if (ret < 0)
 		goto touch_reg_err;

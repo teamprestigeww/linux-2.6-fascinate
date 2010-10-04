@@ -19,16 +19,15 @@
 #include <linux/delay.h>
 #include <linux/seq_file.h>
 #include <linux/of_platform.h>
-#include <linux/memblock.h>
 
 #include <asm/system.h>
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
+#include <asm/mpc86xx.h>
 #include <asm/prom.h>
 #include <mm/mmu_decl.h>
 #include <asm/udbg.h>
-#include <asm/swiotlb.h>
 
 #include <asm/mpic.h>
 
@@ -72,9 +71,7 @@ mpc86xx_hpcn_setup_arch(void)
 {
 #ifdef CONFIG_PCI
 	struct device_node *np;
-	struct pci_controller *hose;
 #endif
-	dma_addr_t max = 0xffffffff;
 
 	if (ppc_md.progress)
 		ppc_md.progress("mpc86xx_hpcn_setup_arch()", 0);
@@ -87,9 +84,6 @@ mpc86xx_hpcn_setup_arch(void)
 			fsl_add_bridge(np, 1);
 		else
 			fsl_add_bridge(np, 0);
-		hose = pci_find_hose_for_OF_device(np);
-		max = min(max, hose->dma_window_base_cur +
-			  hose->dma_window_size);
 	}
 
 	ppc_md.pci_exclude_device = mpc86xx_exclude_device;
@@ -100,14 +94,6 @@ mpc86xx_hpcn_setup_arch(void)
 
 #ifdef CONFIG_SMP
 	mpc86xx_smp_init();
-#endif
-
-#ifdef CONFIG_SWIOTLB
-	if (memblock_end_of_DRAM() > max) {
-		ppc_swiotlb_enable = 1;
-		set_pci_dma_ops(&swiotlb_dma_ops);
-		ppc_md.pci_dma_dev_setup = pci_dma_dev_setup_swiotlb;
-	}
 #endif
 }
 
@@ -162,7 +148,6 @@ mpc86xx_time_init(void)
 static __initdata struct of_device_id of_bus_ids[] = {
 	{ .compatible = "simple-bus", },
 	{ .compatible = "fsl,rapidio-delta", },
-	{ .compatible = "gianfar", },
 	{},
 };
 
@@ -173,7 +158,6 @@ static int __init declare_of_platform_devices(void)
 	return 0;
 }
 machine_device_initcall(mpc86xx_hpcn, declare_of_platform_devices);
-machine_arch_initcall(mpc86xx_hpcn, swiotlb_setup_bus_notifier);
 
 define_machine(mpc86xx_hpcn) {
 	.name			= "MPC86xx HPCN",

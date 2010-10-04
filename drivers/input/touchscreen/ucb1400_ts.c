@@ -26,6 +26,7 @@
 #include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/suspend.h>
+#include <linux/slab.h>
 #include <linux/kthread.h>
 #include <linux/freezer.h>
 #include <linux/ucb1400.h>
@@ -127,10 +128,9 @@ static inline unsigned int ucb1400_ts_read_yres(struct ucb1400_ts *ucb)
 	return ucb1400_adc_read(ucb->ac97, 0, adcsync);
 }
 
-static inline int ucb1400_ts_pen_up(struct snd_ac97 *ac97)
+static inline int ucb1400_ts_pen_down(struct snd_ac97 *ac97)
 {
 	unsigned short val = ucb1400_reg_read(ac97, UCB_TS_CR);
-
 	return val & (UCB_TS_CR_TSPX_LOW | UCB_TS_CR_TSMX_LOW);
 }
 
@@ -151,14 +151,12 @@ static void ucb1400_ts_evt_add(struct input_dev *idev, u16 pressure, u16 x, u16 
 	input_report_abs(idev, ABS_X, x);
 	input_report_abs(idev, ABS_Y, y);
 	input_report_abs(idev, ABS_PRESSURE, pressure);
-	input_report_key(idev, BTN_TOUCH, 1);
 	input_sync(idev);
 }
 
 static void ucb1400_ts_event_release(struct input_dev *idev)
 {
 	input_report_abs(idev, ABS_PRESSURE, 0);
-	input_report_key(idev, BTN_TOUCH, 0);
 	input_sync(idev);
 }
 
@@ -170,11 +168,11 @@ static void ucb1400_handle_pending_irq(struct ucb1400_ts *ucb)
 	ucb1400_reg_write(ucb->ac97, UCB_IE_CLEAR, isr);
 	ucb1400_reg_write(ucb->ac97, UCB_IE_CLEAR, 0);
 
-	if (isr & UCB_IE_TSPX)
+	if (isr & UCB_IE_TSPX) {
 		ucb1400_ts_irq_disable(ucb->ac97);
-	else
-		dev_dbg(&ucb->ts_idev->dev, "ucb1400: unexpected IE_STATUS = %#x\n", isr);
-	enable_irq(ucb->irq);
+		enable_irq(ucb->irq);
+	} else
+		printk(KERN_ERR "ucb1400: unexpected IE_STATUS = %#x\n", isr);
 }
 
 static int ucb1400_ts_thread(void *_ucb)
@@ -209,7 +207,7 @@ static int ucb1400_ts_thread(void *_ucb)
 
 		msleep(10);
 
-		if (ucb1400_ts_pen_up(ucb->ac97)) {
+		if (ucb1400_ts_pen_down(ucb->ac97)) {
 			ucb1400_ts_irq_enable(ucb->ac97);
 
 			/*
@@ -256,7 +254,7 @@ static irqreturn_t ucb1400_hard_irq(int irqnr, void *devid)
 	struct ucb1400_ts *ucb = devid;
 
 	if (irqnr == ucb->irq) {
-		disable_irq_nosync(ucb->irq);
+		disable_irq(ucb->irq);
 		ucb->irq_pending = 1;
 		wake_up(&ucb->ts_wait);
 		return IRQ_HANDLED;
@@ -345,7 +343,6 @@ static int ucb1400_ts_detect_irq(struct ucb1400_ts *ucb)
 static int ucb1400_ts_probe(struct platform_device *dev)
 {
 	int error, x_res, y_res;
-	u16 fcsr;
 	struct ucb1400_ts *ucb = dev->dev.platform_data;
 
 	ucb->ts_idev = input_allocate_device();
@@ -354,13 +351,10 @@ static int ucb1400_ts_probe(struct platform_device *dev)
 		goto err;
 	}
 
-	/* Only in case the IRQ line wasn't supplied, try detecting it */
-	if (ucb->irq < 0) {
-		error = ucb1400_ts_detect_irq(ucb);
-		if (error) {
-			printk(KERN_ERR "UCB1400: IRQ probe failed\n");
-			goto err_free_devs;
-		}
+	error = ucb1400_ts_detect_irq(ucb);
+	if (error) {
+		printk(KERN_ERR "UCB1400: IRQ probe failed\n");
+		goto err_free_devs;
 	}
 
 	init_waitqueue_head(&ucb->ts_wait);
@@ -383,16 +377,7 @@ static int ucb1400_ts_probe(struct platform_device *dev)
 	ucb->ts_idev->id.product	= ucb->id;
 	ucb->ts_idev->open		= ucb1400_ts_open;
 	ucb->ts_idev->close		= ucb1400_ts_close;
-	ucb->ts_idev->evbit[0]		= BIT_MASK(EV_ABS) | BIT_MASK(EV_KEY);
-	ucb->ts_idev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
-
-	/*
-	 * Enable ADC filter to prevent horrible jitter on Colibri.
-	 * This also further reduces jitter on boards where ADCSYNC
-	 * pin is connected.
-	 */
-	fcsr = ucb1400_reg_read(ucb->ac97, UCB_FCSR);
-	ucb1400_reg_write(ucb->ac97, UCB_FCSR, fcsr | UCB_FCSR_AVE);
+	ucb->ts_idev->evbit[0]		= BIT_MASK(EV_ABS);
 
 	ucb1400_adc_enable(ucb->ac97);
 	x_res = ucb1400_ts_read_xres(ucb);
@@ -431,7 +416,7 @@ static int ucb1400_ts_remove(struct platform_device *dev)
 #ifdef CONFIG_PM
 static int ucb1400_ts_resume(struct platform_device *dev)
 {
-	struct ucb1400_ts *ucb = dev->dev.platform_data;
+	struct ucb1400_ts *ucb = platform_get_drvdata(dev);
 
 	if (ucb->ts_task) {
 		/*

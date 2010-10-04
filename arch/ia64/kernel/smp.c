@@ -58,8 +58,7 @@ static struct local_tlb_flush_counts {
 	unsigned int count;
 } __attribute__((__aligned__(32))) local_tlb_flush_counts[NR_CPUS];
 
-static DEFINE_PER_CPU_SHARED_ALIGNED(unsigned short [NR_CPUS],
-				     shadow_flush_counts);
+static DEFINE_PER_CPU(unsigned short, shadow_flush_counts[NR_CPUS]) ____cacheline_aligned;
 
 #define IPI_CALL_FUNC		0
 #define IPI_CPU_STOP		1
@@ -67,7 +66,7 @@ static DEFINE_PER_CPU_SHARED_ALIGNED(unsigned short [NR_CPUS],
 #define IPI_KDUMP_CPU_STOP	3
 
 /* This needs to be cacheline aligned because it is written to by *other* CPUs.  */
-static DEFINE_PER_CPU_SHARED_ALIGNED(unsigned long, ipi_operation);
+static DEFINE_PER_CPU_SHARED_ALIGNED(u64, ipi_operation);
 
 extern void cpu_halt (void);
 
@@ -167,11 +166,11 @@ send_IPI_allbutself (int op)
  * Called with preemption disabled.
  */
 static inline void
-send_IPI_mask(const struct cpumask *mask, int op)
+send_IPI_mask(cpumask_t mask, int op)
 {
 	unsigned int cpu;
 
-	for_each_cpu(cpu, mask) {
+	for_each_cpu_mask(cpu, mask) {
 			send_IPI_single(cpu, op);
 	}
 }
@@ -226,7 +225,6 @@ smp_send_reschedule (int cpu)
 {
 	platform_send_ipi(cpu, IA64_IPI_RESCHEDULE, IA64_IPI_DM_INT, 0);
 }
-EXPORT_SYMBOL_GPL(smp_send_reschedule);
 
 /*
  * Called with preemption disabled.
@@ -302,12 +300,15 @@ smp_flush_tlb_mm (struct mm_struct *mm)
 		return;
 	}
 
-	smp_call_function_many(mm_cpumask(mm),
-		(void (*)(void *))local_finish_flush_tlb_mm, mm, 1);
-	local_irq_disable();
-	local_finish_flush_tlb_mm(mm);
-	local_irq_enable();
 	preempt_enable();
+	/*
+	 * We could optimize this further by using mm->cpu_vm_mask to track which CPUs
+	 * have been running in the address space.  It's not clear that this is worth the
+	 * trouble though: to avoid races, we have to raise the IPI on the target CPU
+	 * anyhow, and once a CPU is interrupted, the cost of local_flush_tlb_all() is
+	 * rather trivial.
+	 */
+	on_each_cpu((void (*)(void *))local_finish_flush_tlb_mm, mm, 1);
 }
 
 void arch_send_call_function_single_ipi(int cpu)
@@ -315,7 +316,7 @@ void arch_send_call_function_single_ipi(int cpu)
 	send_IPI_single(cpu, IPI_CALL_FUNC_SINGLE);
 }
 
-void arch_send_call_function_ipi_mask(const struct cpumask *mask)
+void arch_send_call_function_ipi(cpumask_t mask)
 {
 	send_IPI_mask(mask, IPI_CALL_FUNC);
 }

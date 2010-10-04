@@ -35,7 +35,7 @@
  *   nlmsg_new()			create a new netlink message
  *   nlmsg_put()			add a netlink message to an skb
  *   nlmsg_put_answer()			callback based nlmsg_put()
- *   nlmsg_end()			finalize netlink message
+ *   nlmsg_end()			finanlize netlink message
  *   nlmsg_get_pos()			return current position in message
  *   nlmsg_trim()			trim part of message
  *   nlmsg_cancel()			cancel message construction
@@ -196,7 +196,7 @@ enum {
  *    All other            Exact length of attribute payload
  *
  * Example:
- * static const struct nla_policy my_policy[ATTR_MAX+1] = {
+ * static struct nla_policy my_policy[ATTR_MAX+1] __read_mostly = {
  * 	[ATTR_FOO] = { .type = NLA_U16 },
  *	[ATTR_BAR] = { .type = NLA_STRING, .len = BARSIZ },
  *	[ATTR_BAZ] = { .len = sizeof(struct mystruct) },
@@ -230,7 +230,6 @@ extern int		nla_validate(struct nlattr *head, int len, int maxtype,
 extern int		nla_parse(struct nlattr *tb[], int maxtype,
 				  struct nlattr *head, int len,
 				  const struct nla_policy *policy);
-extern int		nla_policy_len(const struct nla_policy *, int);
 extern struct nlattr *	nla_find(struct nlattr *head, int len, int attrtype);
 extern size_t		nla_strlcpy(char *dst, const struct nlattr *nla,
 				    size_t dstsize);
@@ -365,7 +364,7 @@ static inline struct nlmsghdr *nlmsg_next(struct nlmsghdr *nlh, int *remaining)
  *
  * See nla_parse()
  */
-static inline int nlmsg_parse(const struct nlmsghdr *nlh, int hdrlen,
+static inline int nlmsg_parse(struct nlmsghdr *nlh, int hdrlen,
 			      struct nlattr *tb[], int maxtype,
 			      const struct nla_policy *policy)
 {
@@ -414,7 +413,7 @@ static inline int nlmsg_validate(struct nlmsghdr *nlh, int hdrlen, int maxtype,
  *
  * Returns 1 if a report back to the application is requested.
  */
-static inline int nlmsg_report(const struct nlmsghdr *nlh)
+static inline int nlmsg_report(struct nlmsghdr *nlh)
 {
 	return !!(nlh->nlmsg_flags & NLM_F_ECHO);
 }
@@ -933,19 +932,6 @@ static inline u8 nla_get_u8(const struct nlattr *nla)
 static inline u64 nla_get_u64(const struct nlattr *nla)
 {
 	u64 tmp;
-
-	nla_memcpy(&tmp, nla, sizeof(tmp));
-
-	return tmp;
-}
-
-/**
- * nla_get_be64 - return payload of __be64 attribute
- * @nla: __be64 netlink attribute
- */
-static inline __be64 nla_get_be64(const struct nlattr *nla)
-{
-	__be64 tmp;
 
 	nla_memcpy(&tmp, nla, sizeof(tmp));
 

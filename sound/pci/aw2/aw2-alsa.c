@@ -26,7 +26,7 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <linux/io.h>
+#include <asm/io.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/pcm.h>
@@ -44,6 +44,9 @@ MODULE_LICENSE("GPL");
 /*********************************
  * DEFINES
  ********************************/
+#define PCI_VENDOR_ID_SAA7146		  0x1131
+#define PCI_DEVICE_ID_SAA7146		  0x7146
+
 #define CTL_ROUTE_ANALOG 0
 #define CTL_ROUTE_DIGITAL 1
 
@@ -161,8 +164,8 @@ MODULE_PARM_DESC(id, "ID string for the Audiowerk2 soundcard.");
 module_param_array(enable, bool, NULL, 0444);
 MODULE_PARM_DESC(enable, "Enable Audiowerk2 soundcard.");
 
-static DEFINE_PCI_DEVICE_TABLE(snd_aw2_ids) = {
-	{PCI_VENDOR_ID_PHILIPS, PCI_DEVICE_ID_PHILIPS_SAA7146, 0, 0,
+static struct pci_device_id snd_aw2_ids[] = {
+	{PCI_VENDOR_ID_SAA7146, PCI_DEVICE_ID_SAA7146, 0, 0,
 	 0, 0, 0},
 	{0}
 };
@@ -276,8 +279,8 @@ static int __devinit snd_aw2_create(struct snd_card *card,
 	pci_set_master(pci);
 
 	/* check PCI availability (32bit DMA) */
-	if ((pci_set_dma_mask(pci, DMA_BIT_MASK(32)) < 0) ||
-	    (pci_set_consistent_dma_mask(pci, DMA_BIT_MASK(32)) < 0)) {
+	if ((pci_set_dma_mask(pci, DMA_32BIT_MASK) < 0) ||
+	    (pci_set_consistent_dma_mask(pci, DMA_32BIT_MASK) < 0)) {
 		printk(KERN_ERR "aw2: Impossible to set 32bit mask DMA\n");
 		pci_disable_device(pci);
 		return -ENXIO;
@@ -365,9 +368,9 @@ static int __devinit snd_aw2_probe(struct pci_dev *pci,
 	}
 
 	/* (2) Create card instance */
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
-	if (err < 0)
-		return err;
+	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
+	if (card == NULL)
+		return -ENOMEM;
 
 	/* (3) Create main component */
 	err = snd_aw2_create(card, pci, &chip);
@@ -416,7 +419,7 @@ static int snd_aw2_pcm_playback_open(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
-	snd_printdd(KERN_DEBUG "aw2: Playback_open\n");
+	snd_printdd(KERN_DEBUG "aw2: Playback_open \n");
 	runtime->hw = snd_aw2_playback_hw;
 	return 0;
 }
@@ -432,7 +435,7 @@ static int snd_aw2_pcm_capture_open(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
-	snd_printdd(KERN_DEBUG "aw2: Capture_open\n");
+	snd_printdd(KERN_DEBUG "aw2: Capture_open \n");
 	runtime->hw = snd_aw2_capture_hw;
 	return 0;
 }

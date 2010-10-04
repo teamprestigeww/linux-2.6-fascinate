@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -76,7 +76,8 @@ struct acpi_namespace_node *acpi_ns_create_node(u32 name)
 	ACPI_MEM_TRACKING(acpi_gbl_ns_node_list->total_allocated++);
 
 #ifdef ACPI_DBG_TRACK_ALLOCATIONS
-	temp = acpi_gbl_ns_node_list->total_allocated -
+	temp =
+	    acpi_gbl_ns_node_list->total_allocated -
 	    acpi_gbl_ns_node_list->total_freed;
 	if (temp > acpi_gbl_ns_node_list->max_occupied) {
 		acpi_gbl_ns_node_list->max_occupied = temp;
@@ -96,70 +97,19 @@ struct acpi_namespace_node *acpi_ns_create_node(u32 name)
  *
  * RETURN:      None
  *
- * DESCRIPTION: Delete a namespace node. All node deletions must come through
- *              here. Detaches any attached objects, including any attached
- *              data. If a handler is associated with attached data, it is
- *              invoked before the node is deleted.
+ * DESCRIPTION: Delete a namespace node
  *
  ******************************************************************************/
 
 void acpi_ns_delete_node(struct acpi_namespace_node *node)
 {
-	union acpi_operand_object *obj_desc;
-
-	ACPI_FUNCTION_NAME(ns_delete_node);
-
-	/* Detach an object if there is one */
-
-	acpi_ns_detach_object(node);
-
-	/*
-	 * Delete an attached data object if present (an object that was created
-	 * and attached via acpi_attach_data). Note: After any normal object is
-	 * detached above, the only possible remaining object is a data object.
-	 */
-	obj_desc = node->object;
-	if (obj_desc && (obj_desc->common.type == ACPI_TYPE_LOCAL_DATA)) {
-
-		/* Invoke the attached data deletion handler if present */
-
-		if (obj_desc->data.handler) {
-			obj_desc->data.handler(node, obj_desc->data.pointer);
-		}
-
-		acpi_ut_remove_reference(obj_desc);
-	}
-
-	/* Now we can delete the node */
-
-	(void)acpi_os_release_object(acpi_gbl_namespace_cache, node);
-
-	ACPI_MEM_TRACKING(acpi_gbl_ns_node_list->total_freed++);
-	ACPI_DEBUG_PRINT((ACPI_DB_ALLOCATIONS, "Node %p, Remaining %X\n",
-			  node, acpi_gbl_current_node_count));
-}
-
-/*******************************************************************************
- *
- * FUNCTION:    acpi_ns_remove_node
- *
- * PARAMETERS:  Node            - Node to be removed/deleted
- *
- * RETURN:      None
- *
- * DESCRIPTION: Remove (unlink) and delete a namespace node
- *
- ******************************************************************************/
-
-void acpi_ns_remove_node(struct acpi_namespace_node *node)
-{
 	struct acpi_namespace_node *parent_node;
 	struct acpi_namespace_node *prev_node;
 	struct acpi_namespace_node *next_node;
 
-	ACPI_FUNCTION_TRACE_PTR(ns_remove_node, node);
+	ACPI_FUNCTION_TRACE_PTR(ns_delete_node, node);
 
-	parent_node = node->parent;
+	parent_node = acpi_ns_get_parent_node(node);
 
 	prev_node = NULL;
 	next_node = parent_node->child;
@@ -168,25 +118,38 @@ void acpi_ns_remove_node(struct acpi_namespace_node *node)
 
 	while (next_node != node) {
 		prev_node = next_node;
-		next_node = next_node->peer;
+		next_node = prev_node->peer;
 	}
 
 	if (prev_node) {
 
 		/* Node is not first child, unlink it */
 
-		prev_node->peer = node->peer;
+		prev_node->peer = next_node->peer;
+		if (next_node->flags & ANOBJ_END_OF_PEER_LIST) {
+			prev_node->flags |= ANOBJ_END_OF_PEER_LIST;
+		}
 	} else {
-		/*
-		 * Node is first child (has no previous peer).
-		 * Link peer list to parent
-		 */
-		parent_node->child = node->peer;
+		/* Node is first child (has no previous peer) */
+
+		if (next_node->flags & ANOBJ_END_OF_PEER_LIST) {
+
+			/* No peers at all */
+
+			parent_node->child = NULL;
+		} else {	/* Link peer list to parent */
+
+			parent_node->child = next_node->peer;
+		}
 	}
 
-	/* Delete the node and any attached objects */
+	ACPI_MEM_TRACKING(acpi_gbl_ns_node_list->total_freed++);
 
-	acpi_ns_delete_node(node);
+	/*
+	 * Detach an object if there is one, then delete the node
+	 */
+	acpi_ns_detach_object(node);
+	(void)acpi_os_release_object(acpi_gbl_namespace_cache, node);
 	return_VOID;
 }
 
@@ -219,42 +182,34 @@ void acpi_ns_install_node(struct acpi_walk_state *walk_state, struct acpi_namesp
 
 	ACPI_FUNCTION_TRACE(ns_install_node);
 
+	/*
+	 * Get the owner ID from the Walk state
+	 * The owner ID is used to track table deletion and
+	 * deletion of objects created by methods
+	 */
 	if (walk_state) {
-		/*
-		 * Get the owner ID from the Walk state. The owner ID is used to
-		 * track table deletion and deletion of objects created by methods.
-		 */
 		owner_id = walk_state->owner_id;
-
-		if ((walk_state->method_desc) &&
-		    (parent_node != walk_state->method_node)) {
-			/*
-			 * A method is creating a new node that is not a child of the
-			 * method (it is non-local). Mark the executing method as having
-			 * modified the namespace. This is used for cleanup when the
-			 * method exits.
-			 */
-			walk_state->method_desc->method.flags |=
-			    AOPOBJ_MODIFIED_NAMESPACE;
-		}
 	}
 
 	/* Link the new entry into the parent and existing children */
 
-	node->peer = NULL;
-	node->parent = parent_node;
 	child_node = parent_node->child;
-
 	if (!child_node) {
 		parent_node->child = node;
+		node->flags |= ANOBJ_END_OF_PEER_LIST;
+		node->peer = parent_node;
 	} else {
-		/* Add node to the end of the peer list */
-
-		while (child_node->peer) {
+		while (!(child_node->flags & ANOBJ_END_OF_PEER_LIST)) {
 			child_node = child_node->peer;
 		}
 
 		child_node->peer = node;
+
+		/* Clear end-of-list flag */
+
+		child_node->flags &= ~ANOBJ_END_OF_PEER_LIST;
+		node->flags |= ANOBJ_END_OF_PEER_LIST;
+		node->peer = parent_node;
 	}
 
 	/* Init the new entry */
@@ -288,8 +243,9 @@ void acpi_ns_install_node(struct acpi_walk_state *walk_state, struct acpi_namesp
 
 void acpi_ns_delete_children(struct acpi_namespace_node *parent_node)
 {
+	struct acpi_namespace_node *child_node;
 	struct acpi_namespace_node *next_node;
-	struct acpi_namespace_node *node_to_delete;
+	u8 flags;
 
 	ACPI_FUNCTION_TRACE_PTR(ns_delete_children, parent_node);
 
@@ -297,30 +253,58 @@ void acpi_ns_delete_children(struct acpi_namespace_node *parent_node)
 		return_VOID;
 	}
 
-	/* Deallocate all children at this level */
+	/* If no children, all done! */
 
-	next_node = parent_node->child;
-	while (next_node) {
+	child_node = parent_node->child;
+	if (!child_node) {
+		return_VOID;
+	}
+
+	/*
+	 * Deallocate all children at this level
+	 */
+	do {
+
+		/* Get the things we need */
+
+		next_node = child_node->peer;
+		flags = child_node->flags;
 
 		/* Grandchildren should have all been deleted already */
 
-		if (next_node->child) {
+		if (child_node->child) {
 			ACPI_ERROR((AE_INFO, "Found a grandchild! P=%p C=%p",
-				    parent_node, next_node));
+				    parent_node, child_node));
 		}
 
+		/* Now we can free this child object */
+
+		ACPI_MEM_TRACKING(acpi_gbl_ns_node_list->total_freed++);
+
+		ACPI_DEBUG_PRINT((ACPI_DB_ALLOCATIONS,
+				  "Object %p, Remaining %X\n", child_node,
+				  acpi_gbl_current_node_count));
+
 		/*
-		 * Delete this child node and move on to the next child in the list.
-		 * No need to unlink the node since we are deleting the entire branch.
+		 * Detach an object if there is one, then free the child node
 		 */
-		node_to_delete = next_node;
-		next_node = next_node->peer;
-		acpi_ns_delete_node(node_to_delete);
-	};
+		acpi_ns_detach_object(child_node);
+
+		/* Now we can delete the node */
+
+		(void)acpi_os_release_object(acpi_gbl_namespace_cache,
+					     child_node);
+
+		/* And move on to the next child in the list */
+
+		child_node = next_node;
+
+	} while (!(flags & ANOBJ_END_OF_PEER_LIST));
 
 	/* Clear the parent's child pointer */
 
 	parent_node->child = NULL;
+
 	return_VOID;
 }
 
@@ -356,7 +340,9 @@ void acpi_ns_delete_namespace_subtree(struct acpi_namespace_node *parent_node)
 
 		/* Get the next node in this scope (NULL if none) */
 
-		child_node = acpi_ns_get_next_node(parent_node, child_node);
+		child_node =
+		    acpi_ns_get_next_node(ACPI_TYPE_ANY, parent_node,
+					  child_node);
 		if (child_node) {
 
 			/* Found a child node - detach any attached object */
@@ -365,7 +351,8 @@ void acpi_ns_delete_namespace_subtree(struct acpi_namespace_node *parent_node)
 
 			/* Check if this node has any children */
 
-			if (child_node->child) {
+			if (acpi_ns_get_next_node
+			    (ACPI_TYPE_ANY, child_node, NULL)) {
 				/*
 				 * There is at least one child of this node,
 				 * visit the node
@@ -393,7 +380,7 @@ void acpi_ns_delete_namespace_subtree(struct acpi_namespace_node *parent_node)
 
 			/* Move up the tree to the grandparent */
 
-			parent_node = parent_node->parent;
+			parent_node = acpi_ns_get_parent_node(parent_node);
 		}
 	}
 
@@ -451,11 +438,13 @@ void acpi_ns_delete_namespace_by_owner(acpi_owner_id owner_id)
 		 * Get the next child of this parent node. When child_node is NULL,
 		 * the first child of the parent is returned
 		 */
-		child_node = acpi_ns_get_next_node(parent_node, child_node);
+		child_node =
+		    acpi_ns_get_next_node(ACPI_TYPE_ANY, parent_node,
+					  child_node);
 
 		if (deletion_node) {
 			acpi_ns_delete_children(deletion_node);
-			acpi_ns_remove_node(deletion_node);
+			acpi_ns_delete_node(deletion_node);
 			deletion_node = NULL;
 		}
 
@@ -469,7 +458,8 @@ void acpi_ns_delete_namespace_by_owner(acpi_owner_id owner_id)
 
 			/* Check if this node has any children */
 
-			if (child_node->child) {
+			if (acpi_ns_get_next_node
+			    (ACPI_TYPE_ANY, child_node, NULL)) {
 				/*
 				 * There is at least one child of this node,
 				 * visit the node
@@ -498,7 +488,7 @@ void acpi_ns_delete_namespace_by_owner(acpi_owner_id owner_id)
 
 			/* Move up the tree to the grandparent */
 
-			parent_node = parent_node->parent;
+			parent_node = acpi_ns_get_parent_node(parent_node);
 		}
 	}
 

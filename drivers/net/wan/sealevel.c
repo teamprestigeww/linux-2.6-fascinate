@@ -23,7 +23,6 @@
 #include <linux/hdlc.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <net/arp.h>
 
 #include <asm/irq.h>
@@ -85,7 +84,8 @@ static int sealevel_open(struct net_device *d)
 	 *	Link layer up.
 	 */
 
-	switch (unit) {
+	switch (unit)
+	{
 		case 0:
 			err = z8530_sync_dma_open(d, slvl->chan);
 			break;
@@ -133,7 +133,8 @@ static int sealevel_close(struct net_device *d)
 	hdlc_close(d);
 	netif_stop_queue(d);
 
-	switch (unit) {
+	switch (unit)
+	{
 		case 0:
 			z8530_sync_dma_close(d, slvl->chan);
 			break;
@@ -155,8 +156,7 @@ static int sealevel_ioctl(struct net_device *d, struct ifreq *ifr, int cmd)
  *	Passed network frames, fire them downwind.
  */
 
-static netdev_tx_t sealevel_queue_xmit(struct sk_buff *skb,
-					     struct net_device *d)
+static int sealevel_queue_xmit(struct sk_buff *skb, struct net_device *d)
 {
 	return z8530_queue_xmit(dev_to_chan(d)->chan, skb);
 }
@@ -169,14 +169,6 @@ static int sealevel_attach(struct net_device *dev, unsigned short encoding,
 	return -EINVAL;
 }
 
-static const struct net_device_ops sealevel_ops = {
-	.ndo_open       = sealevel_open,
-	.ndo_stop       = sealevel_close,
-	.ndo_change_mtu = hdlc_change_mtu,
-	.ndo_start_xmit = hdlc_start_xmit,
-	.ndo_do_ioctl   = sealevel_ioctl,
-};
-
 static int slvl_setup(struct slvl_device *sv, int iobase, int irq)
 {
 	struct net_device *dev = alloc_hdlcdev(sv);
@@ -185,7 +177,9 @@ static int slvl_setup(struct slvl_device *sv, int iobase, int irq)
 
 	dev_to_hdlc(dev)->attach = sealevel_attach;
 	dev_to_hdlc(dev)->xmit = sealevel_queue_xmit;
-	dev->netdev_ops = &sealevel_ops;
+	dev->open = sealevel_open;
+	dev->stop = sealevel_close;
+	dev->do_ioctl = sealevel_ioctl;
 	dev->base_addr = iobase;
 	dev->irq = irq;
 
@@ -265,7 +259,7 @@ static __init struct slvl_board *slvl_init(int iobase, int irq,
 	/* We want a fast IRQ for this device. Actually we'd like an even faster
 	   IRQ ;) - This is one driver RtLinux is made for */
 
-	if (request_irq(irq, z8530_interrupt, IRQF_DISABLED,
+	if (request_irq(irq, &z8530_interrupt, IRQF_DISABLED,
 			"SeaLevel", dev) < 0) {
 		printk(KERN_WARNING "sealevel: IRQ %d already in use.\n", irq);
 		goto err_request_irq;
@@ -341,7 +335,8 @@ static void __exit slvl_shutdown(struct slvl_board *b)
 
 	z8530_shutdown(&b->board);
 
-	for (u = 0; u < 2; u++) {
+	for (u = 0; u < 2; u++)
+	{
 		struct net_device *d = b->dev[u].chan->netdevice;
 		unregister_hdlc_device(d);
 		free_netdev(d);
@@ -389,7 +384,7 @@ static int __init slvl_init_module(void)
 
 static void __exit slvl_cleanup_module(void)
 {
-	if (slvl_unit)
+	if(slvl_unit)
 		slvl_shutdown(slvl_unit);
 }
 

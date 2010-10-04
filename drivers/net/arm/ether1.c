@@ -736,6 +736,7 @@ ether1_sendpacket (struct sk_buff *skb, struct net_device *dev)
 	local_irq_restore(flags);
 
 	/* handle transmit */
+	dev->trans_start = jiffies;
 
 	/* check to see if we have room for a full sized ether frame */
 	tmp = priv(dev)->tx_head;
@@ -747,7 +748,7 @@ ether1_sendpacket (struct sk_buff *skb, struct net_device *dev)
 		netif_stop_queue(dev);
 
  out:
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 static void
@@ -990,18 +991,6 @@ static void __devinit ether1_banner(void)
 		printk(KERN_INFO "%s", version);
 }
 
-static const struct net_device_ops ether1_netdev_ops = {
-	.ndo_open		= ether1_open,
-	.ndo_stop		= ether1_close,
-	.ndo_start_xmit		= ether1_sendpacket,
-	.ndo_get_stats		= ether1_getstats,
-	.ndo_set_multicast_list	= ether1_setmulticastlist,
-	.ndo_tx_timeout		= ether1_timeout,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_mac_address	= eth_mac_addr,
-};
-
 static int __devinit
 ether1_probe(struct expansion_card *ec, const struct ecard_id *id)
 {
@@ -1042,7 +1031,12 @@ ether1_probe(struct expansion_card *ec, const struct ecard_id *id)
 		goto free;
 	}
 
-	dev->netdev_ops		= &ether1_netdev_ops;
+	dev->open		= ether1_open;
+	dev->stop		= ether1_close;
+	dev->hard_start_xmit    = ether1_sendpacket;
+	dev->get_stats		= ether1_getstats;
+	dev->set_multicast_list = ether1_setmulticastlist;
+	dev->tx_timeout		= ether1_timeout;
 	dev->watchdog_timeo	= 5 * HZ / 100;
 
 	ret = register_netdev(dev);

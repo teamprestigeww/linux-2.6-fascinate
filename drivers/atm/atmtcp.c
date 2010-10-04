@@ -9,7 +9,6 @@
 #include <linux/atm_tcp.h>
 #include <linux/bitops.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
 
@@ -68,7 +67,7 @@ static int atmtcp_send_control(struct atm_vcc *vcc,int type,
 	*(struct atm_vcc **) &new_msg->vcc = vcc;
 	old_test = test_bit(flag,&vcc->flags);
 	out_vcc->push(out_vcc,skb);
-	add_wait_queue(sk_sleep(sk_atm(vcc)), &wait);
+	add_wait_queue(sk_atm(vcc)->sk_sleep, &wait);
 	while (test_bit(flag,&vcc->flags) == old_test) {
 		mb();
 		out_vcc = PRIV(vcc->dev) ? PRIV(vcc->dev)->vcc : NULL;
@@ -80,7 +79,7 @@ static int atmtcp_send_control(struct atm_vcc *vcc,int type,
 		schedule();
 	}
 	set_current_state(TASK_RUNNING);
-	remove_wait_queue(sk_sleep(sk_atm(vcc)), &wait);
+	remove_wait_queue(sk_atm(vcc)->sk_sleep, &wait);
 	return error;
 }
 
@@ -105,7 +104,7 @@ static int atmtcp_recv_control(const struct atmtcp_control *msg)
 		    msg->type);
 		return -EINVAL;
 	}
-	wake_up(sk_sleep(sk_atm(vcc)));
+	wake_up(sk_atm(vcc)->sk_sleep);
 	return 0;
 }
 

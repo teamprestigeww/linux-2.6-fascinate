@@ -25,7 +25,6 @@
 #include <linux/ethtool.h>
 #include <linux/mii.h>
 #include <linux/eeprom_93cx6.h>
-#include <linux/slab.h>
 
 #include <net/ax88796.h>
 
@@ -94,7 +93,6 @@ struct ax_device {
 
 	unsigned char		 running;
 	unsigned char		 resume_open;
-	unsigned int		 irqflags;
 
 	u32			 reg_offsets[0x20];
 };
@@ -303,6 +301,7 @@ static void ax_block_output(struct net_device *dev, int count,
 
 	ei_outb(ENISR_RDC, nic_base + EN0_ISR);	/* Ack intr. */
 	ei_status.dmaing &= ~0x01;
+	return;
 }
 
 /* definitions for accessing MII/EEPROM interface */
@@ -475,16 +474,13 @@ static int ax_open(struct net_device *dev)
 
 	dev_dbg(&ax->dev->dev, "%s: open\n", dev->name);
 
-	ret = request_irq(dev->irq, ax_ei_interrupt, ax->irqflags,
-			  dev->name, dev);
+	ret = request_irq(dev->irq, ax_ei_interrupt, 0, dev->name, dev);
 	if (ret)
 		return ret;
 
 	ret = ax_ei_open(dev);
-	if (ret) {
-		free_irq(dev->irq, dev);
+	if (ret)
 		return ret;
-	}
 
 	/* turn the phy on (if turned off) */
 
@@ -735,19 +731,12 @@ static int ax_init_dev(struct net_device *dev, int first_init)
 	/* load the mac-address from the device if this is the
 	 * first time we've initialised */
 
-	if (first_init) {
-		if (ax->plat->flags & AXFLG_MAC_FROMDEV) {
-			ei_outb(E8390_NODMA + E8390_PAGE1 + E8390_STOP,
-				ei_local->mem + E8390_CMD); /* 0x61 */
-			for (i = 0; i < ETHER_ADDR_LEN; i++)
-				dev->dev_addr[i] =
-					ei_inb(ioaddr + EN1_PHYS_SHIFT(i));
-		}
+	if (first_init && ax->plat->flags & AXFLG_MAC_FROMDEV) {
+		ei_outb(E8390_NODMA + E8390_PAGE1 + E8390_STOP,
+			ei_local->mem + E8390_CMD); /* 0x61 */
 
-		if ((ax->plat->flags & AXFLG_MAC_FROMPLATFORM) &&
-		     ax->plat->mac_addr)
-			memcpy(dev->dev_addr, ax->plat->mac_addr,
-				ETHER_ADDR_LEN);
+		for (i = 0 ; i < ETHER_ADDR_LEN ; i++)
+			dev->dev_addr[i] = ei_inb(ioaddr + EN1_PHYS_SHIFT(i));
 	}
 
 	ax_reset_8390(dev);
@@ -840,7 +829,7 @@ static int ax_probe(struct platform_device *pdev)
 	struct ax_device  *ax;
 	struct resource   *res;
 	size_t size;
-	int ret = 0;
+	int ret;
 
 	dev = ax__alloc_ei_netdev(sizeof(struct ax_device));
 	if (dev == NULL)
@@ -861,14 +850,12 @@ static int ax_probe(struct platform_device *pdev)
 
 	/* find the platform resources */
 
-	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (res == NULL) {
+	ret  = platform_get_irq(pdev, 0);
+	if (ret < 0) {
 		dev_err(&pdev->dev, "no IRQ specified\n");
 		goto exit_mem;
 	}
-
-	dev->irq = res->start;
-	ax->irqflags = res->flags & IRQF_TRIGGER_MASK;
+	dev->irq = ret;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (res == NULL) {
@@ -923,7 +910,7 @@ static int ax_probe(struct platform_device *pdev)
  		size = (res->end - res->start) + 1;
 
 		ax->mem2 = request_mem_region(res->start, size, pdev->name);
-		if (ax->mem2 == NULL) {
+		if (ax->mem == NULL) {
 			dev_err(&pdev->dev, "cannot reserve registers\n");
 			ret = -ENXIO;
 			goto exit_mem1;

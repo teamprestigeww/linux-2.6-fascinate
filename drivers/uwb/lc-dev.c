@@ -23,7 +23,6 @@
  * FIXME: docs
  */
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/kdev_t.h>
@@ -256,7 +255,7 @@ static struct attribute_group dev_attr_group = {
 	.attrs = dev_attrs,
 };
 
-static const struct attribute_group *groups[] = {
+static struct attribute_group *groups[] = {
 	&dev_attr_group,
 	NULL,
 };

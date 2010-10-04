@@ -5,7 +5,7 @@
  *
  * GPL LICENSE SUMMARY
  *
- * Copyright(c) 2005 - 2010 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2008 Intel Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -30,7 +30,7 @@
  *
  * BSD LICENSE
  *
- * Copyright(c) 2005 - 2010 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2008 Intel Corporation. All rights reserved.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -76,33 +76,77 @@
 
 /*
  * uCode queue management definitions ...
+ * Queue #4 is the command queue for 3945 and 4965; map it to Tx FIFO chnl 4.
  * The first queue used for block-ack aggregation is #7 (4965 only).
  * All block-ack aggregation queues should map to Tx DMA/FIFO channel 7.
  */
+#define IWL_CMD_QUEUE_NUM       4
+#define IWL_CMD_FIFO_NUM        4
 #define IWL49_FIRST_AMPDU_QUEUE	7
+
+/* Time constants */
+#define SHORT_SLOT_TIME 9
+#define LONG_SLOT_TIME 20
+
+/* RSSI to dBm */
+#define IWL_RSSI_OFFSET	44
+
+
+
+/* PCI registers */
+#define PCI_CFG_RETRY_TIMEOUT	0x041
+#define PCI_CFG_POWER_SOURCE	0x0C8
+#define PCI_REG_WUM8		0x0E8
+#define PCI_CFG_LINK_CTRL	0x0F0
+
+/* PCI register values */
+#define PCI_CFG_LINK_CTRL_VAL_L0S_EN	0x01
+#define PCI_CFG_LINK_CTRL_VAL_L1_EN	0x02
+#define PCI_CFG_CMD_REG_INT_DIS_MSK	0x04
+#define PCI_CFG_PMC_PME_FROM_D3COLD_SUPPORT         (0x80000000)
+
+
+#define IWL_NUM_SCAN_RATES         (2)
+
+#define IWL_DEFAULT_TX_RETRY  15
+
+#define RX_QUEUE_SIZE                         256
+#define RX_QUEUE_MASK                         255
+#define RX_QUEUE_SIZE_LOG                     8
+
+#define TFD_TX_CMD_SLOTS 256
+#define TFD_CMD_SLOTS 32
+
+/*
+ * RX related structures and functions
+ */
+#define RX_FREE_BUFFERS 64
+#define RX_LOW_WATERMARK 8
+
+/* Size of one Rx buffer in host DRAM */
+#define IWL_RX_BUF_SIZE_4K (4 * 1024)
+#define IWL_RX_BUF_SIZE_8K (8 * 1024)
 
 /* Sizes and addresses for instruction and data memory (SRAM) in
  * 4965's embedded processor.  Driver access is via HBUS_TARG_MEM_* regs. */
-#define IWL49_RTC_INST_LOWER_BOUND		(0x000000)
+#define RTC_INST_LOWER_BOUND			(0x000000)
 #define IWL49_RTC_INST_UPPER_BOUND		(0x018000)
 
-#define IWL49_RTC_DATA_LOWER_BOUND		(0x800000)
+#define RTC_DATA_LOWER_BOUND			(0x800000)
 #define IWL49_RTC_DATA_UPPER_BOUND		(0x80A000)
 
-#define IWL49_RTC_INST_SIZE  (IWL49_RTC_INST_UPPER_BOUND - \
-				IWL49_RTC_INST_LOWER_BOUND)
-#define IWL49_RTC_DATA_SIZE  (IWL49_RTC_DATA_UPPER_BOUND - \
-				IWL49_RTC_DATA_LOWER_BOUND)
+#define IWL49_RTC_INST_SIZE  (IWL49_RTC_INST_UPPER_BOUND - RTC_INST_LOWER_BOUND)
+#define IWL49_RTC_DATA_SIZE  (IWL49_RTC_DATA_UPPER_BOUND - RTC_DATA_LOWER_BOUND)
 
-#define IWL49_MAX_INST_SIZE IWL49_RTC_INST_SIZE
-#define IWL49_MAX_DATA_SIZE IWL49_RTC_DATA_SIZE
+#define IWL_MAX_INST_SIZE IWL49_RTC_INST_SIZE
+#define IWL_MAX_DATA_SIZE IWL49_RTC_DATA_SIZE
 
 /* Size of uCode instruction memory in bootstrap state machine */
-#define IWL49_MAX_BSM_SIZE BSM_SRAM_SIZE
+#define IWL_MAX_BSM_SIZE BSM_SRAM_SIZE
 
 static inline int iwl4965_hw_valid_rtc_data_addr(u32 addr)
 {
-	return (addr >= IWL49_RTC_DATA_LOWER_BOUND) &&
+	return (addr >= RTC_DATA_LOWER_BOUND) &&
 	       (addr < IWL49_RTC_DATA_UPPER_BOUND);
 }
 
@@ -165,7 +209,7 @@ static inline int iwl4965_hw_valid_rtc_data_addr(u32 addr)
  *
  * 1)  Regulatory information (max txpower and channel usage flags) is provided
  *     separately for each channel that can possibly supported by 4965.
- *     40 MHz wide (.11n HT40) channels are listed separately from 20 MHz
+ *     40 MHz wide (.11n fat) channels are listed separately from 20 MHz
  *     (legacy) channels.
  *
  *     See struct iwl4965_eeprom_channel for format, and struct iwl4965_eeprom
@@ -228,8 +272,8 @@ static inline int iwl4965_hw_valid_rtc_data_addr(u32 addr)
  *     no reduction (such as with regulatory txpower limits) is required.
  *
  *     Saturation and Backoff values apply equally to 20 Mhz (legacy) channel
- *     widths and 40 Mhz (.11n HT40) channel widths; there is no separate
- *     factory measurement for ht40 channels.
+ *     widths and 40 Mhz (.11n fat) channel widths; there is no separate
+ *     factory measurement for fat channels.
  *
  *     The result of this step is the final target txpower.  The rest of
  *     the steps figure out the proper settings for the device to achieve
@@ -372,6 +416,10 @@ static inline int iwl4965_hw_valid_rtc_data_addr(u32 addr)
  * 11) Read gain table entries for DSP and radio gain, place into appropriate
  *     location(s) in command (struct iwl4965_txpowertable_cmd).
  */
+
+/* Limit range of txpower output target to be between these values */
+#define IWL_TX_POWER_TARGET_POWER_MIN       (0)	/* 0 dBm = 1 milliwatt */
+#define IWL_TX_POWER_TARGET_POWER_MAX      (16)	/* 16 dBm */
 
 /**
  * When MIMO is used (2 transmitters operating simultaneously), driver should
@@ -787,6 +835,6 @@ enum {
 struct iwl4965_scd_bc_tbl {
 	__le16 tfd_offset[TFD_QUEUE_BC_SIZE];
 	u8 pad[1024 - (TFD_QUEUE_BC_SIZE) * sizeof(__le16)];
-} __packed;
+} __attribute__ ((packed));
 
 #endif /* !__iwl_4965_hw_h__ */

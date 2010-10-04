@@ -30,7 +30,6 @@
 #include <linux/fs.h>
 #include <linux/oprofile.h>
 #include <linux/sched.h>
-#include <linux/gfp.h>
 
 #include "oprofile_stats.h"
 #include "event_buffer.h"
@@ -39,7 +38,7 @@
 
 static LIST_HEAD(dying_tasks);
 static LIST_HEAD(dead_tasks);
-static cpumask_var_t marked_cpus;
+static cpumask_t marked_cpus = CPU_MASK_NONE;
 static DEFINE_SPINLOCK(task_mortuary);
 static void process_task_mortuary(void);
 
@@ -141,14 +140,21 @@ static struct notifier_block module_load_nb = {
 	.notifier_call = module_load_notify,
 };
 
+
+static void end_sync(void)
+{
+	end_cpu_work();
+	/* make sure we don't leak task structs */
+	process_task_mortuary();
+	process_task_mortuary();
+}
+
+
 int sync_start(void)
 {
 	int err;
 
-	if (!zalloc_cpumask_var(&marked_cpus, GFP_KERNEL))
-		return -ENOMEM;
-
-	mutex_lock(&buffer_mutex);
+	start_cpu_work();
 
 	err = task_handoff_register(&task_free_nb);
 	if (err)
@@ -163,10 +169,7 @@ int sync_start(void)
 	if (err)
 		goto out4;
 
-	start_cpu_work();
-
 out:
-	mutex_unlock(&buffer_mutex);
 	return err;
 out4:
 	profile_event_unregister(PROFILE_MUNMAP, &munmap_nb);
@@ -175,28 +178,18 @@ out3:
 out2:
 	task_handoff_unregister(&task_free_nb);
 out1:
-	free_cpumask_var(marked_cpus);
+	end_sync();
 	goto out;
 }
 
 
 void sync_stop(void)
 {
-	/* flush buffers */
-	mutex_lock(&buffer_mutex);
-	end_cpu_work();
 	unregister_module_notifier(&module_load_nb);
 	profile_event_unregister(PROFILE_MUNMAP, &munmap_nb);
 	profile_event_unregister(PROFILE_TASK_EXIT, &task_exit_nb);
 	task_handoff_unregister(&task_free_nb);
-	mutex_unlock(&buffer_mutex);
-	flush_scheduled_work();
-
-	/* make sure we don't leak task structs */
-	process_task_mortuary();
-	process_task_mortuary();
-
-	free_cpumask_var(marked_cpus);
+	end_sync();
 }
 
 
@@ -463,10 +456,10 @@ static void mark_done(int cpu)
 {
 	int i;
 
-	cpumask_set_cpu(cpu, marked_cpus);
+	cpu_set(cpu, marked_cpus);
 
 	for_each_online_cpu(i) {
-		if (!cpumask_test_cpu(i, marked_cpus))
+		if (!cpu_isset(i, marked_cpus))
 			return;
 	}
 
@@ -475,7 +468,7 @@ static void mark_done(int cpu)
 	 */
 	process_task_mortuary();
 
-	cpumask_clear(marked_cpus);
+	cpus_clear(marked_cpus);
 }
 
 

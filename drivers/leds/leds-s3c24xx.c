@@ -15,8 +15,6 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/leds.h>
-#include <linux/gpio.h>
-#include <linux/slab.h>
 
 #include <mach/hardware.h>
 #include <mach/regs-gpio.h>
@@ -104,11 +102,14 @@ static int s3c24xx_led_probe(struct platform_device *dev)
 	ret = led_classdev_register(&dev->dev, &led->cdev);
 	if (ret < 0) {
 		dev_err(&dev->dev, "led_classdev_register failed\n");
-		kfree(led);
-		return ret;
+		goto exit_err1;
 	}
 
 	return 0;
+
+ exit_err1:
+	kfree(led);
+	return ret;
 }
 
 static struct platform_driver s3c24xx_led_driver = {

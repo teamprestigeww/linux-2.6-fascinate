@@ -279,7 +279,6 @@
 #include <linux/stat.h>
 #include <linux/delay.h>
 #include <linux/io.h>
-#include <linux/slab.h>
 #include <scsi/scsicam.h>
 
 #include <asm/system.h>

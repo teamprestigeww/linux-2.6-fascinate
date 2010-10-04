@@ -352,7 +352,7 @@ asmlinkage long sys_mycall(int arg)
   </para>
 
   <programlisting>
-if (signal_pending(current))
+if (signal_pending()) 
         return -ERESTARTSYS;
   </programlisting>
 
@@ -449,8 +449,8 @@ printk(KERN_INFO "i = %u\n", i);
    </para>
 
    <programlisting>
-__be32 ipaddress;
-printk(KERN_INFO "my ip: %pI4\n", &amp;ipaddress);
+__u32 ipaddress;
+printk(KERN_INFO "my ip: %d.%d.%d.%d\n", NIPQUAD(ipaddress));
    </programlisting>
 
    <para>

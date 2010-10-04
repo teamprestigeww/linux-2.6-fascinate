@@ -20,7 +20,6 @@
 #include <linux/i2c.h>
 #include <linux/videodev2.h>
 #include <linux/ioctl.h>
-#include <linux/slab.h>
 
 #include "wis-i2c.h"
 
@@ -112,8 +111,7 @@ static int wis_tw9903_command(struct i2c_client *client,
 		i2c_smbus_write_byte_data(client, 0x02, 0x40 | (*input << 1));
 		break;
 	}
-#if 0
-	/* The scaler on this thing seems to be horribly broken */
+#if 0   /* The scaler on this thing seems to be horribly broken */
 	case DECODER_SET_RESOLUTION:
 	{
 		struct video_decoder_resolution *res = arg;
@@ -269,19 +267,34 @@ static int wis_tw9903_command(struct i2c_client *client,
 	return 0;
 }
 
-static int wis_tw9903_probe(struct i2c_client *client,
-			    const struct i2c_device_id *id)
+static struct i2c_driver wis_tw9903_driver;
+
+static struct i2c_client wis_tw9903_client_templ = {
+	.name		= "TW9903 (WIS)",
+	.driver		= &wis_tw9903_driver,
+};
+
+static int wis_tw9903_detect(struct i2c_adapter *adapter, int addr, int kind)
 {
-	struct i2c_adapter *adapter = client->adapter;
+	struct i2c_client *client;
 	struct wis_tw9903 *dec;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -ENODEV;
+		return 0;
+
+	client = kmalloc(sizeof(struct i2c_client), GFP_KERNEL);
+	if (client == NULL)
+		return -ENOMEM;
+	memcpy(client, &wis_tw9903_client_templ,
+			sizeof(wis_tw9903_client_templ));
+	client->adapter = adapter;
+	client->addr = addr;
 
 	dec = kmalloc(sizeof(struct wis_tw9903), GFP_KERNEL);
-	if (dec == NULL)
+	if (dec == NULL) {
+		kfree(client);
 		return -ENOMEM;
-
+	}
 	dec->norm = V4L2_STD_NTSC;
 	dec->brightness = 0;
 	dec->contrast = 0x60;
@@ -290,47 +303,55 @@ static int wis_tw9903_probe(struct i2c_client *client,
 
 	printk(KERN_DEBUG
 		"wis-tw9903: initializing TW9903 at address %d on %s\n",
-		client->addr, adapter->name);
+		addr, adapter->name);
 
 	if (write_regs(client, initial_registers) < 0) {
 		printk(KERN_ERR "wis-tw9903: error initializing TW9903\n");
+		kfree(client);
 		kfree(dec);
-		return -ENODEV;
+		return 0;
 	}
 
+	i2c_attach_client(client);
 	return 0;
 }
 
-static int wis_tw9903_remove(struct i2c_client *client)
+static int wis_tw9903_detach(struct i2c_client *client)
 {
 	struct wis_tw9903 *dec = i2c_get_clientdata(client);
+	int r;
 
+	r = i2c_detach_client(client);
+	if (r < 0)
+		return r;
+
+	kfree(client);
 	kfree(dec);
 	return 0;
 }
-
-static const struct i2c_device_id wis_tw9903_id[] = {
-	{ "wis_tw9903", 0 },
-	{ }
-};
 
 static struct i2c_driver wis_tw9903_driver = {
 	.driver = {
 		.name	= "WIS TW9903 I2C driver",
 	},
-	.probe		= wis_tw9903_probe,
-	.remove		= wis_tw9903_remove,
+	.id		= I2C_DRIVERID_WIS_TW9903,
+	.detach_client	= wis_tw9903_detach,
 	.command	= wis_tw9903_command,
-	.id_table	= wis_tw9903_id,
 };
 
 static int __init wis_tw9903_init(void)
 {
-	return i2c_add_driver(&wis_tw9903_driver);
+	int r;
+
+	r = i2c_add_driver(&wis_tw9903_driver);
+	if (r < 0)
+		return r;
+	return wis_i2c_add_driver(wis_tw9903_driver.id, wis_tw9903_detect);
 }
 
 static void __exit wis_tw9903_cleanup(void)
 {
+	wis_i2c_del_driver(wis_tw9903_detect);
 	i2c_del_driver(&wis_tw9903_driver);
 }
 

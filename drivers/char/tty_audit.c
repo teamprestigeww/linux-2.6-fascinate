@@ -10,7 +10,8 @@
  */
 
 #include <linux/audit.h>
-#include <linux/slab.h>
+#include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/tty.h>
 
 struct tty_audit_buf {
@@ -30,7 +31,10 @@ static struct tty_audit_buf *tty_audit_buf_alloc(int major, int minor,
 	buf = kmalloc(sizeof(*buf), GFP_KERNEL);
 	if (!buf)
 		goto err;
-	buf->data = kmalloc(N_TTY_BUF_SIZE, GFP_KERNEL);
+	if (PAGE_SIZE != N_TTY_BUF_SIZE)
+		buf->data = kmalloc(N_TTY_BUF_SIZE, GFP_KERNEL);
+	else
+		buf->data = (unsigned char *)__get_free_page(GFP_KERNEL);
 	if (!buf->data)
 		goto err_buf;
 	atomic_set(&buf->count, 1);
@@ -50,7 +54,10 @@ err:
 static void tty_audit_buf_free(struct tty_audit_buf *buf)
 {
 	WARN_ON(buf->valid != 0);
-	kfree(buf->data);
+	if (PAGE_SIZE != N_TTY_BUF_SIZE)
+		kfree(buf->data);
+	else
+		free_page((unsigned long)buf->data);
 	kfree(buf);
 }
 
@@ -149,6 +156,7 @@ void tty_audit_fork(struct signal_struct *sig)
 	spin_lock_irq(&current->sighand->siglock);
 	sig->audit_tty = current->signal->audit_tty;
 	spin_unlock_irq(&current->sighand->siglock);
+	sig->tty_audit_buf = NULL;
 }
 
 /**

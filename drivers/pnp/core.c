@@ -137,7 +137,7 @@ struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id, char *pnpid
 	INIT_LIST_HEAD(&dev->options);
 	dev->protocol = protocol;
 	dev->number = id;
-	dev->dma_mask = DMA_BIT_MASK(24);
+	dev->dma_mask = DMA_24BIT_MASK;
 
 	dev->dev.parent = &dev->protocol->dev;
 	dev->dev.bus = &pnp_bus_type;
@@ -164,9 +164,6 @@ int __pnp_add_device(struct pnp_dev *dev)
 	list_add_tail(&dev->global_list, &pnp_global);
 	list_add_tail(&dev->protocol_list, &dev->protocol->devices);
 	spin_unlock(&pnp_lock);
-	if (dev->protocol->can_wakeup)
-		device_set_wakeup_capable(&dev->dev,
-				dev->protocol->can_wakeup(dev));
 	return device_register(&dev->dev);
 }
 

@@ -111,12 +111,9 @@ static struct mlog_attribute mlog_attrs[MLOG_MAX_BITS] = {
 	define_mask(EXPORT),
 	define_mask(XATTR),
 	define_mask(QUOTA),
-	define_mask(REFCOUNT),
-	define_mask(BASTS),
 	define_mask(ERROR),
 	define_mask(NOTICE),
 	define_mask(KTHREAD),
-	define_mask(RESERVATIONS),
 };
 
 static struct attribute *mlog_attr_ptrs[MLOG_MAX_BITS] = {NULL, };
@@ -137,7 +134,7 @@ static ssize_t mlog_store(struct kobject *obj, struct attribute *attr,
 	return mlog_mask_store(mlog_attr->mask, buf, count);
 }
 
-static const struct sysfs_ops mlog_attr_ops = {
+static struct sysfs_ops mlog_attr_ops = {
 	.show  = mlog_show,
 	.store = mlog_store,
 };

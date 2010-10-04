@@ -16,7 +16,6 @@
 #define _INET_TIMEWAIT_SOCK_
 
 
-#include <linux/kmemcheck.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/timer.h>
@@ -128,13 +127,11 @@ struct inet_timewait_sock {
 	__be32			tw_rcv_saddr;
 	__be16			tw_dport;
 	__u16			tw_num;
-	kmemcheck_bitfield_begin(flags);
 	/* And these are ours. */
-	unsigned int		tw_ipv6only     : 1,
-				tw_transparent  : 1,
-				tw_pad		: 14,	/* 14 bits hole */
-				tw_ipv6_offset  : 16;
-	kmemcheck_bitfield_end(flags);
+	__u8			tw_ipv6only:1,
+				tw_transparent:1;
+	/* 15 bits hole, try to pack */
+	__u16			tw_ipv6_offset;
 	unsigned long		tw_ttd;
 	struct inet_bind_bucket	*tw_tb;
 	struct hlist_node	tw_death_node;
@@ -194,15 +191,10 @@ static inline struct inet_timewait_sock *inet_twsk(const struct sock *sk)
 static inline __be32 inet_rcv_saddr(const struct sock *sk)
 {
 	return likely(sk->sk_state != TCP_TIME_WAIT) ?
-		inet_sk(sk)->inet_rcv_saddr : inet_twsk(sk)->tw_rcv_saddr;
+		inet_sk(sk)->rcv_saddr : inet_twsk(sk)->tw_rcv_saddr;
 }
 
 extern void inet_twsk_put(struct inet_timewait_sock *tw);
-
-extern int inet_twsk_unhash(struct inet_timewait_sock *tw);
-
-extern int inet_twsk_bind_unhash(struct inet_timewait_sock *tw,
-				 struct inet_hashinfo *hashinfo);
 
 extern struct inet_timewait_sock *inet_twsk_alloc(const struct sock *sk,
 						  const int state);
@@ -217,16 +209,14 @@ extern void inet_twsk_schedule(struct inet_timewait_sock *tw,
 extern void inet_twsk_deschedule(struct inet_timewait_sock *tw,
 				 struct inet_timewait_death_row *twdr);
 
-extern void inet_twsk_purge(struct inet_hashinfo *hashinfo,
+extern void inet_twsk_purge(struct net *net, struct inet_hashinfo *hashinfo,
 			    struct inet_timewait_death_row *twdr, int family);
 
 static inline
 struct net *twsk_net(const struct inet_timewait_sock *twsk)
 {
 #ifdef CONFIG_NET_NS
-	return rcu_dereference_raw(twsk->tw_net); /* protected by locking, */
-						  /* reference counting, */
-						  /* initialization, or RCU. */
+	return twsk->tw_net;
 #else
 	return &init_net;
 #endif
@@ -236,7 +226,7 @@ static inline
 void twsk_net_set(struct inet_timewait_sock *twsk, struct net *net)
 {
 #ifdef CONFIG_NET_NS
-	rcu_assign_pointer(twsk->tw_net, net);
+	twsk->tw_net = net;
 #endif
 }
 #endif	/* _INET_TIMEWAIT_SOCK_ */

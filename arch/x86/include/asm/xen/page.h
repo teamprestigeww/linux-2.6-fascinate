@@ -112,16 +112,19 @@ static inline xpaddr_t machine_to_phys(xmaddr_t machine)
  */
 static inline unsigned long mfn_to_local_pfn(unsigned long mfn)
 {
+	extern unsigned long max_mapnr;
 	unsigned long pfn = mfn_to_pfn(mfn);
-	if (get_phys_to_machine(pfn) != mfn)
-		return -1; /* force !pfn_valid() */
+	if ((pfn < max_mapnr)
+	    && !xen_feature(XENFEAT_auto_translated_physmap)
+	    && (get_phys_to_machine(pfn) != mfn))
+		return max_mapnr; /* force !pfn_valid() */
+	/* XXX fixme; not true with sparsemem */
 	return pfn;
 }
 
 /* VIRT <-> MACHINE conversion */
 #define virt_to_machine(v)	(phys_to_machine(XPADDR(__pa(v))))
-#define virt_to_pfn(v)          (PFN_DOWN(__pa(v)))
-#define virt_to_mfn(v)		(pfn_to_mfn(virt_to_pfn(v)))
+#define virt_to_mfn(v)		(pfn_to_mfn(PFN_DOWN(__pa(v))))
 #define mfn_to_virt(m)		(__va(mfn_to_pfn(m) << PAGE_SHIFT))
 
 static inline unsigned long pte_mfn(pte_t pte)
@@ -161,7 +164,6 @@ static inline pte_t __pte_ma(pteval_t x)
 
 
 xmaddr_t arbitrary_virt_to_machine(void *address);
-unsigned long arbitrary_virt_to_mfn(void *vaddr);
 void make_lowmem_page_readonly(void *vaddr);
 void make_lowmem_page_readwrite(void *vaddr);
 

@@ -127,20 +127,6 @@ static inline void random_ether_addr(u8 *addr)
 }
 
 /**
- * dev_hw_addr_random - Create random MAC and set device flag
- * @dev: pointer to net_device structure
- * @hwaddr: Pointer to a six-byte array containing the Ethernet address
- *
- * Generate random MAC to be used by a device and set addr_assign_type
- * so the state can be read by sysfs and be used by udev.
- */
-static inline void dev_hw_addr_random(struct net_device *dev, u8 *hwaddr)
-{
-	dev->addr_assign_type |= NET_ADDR_RANDOM;
-	random_ether_addr(hwaddr);
-}
-
-/**
  * compare_ether_addr - Compare two Ethernet addresses
  * @addr1: Pointer to a six-byte array containing the Ethernet address
  * @addr2: Pointer other six-byte array containing the Ethernet address
@@ -196,54 +182,6 @@ static inline unsigned compare_ether_addr_64bits(const u8 addr1[6+2],
 	return compare_ether_addr(addr1, addr2);
 #endif
 }
-
-/**
- * is_etherdev_addr - Tell if given Ethernet address belongs to the device.
- * @dev: Pointer to a device structure
- * @addr: Pointer to a six-byte array containing the Ethernet address
- *
- * Compare passed address with all addresses of the device. Return true if the
- * address if one of the device addresses.
- *
- * Note that this function calls compare_ether_addr_64bits() so take care of
- * the right padding.
- */
-static inline bool is_etherdev_addr(const struct net_device *dev,
-				    const u8 addr[6 + 2])
-{
-	struct netdev_hw_addr *ha;
-	int res = 1;
-
-	rcu_read_lock();
-	for_each_dev_addr(dev, ha) {
-		res = compare_ether_addr_64bits(addr, ha->addr);
-		if (!res)
-			break;
-	}
-	rcu_read_unlock();
-	return !res;
-}
 #endif	/* __KERNEL__ */
-
-/**
- * compare_ether_header - Compare two Ethernet headers
- * @a: Pointer to Ethernet header
- * @b: Pointer to Ethernet header
- *
- * Compare two ethernet headers, returns 0 if equal.
- * This assumes that the network header (i.e., IP header) is 4-byte
- * aligned OR the platform can handle unaligned access.  This is the
- * case for all packets coming into netif_receive_skb or similar
- * entry points.
- */
-
-static inline int compare_ether_header(const void *a, const void *b)
-{
-	u32 *a32 = (u32 *)((u8 *)a + 2);
-	u32 *b32 = (u32 *)((u8 *)b + 2);
-
-	return (*(u16 *)a ^ *(u16 *)b) | (a32[0] ^ b32[0]) |
-	       (a32[1] ^ b32[1]) | (a32[2] ^ b32[2]);
-}
 
 #endif	/* _LINUX_ETHERDEVICE_H */

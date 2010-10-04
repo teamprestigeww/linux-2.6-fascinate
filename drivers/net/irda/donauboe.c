@@ -184,7 +184,7 @@
 #define CONFIG0H_DMA_ON_NORX CONFIG0H_DMA_OFF| OBOE_CONFIG0H_ENDMAC
 #define CONFIG0H_DMA_ON CONFIG0H_DMA_ON_NORX | OBOE_CONFIG0H_ENRX
 
-static DEFINE_PCI_DEVICE_TABLE(toshoboe_pci_tbl) = {
+static struct pci_device_id toshoboe_pci_tbl[] = {
 	{ PCI_VENDOR_ID_TOSHIBA, PCI_DEVICE_ID_FIR701, PCI_ANY_ID, PCI_ANY_ID, },
 	{ PCI_VENDOR_ID_TOSHIBA, PCI_DEVICE_ID_FIRD01, PCI_ANY_ID, PCI_ANY_ID, },
 	{ }			/* Terminating entry */
@@ -970,7 +970,7 @@ toshoboe_probe (struct toshoboe_cb *self)
 /* Netdev style code */
 
 /* Transmit something */
-static netdev_tx_t
+static int
 toshoboe_hard_xmit (struct sk_buff *skb, struct net_device *dev)
 {
   struct toshoboe_cb *self;
@@ -981,7 +981,7 @@ toshoboe_hard_xmit (struct sk_buff *skb, struct net_device *dev)
 
   self = netdev_priv(dev);
 
-  IRDA_ASSERT (self != NULL, return NETDEV_TX_OK; );
+  IRDA_ASSERT (self != NULL, return 0; );
 
   IRDA_DEBUG (1, "%s.tx:%x(%x)%x\n", __func__
       ,skb->len,self->txpending,INB (OBOE_ENABLEH));
@@ -994,13 +994,15 @@ toshoboe_hard_xmit (struct sk_buff *skb, struct net_device *dev)
 
   /* change speed pending, wait for its execution */
   if (self->new_speed)
-      return NETDEV_TX_BUSY;
+      return -EBUSY;
 
   /* device stopped (apm) wait for restart */
   if (self->stopped)
-      return NETDEV_TX_BUSY;
+      return -EBUSY;
 
   toshoboe_checkstuck (self);
+
+  dev->trans_start = jiffies;
 
  /* Check if we need to change the speed */
   /* But not now. Wait after transmission if mtt not required */
@@ -1019,7 +1021,7 @@ toshoboe_hard_xmit (struct sk_buff *skb, struct net_device *dev)
             {
 	      spin_unlock_irqrestore(&self->spinlock, flags);
               dev_kfree_skb (skb);
-              return NETDEV_TX_OK;
+              return 0;
             }
           /* True packet, go on, but */
           /* do not accept anything before change speed execution */
@@ -1034,7 +1036,7 @@ toshoboe_hard_xmit (struct sk_buff *skb, struct net_device *dev)
           toshoboe_setbaud (self);
 	  spin_unlock_irqrestore(&self->spinlock, flags);
           dev_kfree_skb (skb);
-          return NETDEV_TX_OK;
+          return 0;
         }
 
     }
@@ -1047,7 +1049,7 @@ toshoboe_hard_xmit (struct sk_buff *skb, struct net_device *dev)
       if (self->txpending)
         {
 	  spin_unlock_irqrestore(&self->spinlock, flags);
-          return NETDEV_TX_BUSY;
+          return -EBUSY;
         }
 
       /* If in SIR mode we need to generate a string of XBOFs */
@@ -1103,7 +1105,7 @@ dumpbufs(skb->data,skb->len,'>');
           ,skb->len, self->ring->tx[self->txs].control, self->txpending);
       toshoboe_start_DMA(self, OBOE_CONFIG0H_ENTX);
       spin_unlock_irqrestore(&self->spinlock, flags);
-      return NETDEV_TX_BUSY;
+      return -EBUSY;
     }
 
   if (INB (OBOE_ENABLEH) & OBOE_ENABLEH_SIRON)
@@ -1141,7 +1143,7 @@ dumpbufs(skb->data,skb->len,'>');
   spin_unlock_irqrestore(&self->spinlock, flags);
   dev_kfree_skb (skb);
 
-  return NETDEV_TX_OK;
+  return 0;
 }
 
 /*interrupt handler */
@@ -1522,13 +1524,6 @@ toshoboe_close (struct pci_dev *pci_dev)
   free_netdev(self->netdev);
 }
 
-static const struct net_device_ops toshoboe_netdev_ops = {
-	.ndo_open	= toshoboe_net_open,
-	.ndo_stop	= toshoboe_net_close,
-	.ndo_start_xmit	= toshoboe_hard_xmit,
-	.ndo_do_ioctl	= toshoboe_net_ioctl,
-};
-
 static int
 toshoboe_open (struct pci_dev *pci_dev, const struct pci_device_id *pdid)
 {
@@ -1662,7 +1657,10 @@ toshoboe_open (struct pci_dev *pci_dev, const struct pci_device_id *pdid)
 #endif
 
   SET_NETDEV_DEV(dev, &pci_dev->dev);
-  dev->netdev_ops = &toshoboe_netdev_ops;
+  dev->hard_start_xmit = toshoboe_hard_xmit;
+  dev->open = toshoboe_net_open;
+  dev->stop = toshoboe_net_close;
+  dev->do_ioctl = toshoboe_net_ioctl;
 
   err = register_netdev(dev);
   if (err)

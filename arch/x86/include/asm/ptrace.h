@@ -7,7 +7,6 @@
 
 #ifdef __KERNEL__
 #include <asm/segment.h>
-#include <asm/page_types.h>
 #endif
 
 #ifndef __ASSEMBLY__
@@ -29,7 +28,7 @@ struct pt_regs {
 	int  xds;
 	int  xes;
 	int  xfs;
-	int  xgs;
+	/* int  gs; */
 	long orig_eax;
 	long eip;
 	int  xcs;
@@ -51,7 +50,7 @@ struct pt_regs {
 	unsigned long ds;
 	unsigned long es;
 	unsigned long fs;
-	unsigned long gs;
+	/* int  gs; */
 	unsigned long orig_ax;
 	unsigned long ip;
 	unsigned long cs;
@@ -188,15 +187,14 @@ static inline int v8086_mode(struct pt_regs *regs)
 
 /*
  * X86_32 CPUs don't save ss and esp if the CPU is already in kernel mode
- * when it traps.  The previous stack will be directly underneath the saved
- * registers, and 'sp/ss' won't even have been saved. Thus the '&regs->sp'.
+ * when it traps.  So regs will be the current sp.
  *
  * This is valid only for kernel mode traps.
  */
-static inline unsigned long kernel_stack_pointer(struct pt_regs *regs)
+static inline unsigned long kernel_trap_sp(struct pt_regs *regs)
 {
 #ifdef CONFIG_X86_32
-	return (unsigned long)(&regs->sp);
+	return (unsigned long)regs;
 #else
 	return regs->sp;
 #endif
@@ -217,77 +215,32 @@ static inline unsigned long user_stack_pointer(struct pt_regs *regs)
 	return regs->sp;
 }
 
-/* Query offset/name of register from its name/offset */
-extern int regs_query_register_offset(const char *name);
-extern const char *regs_query_register_name(unsigned int offset);
-#define MAX_REG_OFFSET (offsetof(struct pt_regs, ss))
-
-/**
- * regs_get_register() - get register value from its offset
- * @regs:	pt_regs from which register value is gotten.
- * @offset:	offset number of the register.
- *
- * regs_get_register returns the value of a register. The @offset is the
- * offset of the register in struct pt_regs address which specified by @regs.
- * If @offset is bigger than MAX_REG_OFFSET, this returns 0.
+/*
+ * These are defined as per linux/ptrace.h, which see.
  */
-static inline unsigned long regs_get_register(struct pt_regs *regs,
-					      unsigned int offset)
-{
-	if (unlikely(offset > MAX_REG_OFFSET))
-		return 0;
-	return *(unsigned long *)((unsigned long)regs + offset);
-}
-
-/**
- * regs_within_kernel_stack() - check the address in the stack
- * @regs:	pt_regs which contains kernel stack pointer.
- * @addr:	address which is checked.
- *
- * regs_within_kernel_stack() checks @addr is within the kernel stack page(s).
- * If @addr is within the kernel stack, it returns true. If not, returns false.
- */
-static inline int regs_within_kernel_stack(struct pt_regs *regs,
-					   unsigned long addr)
-{
-	return ((addr & ~(THREAD_SIZE - 1))  ==
-		(kernel_stack_pointer(regs) & ~(THREAD_SIZE - 1)));
-}
-
-/**
- * regs_get_kernel_stack_nth() - get Nth entry of the stack
- * @regs:	pt_regs which contains kernel stack pointer.
- * @n:		stack entry number.
- *
- * regs_get_kernel_stack_nth() returns @n th entry of the kernel stack which
- * is specified by @regs. If the @n th entry is NOT in the kernel stack,
- * this returns 0.
- */
-static inline unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs,
-						      unsigned int n)
-{
-	unsigned long *addr = (unsigned long *)kernel_stack_pointer(regs);
-	addr += n;
-	if (regs_within_kernel_stack(regs, (unsigned long)addr))
-		return *addr;
-	else
-		return 0;
-}
-
 #define arch_has_single_step()	(1)
+extern void user_enable_single_step(struct task_struct *);
+extern void user_disable_single_step(struct task_struct *);
+
+extern void user_enable_block_step(struct task_struct *);
 #ifdef CONFIG_X86_DEBUGCTLMSR
 #define arch_has_block_step()	(1)
 #else
 #define arch_has_block_step()	(boot_cpu_data.x86 >= 6)
 #endif
 
-#define ARCH_HAS_USER_SINGLE_STEP_INFO
-
 struct user_desc;
 extern int do_get_thread_area(struct task_struct *p, int idx,
 			      struct user_desc __user *info);
 extern int do_set_thread_area(struct task_struct *p, int idx,
 			      struct user_desc __user *info, int can_allocate);
+
+extern void x86_ptrace_untrace(struct task_struct *);
+extern void x86_ptrace_fork(struct task_struct *child,
+			    unsigned long clone_flags);
+
+#define arch_ptrace_untrace(tsk) x86_ptrace_untrace(tsk)
+#define arch_ptrace_fork(child, flags) x86_ptrace_fork(child, flags)
 
 #endif /* __KERNEL__ */
 

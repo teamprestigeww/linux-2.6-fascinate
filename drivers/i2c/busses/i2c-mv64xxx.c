@@ -10,14 +10,14 @@
  * or implied.
  */
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/spinlock.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/mv643xx_i2c.h>
 #include <linux/platform_device.h>
-#include <linux/io.h>
+
+#include <asm/io.h>
 
 /* Register defines */
 #define	MV64XXX_I2C_REG_SLAVE_ADDR			0x00
@@ -293,13 +293,13 @@ mv64xxx_i2c_do_action(struct mv64xxx_i2c_data *drv_data)
 	}
 }
 
-static irqreturn_t
+static int
 mv64xxx_i2c_intr(int irq, void *dev_id)
 {
 	struct mv64xxx_i2c_data	*drv_data = dev_id;
 	unsigned long	flags;
 	u32		status;
-	irqreturn_t	rc = IRQ_NONE;
+	int		rc = IRQ_NONE;
 
 	spin_lock_irqsave(&drv_data->lock, flags);
 	while (readl(drv_data->reg_base + MV64XXX_I2C_REG_CONTROL) &
@@ -338,6 +338,9 @@ mv64xxx_i2c_prepare_for_io(struct mv64xxx_i2c_data *drv_data,
 	if (msg->flags & I2C_M_RD)
 		dir = 1;
 
+	if (msg->flags & I2C_M_REV_DIR_ADDR)
+		dir ^= 1;
+
 	if (msg->flags & I2C_M_TEN) {
 		drv_data->addr1 = 0xf0 | (((u32)msg->addr & 0x300) >> 7) | dir;
 		drv_data->addr2 = (u32)msg->addr & 0xff;
@@ -355,7 +358,7 @@ mv64xxx_i2c_wait_for_completion(struct mv64xxx_i2c_data *drv_data)
 	char		abort = 0;
 
 	time_left = wait_event_interruptible_timeout(drv_data->waitq,
-		!drv_data->block, drv_data->adapter.timeout);
+		!drv_data->block, msecs_to_jiffies(drv_data->adapter.timeout));
 
 	spin_lock_irqsave(&drv_data->lock, flags);
 	if (!time_left) { /* Timed out */
@@ -371,7 +374,8 @@ mv64xxx_i2c_wait_for_completion(struct mv64xxx_i2c_data *drv_data)
 		spin_unlock_irqrestore(&drv_data->lock, flags);
 
 		time_left = wait_event_timeout(drv_data->waitq,
-			!drv_data->block, drv_data->adapter.timeout);
+			!drv_data->block,
+			msecs_to_jiffies(drv_data->adapter.timeout));
 
 		if ((time_left <= 0) && drv_data->block) {
 			drv_data->state = MV64XXX_I2C_STATE_IDLE;
@@ -466,7 +470,7 @@ mv64xxx_i2c_map_regs(struct platform_device *pd,
 	if (!r)
 		return -ENODEV;
 
-	size = resource_size(r);
+	size = r->end - r->start + 1;
 
 	if (!request_mem_region(r->start, size, drv_data->adapter.name))
 		return -EBUSY;
@@ -526,7 +530,7 @@ mv64xxx_i2c_probe(struct platform_device *pd)
 	drv_data->adapter.algo = &mv64xxx_i2c_algo;
 	drv_data->adapter.owner = THIS_MODULE;
 	drv_data->adapter.class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
-	drv_data->adapter.timeout = msecs_to_jiffies(pdata->timeout);
+	drv_data->adapter.timeout = pdata->timeout;
 	drv_data->adapter.nr = pd->id;
 	platform_set_drvdata(pd, drv_data);
 	i2c_set_adapdata(&drv_data->adapter, drv_data);

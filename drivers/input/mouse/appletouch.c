@@ -255,22 +255,15 @@ MODULE_PARM_DESC(debug, "Activate debugging output");
  */
 static int atp_geyser_init(struct usb_device *udev)
 {
-	char *data;
+	char data[8];
 	int size;
 	int i;
-	int ret;
-
-	data = kmalloc(8, GFP_KERNEL);
-	if (!data) {
-		err("Out of memory");
-		return -ENOMEM;
-	}
 
 	size = usb_control_msg(udev, usb_rcvctrlpipe(udev, 0),
 			ATP_GEYSER_MODE_READ_REQUEST_ID,
 			USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
 			ATP_GEYSER_MODE_REQUEST_VALUE,
-			ATP_GEYSER_MODE_REQUEST_INDEX, data, 8, 5000);
+			ATP_GEYSER_MODE_REQUEST_INDEX, &data, 8, 5000);
 
 	if (size != 8) {
 		dprintk("atp_geyser_init: read error\n");
@@ -278,8 +271,7 @@ static int atp_geyser_init(struct usb_device *udev)
 			dprintk("appletouch[%d]: %d\n", i, data[i]);
 
 		err("Failed to read mode from device.");
-		ret = -EIO;
-		goto out_free;
+		return -EIO;
 	}
 
 	/* Apply the mode switch */
@@ -289,7 +281,7 @@ static int atp_geyser_init(struct usb_device *udev)
 			ATP_GEYSER_MODE_WRITE_REQUEST_ID,
 			USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
 			ATP_GEYSER_MODE_REQUEST_VALUE,
-			ATP_GEYSER_MODE_REQUEST_INDEX, data, 8, 5000);
+			ATP_GEYSER_MODE_REQUEST_INDEX, &data, 8, 5000);
 
 	if (size != 8) {
 		dprintk("atp_geyser_init: write error\n");
@@ -297,13 +289,9 @@ static int atp_geyser_init(struct usb_device *udev)
 			dprintk("appletouch[%d]: %d\n", i, data[i]);
 
 		err("Failed to request geyser raw mode");
-		ret = -EIO;
-		goto out_free;
+		return -EIO;
 	}
-	ret = 0;
-out_free:
-	kfree(data);
-	return ret;
+	return 0;
 }
 
 /*
@@ -361,7 +349,7 @@ static int atp_calculate_abs(int *xy_sensors, int nb_sensors, int fact,
 		    (!is_increasing && xy_sensors[i - 1] < xy_sensors[i])) {
 			(*fingers)++;
 			is_increasing = 1;
-		} else if (i > 0 && (xy_sensors[i - 1] - xy_sensors[i] > threshold)) {
+		} else if (i > 0 && xy_sensors[i - 1] >= xy_sensors[i]) {
 			is_increasing = 0;
 		}
 
@@ -806,8 +794,8 @@ static int atp_probe(struct usb_interface *iface,
 	if (!dev->urb)
 		goto err_free_devs;
 
-	dev->data = usb_alloc_coherent(dev->udev, dev->info->datalen, GFP_KERNEL,
-				       &dev->urb->transfer_dma);
+	dev->data = usb_buffer_alloc(dev->udev, dev->info->datalen, GFP_KERNEL,
+				     &dev->urb->transfer_dma);
 	if (!dev->data)
 		goto err_free_urb;
 
@@ -862,8 +850,8 @@ static int atp_probe(struct usb_interface *iface,
 	return 0;
 
  err_free_buffer:
-	usb_free_coherent(dev->udev, dev->info->datalen,
-			  dev->data, dev->urb->transfer_dma);
+	usb_buffer_free(dev->udev, dev->info->datalen,
+			dev->data, dev->urb->transfer_dma);
  err_free_urb:
 	usb_free_urb(dev->urb);
  err_free_devs:
@@ -881,8 +869,8 @@ static void atp_disconnect(struct usb_interface *iface)
 	if (dev) {
 		usb_kill_urb(dev->urb);
 		input_unregister_device(dev->input);
-		usb_free_coherent(dev->udev, dev->info->datalen,
-				  dev->data, dev->urb->transfer_dma);
+		usb_buffer_free(dev->udev, dev->info->datalen,
+				dev->data, dev->urb->transfer_dma);
 		usb_free_urb(dev->urb);
 		kfree(dev);
 	}

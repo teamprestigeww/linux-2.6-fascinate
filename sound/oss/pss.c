@@ -46,7 +46,7 @@
  *          load the driver as it did in previous versions.
  * 04-07-1999: Anthony Barbachan <barbcode@xmen.cis.fordham.edu>
  *          Added module parameter pss_firmware to allow the user to tell 
- *          the driver where the firmware file is located.  The default 
+ *          the driver where the fireware file is located.  The default 
  *          setting is the previous hardcoded setting "/etc/sound/pss_synth".
  * 00-03-03: Christoph Hellwig <chhellwig@infradead.org>
  *	    Adapted to module_init/module_exit
@@ -269,7 +269,7 @@ static int pss_reset_dsp(pss_confdata * devc)
 	unsigned long   i, limit = jiffies + HZ/10;
 
 	outw(0x2000, REG(PSS_CONTROL));
-	for (i = 0; i < 32768 && time_after_eq(limit, jiffies); i++)
+	for (i = 0; i < 32768 && (limit-jiffies >= 0); i++)
 		inw(REG(PSS_CONTROL));
 	outw(0x0000, REG(PSS_CONTROL));
 	return 1;
@@ -369,11 +369,11 @@ static int pss_download_boot(pss_confdata * devc, unsigned char *block, int size
 		outw(0, REG(PSS_DATA));
 
 		limit = jiffies + HZ/10;
-		for (i = 0; i < 32768 && time_after_eq(limit, jiffies); i++)
+		for (i = 0; i < 32768 && (limit - jiffies >= 0); i++)
 			val = inw(REG(PSS_STATUS));
 
 		limit = jiffies + HZ/10;
-		for (i = 0; i < 32768 && time_after_eq(limit, jiffies); i++)
+		for (i = 0; i < 32768 && (limit-jiffies >= 0); i++)
 		{
 			val = inw(REG(PSS_STATUS));
 			if (val & 0x4000)
@@ -457,9 +457,10 @@ static void pss_mixer_reset(pss_confdata *devc)
 	}
 }
 
-static int set_volume_mono(unsigned __user *p, unsigned int *aleft)
+static int set_volume_mono(unsigned __user *p, int *aleft)
 {
-	unsigned int left, volume;
+	int left;
+	unsigned volume;
 	if (get_user(volume, p))
 		return -EFAULT;
 	
@@ -470,11 +471,10 @@ static int set_volume_mono(unsigned __user *p, unsigned int *aleft)
 	return 0;
 }
 
-static int set_volume_stereo(unsigned __user *p,
-			     unsigned int *aleft,
-			     unsigned int *aright)
+static int set_volume_stereo(unsigned __user *p, int *aleft, int *aright)
 {
-	unsigned int left, right, volume;
+	int left, right;
+	unsigned volume;
 	if (get_user(volume, p))
 		return -EFAULT;
 

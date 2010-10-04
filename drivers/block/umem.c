@@ -40,13 +40,13 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
-#include <linux/gfp.h>
 #include <linux/ioctl.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/timer.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 #include <linux/dma-mapping.h>
 
 #include <linux/fcntl.h>        /* O_ACCMODE */
@@ -140,6 +140,7 @@ struct cardinfo {
 };
 
 static struct cardinfo cards[MM_MAXCARDS];
+static struct block_device_operations mm_fops;
 static struct timer_list battery_timer;
 
 static int num_cards;
@@ -478,7 +479,7 @@ static void process_page(unsigned long data)
 				le32_to_cpu(desc->local_addr)>>9,
 				le32_to_cpu(desc->transfer_size));
 			dump_dmastat(card, control);
-		} else if ((bio->bi_rw & REQ_WRITE) &&
+		} else if (test_bit(BIO_RW, &bio->bi_rw) &&
 			   le32_to_cpu(desc->local_addr) >> 9 ==
 				card->init_size) {
 			card->init_size += le32_to_cpu(desc->transfer_size) >> 9;
@@ -788,7 +789,7 @@ static int mm_check_change(struct gendisk *disk)
 	return 0;
 }
 
-static const struct block_device_operations mm_fops = {
+static struct block_device_operations mm_fops = {
 	.owner		= THIS_MODULE,
 	.getgeo		= mm_getgeo,
 	.revalidate_disk = mm_revalidate,
@@ -828,8 +829,8 @@ static int __devinit mm_pci_probe(struct pci_dev *dev,
 	dev_printk(KERN_INFO, &dev->dev,
 	  "Micro Memory(tm) controller found (PCI Mem Module (Battery Backup))\n");
 
-	if (pci_set_dma_mask(dev, DMA_BIT_MASK(64)) &&
-	    pci_set_dma_mask(dev, DMA_BIT_MASK(32))) {
+	if (pci_set_dma_mask(dev, DMA_64BIT_MASK) &&
+	    pci_set_dma_mask(dev, DMA_32BIT_MASK)) {
 		dev_printk(KERN_WARNING, &dev->dev, "NO suitable DMA found\n");
 		return  -ENOMEM;
 	}
@@ -905,7 +906,6 @@ static int __devinit mm_pci_probe(struct pci_dev *dev,
 		goto failed_alloc;
 
 	blk_queue_make_request(card->queue, mm_make_request);
-	card->queue->queue_lock = &card->lock;
 	card->queue->queuedata = card;
 	card->queue->unplug_fn = mm_unplug_device;
 

@@ -3,13 +3,13 @@
 /*
  * Architecture specific compatibility types
  */
+#include <linux/seccomp.h>
 #include <linux/thread_info.h>
 #include <linux/types.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
 
-#define COMPAT_USER_HZ		100
-#define COMPAT_UTS_MACHINE	"mips\0\0\0"
+#define COMPAT_USER_HZ	100
 
 typedef u32		compat_size_t;
 typedef s32		compat_ssize_t;
@@ -145,7 +145,7 @@ static inline compat_uptr_t ptr_to_compat(void __user *uptr)
 	return (u32)(unsigned long)uptr;
 }
 
-static inline void __user *arch_compat_alloc_user_space(long len)
+static inline void __user *compat_alloc_user_space(long len)
 {
 	struct pt_regs *regs = (struct pt_regs *)
 		((unsigned long) current_thread_info() + THREAD_SIZE - 32) - 1;

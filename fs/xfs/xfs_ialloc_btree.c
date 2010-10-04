@@ -24,10 +24,14 @@
 #include "xfs_trans.h"
 #include "xfs_sb.h"
 #include "xfs_ag.h"
+#include "xfs_dir2.h"
+#include "xfs_dmapi.h"
 #include "xfs_mount.h"
 #include "xfs_bmap_btree.h"
 #include "xfs_alloc_btree.h"
 #include "xfs_ialloc_btree.h"
+#include "xfs_dir2_sf.h"
+#include "xfs_attr_sf.h"
 #include "xfs_dinode.h"
 #include "xfs_inode.h"
 #include "xfs_btree.h"
@@ -160,7 +164,7 @@ xfs_inobt_init_rec_from_cur(
 }
 
 /*
- * initial value of ptr for lookup
+ * intial value of ptr for lookup
  */
 STATIC void
 xfs_inobt_init_ptr_from_cur(

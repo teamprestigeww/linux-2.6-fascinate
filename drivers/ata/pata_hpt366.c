@@ -11,7 +11,9 @@
  *
  *
  * TODO
- *	Look into engine reset on timeout errors. Should not be required.
+ *	Maybe PLL mode
+ *	Look into engine reset on timeout errors. Should not be
+ *		required.
  */
 
 
@@ -25,7 +27,7 @@
 #include <linux/libata.h>
 
 #define DRV_NAME	"pata_hpt366"
-#define DRV_VERSION	"0.6.8"
+#define DRV_VERSION	"0.6.2"
 
 struct hpt_clock {
 	u8	xfer_mode;
@@ -34,22 +36,24 @@ struct hpt_clock {
 
 /* key for bus clock timings
  * bit
- * 0:3    data_high_time. Inactive time of DIOW_/DIOR_ for PIO and MW DMA.
- *        cycles = value + 1
- * 4:7    data_low_time. Active time of DIOW_/DIOR_ for PIO and MW DMA.
- *        cycles = value + 1
- * 8:11   cmd_high_time. Inactive time of DIOW_/DIOR_ during task file
+ * 0:3    data_high_time. inactive time of DIOW_/DIOR_ for PIO and MW
+ *        DMA. cycles = value + 1
+ * 4:8    data_low_time. active time of DIOW_/DIOR_ for PIO and MW
+ *        DMA. cycles = value + 1
+ * 9:12   cmd_high_time. inactive time of DIOW_/DIOR_ during task file
  *        register access.
- * 12:15  cmd_low_time. Active time of DIOW_/DIOR_ during task file
+ * 13:17  cmd_low_time. active time of DIOW_/DIOR_ during task file
  *        register access.
- * 16:18  udma_cycle_time. Clock cycles for UDMA xfer?
- * 19:21  pre_high_time. Time to initialize 1st cycle for PIO and MW DMA xfer.
- * 22:24  cmd_pre_high_time. Time to initialize 1st PIO cycle for task file
+ * 18:21  udma_cycle_time. clock freq and clock cycles for UDMA xfer.
+ *        during task file register access.
+ * 22:24  pre_high_time. time to initialize 1st cycle for PIO and MW DMA
+ *        xfer.
+ * 25:27  cmd_pre_high_time. time to initialize 1st PIO cycle for task
  *        register access.
- * 28     UDMA enable.
- * 29     DMA  enable.
- * 30     PIO_MST enable. If set, the chip is in bus master mode during
- *        PIO xfer.
+ * 28     UDMA enable
+ * 29     DMA enable
+ * 30     PIO_MST enable. if set, the chip is in bus master mode during
+ *        PIO.
  * 31     FIFO enable.
  */
 
@@ -182,7 +186,7 @@ static unsigned long hpt366_filter(struct ata_device *adev, unsigned long mask)
 	} else if (adev->class == ATA_DEV_ATAPI)
 		mask &= ~(ATA_MASK_MWDMA | ATA_MASK_UDMA);
 
-	return mask;
+	return ata_bmdma_mode_filter(adev, mask);
 }
 
 static int hpt36x_cable_detect(struct ata_port *ap)
@@ -205,8 +209,17 @@ static void hpt366_set_mode(struct ata_port *ap, struct ata_device *adev,
 {
 	struct hpt_clock *clocks = ap->host->private_data;
 	struct pci_dev *pdev = to_pci_dev(ap->host->dev);
-	u32 addr = 0x40 + 4 * adev->devno;
+	u32 addr1 = 0x40 + 4 * (adev->devno + 2 * ap->port_no);
+	u32 addr2 = 0x51 + 4 * ap->port_no;
 	u32 mask, reg;
+	u8 fast;
+
+	/* Fast interrupt prediction disable, hold off interrupt disable */
+	pci_read_config_byte(pdev, addr2, &fast);
+	if (fast & 0x80) {
+		fast &= ~0x80;
+		pci_write_config_byte(pdev, addr2, fast);
+	}
 
 	/* determine timing mask and find matching clock entry */
 	if (mode < XFER_MW_DMA_0)
@@ -229,9 +242,9 @@ static void hpt366_set_mode(struct ata_port *ap, struct ata_device *adev,
 	 * on-chip PIO FIFO/buffer (and PIO MST mode as well) to avoid
 	 * problems handling I/O errors later.
 	 */
-	pci_read_config_dword(pdev, addr, &reg);
+	pci_read_config_dword(pdev, addr1, &reg);
 	reg = ((reg & ~mask) | (clocks->timing & mask)) & ~0xc0000000;
-	pci_write_config_dword(pdev, addr, reg);
+	pci_write_config_dword(pdev, addr1, reg);
 }
 
 /**
@@ -323,14 +336,15 @@ static int hpt36x_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	static const struct ata_port_info info_hpt366 = {
 		.flags = ATA_FLAG_SLAVE_POSS,
-		.pio_mask = ATA_PIO4,
-		.mwdma_mask = ATA_MWDMA2,
+		.pio_mask = 0x1f,
+		.mwdma_mask = 0x07,
 		.udma_mask = ATA_UDMA4,
 		.port_ops = &hpt366_port_ops
 	};
 	const struct ata_port_info *ppi[] = { &info_hpt366, NULL };
 
 	void *hpriv = NULL;
+	u32 class_rev;
 	u32 reg1;
 	int rc;
 
@@ -338,10 +352,13 @@ static int hpt36x_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 	if (rc)
 		return rc;
 
+	pci_read_config_dword(dev, PCI_CLASS_REVISION, &class_rev);
+	class_rev &= 0xFF;
+
 	/* May be a later chip in disguise. Check */
 	/* Newer chips are not in the HPT36x driver. Ignore them */
-	if (dev->revision > 2)
-		return -ENODEV;
+	if (class_rev > 2)
+			return -ENODEV;
 
 	hpt36x_init_chipset(dev);
 
@@ -361,7 +378,7 @@ static int hpt36x_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 			break;
 	}
 	/* Now kick off ATA set up */
-	return ata_pci_bmdma_init_one(dev, ppi, &hpt36x_sht, hpriv, 0);
+	return ata_pci_sff_init_one(dev, ppi, &hpt36x_sht, hpriv);
 }
 
 #ifdef CONFIG_PM

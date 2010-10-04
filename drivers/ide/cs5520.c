@@ -57,11 +57,11 @@ static struct pio_clocks cs5520_pio_clocks[]={
 	{1, 2, 1}
 };
 
-static void cs5520_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void cs5520_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
+	ide_hwif_t *hwif = drive->hwif;
 	struct pci_dev *pdev = to_pci_dev(hwif->dev);
 	int controller = drive->dn > 1 ? 1 : 0;
-	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 	/* 8bit CAT/CRT - 8bit command timing for channel */
 	pci_write_config_byte(pdev, 0x62 + controller, 
@@ -81,12 +81,11 @@ static void cs5520_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 		(cs5520_pio_clocks[pio].assert));
 }
 
-static void cs5520_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void cs5520_set_dma_mode(ide_drive_t *drive, const u8 speed)
 {
 	printk(KERN_ERR "cs55x0: bad ide timing.\n");
 
-	drive->pio_mode = XFER_PIO_0 + 0;
-	cs5520_set_pio_mode(hwif, drive);
+	cs5520_set_pio_mode(drive, 0);
 }
 
 static const struct ide_port_ops cs5520_port_ops = {
@@ -111,7 +110,7 @@ static const struct ide_port_info cyrix_chipset __devinitdata = {
 static int __devinit cs5520_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	const struct ide_port_info *d = &cyrix_chipset;
-	struct ide_hw hw[2], *hws[] = { NULL, NULL };
+	hw_regs_t hw[4], *hws[] = { NULL, NULL, NULL, NULL };
 
 	ide_setup_pci_noise(dev, d);
 
@@ -123,7 +122,7 @@ static int __devinit cs5520_init_one(struct pci_dev *dev, const struct pci_devic
 		return -ENODEV;
 	}
 	pci_set_master(dev);
-	if (pci_set_dma_mask(dev, DMA_BIT_MASK(32))) {
+	if (pci_set_dma_mask(dev, DMA_32BIT_MASK)) {
 		printk(KERN_WARNING "%s: No suitable DMA available.\n",
 			d->name);
 		return -ENODEV;
@@ -134,11 +133,9 @@ static int __devinit cs5520_init_one(struct pci_dev *dev, const struct pci_devic
 	 *	do all the device setup for us
 	 */
 
-	ide_pci_setup_ports(dev, d, &hw[0], &hws[0]);
-	hw[0].irq = 14;
-	hw[1].irq = 15;
+	ide_pci_setup_ports(dev, d, 14, &hw[0], &hws[0]);
 
-	return ide_host_add(d, hws, 2, NULL);
+	return ide_host_add(d, hws, NULL);
 }
 
 static const struct pci_device_id cs5520_pci_tbl[] = {

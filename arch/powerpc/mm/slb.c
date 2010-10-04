@@ -2,7 +2,7 @@
  * PowerPC64 SLB support.
  *
  * Copyright (C) 2004 David Gibson <dwg@au.ibm.com>, IBM
- * Based on earlier code written by:
+ * Based on earlier code writteh by:
  * Dave Engebretsen and Mike Corrigan {engebret|mikejc}@us.ibm.com
  *    Copyright (c) 2001 Dave Engebretsen
  * Copyright (C) 2002 Anton Blanchard <anton@au.ibm.com>, IBM
@@ -13,6 +13,8 @@
  *      as published by the Free Software Foundation; either version
  *      2 of the License, or (at your option) any later version.
  */
+
+#undef DEBUG
 
 #include <asm/pgtable.h>
 #include <asm/mmu.h>
@@ -25,6 +27,11 @@
 #include <linux/compiler.h>
 #include <asm/udbg.h>
 
+#ifdef DEBUG
+#define DBG(fmt...) printk(fmt)
+#else
+#define DBG pr_debug
+#endif
 
 extern void slb_allocate_realmode(unsigned long ea);
 extern void slb_allocate_user(unsigned long ea);
@@ -92,12 +99,14 @@ static inline void create_shadowed_slbe(unsigned long ea, int ssize,
 		     : "memory" );
 }
 
-static void __slb_flush_and_rebolt(void)
+void slb_flush_and_rebolt(void)
 {
 	/* If you change this make sure you change SLB_NUM_BOLTED
 	 * appropriately too. */
 	unsigned long linear_llp, vmalloc_llp, lflags, vflags;
 	unsigned long ksp_esid_data, ksp_vsid_data;
+
+	WARN_ON(!irqs_disabled());
 
 	linear_llp = mmu_psize_defs[mmu_linear_psize].sllp;
 	vmalloc_llp = mmu_psize_defs[mmu_vmalloc_psize].sllp;
@@ -115,6 +124,12 @@ static void __slb_flush_and_rebolt(void)
 		ksp_vsid_data = get_slb_shadow()->save_area[2].vsid;
 	}
 
+	/*
+	 * We can't take a PMU exception in the following code, so hard
+	 * disable interrupts.
+	 */
+	hard_irq_disable();
+
 	/* We need to do this all in asm, so we're sure we don't touch
 	 * the stack between the slbia and rebolting it. */
 	asm volatile("isync\n"
@@ -129,21 +144,6 @@ static void __slb_flush_and_rebolt(void)
 		        "r"(ksp_vsid_data),
 		        "r"(ksp_esid_data)
 		     : "memory");
-}
-
-void slb_flush_and_rebolt(void)
-{
-
-	WARN_ON(!irqs_disabled());
-
-	/*
-	 * We can't take a PMU exception in the following code, so hard
-	 * disable interrupts.
-	 */
-	hard_irq_disable();
-
-	__slb_flush_and_rebolt();
-	get_paca()->slb_cache_ptr = 0;
 }
 
 void slb_vmalloc_update(void)
@@ -187,20 +187,12 @@ static inline int esids_match(unsigned long addr1, unsigned long addr2)
 /* Flush all user entries from the segment table of the current processor. */
 void switch_slb(struct task_struct *tsk, struct mm_struct *mm)
 {
-	unsigned long offset;
+	unsigned long offset = get_paca()->slb_cache_ptr;
 	unsigned long slbie_data = 0;
 	unsigned long pc = KSTK_EIP(tsk);
 	unsigned long stack = KSTK_ESP(tsk);
-	unsigned long exec_base;
+	unsigned long unmapped_base;
 
-	/*
-	 * We need interrupts hard-disabled here, not just soft-disabled,
-	 * so that a PMU interrupt can't occur, which might try to access
-	 * user memory (to get a stack trace) and possible cause an SLB miss
-	 * which would update the slb_cache/slb_cache_ptr fields in the PACA.
-	 */
-	hard_irq_disable();
-	offset = get_paca()->slb_cache_ptr;
 	if (!cpu_has_feature(CPU_FTR_NO_SLBIE_B) &&
 	    offset <= SLB_CACHE_ENTRIES) {
 		int i;
@@ -215,7 +207,7 @@ void switch_slb(struct task_struct *tsk, struct mm_struct *mm)
 		}
 		asm volatile("isync" : : : "memory");
 	} else {
-		__slb_flush_and_rebolt();
+		slb_flush_and_rebolt();
 	}
 
 	/* Workaround POWER5 < DD2.1 issue */
@@ -227,42 +219,40 @@ void switch_slb(struct task_struct *tsk, struct mm_struct *mm)
 
 	/*
 	 * preload some userspace segments into the SLB.
-	 * Almost all 32 and 64bit PowerPC executables are linked at
-	 * 0x10000000 so it makes sense to preload this segment.
 	 */
-	exec_base = 0x10000000;
+	if (test_tsk_thread_flag(tsk, TIF_32BIT))
+		unmapped_base = TASK_UNMAPPED_BASE_USER32;
+	else
+		unmapped_base = TASK_UNMAPPED_BASE_USER64;
 
-	if (is_kernel_addr(pc) || is_kernel_addr(stack) ||
-	    is_kernel_addr(exec_base))
+	if (is_kernel_addr(pc))
 		return;
-
 	slb_allocate(pc);
 
-	if (!esids_match(pc, stack))
-		slb_allocate(stack);
+	if (esids_match(pc,stack))
+		return;
 
-	if (!esids_match(pc, exec_base) &&
-	    !esids_match(stack, exec_base))
-		slb_allocate(exec_base);
+	if (is_kernel_addr(stack))
+		return;
+	slb_allocate(stack);
+
+	if (esids_match(pc,unmapped_base) || esids_match(stack,unmapped_base))
+		return;
+
+	if (is_kernel_addr(unmapped_base))
+		return;
+	slb_allocate(unmapped_base);
 }
 
 static inline void patch_slb_encoding(unsigned int *insn_addr,
 				      unsigned int immed)
 {
-	*insn_addr = (*insn_addr & 0xffff0000) | immed;
+	/* Assume the instruction had a "0" immediate value, just
+	 * "or" in the new value
+	 */
+	*insn_addr |= immed;
 	flush_icache_range((unsigned long)insn_addr, 4+
 			   (unsigned long)insn_addr);
-}
-
-void slb_set_size(u16 size)
-{
-	extern unsigned int *slb_compare_rr_to_size;
-
-	if (mmu_slb_size == size)
-		return;
-
-	mmu_slb_size = size;
-	patch_slb_encoding(slb_compare_rr_to_size, mmu_slb_size);
 }
 
 void slb_initialize(void)
@@ -295,13 +285,13 @@ void slb_initialize(void)
 		patch_slb_encoding(slb_compare_rr_to_size,
 				   mmu_slb_size);
 
-		pr_devel("SLB: linear  LLP = %04lx\n", linear_llp);
-		pr_devel("SLB: io      LLP = %04lx\n", io_llp);
+		DBG("SLB: linear  LLP = %04lx\n", linear_llp);
+		DBG("SLB: io      LLP = %04lx\n", io_llp);
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 		patch_slb_encoding(slb_miss_kernel_load_vmemmap,
 				   SLB_VSID_KERNEL | vmemmap_llp);
-		pr_devel("SLB: vmemmap LLP = %04lx\n", vmemmap_llp);
+		DBG("SLB: vmemmap LLP = %04lx\n", vmemmap_llp);
 #endif
 	}
 

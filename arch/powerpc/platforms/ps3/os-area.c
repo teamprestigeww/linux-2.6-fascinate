@@ -24,9 +24,8 @@
 #include <linux/fs.h>
 #include <linux/syscalls.h>
 #include <linux/ctype.h>
-#include <linux/memblock.h>
+#include <linux/lmb.h>
 #include <linux/of.h>
-#include <linux/slab.h>
 
 #include <asm/prom.h>
 
@@ -227,44 +226,6 @@ static struct property property_av_multi_out = {
 	.value = &saved_params.av_multi_out,
 };
 
-
-static DEFINE_MUTEX(os_area_flash_mutex);
-
-static const struct ps3_os_area_flash_ops *os_area_flash_ops;
-
-void ps3_os_area_flash_register(const struct ps3_os_area_flash_ops *ops)
-{
-	mutex_lock(&os_area_flash_mutex);
-	os_area_flash_ops = ops;
-	mutex_unlock(&os_area_flash_mutex);
-}
-EXPORT_SYMBOL_GPL(ps3_os_area_flash_register);
-
-static ssize_t os_area_flash_read(void *buf, size_t count, loff_t pos)
-{
-	ssize_t res = -ENODEV;
-
-	mutex_lock(&os_area_flash_mutex);
-	if (os_area_flash_ops)
-		res = os_area_flash_ops->read(buf, count, pos);
-	mutex_unlock(&os_area_flash_mutex);
-
-	return res;
-}
-
-static ssize_t os_area_flash_write(const void *buf, size_t count, loff_t pos)
-{
-	ssize_t res = -ENODEV;
-
-	mutex_lock(&os_area_flash_mutex);
-	if (os_area_flash_ops)
-		res = os_area_flash_ops->write(buf, count, pos);
-	mutex_unlock(&os_area_flash_mutex);
-
-	return res;
-}
-
-
 /**
  * os_area_set_property - Add or overwrite a saved_params value to the device tree.
  *
@@ -391,12 +352,12 @@ static int db_verify(const struct os_area_db *db)
 	if (memcmp(db->magic_num, OS_AREA_DB_MAGIC_NUM,
 		sizeof(db->magic_num))) {
 		pr_debug("%s:%d magic_num failed\n", __func__, __LINE__);
-		return -EINVAL;
+		return -1;
 	}
 
 	if (db->version != 1) {
 		pr_debug("%s:%d version failed\n", __func__, __LINE__);
-		return -EINVAL;
+		return -1;
 	}
 
 	return 0;
@@ -617,48 +578,59 @@ static void os_area_db_init(struct os_area_db *db)
  *
  */
 
-static int update_flash_db(void)
+static void update_flash_db(void)
 {
-	const unsigned int buf_len = 8 * OS_AREA_SEGMENT_SIZE;
-	struct os_area_header *header;
+	int result;
+	int file;
+	off_t offset;
 	ssize_t count;
-	int error;
-	loff_t pos;
+	static const unsigned int buf_len = 8 * OS_AREA_SEGMENT_SIZE;
+	const struct os_area_header *header;
 	struct os_area_db* db;
 
 	/* Read in header and db from flash. */
 
+	file = sys_open("/dev/ps3flash", O_RDWR, 0);
+
+	if (file < 0) {
+		pr_debug("%s:%d sys_open failed\n", __func__, __LINE__);
+		goto fail_open;
+	}
+
 	header = kmalloc(buf_len, GFP_KERNEL);
+
 	if (!header) {
-		pr_debug("%s: kmalloc failed\n", __func__);
-		return -ENOMEM;
+		pr_debug("%s:%d kmalloc failed\n", __func__, __LINE__);
+		goto fail_malloc;
 	}
 
-	count = os_area_flash_read(header, buf_len, 0);
-	if (count < 0) {
-		pr_debug("%s: os_area_flash_read failed %zd\n", __func__,
-			 count);
-		error = count;
-		goto fail;
+	offset = sys_lseek(file, 0, SEEK_SET);
+
+	if (offset != 0) {
+		pr_debug("%s:%d sys_lseek failed\n", __func__, __LINE__);
+		goto fail_header_seek;
 	}
 
-	pos = header->db_area_offset * OS_AREA_SEGMENT_SIZE;
-	if (count < OS_AREA_SEGMENT_SIZE || verify_header(header) ||
-	    count < pos) {
-		pr_debug("%s: verify_header failed\n", __func__);
+	count = sys_read(file, (char __user *)header, buf_len);
+
+	result = count < OS_AREA_SEGMENT_SIZE || verify_header(header)
+		|| count < header->db_area_offset * OS_AREA_SEGMENT_SIZE;
+
+	if (result) {
+		pr_debug("%s:%d verify_header failed\n", __func__, __LINE__);
 		dump_header(header);
-		error = -EINVAL;
-		goto fail;
+		goto fail_header;
 	}
 
 	/* Now got a good db offset and some maybe good db data. */
 
-	db = (void *)header + pos;
+	db = (void*)header + header->db_area_offset * OS_AREA_SEGMENT_SIZE;
 
-	error = db_verify(db);
-	if (error) {
-		pr_notice("%s: Verify of flash database failed, formatting.\n",
-			  __func__);
+	result = db_verify(db);
+
+	if (result) {
+		printk(KERN_NOTICE "%s:%d: Verify of flash database failed, "
+			"formatting.\n", __func__, __LINE__);
 		dump_db(db);
 		os_area_db_init(db);
 	}
@@ -667,16 +639,29 @@ static int update_flash_db(void)
 
 	db_set_64(db, &os_area_db_id_rtc_diff, saved_params.rtc_diff);
 
-	count = os_area_flash_write(db, sizeof(struct os_area_db), pos);
-	if (count < sizeof(struct os_area_db)) {
-		pr_debug("%s: os_area_flash_write failed %zd\n", __func__,
-			 count);
-		error = count < 0 ? count : -EIO;
+	offset = sys_lseek(file, header->db_area_offset * OS_AREA_SEGMENT_SIZE,
+		SEEK_SET);
+
+	if (offset != header->db_area_offset * OS_AREA_SEGMENT_SIZE) {
+		pr_debug("%s:%d sys_lseek failed\n", __func__, __LINE__);
+		goto fail_db_seek;
 	}
 
-fail:
+	count = sys_write(file, (const char __user *)db,
+		sizeof(struct os_area_db));
+
+	if (count < sizeof(struct os_area_db)) {
+		pr_debug("%s:%d sys_write failed\n", __func__, __LINE__);
+	}
+
+fail_db_seek:
+fail_header:
+fail_header_seek:
 	kfree(header);
-	return error;
+fail_malloc:
+	sys_close(file);
+fail_open:
+	return;
 }
 
 /**
@@ -689,11 +674,11 @@ fail:
 static void os_area_queue_work_handler(struct work_struct *work)
 {
 	struct device_node *node;
-	int error;
 
 	pr_debug(" -> %s:%d\n", __func__, __LINE__);
 
 	node = of_find_node_by_path("/");
+
 	if (node) {
 		os_area_set_property(node, &property_rtc_diff);
 		of_node_put(node);
@@ -701,10 +686,12 @@ static void os_area_queue_work_handler(struct work_struct *work)
 		pr_debug("%s:%d of_find_node_by_path failed\n",
 			__func__, __LINE__);
 
-	error = update_flash_db();
-	if (error)
-		pr_warning("%s: Could not update FLASH ROM\n", __func__);
-
+#if defined(CONFIG_PS3_FLASH) || defined(CONFIG_PS3_FLASH_MODULE)
+	update_flash_db();
+#else
+	printk(KERN_WARNING "%s:%d: No flash rom driver configured.\n",
+		__func__, __LINE__);
+#endif
 	pr_debug(" <- %s:%d\n", __func__, __LINE__);
 }
 
@@ -723,7 +710,7 @@ static void os_area_queue_work(void)
  * flash to a high address in the boot memory region and then puts that RAM
  * address and the byte count into the repository for retrieval by the guest.
  * We copy the data we want into a static variable and allow the memory setup
- * by the HV to be claimed by the memblock manager.
+ * by the HV to be claimed by the lmb manager.
  *
  * The os area mirror will not be available to a second stage kernel, and
  * the header verify will fail.  In this case, the saved_params values will
@@ -821,7 +808,6 @@ u64 ps3_os_area_get_rtc_diff(void)
 {
 	return saved_params.rtc_diff;
 }
-EXPORT_SYMBOL_GPL(ps3_os_area_get_rtc_diff);
 
 /**
  * ps3_os_area_set_rtc_diff - Set the rtc diff value.
@@ -837,7 +823,6 @@ void ps3_os_area_set_rtc_diff(u64 rtc_diff)
 		os_area_queue_work();
 	}
 }
-EXPORT_SYMBOL_GPL(ps3_os_area_set_rtc_diff);
 
 /**
  * ps3_os_area_get_av_multi_out - Returns the default video mode.

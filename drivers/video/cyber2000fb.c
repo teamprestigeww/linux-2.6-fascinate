@@ -46,8 +46,8 @@
 #include <linux/fb.h>
 #include <linux/pci.h>
 #include <linux/init.h>
-#include <linux/io.h>
 
+#include <asm/io.h>
 #include <asm/pgtable.h>
 #include <asm/system.h>
 
@@ -388,7 +388,6 @@ cyber2000fb_setcolreg(u_int regno, u_int red, u_int green, u_int blue,
 		pseudo_val |= convert_bitfield(red, &var->red);
 		pseudo_val |= convert_bitfield(green, &var->green);
 		pseudo_val |= convert_bitfield(blue, &var->blue);
-		ret = 0;
 		break;
 	}
 
@@ -437,8 +436,6 @@ static void cyber2000fb_write_ramdac_ctrl(struct cfb_info *cfb)
 	cyber2000fb_writeb(i | 4, 0x3cf, cfb);
 	cyber2000fb_writeb(val, 0x3c6, cfb);
 	cyber2000fb_writeb(i, 0x3cf, cfb);
-	/* prevent card lock-up observed on x86 with CyberPro 2000 */
-	cyber2000fb_readb(0x3cf, cfb);
 }
 
 static void cyber2000fb_set_timing(struct cfb_info *cfb, struct par_info *hw)
@@ -1428,7 +1425,7 @@ static void cyberpro_common_resume(struct cfb_info *cfb)
 
 #ifdef CONFIG_ARCH_SHARK
 
-#include <mach/framebuffer.h>
+#include <mach/hardware.h>
 
 static int __devinit cyberpro_vl_probe(void)
 {
@@ -1576,14 +1573,14 @@ cyberpro_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	if (err)
 		return err;
 
+	err = pci_request_regions(dev, name);
+	if (err)
+		return err;
+
 	err = -ENOMEM;
 	cfb = cyberpro_alloc_fb_info(id->driver_data, name);
 	if (!cfb)
 		goto failed_release;
-
-	err = pci_request_regions(dev, cfb->fb.fix.id);
-	if (err)
-		goto failed_regions;
 
 	cfb->dev = dev;
 	cfb->region = pci_ioremap_bar(dev, 0);
@@ -1636,10 +1633,10 @@ cyberpro_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 failed:
 	iounmap(cfb->region);
 failed_ioremap:
-	pci_release_regions(dev);
-failed_regions:
 	cyberpro_free_fb_info(cfb);
 failed_release:
+	pci_release_regions(dev);
+
 	return err;
 }
 
@@ -1739,8 +1736,10 @@ static int __init cyber2000fb_init(void)
 
 #ifdef CONFIG_ARCH_SHARK
 	err = cyberpro_vl_probe();
-	if (!err)
+	if (!err) {
 		ret = 0;
+		__module_get(THIS_MODULE);
+	}
 #endif
 #ifdef CONFIG_PCI
 	err = pci_register_driver(&cyberpro_driver);
@@ -1750,15 +1749,14 @@ static int __init cyber2000fb_init(void)
 
 	return ret ? err : 0;
 }
-module_init(cyber2000fb_init);
 
-#ifndef CONFIG_ARCH_SHARK
 static void __exit cyberpro_exit(void)
 {
 	pci_unregister_driver(&cyberpro_driver);
 }
+
+module_init(cyber2000fb_init);
 module_exit(cyberpro_exit);
-#endif
 
 MODULE_AUTHOR("Russell King");
 MODULE_DESCRIPTION("CyberPro 2000, 2010 and 5000 framebuffer driver");

@@ -46,7 +46,7 @@
 
 struct mthca_buf_list {
 	void *buf;
-	DEFINE_DMA_UNMAP_ADDR(mapping);
+	DECLARE_PCI_UNMAP_ADDR(mapping)
 };
 
 union mthca_buf {
@@ -113,7 +113,6 @@ struct mthca_eq {
 	int                    nent;
 	struct mthca_buf_list *page_list;
 	struct mthca_mr        mr;
-	char		       irq_name[IB_DEVICE_NAME_MAX];
 };
 
 struct mthca_av;

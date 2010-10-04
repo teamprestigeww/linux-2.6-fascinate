@@ -1,17 +1,32 @@
 /*
- * BF561 coreB bootstrap file
+ * File:         arch/blackfin/mach-bf561/secondary.S
+ * Based on:     arch/blackfin/mach-bf561/head.S
+ * Author:       Philippe Gerum <rpm@xenomai.org>
  *
- * Copyright 2007-2009 Analog Devices Inc.
- *               Philippe Gerum <rpm@xenomai.org>
+ *               Copyright 2007 Analog Devices Inc.
  *
- * Licensed under the GPL-2 or later.
+ * Description:  BF561 coreB bootstrap file
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see the file COPYING, or write
+ * to the Free Software Foundation, Inc.,
+ * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <asm/blackfin.h>
 #include <asm/asm-offsets.h>
-#include <asm/trace.h>
 
 __INIT
 
@@ -63,8 +78,6 @@ ENTRY(_coreb_trampoline_start)
 	M2 = r0;
 	M3 = r0;
 
-	trace_buffer_init(p0,r0);
-
 	/* Turn off the icache */
 	p0.l = LO(IMEM_CONTROL);
 	p0.h = HI(IMEM_CONTROL);
@@ -72,10 +85,16 @@ ENTRY(_coreb_trampoline_start)
 	R0 = ~ENICPLB;
 	R0 = R0 & R1;
 
-	/* Disabling of CPLBs should be proceeded by a CSYNC */
-	CSYNC;
+	/* Anomaly 05000125 */
+#ifdef ANOMALY_05000125
+	CLI R2;
+	SSYNC;
+#endif
 	[p0] = R0;
 	SSYNC;
+#ifdef ANOMALY_05000125
+	STI R2;
+#endif
 
 	/* Turn off the dcache */
 	p0.l = LO(DMEM_CONTROL);
@@ -84,10 +103,16 @@ ENTRY(_coreb_trampoline_start)
 	R0 = ~ENDCPLB;
 	R0 = R0 & R1;
 
-	/* Disabling of CPLBs should be proceeded by a CSYNC */
-	CSYNC;
+	/* Anomaly 05000125 */
+#ifdef ANOMALY_05000125
+	CLI R2;
+	SSYNC;
+#endif
 	[p0] = R0;
 	SSYNC;
+#ifdef ANOMALY_05000125
+	STI R2;
+#endif
 
 	/* in case of double faults, save a few things */
 	p0.l = _init_retx_coreb;
@@ -101,22 +126,22 @@ ENTRY(_coreb_trampoline_start)
 	 * below
 	 */
 	GET_PDA(p0, r0);
-	r7 = [p0 + PDA_DF_RETX];
+	r7 = [p0 + PDA_RETX];
 	p1.l = _init_saved_retx_coreb;
 	p1.h = _init_saved_retx_coreb;
 	[p1] = r7;
 
-	r7 = [p0 + PDA_DF_DCPLB];
+	r7 = [p0 + PDA_DCPLB];
 	p1.l = _init_saved_dcplb_fault_addr_coreb;
 	p1.h = _init_saved_dcplb_fault_addr_coreb;
 	[p1] = r7;
 
-	r7 = [p0 + PDA_DF_ICPLB];
+	r7 = [p0 + PDA_ICPLB];
 	p1.l = _init_saved_icplb_fault_addr_coreb;
 	p1.h = _init_saved_icplb_fault_addr_coreb;
 	[p1] = r7;
 
-	r7 = [p0 + PDA_DF_SEQSTAT];
+	r7 = [p0 + PDA_SEQSTAT];
 	p1.l = _init_saved_seqstat_coreb;
 	p1.h = _init_saved_seqstat_coreb;
 	[p1] = r7;
@@ -162,41 +187,6 @@ ENTRY(_coreb_trampoline_start)
 ENDPROC(_coreb_trampoline_start)
 ENTRY(_coreb_trampoline_end)
 
-.section ".text"
-ENTRY(_set_sicb_iwr)
-	P0.H = hi(SICB_IWR0);
-	P0.L = lo(SICB_IWR0);
-	P1.H = hi(SICB_IWR1);
-	P1.L = lo(SICB_IWR1);
-	[P0] = R0;
-	[P1] = R1;
-	SSYNC;
-	RTS;
-ENDPROC(_set_sicb_iwr)
-
-ENTRY(_coreb_sleep)
-	sp.l = lo(INITIAL_STACK);
-	sp.h = hi(INITIAL_STACK);
-	fp = sp;
-	usp = sp;
-
-	call _set_sicb_iwr;
-
-	CLI R2;
-	SSYNC;
-	IDLE;
-	STI R2;
-
-	R0 = IWR_DISABLE_ALL;
-	R1 = IWR_DISABLE_ALL;
-	call _set_sicb_iwr;
-
-	p0.h = hi(COREB_L1_CODE_START);
-	p0.l = lo(COREB_L1_CODE_START);
-	jump (p0);
-ENDPROC(_coreb_sleep)
-
-__CPUINIT
 ENTRY(_coreb_start)
 	[--sp] = reti;
 
@@ -214,20 +204,12 @@ ENTRY(_coreb_start)
 	sp = [p0];
 	usp = sp;
 	fp = sp;
-#ifdef CONFIG_HOTPLUG_CPU
-	p0.l = _hotplug_coreb;
-	p0.h = _hotplug_coreb;
-	r0 = [p0];
-	cc = BITTST(r0, 0);
-	if cc jump 3f;
-#endif
 	sp += -12;
 	call _init_pda
 	sp += 12;
-#ifdef CONFIG_HOTPLUG_CPU
-3:
-#endif
 	call _secondary_start_kernel;
 .L_exit:
 	jump.s	.L_exit;
 ENDPROC(_coreb_start)
+
+__FINIT

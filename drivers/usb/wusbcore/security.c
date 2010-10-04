@@ -23,7 +23,6 @@
  * FIXME: docs
  */
 #include <linux/types.h>
-#include <linux/slab.h>
 #include <linux/usb/ch9.h>
 #include <linux/random.h>
 #include "wusbhc.h"
@@ -201,40 +200,35 @@ int wusb_dev_sec_add(struct wusbhc *wusbhc,
 {
 	int result, bytes, secd_size;
 	struct device *dev = &usb_dev->dev;
-	struct usb_security_descriptor *secd;
+	struct usb_security_descriptor secd;
 	const struct usb_encryption_descriptor *etd, *ccm1_etd = NULL;
+	void *secd_buf;
 	const void *itr, *top;
 	char buf[64];
 
-	secd = kmalloc(sizeof(*secd), GFP_KERNEL);
-	if (secd == NULL) {
-		result = -ENOMEM;
-		goto out;
-	}
-
 	result = usb_get_descriptor(usb_dev, USB_DT_SECURITY,
-				    0, secd, sizeof(*secd));
-	if (result < sizeof(*secd)) {
+				    0, &secd, sizeof(secd));
+	if (result < sizeof(secd)) {
 		dev_err(dev, "Can't read security descriptor or "
 			"not enough data: %d\n", result);
-		goto out;
+		goto error_secd;
 	}
-	secd_size = le16_to_cpu(secd->wTotalLength);
-	secd = krealloc(secd, secd_size, GFP_KERNEL);
-	if (secd == NULL) {
+	secd_size = le16_to_cpu(secd.wTotalLength);
+	secd_buf = kmalloc(secd_size, GFP_KERNEL);
+	if (secd_buf == NULL) {
 		dev_err(dev, "Can't allocate space for security descriptors\n");
-		goto out;
+		goto error_secd_alloc;
 	}
 	result = usb_get_descriptor(usb_dev, USB_DT_SECURITY,
-				    0, secd, secd_size);
+				    0, secd_buf, secd_size);
 	if (result < secd_size) {
 		dev_err(dev, "Can't read security descriptor or "
 			"not enough data: %d\n", result);
-		goto out;
+		goto error_secd_all;
 	}
 	bytes = 0;
-	itr = &secd[1];
-	top = (void *)secd + result;
+	itr = secd_buf + sizeof(secd);
+	top = secd_buf + result;
 	while (itr < top) {
 		etd = itr;
 		if (top - itr < sizeof(*etd)) {
@@ -265,16 +259,24 @@ int wusb_dev_sec_add(struct wusbhc *wusbhc,
 		dev_err(dev, "WUSB device doesn't support CCM1 encryption, "
 			"can't use!\n");
 		result = -EINVAL;
-		goto out;
+		goto error_no_ccm1;
 	}
 	wusb_dev->ccm1_etd = *ccm1_etd;
 	dev_dbg(dev, "supported encryption: %s; using %s (0x%02x/%02x)\n",
 		buf, wusb_et_name(ccm1_etd->bEncryptionType),
 		ccm1_etd->bEncryptionValue, ccm1_etd->bAuthKeyIndex);
 	result = 0;
+	kfree(secd_buf);
 out:
-	kfree(secd);
 	return result;
+
+
+error_no_ccm1:
+error_secd_all:
+	kfree(secd_buf);
+error_secd_alloc:
+error_secd:
+	goto out;
 }
 
 void wusb_dev_sec_rm(struct wusb_dev *wusb_dev)
@@ -310,7 +312,6 @@ int wusb_dev_update_address(struct wusbhc *wusbhc, struct wusb_dev *wusb_dev)
 	result = wusb_set_dev_addr(wusbhc, wusb_dev, 0);
 	if (result < 0)
 		goto error_addr0;
-	usb_set_device_state(usb_dev, USB_STATE_DEFAULT);
 	usb_ep0_reinit(usb_dev);
 
 	/* Set new (authenticated) address. */
@@ -326,7 +327,6 @@ int wusb_dev_update_address(struct wusbhc *wusbhc, struct wusb_dev *wusb_dev)
 	result = wusb_set_dev_addr(wusbhc, wusb_dev, new_address);
 	if (result < 0)
 		goto error_addr;
-	usb_set_device_state(usb_dev, USB_STATE_ADDRESS);
 	usb_ep0_reinit(usb_dev);
 	usb_dev->authenticated = 1;
 error_addr:
@@ -560,7 +560,7 @@ void wusbhc_gtk_rekey(struct wusbhc *wusbhc)
 		struct wusb_dev *wusb_dev;
 
 		wusb_dev = wusbhc->port[p].wusb_dev;
-		if (!wusb_dev || !wusb_dev->usb_dev || !wusb_dev->usb_dev->authenticated)
+		if (!wusb_dev || !wusb_dev->usb_dev | !wusb_dev->usb_dev->authenticated)
 			continue;
 
 		usb_fill_control_urb(wusb_dev->set_gtk_urb, wusb_dev->usb_dev,

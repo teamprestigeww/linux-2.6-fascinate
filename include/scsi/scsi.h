@@ -9,8 +9,7 @@
 #define _SCSI_SCSI_H
 
 #include <linux/types.h>
-
-struct scsi_cmnd;
+#include <scsi/scsi_cmnd.h>
 
 /*
  * The maximum number of SG segments that we will put inside a
@@ -94,7 +93,6 @@ struct scsi_cmnd;
 #define WRITE_LONG            0x3f
 #define CHANGE_DEFINITION     0x40
 #define WRITE_SAME            0x41
-#define UNMAP		      0x42
 #define READ_TOC              0x43
 #define LOG_SELECT            0x4c
 #define LOG_SENSE             0x4d
@@ -114,7 +112,6 @@ struct scsi_cmnd;
 #define READ_12               0xa8
 #define WRITE_12              0xaa
 #define WRITE_VERIFY_12       0xae
-#define VERIFY_12	      0xaf
 #define SEARCH_HIGH_12        0xb0
 #define SEARCH_EQUAL_12       0xb1
 #define SEARCH_LOW_12         0xb2
@@ -124,20 +121,13 @@ struct scsi_cmnd;
 #define READ_16               0x88
 #define WRITE_16              0x8a
 #define VERIFY_16	      0x8f
-#define WRITE_SAME_16	      0x93
 #define SERVICE_ACTION_IN     0x9e
 /* values for service action in */
 #define	SAI_READ_CAPACITY_16  0x10
-#define SAI_GET_LBA_STATUS    0x12
 /* values for maintenance in */
 #define MI_REPORT_TARGET_PGS  0x0a
 /* values for maintenance out */
 #define MO_SET_TARGET_PGS     0x0a
-/* values for variable length command */
-#define READ_32		      0x09
-#define VERIFY_32	      0x0a
-#define WRITE_32	      0x0b
-#define WRITE_SAME_32	      0x0d
 
 /* Values for T10/04-262r7 */
 #define	ATA_16		      0x85	/* 16-byte pass-thru */
@@ -151,10 +141,10 @@ struct scsi_cmnd;
 
 /* defined in T10 SCSI Primary Commands-2 (SPC2) */
 struct scsi_varlen_cdb_hdr {
-	__u8 opcode;        /* opcode always == VARIABLE_LENGTH_CMD */
-	__u8 control;
-	__u8 misc[5];
-	__u8 additional_cdb_length;         /* total cdb length - 8 */
+	u8 opcode;        /* opcode always == VARIABLE_LENGTH_CMD */
+	u8 control;
+	u8 misc[5];
+	u8 additional_cdb_length;         /* total cdb length - 8 */
 	__be16 service_action;
 	/* service specific data follows */
 };
@@ -273,7 +263,6 @@ static inline int scsi_status_is_good(int status)
 #define TYPE_RAID           0x0c
 #define TYPE_ENCLOSURE      0x0d    /* Enclosure Services Device */
 #define TYPE_RBC	    0x0e
-#define TYPE_OSD            0x11
 #define TYPE_NO_LUN         0x7f
 
 /* SCSI protocols; these are taken from SPC-3 section 7.5 */
@@ -413,6 +402,16 @@ static inline int scsi_is_wlun(unsigned int lun)
 #define DRIVER_HARD         0x07
 #define DRIVER_SENSE	    0x08
 
+#define SUGGEST_RETRY       0x10
+#define SUGGEST_ABORT       0x20
+#define SUGGEST_REMAP       0x30
+#define SUGGEST_DIE         0x40
+#define SUGGEST_SENSE       0x80
+#define SUGGEST_IS_OK       0xff
+
+#define DRIVER_MASK         0x0f
+#define SUGGEST_MASK        0xf0
+
 /*
  * Internal return values.
  */
@@ -425,7 +424,6 @@ static inline int scsi_is_wlun(unsigned int lun)
 #define ADD_TO_MLQUEUE  0x2006
 #define TIMEOUT_ERROR   0x2007
 #define SCSI_RETURN_NOT_HANDLED   0x2008
-#define FAST_IO_FAIL	0x2009
 
 /*
  * Midlevel queue return values.
@@ -449,6 +447,23 @@ static inline int scsi_is_wlun(unsigned int lun)
 #define msg_byte(result)    (((result) >> 8) & 0xff)
 #define host_byte(result)   (((result) >> 16) & 0xff)
 #define driver_byte(result) (((result) >> 24) & 0xff)
+#define suggestion(result)  (driver_byte(result) & SUGGEST_MASK)
+
+static inline void set_msg_byte(struct scsi_cmnd *cmd, char status)
+{
+	cmd->result |= status << 8;
+}
+
+static inline void set_host_byte(struct scsi_cmnd *cmd, char status)
+{
+	cmd->result |= status << 16;
+}
+
+static inline void set_driver_byte(struct scsi_cmnd *cmd, char status)
+{
+	cmd->result |= status << 24;
+}
+
 
 #define sense_class(sense)  (((sense) >> 4) & 0x7)
 #define sense_error(sense)  ((sense) & 0xf)

@@ -24,7 +24,7 @@
 #define dummy_read()
 #endif
 
-unsigned long generic_io_base = 0;
+unsigned long generic_io_base;
 
 u8 generic_inb(unsigned long port)
 {
@@ -73,19 +73,35 @@ u32 generic_inl_p(unsigned long port)
 
 void generic_insb(unsigned long port, void *dst, unsigned long count)
 {
-	__raw_readsb(__ioport_map(port, 1), dst, count);
-	dummy_read();
+	volatile u8 *port_addr;
+	u8 *buf = dst;
+
+	port_addr = (volatile u8 __force *)__ioport_map(port, 1);
+	while (count--)
+		*buf++ = *port_addr;
 }
 
 void generic_insw(unsigned long port, void *dst, unsigned long count)
 {
-	__raw_readsw(__ioport_map(port, 2), dst, count);
+	volatile u16 *port_addr;
+	u16 *buf = dst;
+
+	port_addr = (volatile u16 __force *)__ioport_map(port, 2);
+	while (count--)
+		*buf++ = *port_addr;
+
 	dummy_read();
 }
 
 void generic_insl(unsigned long port, void *dst, unsigned long count)
 {
-	__raw_readsl(__ioport_map(port, 4), dst, count);
+	volatile u32 *port_addr;
+	u32 *buf = dst;
+
+	port_addr = (volatile u32 __force *)__ioport_map(port, 4);
+	while (count--)
+		*buf++ = *port_addr;
+
 	dummy_read();
 }
 
@@ -129,52 +145,45 @@ void generic_outl_p(u32 b, unsigned long port)
  */
 void generic_outsb(unsigned long port, const void *src, unsigned long count)
 {
-	__raw_writesb(__ioport_map(port, 1), src, count);
-	dummy_read();
+	volatile u8 *port_addr;
+	const u8 *buf = src;
+
+	port_addr = (volatile u8 __force *)__ioport_map(port, 1);
+
+	while (count--)
+		*port_addr = *buf++;
 }
 
 void generic_outsw(unsigned long port, const void *src, unsigned long count)
 {
-	__raw_writesw(__ioport_map(port, 2), src, count);
+	volatile u16 *port_addr;
+	const u16 *buf = src;
+
+	port_addr = (volatile u16 __force *)__ioport_map(port, 2);
+
+	while (count--)
+		*port_addr = *buf++;
+
 	dummy_read();
 }
 
 void generic_outsl(unsigned long port, const void *src, unsigned long count)
 {
-	__raw_writesl(__ioport_map(port, 4), src, count);
+	volatile u32 *port_addr;
+	const u32 *buf = src;
+
+	port_addr = (volatile u32 __force *)__ioport_map(port, 4);
+	while (count--)
+		*port_addr = *buf++;
+
 	dummy_read();
 }
 
 void __iomem *generic_ioport_map(unsigned long addr, unsigned int size)
 {
-#ifdef P1SEG
-	if (PXSEG(addr) >= P1SEG)
-		return (void __iomem *)addr;
-#endif
-
 	return (void __iomem *)(addr + generic_io_base);
 }
 
 void generic_ioport_unmap(void __iomem *addr)
 {
 }
-
-#ifndef CONFIG_GENERIC_IOMAP
-void __iomem *ioport_map(unsigned long port, unsigned int nr)
-{
-	void __iomem *ret;
-
-	ret = __ioport_map_trapped(port, nr);
-	if (ret)
-		return ret;
-
-	return __ioport_map(port, nr);
-}
-EXPORT_SYMBOL(ioport_map);
-
-void ioport_unmap(void __iomem *addr)
-{
-	sh_mv.mv_ioport_unmap(addr);
-}
-EXPORT_SYMBOL(ioport_unmap);
-#endif /* CONFIG_GENERIC_IOMAP */

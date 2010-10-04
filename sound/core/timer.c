@@ -393,7 +393,7 @@ static void snd_timer_notify1(struct snd_timer_instance *ti, int event)
 	    event == SNDRV_TIMER_EVENT_CONTINUE)
 		resolution = snd_timer_resolution(ti);
 	if (ti->ccallback)
-		ti->ccallback(ti, event, &tstamp, resolution);
+		ti->ccallback(ti, SNDRV_TIMER_EVENT_START, &tstamp, resolution);
 	if (ti->flags & SNDRV_TIMER_IFLG_SLAVE)
 		return;
 	timer = ti->timer;
@@ -1160,7 +1160,6 @@ static void snd_timer_user_ccallback(struct snd_timer_instance *timeri,
 {
 	struct snd_timer_user *tu = timeri->callback_data;
 	struct snd_timer_tread r1;
-	unsigned long flags;
 
 	if (event >= SNDRV_TIMER_EVENT_START &&
 	    event <= SNDRV_TIMER_EVENT_PAUSE)
@@ -1170,9 +1169,9 @@ static void snd_timer_user_ccallback(struct snd_timer_instance *timeri,
 	r1.event = event;
 	r1.tstamp = *tstamp;
 	r1.val = resolution;
-	spin_lock_irqsave(&tu->qlock, flags);
+	spin_lock(&tu->qlock);
 	snd_timer_user_append_to_tqueue(tu, &r1);
-	spin_unlock_irqrestore(&tu->qlock, flags);
+	spin_unlock(&tu->qlock);
 	kill_fasync(&tu->fasync, SIGIO, POLL_IN);
 	wake_up(&tu->qchange_sleep);
 }
@@ -1238,11 +1237,6 @@ static void snd_timer_user_tinterrupt(struct snd_timer_instance *timeri,
 static int snd_timer_user_open(struct inode *inode, struct file *file)
 {
 	struct snd_timer_user *tu;
-	int err;
-
-	err = nonseekable_open(inode, file);
-	if (err < 0)
-		return err;
 
 	tu = kzalloc(sizeof(*tu), GFP_KERNEL);
 	if (tu == NULL)
@@ -1401,10 +1395,13 @@ static int snd_timer_user_ginfo(struct file *file,
 	struct list_head *p;
 	int err = 0;
 
-	ginfo = memdup_user(_ginfo, sizeof(*ginfo));
-	if (IS_ERR(ginfo))
-		return PTR_ERR(ginfo);
-
+	ginfo = kmalloc(sizeof(*ginfo), GFP_KERNEL);
+	if (! ginfo)
+		return -ENOMEM;
+	if (copy_from_user(ginfo, _ginfo, sizeof(*ginfo))) {
+		kfree(ginfo);
+		return -EFAULT;
+	}
 	tid = ginfo->tid;
 	memset(ginfo, 0, sizeof(*ginfo));
 	ginfo->tid = tid;
@@ -1828,9 +1825,13 @@ static long snd_timer_user_ioctl(struct file *file, unsigned int cmd,
 static int snd_timer_user_fasync(int fd, struct file * file, int on)
 {
 	struct snd_timer_user *tu;
+	int err;
 
 	tu = file->private_data;
-	return fasync_helper(fd, file, on, &tu->fasync);
+	err = fasync_helper(fd, file, on, &tu->fasync);
+        if (err < 0)
+		return err;
+	return 0;
 }
 
 static ssize_t snd_timer_user_read(struct file *file, char __user *buffer,
@@ -1927,7 +1928,6 @@ static const struct file_operations snd_timer_f_ops =
 	.read =		snd_timer_user_read,
 	.open =		snd_timer_user_open,
 	.release =	snd_timer_user_release,
-	.llseek =	no_llseek,
 	.poll =		snd_timer_user_poll,
 	.unlocked_ioctl =	snd_timer_user_ioctl,
 	.compat_ioctl =	snd_timer_user_ioctl_compat,

@@ -11,6 +11,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/time.h>
@@ -43,6 +44,7 @@ static irqreturn_t timebase_interrupt(int irq, void *dev)
 
 static struct irqaction tbint_irqaction = {
 	.handler = timebase_interrupt,
+	.mask = CPU_MASK_NONE,
 	.name = "tbint",
 };
 
@@ -221,7 +223,7 @@ static void cpm_cascade(unsigned int irq, struct irq_desc *desc)
 	int cascade_irq;
 
 	if ((cascade_irq = cpm_get_irq()) >= 0) {
-		struct irq_desc *cdesc = irq_to_desc(cascade_irq);
+		struct irq_desc *cdesc = irq_desc + cascade_irq;
 
 		generic_handle_irq(cascade_irq);
 		cdesc->chip->eoi(cascade_irq);

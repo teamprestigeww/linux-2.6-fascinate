@@ -15,9 +15,6 @@
 #include <linux/mtd/physmap.h>
 #include <linux/mv643xx_eth.h>
 #include <linux/ethtool.h>
-#include <linux/leds.h>
-#include <linux/gpio_keys.h>
-#include <linux/input.h>
 #include <net/dsa.h>
 #include <asm/mach-types.h>
 #include <asm/gpio.h>
@@ -27,80 +24,6 @@
 #include "common.h"
 #include "mpp.h"
 
-/*
- * LEDs attached to GPIO
- */
-static struct gpio_led wrt350n_v2_led_pins[] = {
-	{
-		.name		= "wrt350nv2:green:power",
-		.gpio		= 0,
-		.active_low	= 1,
-	}, {
-		.name		= "wrt350nv2:green:security",
-		.gpio		= 1,
-		.active_low	= 1,
-	}, {
-		.name		= "wrt350nv2:orange:power",
-		.gpio		= 5,
-		.active_low	= 1,
-	}, {
-		.name		= "wrt350nv2:green:usb",
-		.gpio		= 6,
-		.active_low	= 1,
-	}, {
-		.name		= "wrt350nv2:green:wireless",
-		.gpio		= 7,
-		.active_low	= 1,
-	},
-};
-
-static struct gpio_led_platform_data wrt350n_v2_led_data = {
-	.leds		= wrt350n_v2_led_pins,
-	.num_leds	= ARRAY_SIZE(wrt350n_v2_led_pins),
-};
-
-static struct platform_device wrt350n_v2_leds = {
-	.name	= "leds-gpio",
-	.id	= -1,
-	.dev	= {
-		.platform_data	= &wrt350n_v2_led_data,
-	},
-};
-
-/*
- * Buttons attached to GPIO
- */
-static struct gpio_keys_button wrt350n_v2_buttons[] = {
-	{
-		.code		= KEY_RESTART,
-		.gpio		= 3,
-		.desc		= "Reset Button",
-		.active_low	= 1,
-	}, {
-		.code		= KEY_WPS_BUTTON,
-		.gpio		= 2,
-		.desc		= "WPS Button",
-		.active_low	= 1,
-	},
-};
-
-static struct gpio_keys_platform_data wrt350n_v2_button_data = {
-	.buttons	= wrt350n_v2_buttons,
-	.nbuttons	= ARRAY_SIZE(wrt350n_v2_buttons),
-};
-
-static struct platform_device wrt350n_v2_button_device = {
-	.name		= "gpio-keys",
-	.id		= -1,
-	.num_resources	= 0,
-	.dev		= {
-		.platform_data	= &wrt350n_v2_button_data,
-	},
-};
-
-/*
- * General setup
- */
 static struct orion5x_mpp_mode wrt350n_v2_mpp_modes[] __initdata = {
 	{  0, MPP_GPIO },		/* Power LED green (0=on) */
 	{  1, MPP_GPIO },		/* Security LED (0=on) */
@@ -183,18 +106,13 @@ static struct mv643xx_eth_platform_data wrt350n_v2_eth_data = {
 	.duplex		= DUPLEX_FULL,
 };
 
-static struct dsa_chip_data wrt350n_v2_switch_chip_data = {
+static struct dsa_platform_data wrt350n_v2_switch_data = {
 	.port_names[0]	= "lan2",
 	.port_names[1]	= "lan1",
 	.port_names[2]	= "wan",
 	.port_names[3]	= "cpu",
 	.port_names[5]	= "lan3",
 	.port_names[7]	= "lan4",
-};
-
-static struct dsa_platform_data wrt350n_v2_switch_plat_data = {
-	.nr_chips	= 1,
-	.chip		= &wrt350n_v2_switch_chip_data,
 };
 
 static void __init wrt350n_v2_init(void)
@@ -211,14 +129,12 @@ static void __init wrt350n_v2_init(void)
 	 */
 	orion5x_ehci0_init();
 	orion5x_eth_init(&wrt350n_v2_eth_data);
-	orion5x_eth_switch_init(&wrt350n_v2_switch_plat_data, NO_IRQ);
+	orion5x_eth_switch_init(&wrt350n_v2_switch_data, NO_IRQ);
 	orion5x_uart0_init();
 
 	orion5x_setup_dev_boot_win(WRT350N_V2_NOR_BOOT_BASE,
 				   WRT350N_V2_NOR_BOOT_SIZE);
 	platform_device_register(&wrt350n_v2_nor_flash);
-	platform_device_register(&wrt350n_v2_leds);
-	platform_device_register(&wrt350n_v2_button_device);
 }
 
 static int __init wrt350n_v2_pci_map_irq(struct pci_dev *dev, u8 slot, u8 pin)

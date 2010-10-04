@@ -20,7 +20,6 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/elf.h>
-#include <linux/slab.h>
 #include "pr_util.h"
 
 
@@ -186,7 +185,7 @@ struct vma_to_fileoffset_map *create_vma_map(const struct spu *aSpu,
 			goto fail;
 
 		if (shdr_str.sh_type != SHT_STRTAB)
-			goto fail;
+			goto fail;;
 
 		for (j = 0; j < shdr.sh_size / sizeof (sym); j++) {
 			if (copy_from_user(&sym, spu_elf_start +

@@ -184,10 +184,10 @@ void gru_flush_tlb_range(struct gru_mm_struct *gms, unsigned long start,
 			STAT(flush_tlb_gru_tgh);
 			asid = GRUASID(asid, start);
 			gru_dbg(grudev,
-	"  FLUSH gruid %d, asid 0x%x, vaddr 0x%lx, vamask 0x%x, num %ld, cbmap 0x%x\n",
-			      gid, asid, start, grupagesize, num, asids->mt_ctxbitmap);
+	"  FLUSH gruid %d, asid 0x%x, num %ld, cbmap 0x%x\n",
+				gid, asid, num, asids->mt_ctxbitmap);
 			tgh = get_lock_tgh_handle(gru);
-			tgh_invalidate(tgh, start, ~0, asid, grupagesize, 0,
+			tgh_invalidate(tgh, start, 0, asid, grupagesize, 0,
 				       num - 1, asids->mt_ctxbitmap);
 			get_unlock_tgh_handle(tgh);
 		} else {
@@ -210,10 +210,11 @@ void gru_flush_all_tlb(struct gru_state *gru)
 {
 	struct gru_tlb_global_handle *tgh;
 
-	gru_dbg(grudev, "gid %d\n", gru->gs_gid);
+	gru_dbg(grudev, "gru %p, gid %d\n", gru, gru->gs_gid);
 	tgh = get_lock_tgh_handle(gru);
-	tgh_invalidate(tgh, 0, ~0, 0, 1, 1, GRUMAXINVAL - 1, 0xffff);
+	tgh_invalidate(tgh, 0, ~0, 0, 1, 1, GRUMAXINVAL - 1, 0);
 	get_unlock_tgh_handle(tgh);
+	preempt_enable();
 }
 
 /*
@@ -299,7 +300,6 @@ struct gru_mm_struct *gru_register_mmu_notifier(void)
 {
 	struct gru_mm_struct *gms;
 	struct mmu_notifier *mn;
-	int err;
 
 	mn = mmu_find_ops(current->mm, &gru_mmuops);
 	if (mn) {
@@ -308,22 +308,16 @@ struct gru_mm_struct *gru_register_mmu_notifier(void)
 	} else {
 		gms = kzalloc(sizeof(*gms), GFP_KERNEL);
 		if (gms) {
-			STAT(gms_alloc);
 			spin_lock_init(&gms->ms_asid_lock);
 			gms->ms_notifier.ops = &gru_mmuops;
 			atomic_set(&gms->ms_refcnt, 1);
 			init_waitqueue_head(&gms->ms_wait_queue);
-			err = __mmu_notifier_register(&gms->ms_notifier, current->mm);
-			if (err)
-				goto error;
+			__mmu_notifier_register(&gms->ms_notifier, current->mm);
 		}
 	}
 	gru_dbg(grudev, "gms %p, refcnt %d\n", gms,
 		atomic_read(&gms->ms_refcnt));
 	return gms;
-error:
-	kfree(gms);
-	return ERR_PTR(err);
 }
 
 void gru_drop_mmu_notifier(struct gru_mm_struct *gms)
@@ -334,7 +328,6 @@ void gru_drop_mmu_notifier(struct gru_mm_struct *gms)
 		if (!gms->ms_released)
 			mmu_notifier_unregister(&gms->ms_notifier, current->mm);
 		kfree(gms);
-		STAT(gms_free);
 	}
 }
 

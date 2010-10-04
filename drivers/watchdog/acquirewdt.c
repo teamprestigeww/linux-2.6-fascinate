@@ -1,7 +1,7 @@
 /*
  *	Acquire Single Board Computer Watchdog Timer driver
  *
- *	Based on wdt.c. Original copyright messages:
+ *      Based on wdt.c. Original copyright messages:
  *
  *	(c) Copyright 1996 Alan Cox <alan@lxorguk.ukuu.org.uk>,
  *						All Rights Reserved.
@@ -17,9 +17,9 @@
  *
  *	(c) Copyright 1995    Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
- *	14-Dec-2001 Matt Domsch <Matt_Domsch@dell.com>
- *	    Added nowayout module option to override CONFIG_WATCHDOG_NOWAYOUT
- *	    Can't add timeout - driver doesn't allow changing value
+ *      14-Dec-2001 Matt Domsch <Matt_Domsch@dell.com>
+ *          Added nowayout module option to override CONFIG_WATCHDOG_NOWAYOUT
+ *          Can't add timeout - driver doesn't allow changing value
  */
 
 /*
@@ -150,7 +150,7 @@ static long acq_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	int options, retval = -EINVAL;
 	void __user *argp = (void __user *)arg;
 	int __user *p = argp;
-	static const struct watchdog_info ident = {
+	static struct watchdog_info ident = {
 		.options = WDIOF_KEEPALIVEPING | WDIOF_MAGICCLOSE,
 		.firmware_version = 1,
 		.identity = WATCHDOG_NAME,

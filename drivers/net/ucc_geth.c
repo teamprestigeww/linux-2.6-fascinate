@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2006-2009 Freescale Semicondutor, Inc. All rights reserved.
+ * Copyright (C) 2006-2007 Freescale Semicondutor, Inc. All rights reserved.
  *
  * Author: Shlomi Gridish <gridish@freescale.com>
  *	   Li Yang <leoli@freescale.com>
@@ -24,10 +24,10 @@
 #include <linux/spinlock.h>
 #include <linux/mm.h>
 #include <linux/dma-mapping.h>
+#include <linux/fsl_devices.h>
 #include <linux/mii.h>
 #include <linux/phy.h>
 #include <linux/workqueue.h>
-#include <linux/of_mdio.h>
 #include <linux/of_platform.h>
 
 #include <asm/uaccess.h>
@@ -37,10 +37,9 @@
 #include <asm/qe.h>
 #include <asm/ucc.h>
 #include <asm/ucc_fast.h>
-#include <asm/machdep.h>
 
 #include "ucc_geth.h"
-#include "fsl_pq_mdio.h"
+#include "ucc_geth_mii.h"
 
 #undef DEBUG
 
@@ -210,10 +209,9 @@ static struct sk_buff *get_new_skb(struct ucc_geth_private *ugeth,
 {
 	struct sk_buff *skb = NULL;
 
-	skb = __skb_dequeue(&ugeth->rx_recycle);
-	if (!skb)
-		skb = dev_alloc_skb(ugeth->ug_info->uf_info.max_rx_buf_length +
-				    UCC_GETH_RX_DATA_BUF_ALIGNMENT);
+	skb = dev_alloc_skb(ugeth->ug_info->uf_info.max_rx_buf_length +
+				  UCC_GETH_RX_DATA_BUF_ALIGNMENT);
+
 	if (skb == NULL)
 		return NULL;
 
@@ -225,10 +223,10 @@ static struct sk_buff *get_new_skb(struct ucc_geth_private *ugeth,
 		    (((unsigned)skb->data) & (UCC_GETH_RX_DATA_BUF_ALIGNMENT -
 					      1)));
 
-	skb->dev = ugeth->ndev;
+	skb->dev = ugeth->dev;
 
 	out_be32(&((struct qe_bd __iomem *)bd)->buf,
-		      dma_map_single(ugeth->dev,
+		      dma_map_single(&ugeth->dev->dev,
 				     skb->data,
 				     ugeth->ug_info->uf_info.max_rx_buf_length +
 				     UCC_GETH_RX_DATA_BUF_ALIGNMENT,
@@ -273,7 +271,7 @@ static int fill_init_enet_entries(struct ucc_geth_private *ugeth,
 				  u8 num_entries,
 				  u32 thread_size,
 				  u32 thread_alignment,
-				  unsigned int risc,
+				  enum qe_risc_allocation risc,
 				  int skip_page_for_first_entry)
 {
 	u32 init_enet_offset;
@@ -310,7 +308,7 @@ static int fill_init_enet_entries(struct ucc_geth_private *ugeth,
 static int return_init_enet_entries(struct ucc_geth_private *ugeth,
 				    u32 *p_start,
 				    u8 num_entries,
-				    unsigned int risc,
+				    enum qe_risc_allocation risc,
 				    int skip_page_for_first_entry)
 {
 	u32 init_enet_offset;
@@ -345,7 +343,7 @@ static int dump_init_enet_entries(struct ucc_geth_private *ugeth,
 				  u32 __iomem *p_start,
 				  u8 num_entries,
 				  u32 thread_size,
-				  unsigned int risc,
+				  enum qe_risc_allocation risc,
 				  int skip_page_for_first_entry)
 {
 	u32 init_enet_offset;
@@ -430,7 +428,7 @@ static void hw_add_addr_in_hash(struct ucc_geth_private *ugeth,
 	    ucc_fast_get_qe_cr_subblock(ugeth->ug_info->uf_info.ucc_num);
 
 	/* Ethernet frames are defined in Little Endian mode,
-	therefore to insert */
+	therefor to insert */
 	/* the address to the hash (Big Endian mode), we reverse the bytes.*/
 
 	set_mac_addr(&p_82xx_addr_filt->taddr.h, p_enet_addr);
@@ -438,6 +436,38 @@ static void hw_add_addr_in_hash(struct ucc_geth_private *ugeth,
 	qe_issue_cmd(QE_SET_GROUP_ADDRESS, cecr_subblock,
 		     QE_CR_PROTOCOL_ETHERNET, 0);
 }
+
+#ifdef CONFIG_UGETH_MAGIC_PACKET
+static void magic_packet_detection_enable(struct ucc_geth_private *ugeth)
+{
+	struct ucc_fast_private *uccf;
+	struct ucc_geth __iomem *ug_regs;
+
+	uccf = ugeth->uccf;
+	ug_regs = ugeth->ug_regs;
+
+	/* Enable interrupts for magic packet detection */
+	setbits32(uccf->p_uccm, UCC_GETH_UCCE_MPD);
+
+	/* Enable magic packet detection */
+	setbits32(&ug_regs->maccfg2, MACCFG2_MPE);
+}
+
+static void magic_packet_detection_disable(struct ucc_geth_private *ugeth)
+{
+	struct ucc_fast_private *uccf;
+	struct ucc_geth __iomem *ug_regs;
+
+	uccf = ugeth->uccf;
+	ug_regs = ugeth->ug_regs;
+
+	/* Disable interrupts for magic packet detection */
+	clrbits32(uccf->p_uccm, UCC_GETH_UCCE_MPD);
+
+	/* Disable magic packet detection */
+	clrbits32(&ug_regs->maccfg2, MACCFG2_MPE);
+}
+#endif /* MAGIC_PACKET */
 
 static inline int compare_addr(u8 **addr1, u8 **addr2)
 {
@@ -594,7 +624,7 @@ static void dump_regs(struct ucc_geth_private *ugeth)
 {
 	int i;
 
-	ugeth_info("UCC%d Geth registers:", ugeth->ug_info->uf_info.ucc_num + 1);
+	ugeth_info("UCC%d Geth registers:", ugeth->ug_info->uf_info.ucc_num);
 	ugeth_info("Base address: 0x%08x", (u32) ugeth->ug_regs);
 
 	ugeth_info("maccfg1    : addr - 0x%08x, val - 0x%08x",
@@ -1307,8 +1337,8 @@ static int init_max_rx_buff_len(u16 max_rx_buf_len,
 				u16 __iomem *mrblr_register)
 {
 	/* max_rx_buf_len value must be a multiple of 128 */
-	if ((max_rx_buf_len == 0) ||
-	    (max_rx_buf_len % UCC_GETH_MRBLR_ALIGNMENT))
+	if ((max_rx_buf_len == 0)
+	    || (max_rx_buf_len % UCC_GETH_MRBLR_ALIGNMENT))
 		return -EINVAL;
 
 	out_be16(mrblr_register, max_rx_buf_len);
@@ -1335,7 +1365,7 @@ static int adjust_enet_interface(struct ucc_geth_private *ugeth)
 	struct ucc_geth __iomem *ug_regs;
 	struct ucc_fast __iomem *uf_regs;
 	int ret_val;
-	u32 upsmr, maccfg2;
+	u32 upsmr, maccfg2, tbiBaseAddress;
 	u16 value;
 
 	ugeth_vdbg("%s: IN", __func__);
@@ -1365,8 +1395,7 @@ static int adjust_enet_interface(struct ucc_geth_private *ugeth)
 	    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII_RXID) ||
 	    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII_TXID) ||
 	    (ugeth->phy_interface == PHY_INTERFACE_MODE_RTBI)) {
-		if (ugeth->phy_interface != PHY_INTERFACE_MODE_RMII)
-			upsmr |= UCC_GETH_UPSMR_RPM;
+		upsmr |= UCC_GETH_UPSMR_RPM;
 		switch (ugeth->max_speed) {
 		case SPEED_10:
 			upsmr |= UCC_GETH_UPSMR_R10M;
@@ -1380,9 +1409,6 @@ static int adjust_enet_interface(struct ucc_geth_private *ugeth)
 	    (ugeth->phy_interface == PHY_INTERFACE_MODE_RTBI)) {
 		upsmr |= UCC_GETH_UPSMR_TBIM;
 	}
-	if ((ugeth->phy_interface == PHY_INTERFACE_MODE_SGMII))
-		upsmr |= UCC_GETH_UPSMR_SGMM;
-
 	out_be32(&uf_regs->upsmr, upsmr);
 
 	/* Disable autonegotiation in tbi mode, because by default it
@@ -1390,20 +1416,14 @@ static int adjust_enet_interface(struct ucc_geth_private *ugeth)
 	/* Note that this depends on proper setting in utbipar register. */
 	if ((ugeth->phy_interface == PHY_INTERFACE_MODE_TBI) ||
 	    (ugeth->phy_interface == PHY_INTERFACE_MODE_RTBI)) {
-		struct ucc_geth_info *ug_info = ugeth->ug_info;
-		struct phy_device *tbiphy;
-
-		if (!ug_info->tbi_node)
-			ugeth_warn("TBI mode requires that the device "
-				"tree specify a tbi-handle\n");
-
-		tbiphy = of_phy_find_device(ug_info->tbi_node);
-		if (!tbiphy)
-			ugeth_warn("Could not get TBI device\n");
-
-		value = phy_read(tbiphy, ENET_TBI_MII_CR);
+		tbiBaseAddress = in_be32(&ug_regs->utbipar);
+		tbiBaseAddress &= UTBIPAR_PHY_ADDRESS_MASK;
+		tbiBaseAddress >>= UTBIPAR_PHY_ADDRESS_SHIFT;
+		value = ugeth->phydev->bus->read(ugeth->phydev->bus,
+				(u8) tbiBaseAddress, ENET_TBI_MII_CR);
 		value &= ~0x1000;	/* Turn off autonegotiation */
-		phy_write(tbiphy, ENET_TBI_MII_CR, value);
+		ugeth->phydev->bus->write(ugeth->phydev->bus,
+				(u8) tbiBaseAddress, ENET_TBI_MII_CR, value);
 	}
 
 	init_check_frame_length_mode(ug_info->lengthCheckRx, &ug_regs->maccfg2);
@@ -1418,6 +1438,135 @@ static int adjust_enet_interface(struct ucc_geth_private *ugeth)
 
 	return 0;
 }
+
+/* Called every time the controller might need to be made
+ * aware of new link state.  The PHY code conveys this
+ * information through variables in the ugeth structure, and this
+ * function converts those variables into the appropriate
+ * register values, and can bring down the device if needed.
+ */
+
+static void adjust_link(struct net_device *dev)
+{
+	struct ucc_geth_private *ugeth = netdev_priv(dev);
+	struct ucc_geth __iomem *ug_regs;
+	struct ucc_fast __iomem *uf_regs;
+	struct phy_device *phydev = ugeth->phydev;
+	unsigned long flags;
+	int new_state = 0;
+
+	ug_regs = ugeth->ug_regs;
+	uf_regs = ugeth->uccf->uf_regs;
+
+	spin_lock_irqsave(&ugeth->lock, flags);
+
+	if (phydev->link) {
+		u32 tempval = in_be32(&ug_regs->maccfg2);
+		u32 upsmr = in_be32(&uf_regs->upsmr);
+		/* Now we make sure that we can be in full duplex mode.
+		 * If not, we operate in half-duplex mode. */
+		if (phydev->duplex != ugeth->oldduplex) {
+			new_state = 1;
+			if (!(phydev->duplex))
+				tempval &= ~(MACCFG2_FDX);
+			else
+				tempval |= MACCFG2_FDX;
+			ugeth->oldduplex = phydev->duplex;
+		}
+
+		if (phydev->speed != ugeth->oldspeed) {
+			new_state = 1;
+			switch (phydev->speed) {
+			case SPEED_1000:
+				tempval = ((tempval &
+					    ~(MACCFG2_INTERFACE_MODE_MASK)) |
+					    MACCFG2_INTERFACE_MODE_BYTE);
+				break;
+			case SPEED_100:
+			case SPEED_10:
+				tempval = ((tempval &
+					    ~(MACCFG2_INTERFACE_MODE_MASK)) |
+					    MACCFG2_INTERFACE_MODE_NIBBLE);
+				/* if reduced mode, re-set UPSMR.R10M */
+				if ((ugeth->phy_interface == PHY_INTERFACE_MODE_RMII) ||
+				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII) ||
+				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII_ID) ||
+				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII_RXID) ||
+				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII_TXID) ||
+				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RTBI)) {
+					if (phydev->speed == SPEED_10)
+						upsmr |= UCC_GETH_UPSMR_R10M;
+					else
+						upsmr &= ~UCC_GETH_UPSMR_R10M;
+				}
+				break;
+			default:
+				if (netif_msg_link(ugeth))
+					ugeth_warn(
+						"%s: Ack!  Speed (%d) is not 10/100/1000!",
+						dev->name, phydev->speed);
+				break;
+			}
+			ugeth->oldspeed = phydev->speed;
+		}
+
+		out_be32(&ug_regs->maccfg2, tempval);
+		out_be32(&uf_regs->upsmr, upsmr);
+
+		if (!ugeth->oldlink) {
+			new_state = 1;
+			ugeth->oldlink = 1;
+		}
+	} else if (ugeth->oldlink) {
+			new_state = 1;
+			ugeth->oldlink = 0;
+			ugeth->oldspeed = 0;
+			ugeth->oldduplex = -1;
+	}
+
+	if (new_state && netif_msg_link(ugeth))
+		phy_print_status(phydev);
+
+	spin_unlock_irqrestore(&ugeth->lock, flags);
+}
+
+/* Configure the PHY for dev.
+ * returns 0 if success.  -1 if failure
+ */
+static int init_phy(struct net_device *dev)
+{
+	struct ucc_geth_private *priv = netdev_priv(dev);
+	struct ucc_geth_info *ug_info = priv->ug_info;
+	struct phy_device *phydev;
+
+	priv->oldlink = 0;
+	priv->oldspeed = 0;
+	priv->oldduplex = -1;
+
+	phydev = phy_connect(dev, ug_info->phy_bus_id, &adjust_link, 0,
+			     priv->phy_interface);
+
+	if (IS_ERR(phydev)) {
+		printk("%s: Could not attach to PHY\n", dev->name);
+		return PTR_ERR(phydev);
+	}
+
+	phydev->supported &= (ADVERTISED_10baseT_Half |
+				 ADVERTISED_10baseT_Full |
+				 ADVERTISED_100baseT_Half |
+				 ADVERTISED_100baseT_Full);
+
+	if (priv->max_speed == SPEED_1000)
+		phydev->supported |= ADVERTISED_1000baseT_Full;
+
+	phydev->advertising = phydev->supported;
+
+	priv->phydev = phydev;
+
+	return 0;
+}
+
+
 
 static int ugeth_graceful_stop_tx(struct ucc_geth_private *ugeth)
 {
@@ -1449,7 +1598,7 @@ static int ugeth_graceful_stop_tx(struct ucc_geth_private *ugeth)
 	return 0;
 }
 
-static int ugeth_graceful_stop_rx(struct ucc_geth_private *ugeth)
+static int ugeth_graceful_stop_rx(struct ucc_geth_private * ugeth)
 {
 	struct ucc_fast_private *uccf;
 	u32 cecr_subblock;
@@ -1542,7 +1691,7 @@ static int ugeth_enable(struct ucc_geth_private *ugeth, enum comm_dir mode)
 
 }
 
-static int ugeth_disable(struct ucc_geth_private *ugeth, enum comm_dir mode)
+static int ugeth_disable(struct ucc_geth_private * ugeth, enum comm_dir mode)
 {
 	struct ucc_fast_private *uccf;
 
@@ -1564,213 +1713,6 @@ static int ugeth_disable(struct ucc_geth_private *ugeth, enum comm_dir mode)
 		ugeth_graceful_stop_rx(ugeth);
 
 	ucc_fast_disable(ugeth->uccf, mode); /* OK to do even if not enabled */
-
-	return 0;
-}
-
-static void ugeth_quiesce(struct ucc_geth_private *ugeth)
-{
-	/* Prevent any further xmits, plus detach the device. */
-	netif_device_detach(ugeth->ndev);
-
-	/* Wait for any current xmits to finish. */
-	netif_tx_disable(ugeth->ndev);
-
-	/* Disable the interrupt to avoid NAPI rescheduling. */
-	disable_irq(ugeth->ug_info->uf_info.irq);
-
-	/* Stop NAPI, and possibly wait for its completion. */
-	napi_disable(&ugeth->napi);
-}
-
-static void ugeth_activate(struct ucc_geth_private *ugeth)
-{
-	napi_enable(&ugeth->napi);
-	enable_irq(ugeth->ug_info->uf_info.irq);
-	netif_device_attach(ugeth->ndev);
-}
-
-/* Called every time the controller might need to be made
- * aware of new link state.  The PHY code conveys this
- * information through variables in the ugeth structure, and this
- * function converts those variables into the appropriate
- * register values, and can bring down the device if needed.
- */
-
-static void adjust_link(struct net_device *dev)
-{
-	struct ucc_geth_private *ugeth = netdev_priv(dev);
-	struct ucc_geth __iomem *ug_regs;
-	struct ucc_fast __iomem *uf_regs;
-	struct phy_device *phydev = ugeth->phydev;
-	int new_state = 0;
-
-	ug_regs = ugeth->ug_regs;
-	uf_regs = ugeth->uccf->uf_regs;
-
-	if (phydev->link) {
-		u32 tempval = in_be32(&ug_regs->maccfg2);
-		u32 upsmr = in_be32(&uf_regs->upsmr);
-		/* Now we make sure that we can be in full duplex mode.
-		 * If not, we operate in half-duplex mode. */
-		if (phydev->duplex != ugeth->oldduplex) {
-			new_state = 1;
-			if (!(phydev->duplex))
-				tempval &= ~(MACCFG2_FDX);
-			else
-				tempval |= MACCFG2_FDX;
-			ugeth->oldduplex = phydev->duplex;
-		}
-
-		if (phydev->speed != ugeth->oldspeed) {
-			new_state = 1;
-			switch (phydev->speed) {
-			case SPEED_1000:
-				tempval = ((tempval &
-					    ~(MACCFG2_INTERFACE_MODE_MASK)) |
-					    MACCFG2_INTERFACE_MODE_BYTE);
-				break;
-			case SPEED_100:
-			case SPEED_10:
-				tempval = ((tempval &
-					    ~(MACCFG2_INTERFACE_MODE_MASK)) |
-					    MACCFG2_INTERFACE_MODE_NIBBLE);
-				/* if reduced mode, re-set UPSMR.R10M */
-				if ((ugeth->phy_interface == PHY_INTERFACE_MODE_RMII) ||
-				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII) ||
-				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII_ID) ||
-				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII_RXID) ||
-				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RGMII_TXID) ||
-				    (ugeth->phy_interface == PHY_INTERFACE_MODE_RTBI)) {
-					if (phydev->speed == SPEED_10)
-						upsmr |= UCC_GETH_UPSMR_R10M;
-					else
-						upsmr &= ~UCC_GETH_UPSMR_R10M;
-				}
-				break;
-			default:
-				if (netif_msg_link(ugeth))
-					ugeth_warn(
-						"%s: Ack!  Speed (%d) is not 10/100/1000!",
-						dev->name, phydev->speed);
-				break;
-			}
-			ugeth->oldspeed = phydev->speed;
-		}
-
-		if (!ugeth->oldlink) {
-			new_state = 1;
-			ugeth->oldlink = 1;
-		}
-
-		if (new_state) {
-			/*
-			 * To change the MAC configuration we need to disable
-			 * the controller. To do so, we have to either grab
-			 * ugeth->lock, which is a bad idea since 'graceful
-			 * stop' commands might take quite a while, or we can
-			 * quiesce driver's activity.
-			 */
-			ugeth_quiesce(ugeth);
-			ugeth_disable(ugeth, COMM_DIR_RX_AND_TX);
-
-			out_be32(&ug_regs->maccfg2, tempval);
-			out_be32(&uf_regs->upsmr, upsmr);
-
-			ugeth_enable(ugeth, COMM_DIR_RX_AND_TX);
-			ugeth_activate(ugeth);
-		}
-	} else if (ugeth->oldlink) {
-			new_state = 1;
-			ugeth->oldlink = 0;
-			ugeth->oldspeed = 0;
-			ugeth->oldduplex = -1;
-	}
-
-	if (new_state && netif_msg_link(ugeth))
-		phy_print_status(phydev);
-}
-
-/* Initialize TBI PHY interface for communicating with the
- * SERDES lynx PHY on the chip.  We communicate with this PHY
- * through the MDIO bus on each controller, treating it as a
- * "normal" PHY at the address found in the UTBIPA register.  We assume
- * that the UTBIPA register is valid.  Either the MDIO bus code will set
- * it to a value that doesn't conflict with other PHYs on the bus, or the
- * value doesn't matter, as there are no other PHYs on the bus.
- */
-static void uec_configure_serdes(struct net_device *dev)
-{
-	struct ucc_geth_private *ugeth = netdev_priv(dev);
-	struct ucc_geth_info *ug_info = ugeth->ug_info;
-	struct phy_device *tbiphy;
-
-	if (!ug_info->tbi_node) {
-		dev_warn(&dev->dev, "SGMII mode requires that the device "
-			"tree specify a tbi-handle\n");
-		return;
-	}
-
-	tbiphy = of_phy_find_device(ug_info->tbi_node);
-	if (!tbiphy) {
-		dev_err(&dev->dev, "error: Could not get TBI device\n");
-		return;
-	}
-
-	/*
-	 * If the link is already up, we must already be ok, and don't need to
-	 * configure and reset the TBI<->SerDes link.  Maybe U-Boot configured
-	 * everything for us?  Resetting it takes the link down and requires
-	 * several seconds for it to come back.
-	 */
-	if (phy_read(tbiphy, ENET_TBI_MII_SR) & TBISR_LSTATUS)
-		return;
-
-	/* Single clk mode, mii mode off(for serdes communication) */
-	phy_write(tbiphy, ENET_TBI_MII_ANA, TBIANA_SETTINGS);
-
-	phy_write(tbiphy, ENET_TBI_MII_TBICON, TBICON_CLK_SELECT);
-
-	phy_write(tbiphy, ENET_TBI_MII_CR, TBICR_SETTINGS);
-}
-
-/* Configure the PHY for dev.
- * returns 0 if success.  -1 if failure
- */
-static int init_phy(struct net_device *dev)
-{
-	struct ucc_geth_private *priv = netdev_priv(dev);
-	struct ucc_geth_info *ug_info = priv->ug_info;
-	struct phy_device *phydev;
-
-	priv->oldlink = 0;
-	priv->oldspeed = 0;
-	priv->oldduplex = -1;
-
-	phydev = of_phy_connect(dev, ug_info->phy_node, &adjust_link, 0,
-				priv->phy_interface);
-	if (!phydev)
-		phydev = of_phy_connect_fixed_link(dev, &adjust_link,
-						   priv->phy_interface);
-	if (!phydev) {
-		dev_err(&dev->dev, "Could not attach to PHY\n");
-		return -ENODEV;
-	}
-
-	if (priv->phy_interface == PHY_INTERFACE_MODE_SGMII)
-		uec_configure_serdes(dev);
-
-	phydev->supported &= (ADVERTISED_10baseT_Half |
-				 ADVERTISED_10baseT_Full |
-				 ADVERTISED_100baseT_Half |
-				 ADVERTISED_100baseT_Full);
-
-	if (priv->max_speed == SPEED_1000)
-		phydev->supported |= ADVERTISED_1000baseT_Full;
-
-	phydev->advertising = phydev->supported;
-
-	priv->phydev = phydev;
 
 	return 0;
 }
@@ -1930,7 +1872,7 @@ static void ucc_geth_memclean(struct ucc_geth_private *ugeth)
 			continue;
 		for (j = 0; j < ugeth->ug_info->bdRingLenTx[i]; j++) {
 			if (ugeth->tx_skbuff[i][j]) {
-				dma_unmap_single(ugeth->dev,
+				dma_unmap_single(&ugeth->dev->dev,
 						 in_be32(&((struct qe_bd __iomem *)bd)->buf),
 						 (in_be32((u32 __iomem *)bd) &
 						  BD_LENGTH_MASK),
@@ -1958,7 +1900,7 @@ static void ucc_geth_memclean(struct ucc_geth_private *ugeth)
 			bd = ugeth->p_rx_bd_ring[i];
 			for (j = 0; j < ugeth->ug_info->bdRingLenRx[i]; j++) {
 				if (ugeth->rx_skbuff[i][j]) {
-					dma_unmap_single(ugeth->dev,
+					dma_unmap_single(&ugeth->dev->dev,
 						in_be32(&((struct qe_bd __iomem *)bd)->buf),
 						ugeth->ug_info->
 						uf_info.max_rx_buf_length +
@@ -1992,16 +1934,15 @@ static void ucc_geth_memclean(struct ucc_geth_private *ugeth)
 		iounmap(ugeth->ug_regs);
 		ugeth->ug_regs = NULL;
 	}
-
-	skb_queue_purge(&ugeth->rx_recycle);
 }
 
 static void ucc_geth_set_multi(struct net_device *dev)
 {
 	struct ucc_geth_private *ugeth;
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *dmi;
 	struct ucc_fast __iomem *uf_regs;
 	struct ucc_geth_82xx_address_filtering_pram __iomem *p_82xx_addr_filt;
+	int i;
 
 	ugeth = netdev_priv(dev);
 
@@ -2028,16 +1969,19 @@ static void ucc_geth_set_multi(struct net_device *dev)
 			out_be32(&p_82xx_addr_filt->gaddr_h, 0x0);
 			out_be32(&p_82xx_addr_filt->gaddr_l, 0x0);
 
-			netdev_for_each_mc_addr(ha, dev) {
+			dmi = dev->mc_list;
+
+			for (i = 0; i < dev->mc_count; i++, dmi = dmi->next) {
+
 				/* Only support group multicast for now.
 				 */
-				if (!(ha->addr[0] & 1))
+				if (!(dmi->dmi_addr[0] & 1))
 					continue;
 
 				/* Ask CPM to run CRC and set bit in
 				 * filter mask.
 				 */
-				hw_add_addr_in_hash(ugeth, ha->addr);
+				hw_add_addr_in_hash(ugeth, dmi->dmi_addr);
 			}
 		}
 	}
@@ -2064,9 +2008,6 @@ static void ucc_geth_stop(struct ucc_geth_private *ugeth)
 
 	/* Disable Rx and Tx */
 	clrbits32(&ug_regs->maccfg1, MACCFG1_ENABLE_RX | MACCFG1_ENABLE_TX);
-
-	phy_disconnect(ugeth->phydev);
-	ugeth->phydev = NULL;
 
 	ucc_geth_memclean(ugeth);
 }
@@ -2168,8 +2109,8 @@ static int ucc_struct_init(struct ucc_geth_private *ugeth)
 	}
 
 	if ((ug_info->numStationAddresses !=
-	     UCC_GETH_NUM_OF_STATION_ADDRESSES_1) &&
-	    ug_info->rxExtendedFiltering) {
+	     UCC_GETH_NUM_OF_STATION_ADDRESSES_1)
+	    && ug_info->rxExtendedFiltering) {
 		if (netif_msg_probe(ugeth))
 			ugeth_err("%s: Number of station addresses greater than 1 "
 				  "not allowed in extended parsing mode.",
@@ -2191,22 +2132,12 @@ static int ucc_struct_init(struct ucc_geth_private *ugeth)
 		return -ENOMEM;
 	}
 
-	/* read the number of risc engines, update the riscTx and riscRx
-	 * if there are 4 riscs in QE
-	 */
-	if (qe_get_num_of_risc() == 4) {
-		ug_info->riscTx = QE_RISC_ALLOCATION_FOUR_RISCS;
-		ug_info->riscRx = QE_RISC_ALLOCATION_FOUR_RISCS;
-	}
-
 	ugeth->ug_regs = ioremap(uf_info->regs, sizeof(*ugeth->ug_regs));
 	if (!ugeth->ug_regs) {
 		if (netif_msg_probe(ugeth))
 			ugeth_err("%s: Failed to ioremap regs.", __func__);
 		return -ENOMEM;
 	}
-
-	skb_queue_head_init(&ugeth->rx_recycle);
 
 	return 0;
 }
@@ -2293,9 +2224,9 @@ static int ucc_geth_startup(struct ucc_geth_private *ugeth)
 	     UCC_GETH_NUM_OF_STATION_ADDRESSES_1);
 
 	ugeth->rx_extended_features = ugeth->rx_non_dynamic_extended_features ||
-		(ug_info->vlanOperationTagged != UCC_GETH_VLAN_OPERATION_TAGGED_NOP) ||
-		(ug_info->vlanOperationNonTagged !=
-		 UCC_GETH_VLAN_OPERATION_NON_TAGGED_NOP);
+	    (ug_info->vlanOperationTagged != UCC_GETH_VLAN_OPERATION_TAGGED_NOP)
+	    || (ug_info->vlanOperationNonTagged !=
+		UCC_GETH_VLAN_OPERATION_NON_TAGGED_NOP);
 
 	init_default_reg_vals(&uf_regs->upsmr,
 			      &ug_regs->maccfg1, &ug_regs->maccfg2);
@@ -2996,11 +2927,11 @@ static int ucc_geth_startup(struct ucc_geth_private *ugeth)
 	ugeth->p_init_enet_param_shadow->rgftgfrxglobal |=
 	    ugeth->rx_glbl_pram_offset | ug_info->riscRx;
 	if ((ug_info->largestexternallookupkeysize !=
-	     QE_FLTR_LARGEST_EXTERNAL_TABLE_LOOKUP_KEY_SIZE_NONE) &&
-	    (ug_info->largestexternallookupkeysize !=
-	     QE_FLTR_LARGEST_EXTERNAL_TABLE_LOOKUP_KEY_SIZE_8_BYTES) &&
-	    (ug_info->largestexternallookupkeysize !=
-	     QE_FLTR_LARGEST_EXTERNAL_TABLE_LOOKUP_KEY_SIZE_16_BYTES)) {
+	     QE_FLTR_LARGEST_EXTERNAL_TABLE_LOOKUP_KEY_SIZE_NONE)
+	    && (ug_info->largestexternallookupkeysize !=
+		QE_FLTR_LARGEST_EXTERNAL_TABLE_LOOKUP_KEY_SIZE_8_BYTES)
+	    && (ug_info->largestexternallookupkeysize !=
+		QE_FLTR_LARGEST_EXTERNAL_TABLE_LOOKUP_KEY_SIZE_16_BYTES)) {
 		if (netif_msg_ifup(ugeth))
 			ugeth_err("%s: Invalid largest External Lookup Key Size.",
 				  __func__);
@@ -3117,11 +3048,10 @@ static int ucc_geth_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	u8 __iomem *bd;			/* BD pointer */
 	u32 bd_status;
 	u8 txQ = 0;
-	unsigned long flags;
 
 	ugeth_vdbg("%s: IN", __func__);
 
-	spin_lock_irqsave(&ugeth->lock, flags);
+	spin_lock_irq(&ugeth->lock);
 
 	dev->stats.tx_bytes += skb->len;
 
@@ -3138,7 +3068,7 @@ static int ucc_geth_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	/* set up the buffer descriptor */
 	out_be32(&((struct qe_bd __iomem *)bd)->buf,
-		      dma_map_single(ugeth->dev, skb->data,
+		      dma_map_single(&ugeth->dev->dev, skb->data,
 			      skb->len, DMA_TO_DEVICE));
 
 	/* printk(KERN_DEBUG"skb->data is 0x%x\n",skb->data); */
@@ -3147,6 +3077,8 @@ static int ucc_geth_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	/* set bd status and length */
 	out_be32((u32 __iomem *)bd, bd_status);
+
+	dev->trans_start = jiffies;
 
 	/* Move to next BD in the ring */
 	if (!(bd_status & T_W))
@@ -3176,9 +3108,9 @@ static int ucc_geth_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	uccf = ugeth->uccf;
 	out_be16(uccf->p_utodr, UCC_FAST_TOD);
 #endif
-	spin_unlock_irqrestore(&ugeth->lock, flags);
+	spin_unlock_irq(&ugeth->lock);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 static int ucc_geth_rx(struct ucc_geth_private *ugeth, u8 rxQ, int rx_work_limit)
@@ -3192,7 +3124,7 @@ static int ucc_geth_rx(struct ucc_geth_private *ugeth, u8 rxQ, int rx_work_limit
 
 	ugeth_vdbg("%s: IN", __func__);
 
-	dev = ugeth->ndev;
+	dev = ugeth->dev;
 
 	/* collect received buffers */
 	bd = ugeth->rxBd[rxQ];
@@ -3213,12 +3145,8 @@ static int ucc_geth_rx(struct ucc_geth_private *ugeth, u8 rxQ, int rx_work_limit
 			if (netif_msg_rx_err(ugeth))
 				ugeth_err("%s, %d: ERROR!!! skb - 0x%08x",
 					   __func__, __LINE__, (u32) skb);
-			if (skb) {
-				skb->data = skb->head + NET_SKB_PAD;
-				skb->len = 0;
-				skb_reset_tail_pointer(skb);
-				__skb_queue_head(&ugeth->rx_recycle, skb);
-			}
+			if (skb)
+				dev_kfree_skb_any(skb);
 
 			ugeth->rx_skbuff[rxQ][ugeth->skb_currx[rxQ]] = NULL;
 			dev->stats.rx_dropped++;
@@ -3230,7 +3158,7 @@ static int ucc_geth_rx(struct ucc_geth_private *ugeth, u8 rxQ, int rx_work_limit
 			skb_put(skb, length);
 
 			/* Tell the skb what kind of packet this is */
-			skb->protocol = eth_type_trans(skb, ugeth->ndev);
+			skb->protocol = eth_type_trans(skb, ugeth->dev);
 
 			dev->stats.rx_bytes += length;
 			/* Send the packet up the stack */
@@ -3276,26 +3204,18 @@ static int ucc_geth_tx(struct net_device *dev, u8 txQ)
 
 	/* Normal processing. */
 	while ((bd_status & T_R) == 0) {
-		struct sk_buff *skb;
-
 		/* BD contains already transmitted buffer.   */
 		/* Handle the transmitted buffer and release */
 		/* the BD to be used with the current frame  */
 
-		skb = ugeth->tx_skbuff[txQ][ugeth->skb_dirtytx[txQ]];
-		if (!skb)
+		if ((bd == ugeth->txBd[txQ]) && (netif_queue_stopped(dev) == 0))
 			break;
 
 		dev->stats.tx_packets++;
 
-		if (skb_queue_len(&ugeth->rx_recycle) < RX_BD_RING_LEN &&
-			     skb_recycle_check(skb,
-				    ugeth->ug_info->uf_info.max_rx_buf_length +
-				    UCC_GETH_RX_DATA_BUF_ALIGNMENT))
-			__skb_queue_head(&ugeth->rx_recycle, skb);
-		else
-			dev_kfree_skb(skb);
-
+		/* Free the sk buffer associated with this TxBD */
+		dev_kfree_skb_irq(ugeth->
+				  tx_skbuff[txQ][ugeth->skb_dirtytx[txQ]]);
 		ugeth->tx_skbuff[txQ][ugeth->skb_dirtytx[txQ]] = NULL;
 		ugeth->skb_dirtytx[txQ] =
 		    (ugeth->skb_dirtytx[txQ] +
@@ -3324,19 +3244,13 @@ static int ucc_geth_poll(struct napi_struct *napi, int budget)
 
 	ug_info = ugeth->ug_info;
 
-	/* Tx event processing */
-	spin_lock(&ugeth->lock);
-	for (i = 0; i < ug_info->numQueuesTx; i++)
-		ucc_geth_tx(ugeth->ndev, i);
-	spin_unlock(&ugeth->lock);
-
 	howmany = 0;
 	for (i = 0; i < ug_info->numQueuesRx; i++)
 		howmany += ucc_geth_rx(ugeth, i, budget - howmany);
 
 	if (howmany < budget) {
-		napi_complete(napi);
-		setbits32(ugeth->uccf->p_uccm, UCCE_RX_EVENTS | UCCE_TX_EVENTS);
+		netif_rx_complete(napi);
+		setbits32(ugeth->uccf->p_uccm, UCCE_RX_EVENTS);
 	}
 
 	return howmany;
@@ -3350,6 +3264,8 @@ static irqreturn_t ucc_geth_irq_handler(int irq, void *info)
 	struct ucc_geth_info *ug_info;
 	register u32 ucce;
 	register u32 uccm;
+	register u32 tx_mask;
+	u8 i;
 
 	ugeth_vdbg("%s: IN", __func__);
 
@@ -3363,12 +3279,25 @@ static irqreturn_t ucc_geth_irq_handler(int irq, void *info)
 	out_be32(uccf->p_ucce, ucce);
 
 	/* check for receive events that require processing */
-	if (ucce & (UCCE_RX_EVENTS | UCCE_TX_EVENTS)) {
-		if (napi_schedule_prep(&ugeth->napi)) {
-			uccm &= ~(UCCE_RX_EVENTS | UCCE_TX_EVENTS);
+	if (ucce & UCCE_RX_EVENTS) {
+		if (netif_rx_schedule_prep(&ugeth->napi)) {
+			uccm &= ~UCCE_RX_EVENTS;
 			out_be32(uccf->p_uccm, uccm);
-			__napi_schedule(&ugeth->napi);
+			__netif_rx_schedule(&ugeth->napi);
 		}
+	}
+
+	/* Tx event processing */
+	if (ucce & UCCE_TX_EVENTS) {
+		spin_lock(&ugeth->lock);
+		tx_mask = UCC_GETH_UCCE_TXB0;
+		for (i = 0; i < ug_info->numQueuesTx; i++) {
+			if (ucce & tx_mask)
+				ucc_geth_tx(dev, i);
+			ucce &= ~tx_mask;
+			tx_mask <<= 1;
+		}
+		spin_unlock(&ugeth->lock);
 	}
 
 	/* Errors and other events */
@@ -3399,56 +3328,38 @@ static void ucc_netpoll(struct net_device *dev)
 }
 #endif /* CONFIG_NET_POLL_CONTROLLER */
 
-static int ucc_geth_set_mac_addr(struct net_device *dev, void *p)
+/* Called when something needs to use the ethernet device */
+/* Returns 0 for success. */
+static int ucc_geth_open(struct net_device *dev)
 {
 	struct ucc_geth_private *ugeth = netdev_priv(dev);
-	struct sockaddr *addr = p;
-
-	if (!is_valid_ether_addr(addr->sa_data))
-		return -EADDRNOTAVAIL;
-
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
-
-	/*
-	 * If device is not running, we will set mac addr register
-	 * when opening the device.
-	 */
-	if (!netif_running(dev))
-		return 0;
-
-	spin_lock_irq(&ugeth->lock);
-	init_mac_station_addr_regs(dev->dev_addr[0],
-				   dev->dev_addr[1],
-				   dev->dev_addr[2],
-				   dev->dev_addr[3],
-				   dev->dev_addr[4],
-				   dev->dev_addr[5],
-				   &ugeth->ug_regs->macstnaddr1,
-				   &ugeth->ug_regs->macstnaddr2);
-	spin_unlock_irq(&ugeth->lock);
-
-	return 0;
-}
-
-static int ucc_geth_init_mac(struct ucc_geth_private *ugeth)
-{
-	struct net_device *dev = ugeth->ndev;
 	int err;
+
+	ugeth_vdbg("%s: IN", __func__);
+
+	/* Test station address */
+	if (dev->dev_addr[0] & ENET_GROUP_ADDR) {
+		if (netif_msg_ifup(ugeth))
+			ugeth_err("%s: Multicast address used for station address"
+				  " - is this what you wanted?", __func__);
+		return -EINVAL;
+	}
 
 	err = ucc_struct_init(ugeth);
 	if (err) {
 		if (netif_msg_ifup(ugeth))
-			ugeth_err("%s: Cannot configure internal struct, "
-				  "aborting.", dev->name);
-		goto err;
+			ugeth_err("%s: Cannot configure internal struct, aborting.", dev->name);
+		goto out_err_stop;
 	}
+
+	napi_enable(&ugeth->napi);
 
 	err = ucc_geth_startup(ugeth);
 	if (err) {
 		if (netif_msg_ifup(ugeth))
 			ugeth_err("%s: Cannot configure net device, aborting.",
 				  dev->name);
-		goto err;
+		goto out_err;
 	}
 
 	err = adjust_enet_interface(ugeth);
@@ -3456,7 +3367,7 @@ static int ucc_geth_init_mac(struct ucc_geth_private *ugeth)
 		if (netif_msg_ifup(ugeth))
 			ugeth_err("%s: Cannot configure net device, aborting.",
 				  dev->name);
-		goto err;
+		goto out_err;
 	}
 
 	/*       Set MACSTNADDR1, MACSTNADDR2                */
@@ -3470,51 +3381,20 @@ static int ucc_geth_init_mac(struct ucc_geth_private *ugeth)
 				   &ugeth->ug_regs->macstnaddr1,
 				   &ugeth->ug_regs->macstnaddr2);
 
+	err = init_phy(dev);
+	if (err) {
+		if (netif_msg_ifup(ugeth))
+			ugeth_err("%s: Cannot initialize PHY, aborting.", dev->name);
+		goto out_err;
+	}
+
+	phy_start(ugeth->phydev);
+
 	err = ugeth_enable(ugeth, COMM_DIR_RX_AND_TX);
 	if (err) {
 		if (netif_msg_ifup(ugeth))
 			ugeth_err("%s: Cannot enable net device, aborting.", dev->name);
-		goto err;
-	}
-
-	return 0;
-err:
-	ucc_geth_stop(ugeth);
-	return err;
-}
-
-/* Called when something needs to use the ethernet device */
-/* Returns 0 for success. */
-static int ucc_geth_open(struct net_device *dev)
-{
-	struct ucc_geth_private *ugeth = netdev_priv(dev);
-	int err;
-
-	ugeth_vdbg("%s: IN", __func__);
-
-	/* Test station address */
-	if (dev->dev_addr[0] & ENET_GROUP_ADDR) {
-		if (netif_msg_ifup(ugeth))
-			ugeth_err("%s: Multicast address used for station "
-				  "address - is this what you wanted?",
-				  __func__);
-		return -EINVAL;
-	}
-
-	err = init_phy(dev);
-	if (err) {
-		if (netif_msg_ifup(ugeth))
-			ugeth_err("%s: Cannot initialize PHY, aborting.",
-				  dev->name);
-		return err;
-	}
-
-	err = ucc_geth_init_mac(ugeth);
-	if (err) {
-		if (netif_msg_ifup(ugeth))
-			ugeth_err("%s: Cannot initialize MAC, aborting.",
-				  dev->name);
-		goto err;
+		goto out_err;
 	}
 
 	err = request_irq(ugeth->ug_info->uf_info.irq, ucc_geth_irq_handler,
@@ -3523,20 +3403,16 @@ static int ucc_geth_open(struct net_device *dev)
 		if (netif_msg_ifup(ugeth))
 			ugeth_err("%s: Cannot get IRQ for net device, aborting.",
 				  dev->name);
-		goto err;
+		goto out_err;
 	}
 
-	phy_start(ugeth->phydev);
-	napi_enable(&ugeth->napi);
 	netif_start_queue(dev);
-
-	device_set_wakeup_capable(&dev->dev,
-			qe_alive_during_sleep() || ugeth->phydev->irq);
-	device_set_wakeup_enable(&dev->dev, ugeth->wol_en);
 
 	return err;
 
-err:
+out_err:
+	napi_disable(&ugeth->napi);
+out_err_stop:
 	ucc_geth_stop(ugeth);
 	return err;
 }
@@ -3552,7 +3428,10 @@ static int ucc_geth_close(struct net_device *dev)
 
 	ucc_geth_stop(ugeth);
 
-	free_irq(ugeth->ug_info->uf_info.irq, ugeth->ndev);
+	free_irq(ugeth->ug_info->uf_info.irq, ugeth->dev);
+
+	phy_disconnect(ugeth->phydev);
+	ugeth->phydev = NULL;
 
 	netif_stop_queue(dev);
 
@@ -3566,7 +3445,7 @@ static void ucc_geth_timeout_work(struct work_struct *work)
 	struct net_device *dev;
 
 	ugeth = container_of(work, struct ucc_geth_private, timeout_work);
-	dev = ugeth->ndev;
+	dev = ugeth->dev;
 
 	ugeth_vdbg("%s: IN", __func__);
 
@@ -3598,86 +3477,6 @@ static void ucc_geth_timeout(struct net_device *dev)
 	schedule_work(&ugeth->timeout_work);
 }
 
-
-#ifdef CONFIG_PM
-
-static int ucc_geth_suspend(struct platform_device *ofdev, pm_message_t state)
-{
-	struct net_device *ndev = dev_get_drvdata(&ofdev->dev);
-	struct ucc_geth_private *ugeth = netdev_priv(ndev);
-
-	if (!netif_running(ndev))
-		return 0;
-
-	netif_device_detach(ndev);
-	napi_disable(&ugeth->napi);
-
-	/*
-	 * Disable the controller, otherwise we'll wakeup on any network
-	 * activity.
-	 */
-	ugeth_disable(ugeth, COMM_DIR_RX_AND_TX);
-
-	if (ugeth->wol_en & WAKE_MAGIC) {
-		setbits32(ugeth->uccf->p_uccm, UCC_GETH_UCCE_MPD);
-		setbits32(&ugeth->ug_regs->maccfg2, MACCFG2_MPE);
-		ucc_fast_enable(ugeth->uccf, COMM_DIR_RX_AND_TX);
-	} else if (!(ugeth->wol_en & WAKE_PHY)) {
-		phy_stop(ugeth->phydev);
-	}
-
-	return 0;
-}
-
-static int ucc_geth_resume(struct platform_device *ofdev)
-{
-	struct net_device *ndev = dev_get_drvdata(&ofdev->dev);
-	struct ucc_geth_private *ugeth = netdev_priv(ndev);
-	int err;
-
-	if (!netif_running(ndev))
-		return 0;
-
-	if (qe_alive_during_sleep()) {
-		if (ugeth->wol_en & WAKE_MAGIC) {
-			ucc_fast_disable(ugeth->uccf, COMM_DIR_RX_AND_TX);
-			clrbits32(&ugeth->ug_regs->maccfg2, MACCFG2_MPE);
-			clrbits32(ugeth->uccf->p_uccm, UCC_GETH_UCCE_MPD);
-		}
-		ugeth_enable(ugeth, COMM_DIR_RX_AND_TX);
-	} else {
-		/*
-		 * Full reinitialization is required if QE shuts down
-		 * during sleep.
-		 */
-		ucc_geth_memclean(ugeth);
-
-		err = ucc_geth_init_mac(ugeth);
-		if (err) {
-			ugeth_err("%s: Cannot initialize MAC, aborting.",
-				  ndev->name);
-			return err;
-		}
-	}
-
-	ugeth->oldlink = 0;
-	ugeth->oldspeed = 0;
-	ugeth->oldduplex = -1;
-
-	phy_stop(ugeth->phydev);
-	phy_start(ugeth->phydev);
-
-	napi_enable(&ugeth->napi);
-	netif_device_attach(ndev);
-
-	return 0;
-}
-
-#else
-#define ucc_geth_suspend NULL
-#define ucc_geth_resume NULL
-#endif
-
 static phy_interface_t to_phy_interface(const char *phy_connection_type)
 {
 	if (strcasecmp(phy_connection_type, "mii") == 0)
@@ -3698,49 +3497,23 @@ static phy_interface_t to_phy_interface(const char *phy_connection_type)
 		return PHY_INTERFACE_MODE_RGMII_RXID;
 	if (strcasecmp(phy_connection_type, "rtbi") == 0)
 		return PHY_INTERFACE_MODE_RTBI;
-	if (strcasecmp(phy_connection_type, "sgmii") == 0)
-		return PHY_INTERFACE_MODE_SGMII;
 
 	return PHY_INTERFACE_MODE_MII;
 }
 
-static int ucc_geth_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
-{
-	struct ucc_geth_private *ugeth = netdev_priv(dev);
-
-	if (!netif_running(dev))
-		return -EINVAL;
-
-	if (!ugeth->phydev)
-		return -ENODEV;
-
-	return phy_mii_ioctl(ugeth->phydev, rq, cmd);
-}
-
-static const struct net_device_ops ucc_geth_netdev_ops = {
-	.ndo_open		= ucc_geth_open,
-	.ndo_stop		= ucc_geth_close,
-	.ndo_start_xmit		= ucc_geth_start_xmit,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_mac_address	= ucc_geth_set_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_multicast_list	= ucc_geth_set_multi,
-	.ndo_tx_timeout		= ucc_geth_timeout,
-	.ndo_do_ioctl		= ucc_geth_ioctl,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= ucc_netpoll,
-#endif
-};
-
-static int ucc_geth_probe(struct platform_device* ofdev, const struct of_device_id *match)
+static int ucc_geth_probe(struct of_device* ofdev, const struct of_device_id *match)
 {
 	struct device *device = &ofdev->dev;
-	struct device_node *np = ofdev->dev.of_node;
+	struct device_node *np = ofdev->node;
+	struct device_node *mdio;
 	struct net_device *dev = NULL;
 	struct ucc_geth_private *ugeth = NULL;
 	struct ucc_geth_info *ug_info;
 	struct resource res;
+	struct device_node *phy;
 	int err, ucc_num, max_speed = 0;
+	const phandle *ph;
+	const u32 *fixed_link;
 	const unsigned int *prop;
 	const char *sprop;
 	const void *mac_addr;
@@ -3756,7 +3529,6 @@ static int ucc_geth_probe(struct platform_device* ofdev, const struct of_device_
 		PHY_INTERFACE_MODE_RMII, PHY_INTERFACE_MODE_RGMII,
 		PHY_INTERFACE_MODE_GMII, PHY_INTERFACE_MODE_RGMII,
 		PHY_INTERFACE_MODE_TBI, PHY_INTERFACE_MODE_RTBI,
-		PHY_INTERFACE_MODE_SGMII,
 	};
 
 	ugeth_vdbg("%s: IN", __func__);
@@ -3821,7 +3593,7 @@ static int ucc_geth_probe(struct platform_device* ofdev, const struct of_device_
 		prop = of_get_property(np, "tx-clock", NULL);
 		if (!prop) {
 			printk(KERN_ERR
-				"ucc_geth: missing tx-clock-name property\n");
+				"ucc_geth: mising tx-clock-name property\n");
 			return -EINVAL;
 		}
 		if ((*prop < QE_CLK_NONE) || (*prop > QE_CLK24)) {
@@ -3838,17 +3610,47 @@ static int ucc_geth_probe(struct platform_device* ofdev, const struct of_device_
 
 	ug_info->uf_info.regs = res.start;
 	ug_info->uf_info.irq = irq_of_parse_and_map(np, 0);
+	fixed_link = of_get_property(np, "fixed-link", NULL);
+	if (fixed_link) {
+		snprintf(ug_info->phy_bus_id, sizeof(ug_info->phy_bus_id),
+			 PHY_ID_FMT, "0", fixed_link[0]);
+		phy = NULL;
+	} else {
+		char bus_name[MII_BUS_ID_SIZE];
 
-	ug_info->phy_node = of_parse_phandle(np, "phy-handle", 0);
+		ph = of_get_property(np, "phy-handle", NULL);
+		phy = of_find_node_by_phandle(*ph);
 
-	/* Find the TBI PHY node.  If it's not there, we don't support SGMII */
-	ug_info->tbi_node = of_parse_phandle(np, "tbi-handle", 0);
+		if (phy == NULL)
+			return -ENODEV;
+
+		/* set the PHY address */
+		prop = of_get_property(phy, "reg", NULL);
+		if (prop == NULL)
+			return -1;
+
+		/* Set the bus id */
+		mdio = of_get_parent(phy);
+
+		if (mdio == NULL)
+			return -1;
+
+		err = of_address_to_resource(mdio, 0, &res);
+		of_node_put(mdio);
+
+		if (err)
+			return -1;
+
+		uec_mdio_bus_name(bus_name, mdio);
+		snprintf(ug_info->phy_bus_id, sizeof(ug_info->phy_bus_id),
+			"%s:%02x", bus_name, *prop);
+	}
 
 	/* get the phy interface type, or default to MII */
 	prop = of_get_property(np, "phy-connection-type", NULL);
 	if (!prop) {
 		/* handle interface property present in old trees */
-		prop = of_get_property(ug_info->phy_node, "interface", NULL);
+		prop = of_get_property(phy, "interface", NULL);
 		if (prop != NULL) {
 			phy_interface = enet_to_phy_interface[*prop];
 			max_speed = enet_to_speed[*prop];
@@ -3868,7 +3670,6 @@ static int ucc_geth_probe(struct platform_device* ofdev, const struct of_device_
 		case PHY_INTERFACE_MODE_RGMII_TXID:
 		case PHY_INTERFACE_MODE_TBI:
 		case PHY_INTERFACE_MODE_RTBI:
-		case PHY_INTERFACE_MODE_SGMII:
 			max_speed = SPEED_1000;
 			break;
 		default:
@@ -3885,19 +3686,11 @@ static int ucc_geth_probe(struct platform_device* ofdev, const struct of_device_
 		ug_info->uf_info.utfet = UCC_GETH_UTFET_GIGA_INIT;
 		ug_info->uf_info.utftt = UCC_GETH_UTFTT_GIGA_INIT;
 		ug_info->numThreadsTx = UCC_GETH_NUM_OF_THREADS_4;
-
-		/* If QE's snum number is 46 which means we need to support
-		 * 4 UECs at 1000Base-T simultaneously, we need to allocate
-		 * more Threads to Rx.
-		 */
-		if (qe_get_num_of_snums() == 46)
-			ug_info->numThreadsRx = UCC_GETH_NUM_OF_THREADS_6;
-		else
-			ug_info->numThreadsRx = UCC_GETH_NUM_OF_THREADS_4;
+		ug_info->numThreadsRx = UCC_GETH_NUM_OF_THREADS_4;
 	}
 
 	if (netif_msg_probe(&debug))
-		printk(KERN_INFO "ucc_geth: UCC%1d at 0x%8x (irq = %d)\n",
+		printk(KERN_INFO "ucc_geth: UCC%1d at 0x%8x (irq = %d) \n",
 			ug_info->uf_info.ucc_num + 1, ug_info->uf_info.regs,
 			ug_info->uf_info.irq);
 
@@ -3923,11 +3716,19 @@ static int ucc_geth_probe(struct platform_device* ofdev, const struct of_device_
 
 	/* Fill in the dev structure */
 	uec_set_ethtool_ops(dev);
-	dev->netdev_ops = &ucc_geth_netdev_ops;
+	dev->open = ucc_geth_open;
+	dev->hard_start_xmit = ucc_geth_start_xmit;
+	dev->tx_timeout = ucc_geth_timeout;
 	dev->watchdog_timeo = TX_TIMEOUT;
 	INIT_WORK(&ugeth->timeout_work, ucc_geth_timeout_work);
-	netif_napi_add(dev, &ugeth->napi, ucc_geth_poll, 64);
+	netif_napi_add(dev, &ugeth->napi, ucc_geth_poll, UCC_GETH_DEV_WEIGHT);
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = ucc_netpoll;
+#endif
+	dev->stop = ucc_geth_close;
+//    dev->change_mtu = ucc_geth_change_mtu;
 	dev->mtu = 1500;
+	dev->set_multicast_list = ucc_geth_set_multi;
 
 	ugeth->msg_enable = netif_msg_init(debug.msg_enable, UGETH_MSG_DEFAULT);
 	ugeth->phy_interface = phy_interface;
@@ -3947,14 +3748,13 @@ static int ucc_geth_probe(struct platform_device* ofdev, const struct of_device_
 		memcpy(dev->dev_addr, mac_addr, 6);
 
 	ugeth->ug_info = ug_info;
-	ugeth->dev = device;
-	ugeth->ndev = dev;
+	ugeth->dev = dev;
 	ugeth->node = np;
 
 	return 0;
 }
 
-static int ucc_geth_remove(struct platform_device* ofdev)
+static int ucc_geth_remove(struct of_device* ofdev)
 {
 	struct device *device = &ofdev->dev;
 	struct net_device *dev = dev_get_drvdata(device);
@@ -3979,20 +3779,20 @@ static struct of_device_id ucc_geth_match[] = {
 MODULE_DEVICE_TABLE(of, ucc_geth_match);
 
 static struct of_platform_driver ucc_geth_driver = {
-	.driver = {
-		.name = DRV_NAME,
-		.owner = THIS_MODULE,
-		.of_match_table = ucc_geth_match,
-	},
+	.name		= DRV_NAME,
+	.match_table	= ucc_geth_match,
 	.probe		= ucc_geth_probe,
 	.remove		= ucc_geth_remove,
-	.suspend	= ucc_geth_suspend,
-	.resume		= ucc_geth_resume,
 };
 
 static int __init ucc_geth_init(void)
 {
 	int i, ret;
+
+	ret = uec_mdio_init();
+
+	if (ret)
+		return ret;
 
 	if (netif_msg_drv(&debug))
 		printk(KERN_INFO "ucc_geth: " DRV_DESC "\n");
@@ -4002,12 +3802,16 @@ static int __init ucc_geth_init(void)
 
 	ret = of_register_platform_driver(&ucc_geth_driver);
 
+	if (ret)
+		uec_mdio_exit();
+
 	return ret;
 }
 
 static void __exit ucc_geth_exit(void)
 {
 	of_unregister_platform_driver(&ucc_geth_driver);
+	uec_mdio_exit();
 }
 
 module_init(ucc_geth_init);

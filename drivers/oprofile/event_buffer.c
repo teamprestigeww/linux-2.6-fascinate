@@ -35,23 +35,12 @@ static size_t buffer_pos;
 /* atomic_t because wait_event checks it outside of buffer_mutex */
 static atomic_t buffer_ready = ATOMIC_INIT(0);
 
-/*
- * Add an entry to the event buffer. When we get near to the end we
- * wake up the process sleeping on the read() of the file. To protect
- * the event_buffer this function may only be called when buffer_mutex
- * is set.
+/* Add an entry to the event buffer. When we
+ * get near to the end we wake up the process
+ * sleeping on the read() of the file.
  */
 void add_event_entry(unsigned long value)
 {
-	/*
-	 * This shouldn't happen since all workqueues or handlers are
-	 * canceled or flushed before the event buffer is freed.
-	 */
-	if (!event_buffer) {
-		WARN_ON_ONCE(1);
-		return;
-	}
-
 	if (buffer_pos == buffer_size) {
 		atomic_inc(&oprofile_stats.event_lost_overflow);
 		return;
@@ -80,6 +69,7 @@ void wake_up_buffer_waiter(void)
 
 int alloc_event_buffer(void)
 {
+	int err = -ENOMEM;
 	unsigned long flags;
 
 	spin_lock_irqsave(&oprofilefs_lock, flags);
@@ -90,22 +80,21 @@ int alloc_event_buffer(void)
 	if (buffer_watershed >= buffer_size)
 		return -EINVAL;
 
-	buffer_pos = 0;
 	event_buffer = vmalloc(sizeof(unsigned long) * buffer_size);
 	if (!event_buffer)
-		return -ENOMEM;
+		goto out;
 
-	return 0;
+	err = 0;
+out:
+	return err;
 }
 
 
 void free_event_buffer(void)
 {
-	mutex_lock(&buffer_mutex);
 	vfree(event_buffer);
-	buffer_pos = 0;
+
 	event_buffer = NULL;
-	mutex_unlock(&buffer_mutex);
 }
 
 
@@ -135,7 +124,7 @@ static int event_buffer_open(struct inode *inode, struct file *file)
 	 * echo 1 >/dev/oprofile/enable
 	 */
 
-	return nonseekable_open(inode, file);
+	return 0;
 
 fail:
 	dcookie_unregister(file->private_data);
@@ -178,12 +167,6 @@ static ssize_t event_buffer_read(struct file *file, char __user *buf,
 
 	mutex_lock(&buffer_mutex);
 
-	/* May happen if the buffer is freed during pending reads. */
-	if (!event_buffer) {
-		retval = -EINTR;
-		goto out;
-	}
-
 	atomic_set(&buffer_ready, 0);
 
 	retval = -EFAULT;
@@ -205,5 +188,4 @@ const struct file_operations event_buffer_fops = {
 	.open		= event_buffer_open,
 	.release	= event_buffer_release,
 	.read		= event_buffer_read,
-	.llseek		= no_llseek,
 };

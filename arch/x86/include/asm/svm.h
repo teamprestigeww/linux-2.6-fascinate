@@ -57,8 +57,7 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 	u16 intercept_dr_write;
 	u32 intercept_exceptions;
 	u64 intercept;
-	u8 reserved_1[42];
-	u16 pause_filter_count;
+	u8 reserved_1[44];
 	u64 iopm_base_pa;
 	u64 msrpm_base_pa;
 	u64 tsc_offset;
@@ -81,9 +80,7 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 	u32 event_inj_err;
 	u64 nested_cr3;
 	u64 lbr_ctl;
-	u64 reserved_5;
-	u64 next_rip;
-	u8 reserved_6[816];
+	u8 reserved_5[832];
 };
 
 
@@ -116,10 +113,6 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 #define SVM_IOIO_REP_MASK (1 << SVM_IOIO_REP_SHIFT)
 #define SVM_IOIO_SIZE_MASK (7 << SVM_IOIO_SIZE_SHIFT)
 #define SVM_IOIO_ASIZE_MASK (7 << SVM_IOIO_ASIZE_SHIFT)
-
-#define SVM_VM_CR_VALID_MASK	0x001fULL
-#define SVM_VM_CR_SVM_LOCK_MASK 0x0008ULL
-#define SVM_VM_CR_SVM_DIS_MASK  0x0010ULL
 
 struct __attribute__ ((__packed__)) vmcb_seg {
 	u16 selector;
@@ -181,6 +174,10 @@ struct __attribute__ ((__packed__)) vmcb {
 #define SVM_CPUID_FEATURE_SHIFT 2
 #define SVM_CPUID_FUNC 0x8000000a
 
+#define MSR_EFER_SVME_MASK (1ULL << 12)
+#define MSR_VM_CR       0xc0010114
+#define MSR_VM_HSAVE_PA 0xc0010117ULL
+
 #define SVM_VM_CR_SVM_DISABLE 4
 
 #define SVM_SELECTOR_S_SHIFT 4
@@ -232,7 +229,6 @@ struct __attribute__ ((__packed__)) vmcb {
 #define SVM_EVTINJ_VALID_ERR (1 << 11)
 
 #define SVM_EXITINTINFO_VEC_MASK SVM_EVTINJ_VEC_MASK
-#define SVM_EXITINTINFO_TYPE_MASK SVM_EVTINJ_TYPE_MASK
 
 #define	SVM_EXITINTINFO_TYPE_INTR SVM_EVTINJ_TYPE_INTR
 #define	SVM_EXITINTINFO_TYPE_NMI SVM_EVTINJ_TYPE_NMI
@@ -244,7 +240,6 @@ struct __attribute__ ((__packed__)) vmcb {
 
 #define SVM_EXITINFOSHIFT_TS_REASON_IRET 36
 #define SVM_EXITINFOSHIFT_TS_REASON_JMP 38
-#define SVM_EXITINFOSHIFT_TS_HAS_ERROR_CODE 44
 
 #define	SVM_EXIT_READ_CR0 	0x000
 #define	SVM_EXIT_READ_CR3 	0x003
@@ -320,7 +315,7 @@ struct __attribute__ ((__packed__)) vmcb {
 
 #define SVM_EXIT_ERR		-1
 
-#define SVM_CR0_SELECTIVE_MASK (X86_CR0_TS | X86_CR0_MP)
+#define SVM_CR0_SELECTIVE_MASK (1 << 3 | 1) /* TS and MP */
 
 #define SVM_VMLOAD ".byte 0x0f, 0x01, 0xda"
 #define SVM_VMRUN  ".byte 0x0f, 0x01, 0xd8"

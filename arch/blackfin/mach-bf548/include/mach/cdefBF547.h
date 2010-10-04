@@ -1,24 +1,48 @@
 /*
- * Copyright 2008 Analog Devices Inc.
+ * File:         include/asm-blackfin/mach-bf548/cdefBF547.h
+ * Based on:
+ * Author:
  *
- * Licensed under the GPL-2 or later.
+ * Created:
+ * Description:
+ *
+ * Rev:
+ *
+ * Modified:
+ *
+ * Bugs:         Enter bugs at http://blackfin.uclinux.org/
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see the file COPYING.
+ * If not, write to the Free Software Foundation,
+ * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
-#ifndef _CDEF_BF547_H
-#define _CDEF_BF547_H
+#ifndef _CDEF_BF548_H
+#define _CDEF_BF548_H
 
 /* include all Core registers and bit definitions */
-#include "defBF547.h"
+#include "defBF548.h"
 
 /* include core sbfin_read_()ecific register pointer definitions */
 #include <asm/cdef_LPBlackfin.h>
 
-/* SYSTEM & MMR ADDRESS DEFINITIONS FOR ADSP-BF547 */
+/* SYSTEM & MMR ADDRESS DEFINITIONS FOR ADSP-BF548 */
 
 /* include cdefBF54x_base.h for the set of #defines that are common to all ADSP-BF54x bfin_read_()rocessors */
 #include "cdefBF54x_base.h"
 
-/* The following are the #defines needed by ADSP-BF547 that are not in the common header */
+/* The following are the #defines needed by ADSP-BF548 that are not in the common header */
 
 /* Timer Registers */
 
@@ -805,4 +829,4 @@
 #define bfin_read_HMDMA1_BCOUNT()		bfin_read16(HMDMA1_BCOUNT)
 #define bfin_write_HMDMA1_BCOUNT(val)		bfin_write16(HMDMA1_BCOUNT, val)
 
-#endif /* _CDEF_BF547_H */
+#endif /* _CDEF_BF548_H */

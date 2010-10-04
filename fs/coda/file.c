@@ -17,7 +17,6 @@
 #include <linux/errno.h>
 #include <linux/smp_lock.h>
 #include <linux/string.h>
-#include <linux/slab.h>
 #include <asm/uaccess.h>
 
 #include <linux/coda.h>
@@ -48,8 +47,6 @@ coda_file_splice_read(struct file *coda_file, loff_t *ppos,
 		      struct pipe_inode_info *pipe, size_t count,
 		      unsigned int flags)
 {
-	ssize_t (*splice_read)(struct file *, loff_t *,
-			       struct pipe_inode_info *, size_t, unsigned int);
 	struct coda_file_info *cfi;
 	struct file *host_file;
 
@@ -57,11 +54,10 @@ coda_file_splice_read(struct file *coda_file, loff_t *ppos,
 	BUG_ON(!cfi || cfi->cfi_magic != CODA_MAGIC);
 	host_file = cfi->cfi_container;
 
-	splice_read = host_file->f_op->splice_read;
-	if (!splice_read)
-		splice_read = default_file_splice_read;
+	if (!host_file->f_op || !host_file->f_op->splice_read)
+		return -EINVAL;
 
-	return splice_read(host_file, ppos, pipe, count, flags);
+	return host_file->f_op->splice_read(host_file, ppos, pipe, count,flags);
 }
 
 static ssize_t
@@ -202,10 +198,10 @@ int coda_release(struct inode *coda_inode, struct file *coda_file)
 	return 0;
 }
 
-int coda_fsync(struct file *coda_file, int datasync)
+int coda_fsync(struct file *coda_file, struct dentry *coda_dentry, int datasync)
 {
 	struct file *host_file;
-	struct inode *coda_inode = coda_file->f_path.dentry->d_inode;
+	struct inode *coda_inode = coda_dentry->d_inode;
 	struct coda_file_info *cfi;
 	int err = 0;
 
@@ -217,7 +213,7 @@ int coda_fsync(struct file *coda_file, int datasync)
 	BUG_ON(!cfi || cfi->cfi_magic != CODA_MAGIC);
 	host_file = cfi->cfi_container;
 
-	err = vfs_fsync(host_file, datasync);
+	err = vfs_fsync(host_file, host_file->f_path.dentry, datasync);
 	if ( !err && !datasync ) {
 		lock_kernel();
 		err = venus_fsync(coda_inode->i_sb, coda_i2f(coda_inode));

@@ -117,7 +117,7 @@ static struct ssc_clock_data playpaq_wm8510_calc_ssc_clock(
 	 * Find actual rate, compare to requested rate
 	 */
 	actual_rate = (cd.ssc_rate / (cd.cmr_div * 2)) / (2 * (cd.period + 1));
-	pr_debug("playpaq_wm8510: Request rate = %u, actual rate = %u\n",
+	pr_debug("playpaq_wm8510: Request rate = %d, actual rate = %d\n",
 		 rate, actual_rate);
 
 
@@ -164,38 +164,38 @@ static int playpaq_wm8510_hw_params(struct snd_pcm_substream *substream,
 	 */
 	switch (params_rate(params)) {
 	case 48000:
-		pll_out = 24576000;
-		mclk_div = WM8510_MCLKDIV_2;
+		pll_out = 12288000;
+		mclk_div = WM8510_MCLKDIV_1;
 		bclk = WM8510_BCLKDIV_8;
 		break;
 
 	case 44100:
-		pll_out = 22579200;
-		mclk_div = WM8510_MCLKDIV_2;
+		pll_out = 11289600;
+		mclk_div = WM8510_MCLKDIV_1;
 		bclk = WM8510_BCLKDIV_8;
 		break;
 
 	case 22050:
-		pll_out = 22579200;
-		mclk_div = WM8510_MCLKDIV_4;
+		pll_out = 11289600;
+		mclk_div = WM8510_MCLKDIV_2;
 		bclk = WM8510_BCLKDIV_8;
 		break;
 
 	case 16000:
-		pll_out = 24576000;
-		mclk_div = WM8510_MCLKDIV_6;
+		pll_out = 12288000;
+		mclk_div = WM8510_MCLKDIV_3;
 		bclk = WM8510_BCLKDIV_8;
 		break;
 
 	case 11025:
-		pll_out = 22579200;
-		mclk_div = WM8510_MCLKDIV_8;
+		pll_out = 11289600;
+		mclk_div = WM8510_MCLKDIV_4;
 		bclk = WM8510_BCLKDIV_8;
 		break;
 
 	case 8000:
-		pll_out = 24576000;
-		mclk_div = WM8510_MCLKDIV_12;
+		pll_out = 12288000;
+		mclk_div = WM8510_MCLKDIV_6;
 		bclk = WM8510_BCLKDIV_8;
 		break;
 
@@ -268,7 +268,7 @@ static int playpaq_wm8510_hw_params(struct snd_pcm_substream *substream,
 #endif /* CONFIG_SND_AT32_SOC_PLAYPAQ_SLAVE */
 
 
-	ret = snd_soc_dai_set_pll(codec_dai, 0, 0,
+	ret = snd_soc_dai_set_pll(codec_dai, 0,
 					 clk_get_rate(CODEC_CLK), pll_out);
 	if (ret < 0) {
 		pr_warning("playpaq_wm8510: Failed to set CODEC DAI PLL (%d)\n",

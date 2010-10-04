@@ -30,7 +30,6 @@
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
-#include <linux/slab.h>
 
 #include <scsi/scsi_host.h>
 
@@ -688,9 +687,9 @@ static int asd_register_sas_ha(struct asd_ha_struct *asd_ha)
 {
 	int i;
 	struct asd_sas_phy   **sas_phys =
-		kcalloc(ASD_MAX_PHYS, sizeof(*sas_phys), GFP_KERNEL);
+		kmalloc(ASD_MAX_PHYS * sizeof(struct asd_sas_phy), GFP_KERNEL);
 	struct asd_sas_port  **sas_ports =
-		kcalloc(ASD_MAX_PHYS, sizeof(*sas_ports), GFP_KERNEL);
+		kmalloc(ASD_MAX_PHYS * sizeof(struct asd_sas_port), GFP_KERNEL);
 
 	if (!sas_phys || !sas_ports) {
 		kfree(sas_phys);
@@ -791,11 +790,11 @@ static int __devinit asd_pci_probe(struct pci_dev *dev,
 		goto Err_remove;
 
 	err = -ENODEV;
-	if (!pci_set_dma_mask(dev, DMA_BIT_MASK(64))
-	    && !pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(64)))
+	if (!pci_set_dma_mask(dev, DMA_64BIT_MASK)
+	    && !pci_set_consistent_dma_mask(dev, DMA_64BIT_MASK))
 		;
-	else if (!pci_set_dma_mask(dev, DMA_BIT_MASK(32))
-		 && !pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(32)))
+	else if (!pci_set_dma_mask(dev, DMA_32BIT_MASK)
+		 && !pci_set_consistent_dma_mask(dev, DMA_32BIT_MASK))
 		;
 	else {
 		asd_printk("no suitable DMA mask for %s\n", pci_name(dev));

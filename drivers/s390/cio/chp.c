@@ -15,11 +15,10 @@
 #include <linux/wait.h>
 #include <linux/mutex.h>
 #include <linux/errno.h>
-#include <linux/slab.h>
 #include <asm/chpid.h>
 #include <asm/sclp.h>
-#include <asm/crw.h>
 
+#include "../s390mach.h"
 #include "cio.h"
 #include "css.h"
 #include "ioasm.h"
@@ -66,7 +65,7 @@ static void set_chp_logically_online(struct chp_id chpid, int onoff)
 	chpid_to_chp(chpid)->state = onoff;
 }
 
-/* On success return 0 if channel-path is varied offline, 1 if it is varied
+/* On succes return 0 if channel-path is varied offline, 1 if it is varied
  * online. Return -ENODEV if channel-path is not registered. */
 int chp_get_status(struct chp_id chpid)
 {
@@ -135,8 +134,7 @@ static int s390_vary_chpid(struct chp_id chpid, int on)
 /*
  * Channel measurement related functions
  */
-static ssize_t chp_measurement_chars_read(struct file *filp,
-					  struct kobject *kobj,
+static ssize_t chp_measurement_chars_read(struct kobject *kobj,
 					  struct bin_attribute *bin_attr,
 					  char *buf, loff_t off, size_t count)
 {
@@ -183,7 +181,7 @@ static void chp_measurement_copy_block(struct cmg_entry *buf,
 	} while (reference_buf.values[0] != buf->values[0]);
 }
 
-static ssize_t chp_measurement_read(struct file *filp, struct kobject *kobj,
+static ssize_t chp_measurement_read(struct kobject *kobj,
 				    struct bin_attribute *bin_attr,
 				    char *buf, loff_t off, size_t count)
 {
@@ -395,6 +393,7 @@ int chp_new(struct chp_id chpid)
 	chp->state = 1;
 	chp->dev.parent = &channel_subsystems[chpid.cssid]->device;
 	chp->dev.release = chp_release;
+	dev_set_name(&chp->dev, "chp%x.%02x", chpid.cssid, chpid.id);
 
 	/* Obtain channel path description and fill it in. */
 	ret = chsc_determine_base_channel_path_desc(chpid, &chp->desc);
@@ -412,15 +411,13 @@ int chp_new(struct chp_id chpid)
 	} else {
 		chp->cmg = -1;
 	}
-	dev_set_name(&chp->dev, "chp%x.%02x", chpid.cssid, chpid.id);
 
 	/* make it known to the system */
 	ret = device_register(&chp->dev);
 	if (ret) {
 		CIO_MSG_EVENT(0, "Could not register chp%x.%02x: %d\n",
 			      chpid.cssid, chpid.id, ret);
-		put_device(&chp->dev);
-		goto out;
+		goto out_free;
 	}
 	ret = sysfs_create_group(&chp->dev.kobj, &chp_attr_group);
 	if (ret) {
@@ -709,12 +706,12 @@ static int __init chp_init(void)
 	struct chp_id chpid;
 	int ret;
 
-	ret = crw_register_handler(CRW_RSC_CPATH, chp_process_crw);
+	ret = s390_register_crw_handler(CRW_RSC_CPATH, chp_process_crw);
 	if (ret)
 		return ret;
 	chp_wq = create_singlethread_workqueue("cio_chp");
 	if (!chp_wq) {
-		crw_unregister_handler(CRW_RSC_CPATH);
+		s390_unregister_crw_handler(CRW_RSC_CPATH);
 		return -ENOMEM;
 	}
 	INIT_WORK(&cfg_work, cfg_func);

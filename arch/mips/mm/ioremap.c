@@ -10,7 +10,6 @@
 #include <asm/addrspace.h>
 #include <asm/byteorder.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <asm/cacheflush.h>
 #include <asm/io.h>
@@ -28,7 +27,8 @@ static inline void remap_area_pte(pte_t * pte, unsigned long address,
 	end = address + size;
 	if (end > PMD_SIZE)
 		end = PMD_SIZE;
-	BUG_ON(address >= end);
+	if (address >= end)
+		BUG();
 	pfn = phys_addr >> PAGE_SHIFT;
 	do {
 		if (!pte_none(*pte)) {
@@ -52,7 +52,8 @@ static inline int remap_area_pmd(pmd_t * pmd, unsigned long address,
 	if (end > PGDIR_SIZE)
 		end = PGDIR_SIZE;
 	phys_addr -= address;
-	BUG_ON(address >= end);
+	if (address >= end)
+		BUG();
 	do {
 		pte_t * pte = pte_alloc_kernel(pmd, address);
 		if (!pte)
@@ -74,7 +75,8 @@ static int remap_area_pages(unsigned long address, phys_t phys_addr,
 	phys_addr -= address;
 	dir = pgd_offset(&init_mm, address);
 	flush_cache_all();
-	BUG_ON(address >= end);
+	if (address >= end)
+		BUG();
 	do {
 		pud_t *pud;
 		pmd_t *pmd;

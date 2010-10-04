@@ -11,8 +11,6 @@
  *
  */
 
-#define KMSG_COMPONENT "dasd"
-
 #include <linux/interrupt.h>
 #include <linux/fs.h>
 #include <linux/blkpg.h>
@@ -70,8 +68,7 @@ int dasd_gendisk_alloc(struct dasd_block *block)
 	}
 	len += sprintf(gdp->disk_name + len, "%c", 'a'+(base->devindex%26));
 
-	if (base->features & DASD_FEATURE_READONLY ||
-	    test_bit(DASD_FLAG_DEVICE_RO, &base->flags))
+	if (block->base->features & DASD_FEATURE_READONLY)
 		set_disk_ro(gdp, 1);
 	gdp->private_data = block;
 	gdp->queue = block->request_queue;
@@ -89,7 +86,6 @@ void dasd_gendisk_free(struct dasd_block *block)
 	if (block->gdp) {
 		del_gendisk(block->gdp);
 		block->gdp->queue = NULL;
-		block->gdp->private_data = NULL;
 		put_disk(block->gdp);
 		block->gdp = NULL;
 	}
@@ -167,8 +163,9 @@ int dasd_gendisk_init(void)
 	/* Register to static dasd major 94 */
 	rc = register_blkdev(DASD_MAJOR, "dasd");
 	if (rc != 0) {
-		pr_warning("Registering the device driver with major number "
-			   "%d failed\n", DASD_MAJOR);
+		MESSAGE(KERN_WARNING,
+			"Couldn't register successfully to "
+			"major no %d", DASD_MAJOR);
 		return rc;
 	}
 	return 0;

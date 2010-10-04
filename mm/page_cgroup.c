@@ -9,7 +9,6 @@
 #include <linux/vmalloc.h>
 #include <linux/cgroup.h>
 #include <linux/swapops.h>
-#include <linux/kmemleak.h>
 
 static void __meminit
 __init_page_cgroup(struct page_cgroup *pc, unsigned long pfn)
@@ -70,7 +69,7 @@ static int __init alloc_node_page_cgroup(int nid)
 	return 0;
 }
 
-void __init page_cgroup_init_flatmem(void)
+void __init page_cgroup_init(void)
 {
 
 	int nid, fail;
@@ -84,12 +83,12 @@ void __init page_cgroup_init_flatmem(void)
 			goto fail;
 	}
 	printk(KERN_INFO "allocated %ld bytes of page_cgroup\n", total_usage);
-	printk(KERN_INFO "please try 'cgroup_disable=memory' option if you"
-	" don't want memory cgroups\n");
+	printk(KERN_INFO "please try cgroup_disable=memory option if you"
+	" don't want\n");
 	return;
 fail:
-	printk(KERN_CRIT "allocation of page_cgroup failed.\n");
-	printk(KERN_CRIT "please try 'cgroup_disable=memory' boot option\n");
+	printk(KERN_CRIT "allocation of page_cgroup was failed.\n");
+	printk(KERN_CRIT "please try cgroup_disable=memory boot option\n");
 	panic("Out of memory");
 }
 
@@ -100,8 +99,6 @@ struct page_cgroup *lookup_page_cgroup(struct page *page)
 	unsigned long pfn = page_to_pfn(page);
 	struct mem_section *section = __pfn_to_section(pfn);
 
-	if (!section->page_cgroup)
-		return NULL;
 	return section->page_cgroup + pfn;
 }
 
@@ -116,23 +113,16 @@ static int __init_refok init_section_page_cgroup(unsigned long pfn)
 	if (!section->page_cgroup) {
 		nid = page_to_nid(pfn_to_page(pfn));
 		table_size = sizeof(struct page_cgroup) * PAGES_PER_SECTION;
-		VM_BUG_ON(!slab_is_available());
-		if (node_state(nid, N_HIGH_MEMORY)) {
+		if (slab_is_available()) {
 			base = kmalloc_node(table_size,
-				GFP_KERNEL | __GFP_NOWARN, nid);
+					GFP_KERNEL | __GFP_NOWARN, nid);
 			if (!base)
 				base = vmalloc_node(table_size, nid);
 		} else {
-			base = kmalloc(table_size, GFP_KERNEL | __GFP_NOWARN);
-			if (!base)
-				base = vmalloc(table_size);
+			base = __alloc_bootmem_node_nopanic(NODE_DATA(nid),
+				table_size,
+				PAGE_SIZE, __pa(MAX_DMA_ADDRESS));
 		}
-		/*
-		 * The value stored in section->page_cgroup is (base - pfn)
-		 * and it does not point to the memory block allocated above,
-		 * causing kmemleak false positives.
-		 */
-		kmemleak_not_leak(base);
 	} else {
 		/*
  		 * We don't have to allocate page_cgroup again, but
@@ -267,14 +257,14 @@ void __init page_cgroup_init(void)
 		fail = init_section_page_cgroup(pfn);
 	}
 	if (fail) {
-		printk(KERN_CRIT "try 'cgroup_disable=memory' boot option\n");
+		printk(KERN_CRIT "try cgroup_disable=memory boot option\n");
 		panic("Out of memory");
 	} else {
 		hotplug_memory_notifier(page_cgroup_callback, 0);
 	}
 	printk(KERN_INFO "allocated %ld bytes of page_cgroup\n", total_usage);
-	printk(KERN_INFO "please try 'cgroup_disable=memory' option if you don't"
-	" want memory cgroups\n");
+	printk(KERN_INFO "please try cgroup_disable=memory option if you don't"
+	" want\n");
 }
 
 void __meminit pgdat_page_cgroup_init(struct pglist_data *pgdat)
@@ -291,13 +281,16 @@ static DEFINE_MUTEX(swap_cgroup_mutex);
 struct swap_cgroup_ctrl {
 	struct page **map;
 	unsigned long length;
-	spinlock_t	lock;
 };
 
 struct swap_cgroup_ctrl swap_cgroup_ctrl[MAX_SWAPFILES];
 
+/*
+ * This 8bytes seems big..maybe we can reduce this when we can use "id" for
+ * cgroup rather than pointer.
+ */
 struct swap_cgroup {
-	unsigned short		id;
+	struct mem_cgroup	*val;
 };
 #define SC_PER_PAGE	(PAGE_SIZE/sizeof(struct swap_cgroup))
 #define SC_POS_MASK	(SC_PER_PAGE - 1)
@@ -325,6 +318,8 @@ static int swap_cgroup_prepare(int type)
 	struct swap_cgroup_ctrl *ctrl;
 	unsigned long idx, max;
 
+	if (!do_swap_account)
+		return 0;
 	ctrl = &swap_cgroup_ctrl[type];
 
 	for (idx = 0; idx < ctrl->length; idx++) {
@@ -343,51 +338,14 @@ not_enough_page:
 }
 
 /**
- * swap_cgroup_cmpxchg - cmpxchg mem_cgroup's id for this swp_entry.
- * @end: swap entry to be cmpxchged
- * @old: old id
- * @new: new id
- *
- * Returns old id at success, 0 at failure.
- * (There is no mem_cgroup useing 0 as its id)
- */
-unsigned short swap_cgroup_cmpxchg(swp_entry_t ent,
-					unsigned short old, unsigned short new)
-{
-	int type = swp_type(ent);
-	unsigned long offset = swp_offset(ent);
-	unsigned long idx = offset / SC_PER_PAGE;
-	unsigned long pos = offset & SC_POS_MASK;
-	struct swap_cgroup_ctrl *ctrl;
-	struct page *mappage;
-	struct swap_cgroup *sc;
-	unsigned long flags;
-	unsigned short retval;
-
-	ctrl = &swap_cgroup_ctrl[type];
-
-	mappage = ctrl->map[idx];
-	sc = page_address(mappage);
-	sc += pos;
-	spin_lock_irqsave(&ctrl->lock, flags);
-	retval = sc->id;
-	if (retval == old)
-		sc->id = new;
-	else
-		retval = 0;
-	spin_unlock_irqrestore(&ctrl->lock, flags);
-	return retval;
-}
-
-/**
  * swap_cgroup_record - record mem_cgroup for this swp_entry.
  * @ent: swap entry to be recorded into
  * @mem: mem_cgroup to be recorded
  *
- * Returns old value at success, 0 at failure.
- * (Of course, old value can be 0.)
+ * Returns old value at success, NULL at failure.
+ * (Of course, old value can be NULL.)
  */
-unsigned short swap_cgroup_record(swp_entry_t ent, unsigned short id)
+struct mem_cgroup *swap_cgroup_record(swp_entry_t ent, struct mem_cgroup *mem)
 {
 	int type = swp_type(ent);
 	unsigned long offset = swp_offset(ent);
@@ -396,18 +354,18 @@ unsigned short swap_cgroup_record(swp_entry_t ent, unsigned short id)
 	struct swap_cgroup_ctrl *ctrl;
 	struct page *mappage;
 	struct swap_cgroup *sc;
-	unsigned short old;
-	unsigned long flags;
+	struct mem_cgroup *old;
+
+	if (!do_swap_account)
+		return NULL;
 
 	ctrl = &swap_cgroup_ctrl[type];
 
 	mappage = ctrl->map[idx];
 	sc = page_address(mappage);
 	sc += pos;
-	spin_lock_irqsave(&ctrl->lock, flags);
-	old = sc->id;
-	sc->id = id;
-	spin_unlock_irqrestore(&ctrl->lock, flags);
+	old = sc->val;
+	sc->val = mem;
 
 	return old;
 }
@@ -416,9 +374,9 @@ unsigned short swap_cgroup_record(swp_entry_t ent, unsigned short id)
  * lookup_swap_cgroup - lookup mem_cgroup tied to swap entry
  * @ent: swap entry to be looked up.
  *
- * Returns CSS ID of mem_cgroup at success. 0 at failure. (0 is invalid ID)
+ * Returns pointer to mem_cgroup at success. NULL at failure.
  */
-unsigned short lookup_swap_cgroup(swp_entry_t ent)
+struct mem_cgroup *lookup_swap_cgroup(swp_entry_t ent)
 {
 	int type = swp_type(ent);
 	unsigned long offset = swp_offset(ent);
@@ -427,13 +385,16 @@ unsigned short lookup_swap_cgroup(swp_entry_t ent)
 	struct swap_cgroup_ctrl *ctrl;
 	struct page *mappage;
 	struct swap_cgroup *sc;
-	unsigned short ret;
+	struct mem_cgroup *ret;
+
+	if (!do_swap_account)
+		return NULL;
 
 	ctrl = &swap_cgroup_ctrl[type];
 	mappage = ctrl->map[idx];
 	sc = page_address(mappage);
 	sc += pos;
-	ret = sc->id;
+	ret = sc->val;
 	return ret;
 }
 
@@ -459,7 +420,6 @@ int swap_cgroup_swapon(int type, unsigned long max_pages)
 	mutex_lock(&swap_cgroup_mutex);
 	ctrl->length = length;
 	ctrl->map = array;
-	spin_lock_init(&ctrl->lock);
 	if (swap_cgroup_prepare(type)) {
 		/* memory shortage */
 		ctrl->map = NULL;
@@ -469,6 +429,13 @@ int swap_cgroup_swapon(int type, unsigned long max_pages)
 		goto nomem;
 	}
 	mutex_unlock(&swap_cgroup_mutex);
+
+	printk(KERN_INFO
+		"swap_cgroup: uses %ld bytes of vmalloc for pointer array space"
+		" and %ld bytes to hold mem_cgroup pointers on swap\n",
+		array_size, length * PAGE_SIZE);
+	printk(KERN_INFO
+	"swap_cgroup can be disabled by noswapaccount boot option.\n");
 
 	return 0;
 nomem:

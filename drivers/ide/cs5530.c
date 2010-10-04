@@ -41,8 +41,8 @@ static unsigned int cs5530_pio_timings[2][5] = {
 
 /**
  *	cs5530_set_pio_mode	-	set host controller for PIO mode
- *	@hwif: port
  *	@drive: drive
+ *	@pio: PIO mode number
  *
  *	Handles setting of PIO mode for the chipset.
  *
@@ -50,11 +50,10 @@ static unsigned int cs5530_pio_timings[2][5] = {
  *	will have valid default PIO timings set up before we get here.
  */
 
-static void cs5530_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void cs5530_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
-	unsigned long basereg = CS5530_BASEREG(hwif);
+	unsigned long basereg = CS5530_BASEREG(drive->hwif);
 	unsigned int format = (inl(basereg + 4) >> 31) & 1;
-	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 	outl(cs5530_pio_timings[format][pio], basereg + ((drive->dn & 1)<<3));
 }
@@ -93,19 +92,20 @@ static u8 cs5530_udma_filter(ide_drive_t *drive)
 		if ((mateid[ATA_ID_FIELD_VALID] & 4) &&
 		    (mateid[ATA_ID_UDMA_MODES] & 7))
 			goto out;
-		if (mateid[ATA_ID_MWDMA_MODES] & 7)
+		if ((mateid[ATA_ID_FIELD_VALID] & 2) &&
+		    (mateid[ATA_ID_MWDMA_MODES] & 7))
 			mask = 0;
 	}
 out:
 	return mask;
 }
 
-static void cs5530_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void cs5530_set_dma_mode(ide_drive_t *drive, const u8 mode)
 {
 	unsigned long basereg;
 	unsigned int reg, timings = 0;
 
-	switch (drive->dma_mode) {
+	switch (mode) {
 		case XFER_UDMA_0:	timings = 0x00921250; break;
 		case XFER_UDMA_1:	timings = 0x00911140; break;
 		case XFER_UDMA_2:	timings = 0x00911030; break;
@@ -113,7 +113,7 @@ static void cs5530_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 		case XFER_MW_DMA_1:	timings = 0x00012121; break;
 		case XFER_MW_DMA_2:	timings = 0x00002020; break;
 	}
-	basereg = CS5530_BASEREG(hwif);
+	basereg = CS5530_BASEREG(drive->hwif);
 	reg = inl(basereg + 4);			/* get drive0 config register */
 	timings |= reg & 0x80000000;		/* preserve PIO format bit */
 	if ((drive-> dn & 1) == 0) {		/* are we configuring drive0? */
@@ -135,7 +135,7 @@ static void cs5530_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
  *	Initialize the cs5530 bridge for reliable IDE DMA operation.
  */
 
-static int init_chipset_cs5530(struct pci_dev *dev)
+static unsigned int init_chipset_cs5530(struct pci_dev *dev)
 {
 	struct pci_dev *master_0 = NULL, *cs5530_0 = NULL;
 

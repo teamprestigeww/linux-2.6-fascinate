@@ -12,7 +12,6 @@
  *
  */
 
-#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/stddef.h>
 #include <linux/module.h>
@@ -215,7 +214,7 @@ get_free_devid(void)
 		if (!test_and_set_bit(i, (u_long *)&device_ids))
 			break;
 	if (i > MAX_DEVICE_ID)
-		return -EBUSY;
+		return -1;
 	return i;
 }
 
@@ -225,10 +224,10 @@ mISDN_register_device(struct mISDNdevice *dev,
 {
 	int	err;
 
-	err = get_free_devid();
-	if (err < 0)
+	dev->id = get_free_devid();
+	err = -EBUSY;
+	if (dev->id < 0)
 		goto error1;
-	dev->id = err;
 
 	device_initialize(&dev->dev);
 	if (name && name[0])

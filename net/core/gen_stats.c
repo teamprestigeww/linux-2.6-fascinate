@@ -73,7 +73,6 @@ gnet_stats_start_copy_compat(struct sk_buff *skb, int type, int tc_stats_type,
 
 	return 0;
 }
-EXPORT_SYMBOL(gnet_stats_start_copy_compat);
 
 /**
  * gnet_stats_start_copy_compat - start dumping procedure in compatibility mode
@@ -94,7 +93,6 @@ gnet_stats_start_copy(struct sk_buff *skb, int type, spinlock_t *lock,
 {
 	return gnet_stats_start_copy_compat(skb, type, 0, 0, lock, d);
 }
-EXPORT_SYMBOL(gnet_stats_start_copy);
 
 /**
  * gnet_stats_copy_basic - copy basic statistics into statistic TLV
@@ -108,29 +106,22 @@ EXPORT_SYMBOL(gnet_stats_start_copy);
  * if the room in the socket buffer was not sufficient.
  */
 int
-gnet_stats_copy_basic(struct gnet_dump *d, struct gnet_stats_basic_packed *b)
+gnet_stats_copy_basic(struct gnet_dump *d, struct gnet_stats_basic *b)
 {
 	if (d->compat_tc_stats) {
 		d->tc_stats.bytes = b->bytes;
 		d->tc_stats.packets = b->packets;
 	}
 
-	if (d->tail) {
-		struct gnet_stats_basic sb;
+	if (d->tail)
+		return gnet_stats_copy(d, TCA_STATS_BASIC, b, sizeof(*b));
 
-		memset(&sb, 0, sizeof(sb));
-		sb.bytes = b->bytes;
-		sb.packets = b->packets;
-		return gnet_stats_copy(d, TCA_STATS_BASIC, &sb, sizeof(sb));
-	}
 	return 0;
 }
-EXPORT_SYMBOL(gnet_stats_copy_basic);
 
 /**
  * gnet_stats_copy_rate_est - copy rate estimator statistics into statistics TLV
  * @d: dumping handle
- * @b: basic statistics
  * @r: rate estimator statistics
  *
  * Appends the rate estimator statistics to the top level TLV created by
@@ -140,13 +131,8 @@ EXPORT_SYMBOL(gnet_stats_copy_basic);
  * if the room in the socket buffer was not sufficient.
  */
 int
-gnet_stats_copy_rate_est(struct gnet_dump *d,
-			 const struct gnet_stats_basic_packed *b,
-			 struct gnet_stats_rate_est *r)
+gnet_stats_copy_rate_est(struct gnet_dump *d, struct gnet_stats_rate_est *r)
 {
-	if (b && !gen_estimator_active(b, r))
-		return 0;
-
 	if (d->compat_tc_stats) {
 		d->tc_stats.bps = r->bps;
 		d->tc_stats.pps = r->pps;
@@ -157,7 +143,6 @@ gnet_stats_copy_rate_est(struct gnet_dump *d,
 
 	return 0;
 }
-EXPORT_SYMBOL(gnet_stats_copy_rate_est);
 
 /**
  * gnet_stats_copy_queue - copy queue statistics into statistics TLV
@@ -185,7 +170,6 @@ gnet_stats_copy_queue(struct gnet_dump *d, struct gnet_stats_queue *q)
 
 	return 0;
 }
-EXPORT_SYMBOL(gnet_stats_copy_queue);
 
 /**
  * gnet_stats_copy_app - copy application specific statistics into statistics TLV
@@ -213,7 +197,6 @@ gnet_stats_copy_app(struct gnet_dump *d, void *st, int len)
 
 	return 0;
 }
-EXPORT_SYMBOL(gnet_stats_copy_app);
 
 /**
  * gnet_stats_finish_copy - finish dumping procedure
@@ -247,4 +230,12 @@ gnet_stats_finish_copy(struct gnet_dump *d)
 	spin_unlock_bh(d->lock);
 	return 0;
 }
+
+
+EXPORT_SYMBOL(gnet_stats_start_copy);
+EXPORT_SYMBOL(gnet_stats_start_copy_compat);
+EXPORT_SYMBOL(gnet_stats_copy_basic);
+EXPORT_SYMBOL(gnet_stats_copy_rate_est);
+EXPORT_SYMBOL(gnet_stats_copy_queue);
+EXPORT_SYMBOL(gnet_stats_copy_app);
 EXPORT_SYMBOL(gnet_stats_finish_copy);

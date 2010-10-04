@@ -1,12 +1,10 @@
 #ifndef _M68KNOMMU_PAGE_H
 #define _M68KNOMMU_PAGE_H
 
-#include <linux/const.h>
-
 /* PAGE_SHIFT determines the page size */
 
 #define PAGE_SHIFT	(12)
-#define PAGE_SIZE	(_AC(1,UL) << PAGE_SHIFT)
+#define PAGE_SIZE	(1UL << PAGE_SHIFT)
 #define PAGE_MASK	(~(PAGE_SIZE-1))
 
 #include <asm/setup.h>
@@ -56,8 +54,8 @@ extern unsigned long memory_end;
 
 #ifndef __ASSEMBLY__
 
-#define __pa(vaddr)		((unsigned long)(vaddr))
-#define __va(paddr)		((void *)(paddr))
+#define __pa(vaddr)		virt_to_phys((void *)(vaddr))
+#define __va(paddr)		phys_to_virt((unsigned long)(paddr))
 
 #define virt_to_pfn(kaddr)	(__pa(kaddr) >> PAGE_SHIFT)
 #define pfn_to_virt(pfn)	__va((pfn) << PAGE_SHIFT)
@@ -74,6 +72,6 @@ extern unsigned long memory_end;
 
 #endif /* __ASSEMBLY__ */
 
-#include <asm-generic/getorder.h>
+#include <asm-generic/page.h>
 
 #endif /* _M68KNOMMU_PAGE_H */

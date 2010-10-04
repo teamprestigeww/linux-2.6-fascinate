@@ -11,7 +11,6 @@
  */
 
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
@@ -54,7 +53,7 @@ static int ad73311_soc_probe(struct platform_device *pdev)
 	codec->owner = THIS_MODULE;
 	codec->dai = &ad73311_dai;
 	codec->num_dai = 1;
-	socdev->card->codec = codec;
+	socdev->codec = codec;
 	INIT_LIST_HEAD(&codec->dapm_widgets);
 	INIT_LIST_HEAD(&codec->dapm_paths);
 
@@ -65,18 +64,26 @@ static int ad73311_soc_probe(struct platform_device *pdev)
 		goto pcm_err;
 	}
 
+	ret = snd_soc_init_card(socdev);
+	if (ret < 0) {
+		printk(KERN_ERR "ad73311: failed to register card\n");
+		goto register_err;
+	}
+
 	return ret;
 
+register_err:
+	snd_soc_free_pcms(socdev);
 pcm_err:
-	kfree(socdev->card->codec);
-	socdev->card->codec = NULL;
+	kfree(socdev->codec);
+	socdev->codec = NULL;
 	return ret;
 }
 
 static int ad73311_soc_remove(struct platform_device *pdev)
 {
 	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
-	struct snd_soc_codec *codec = socdev->card->codec;
+	struct snd_soc_codec *codec = socdev->codec;
 
 	if (codec == NULL)
 		return 0;

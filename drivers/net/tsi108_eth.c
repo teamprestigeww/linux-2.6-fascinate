@@ -38,6 +38,7 @@
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/delay.h>
 #include <linux/crc32.h>
@@ -47,7 +48,6 @@
 #include <linux/rtnetlink.h>
 #include <linux/timer.h>
 #include <linux/platform_device.h>
-#include <linux/gfp.h>
 
 #include <asm/system.h>
 #include <asm/io.h>
@@ -263,7 +263,7 @@ static inline void tsi108_write_tbi(struct tsi108_prv_data *data,
 			return;
 		udelay(10);
 	}
-	printk(KERN_ERR "%s function time out\n", __func__);
+	printk(KERN_ERR "%s function time out \n", __func__);
 }
 
 static int mii_speed(struct mii_if_info *mii)
@@ -704,8 +704,8 @@ static int tsi108_send_packet(struct sk_buff * skb, struct net_device *dev)
 
 		if (i == 0) {
 			data->txring[tx].buf0 = dma_map_single(NULL, skb->data,
-					skb_headlen(skb), DMA_TO_DEVICE);
-			data->txring[tx].len = skb_headlen(skb);
+					skb->len - skb->data_len, DMA_TO_DEVICE);
+			data->txring[tx].len = skb->len - skb->data_len;
 			misc |= TSI108_TX_SOF;
 		} else {
 			skb_frag_t *frag = &skb_shinfo(skb)->frags[i - 1];
@@ -802,10 +802,12 @@ static int tsi108_refill_rx(struct net_device *dev, int budget)
 		int rx = data->rxhead;
 		struct sk_buff *skb;
 
-		skb = netdev_alloc_skb_ip_align(dev, TSI108_RXBUF_SIZE);
-		data->rxskbs[rx] = skb;
+		data->rxskbs[rx] = skb = netdev_alloc_skb(dev,
+							  TSI108_RXBUF_SIZE + 2);
 		if (!skb)
 			break;
+
+		skb_reserve(skb, 2); /* Align the data on a 4-byte boundary. */
 
 		data->rxring[rx].buf0 = dma_map_single(NULL, skb->data,
 							TSI108_RX_SKB_SIZE,
@@ -886,7 +888,7 @@ static int tsi108_poll(struct napi_struct *napi, int budget)
 
 	if (num_received < budget) {
 		data->rxpending = 0;
-		napi_complete(napi);
+		netif_rx_complete(napi);
 
 		TSI_WRITE(TSI108_EC_INTMASK,
 				     TSI_READ(TSI108_EC_INTMASK)
@@ -913,11 +915,11 @@ static void tsi108_rx_int(struct net_device *dev)
 	 *
 	 * This can happen if this code races with tsi108_poll(), which masks
 	 * the interrupts after tsi108_irq_one() read the mask, but before
-	 * napi_schedule is called.  It could also happen due to calls
+	 * netif_rx_schedule is called.  It could also happen due to calls
 	 * from tsi108_check_rxring().
 	 */
 
-	if (napi_schedule_prep(&data->napi)) {
+	if (netif_rx_schedule_prep(&data->napi)) {
 		/* Mask, rather than ack, the receive interrupts.  The ack
 		 * will happen in tsi108_poll().
 		 */
@@ -928,7 +930,7 @@ static void tsi108_rx_int(struct net_device *dev)
 				     | TSI108_INT_RXTHRESH |
 				     TSI108_INT_RXOVERRUN | TSI108_INT_RXERROR |
 				     TSI108_INT_RXWAIT);
-		__napi_schedule(&data->napi);
+		__netif_rx_schedule(&data->napi);
 	} else {
 		if (!netif_running(dev)) {
 			/* This can happen if an interrupt occurs while the
@@ -1056,7 +1058,7 @@ static void tsi108_stop_ethernet(struct net_device *dev)
 			return;
 		udelay(10);
 	}
-	printk(KERN_ERR "%s function time out\n", __func__);
+	printk(KERN_ERR "%s function time out \n", __func__);
 }
 
 static void tsi108_reset_ether(struct tsi108_prv_data * data)
@@ -1130,9 +1132,7 @@ static int tsi108_get_mac(struct net_device *dev)
 	}
 
 	if (!is_valid_ether_addr(dev->dev_addr)) {
-		printk(KERN_ERR
-		       "%s: Invalid MAC address. word1: %08x, word2: %08x\n",
-		       dev->name, word1, word2);
+		printk("KERN_ERR: word1: %08x, word2: %08x\n", word1, word2);
 		return -EINVAL;
 	}
 
@@ -1184,19 +1184,29 @@ static void tsi108_set_rx_mode(struct net_device *dev)
 
 	rxcfg &= ~(TSI108_EC_RXCFG_UFE | TSI108_EC_RXCFG_MFE);
 
-	if (dev->flags & IFF_ALLMULTI || !netdev_mc_empty(dev)) {
+	if (dev->flags & IFF_ALLMULTI || dev->mc_count) {
 		int i;
-		struct netdev_hw_addr *ha;
+		struct dev_mc_list *mc = dev->mc_list;
 		rxcfg |= TSI108_EC_RXCFG_MFE | TSI108_EC_RXCFG_MC_HASH;
 
 		memset(data->mc_hash, 0, sizeof(data->mc_hash));
 
-		netdev_for_each_mc_addr(ha, dev) {
+		while (mc) {
 			u32 hash, crc;
 
-			crc = ether_crc(6, ha->addr);
-			hash = crc >> 23;
-			__set_bit(hash, &data->mc_hash[0]);
+			if (mc->dmi_addrlen == 6) {
+				crc = ether_crc(6, mc->dmi_addr);
+				hash = crc >> 23;
+
+				__set_bit(hash, &data->mc_hash[0]);
+			} else {
+				printk(KERN_ERR
+				       "%s: got multicast address of length %d "
+				       "instead of 6.\n", dev->name,
+				       mc->dmi_addrlen);
+			}
+
+			mc = mc->next;
 		}
 
 		TSI_WRITE(TSI108_EC_HASHADDR,
@@ -1233,7 +1243,7 @@ static void tsi108_init_phy(struct net_device *dev)
 		udelay(10);
 	}
 	if (i == 0)
-		printk(KERN_ERR "%s function time out\n", __func__);
+		printk(KERN_ERR "%s function time out \n", __func__);
 
 	if (data->phy_type == TSI108_PHY_BCM54XX) {
 		tsi108_write_mii(data, 0x09, 0x0300);
@@ -1344,7 +1354,7 @@ static int tsi108_open(struct net_device *dev)
 	for (i = 0; i < TSI108_RXRING_LEN; i++) {
 		struct sk_buff *skb;
 
-		skb = netdev_alloc_skb_ip_align(dev, TSI108_RXBUF_SIZE);
+		skb = netdev_alloc_skb(dev, TSI108_RXBUF_SIZE + NET_IP_ALIGN);
 		if (!skb) {
 			/* Bah.  No memory for now, but maybe we'll get
 			 * some more later.
@@ -1358,6 +1368,8 @@ static int tsi108_open(struct net_device *dev)
 		}
 
 		data->rxskbs[i] = skb;
+		/* Align the payload on a 4-byte boundary */
+		skb_reserve(skb, 2);
 		data->rxskbs[i] = skb;
 		data->rxring[i].buf0 = virt_to_phys(data->rxskbs[i]->data);
 		data->rxring[i].misc = TSI108_RX_OWN | TSI108_RX_INT;
@@ -1549,18 +1561,6 @@ static const struct ethtool_ops tsi108_ethtool_ops = {
 	.set_settings	= tsi108_set_settings,
 };
 
-static const struct net_device_ops tsi108_netdev_ops = {
-	.ndo_open		= tsi108_open,
-	.ndo_stop		= tsi108_close,
-	.ndo_start_xmit		= tsi108_send_packet,
-	.ndo_set_multicast_list	= tsi108_set_rx_mode,
-	.ndo_get_stats		= tsi108_get_stats,
-	.ndo_do_ioctl		= tsi108_do_ioctl,
-	.ndo_set_mac_address	= tsi108_set_mac,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-};
-
 static int
 tsi108_init_one(struct platform_device *pdev)
 {
@@ -1616,8 +1616,14 @@ tsi108_init_one(struct platform_device *pdev)
 	data->phy_type = einfo->phy_type;
 	data->irq_num = einfo->irq_num;
 	data->id = pdev->id;
+	dev->open = tsi108_open;
+	dev->stop = tsi108_close;
+	dev->hard_start_xmit = tsi108_send_packet;
+	dev->set_mac_address = tsi108_set_mac;
+	dev->set_multicast_list = tsi108_set_rx_mode;
+	dev->get_stats = tsi108_get_stats;
 	netif_napi_add(dev, &data->napi, tsi108_poll, 64);
-	dev->netdev_ops = &tsi108_netdev_ops;
+	dev->do_ioctl = tsi108_do_ioctl;
 	dev->ethtool_ops = &tsi108_ethtool_ops;
 
 	/* Apparently, the Linux networking code won't use scatter-gather

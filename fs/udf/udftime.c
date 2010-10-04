@@ -85,8 +85,7 @@ extern struct timezone sys_tz;
 #define SECS_PER_HOUR	(60 * 60)
 #define SECS_PER_DAY	(SECS_PER_HOUR * 24)
 
-struct timespec *
-udf_disk_stamp_to_time(struct timespec *dest, struct timestamp src)
+struct timespec *udf_disk_stamp_to_time(struct timespec *dest, timestamp src)
 {
 	int yday;
 	u16 typeAndTimezone = le16_to_cpu(src.typeAndTimezone);
@@ -117,8 +116,7 @@ udf_disk_stamp_to_time(struct timespec *dest, struct timestamp src)
 	return dest;
 }
 
-struct timestamp *
-udf_time_to_disk_stamp(struct timestamp *dest, struct timespec ts)
+timestamp *udf_time_to_disk_stamp(timestamp *dest, struct timespec ts)
 {
 	long int days, rem, y;
 	const unsigned short int *ip;

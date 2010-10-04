@@ -30,7 +30,6 @@
 #include <linux/inetdevice.h>
 #include <linux/if_arp.h>
 #include <linux/module.h>
-#include <linux/sched.h>
 #include <net/arp.h>
 
 #include <net/irda/irda.h>
@@ -42,20 +41,9 @@
 
 static int  irlan_eth_open(struct net_device *dev);
 static int  irlan_eth_close(struct net_device *dev);
-static netdev_tx_t  irlan_eth_xmit(struct sk_buff *skb,
-					 struct net_device *dev);
+static int  irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev);
 static void irlan_eth_set_multicast_list( struct net_device *dev);
 static struct net_device_stats *irlan_eth_get_stats(struct net_device *dev);
-
-static const struct net_device_ops irlan_eth_netdev_ops = {
-	.ndo_open               = irlan_eth_open,
-	.ndo_stop               = irlan_eth_close,
-	.ndo_start_xmit    	= irlan_eth_xmit,
-	.ndo_get_stats	        = irlan_eth_get_stats,
-	.ndo_set_multicast_list = irlan_eth_set_multicast_list,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_validate_addr	= eth_validate_addr,
-};
 
 /*
  * Function irlan_eth_setup (dev)
@@ -65,11 +53,14 @@ static const struct net_device_ops irlan_eth_netdev_ops = {
  */
 static void irlan_eth_setup(struct net_device *dev)
 {
-	ether_setup(dev);
-
-	dev->netdev_ops		= &irlan_eth_netdev_ops;
+	dev->open               = irlan_eth_open;
+	dev->stop               = irlan_eth_close;
+	dev->hard_start_xmit    = irlan_eth_xmit;
+	dev->get_stats	        = irlan_eth_get_stats;
+	dev->set_multicast_list = irlan_eth_set_multicast_list;
 	dev->destructor		= free_netdev;
 
+	ether_setup(dev);
 
 	/*
 	 * Lets do all queueing in IrTTP instead of this device driver.
@@ -164,12 +155,10 @@ static int irlan_eth_close(struct net_device *dev)
  *    Transmits ethernet frames over IrDA link.
  *
  */
-static netdev_tx_t irlan_eth_xmit(struct sk_buff *skb,
-					struct net_device *dev)
+static int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct irlan_cb *self = netdev_priv(dev);
 	int ret;
-	unsigned int len;
 
 	/* skb headroom large enough to contain all IrDA-headers? */
 	if ((skb_headroom(skb) < self->max_header_size) || (skb_shared(skb))) {
@@ -181,7 +170,7 @@ static netdev_tx_t irlan_eth_xmit(struct sk_buff *skb,
 
 		/* Did the realloc succeed? */
 		if (new_skb == NULL)
-			return NETDEV_TX_OK;
+			return 0;
 
 		/* Use the new skb instead */
 		skb = new_skb;
@@ -189,7 +178,6 @@ static netdev_tx_t irlan_eth_xmit(struct sk_buff *skb,
 
 	dev->trans_start = jiffies;
 
-	len = skb->len;
 	/* Now queue the packet in the transport layer */
 	if (self->use_udata)
 		ret = irttp_udata_request(self->tsap_data, skb);
@@ -211,10 +199,10 @@ static netdev_tx_t irlan_eth_xmit(struct sk_buff *skb,
 		self->stats.tx_dropped++;
 	} else {
 		self->stats.tx_packets++;
-		self->stats.tx_bytes += len;
+		self->stats.tx_bytes += skb->len;
 	}
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -323,15 +311,14 @@ static void irlan_eth_set_multicast_list(struct net_device *dev)
 		/* Enable promiscuous mode */
 		IRDA_WARNING("Promiscuous mode not implemented by IrLAN!\n");
 	}
-	else if ((dev->flags & IFF_ALLMULTI) ||
-		 netdev_mc_count(dev) > HW_MAX_ADDRS) {
+	else if ((dev->flags & IFF_ALLMULTI) || dev->mc_count > HW_MAX_ADDRS) {
 		/* Disable promiscuous mode, use normal mode. */
 		IRDA_DEBUG(4, "%s(), Setting multicast filter\n", __func__ );
 		/* hardware_set_filter(NULL); */
 
 		irlan_set_multicast_filter(self, TRUE);
 	}
-	else if (!netdev_mc_empty(dev)) {
+	else if (dev->mc_count) {
 		IRDA_DEBUG(4, "%s(), Setting multicast filter\n", __func__ );
 		/* Walk the address list, and load the filter */
 		/* hardware_set_filter(dev->mc_list); */

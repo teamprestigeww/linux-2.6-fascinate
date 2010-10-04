@@ -142,6 +142,9 @@ static int __init do_ultra_probe(struct net_device *dev)
 	int base_addr = dev->base_addr;
 	int irq = dev->irq;
 
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = &ultra_poll;
+#endif
 	if (base_addr > 0x1ff)		/* Check a single specified location. */
 		return ultra_probe1(dev, base_addr);
 	else if (base_addr != 0)	/* Don't probe at all. */
@@ -196,7 +199,7 @@ static const struct net_device_ops ultra_netdev_ops = {
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_change_mtu		= eth_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller 	= ultra_poll,
+	.ndo_poll_controller 	= ei_poll,
 #endif
 };
 
@@ -421,6 +424,7 @@ ultra_reset_8390(struct net_device *dev)
 		outb(0x01, cmd_port + 6);		/* Enable interrupts and memory. */
 
 	if (ei_debug > 1) printk("reset done\n");
+	return;
 }
 
 /* Grab the 8390 specific header. Similar to the block_input routine, but

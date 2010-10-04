@@ -12,7 +12,6 @@
 #include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/io.h>
-#include <mach/bridge-regs.h>
 #include <plat/irq.h>
 #include "common.h"
 

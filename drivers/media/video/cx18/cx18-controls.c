@@ -20,8 +20,6 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
  *  02111-1307  USA
  */
-#include <linux/kernel.h>
-#include <linux/slab.h>
 
 #include "cx18-driver.h"
 #include "cx18-cards.h"
@@ -263,7 +261,7 @@ int cx18_s_ext_ctrls(struct file *file, void *fh, struct v4l2_ext_controls *c)
 	int ret;
 	struct v4l2_control ctrl;
 
-	ret = v4l2_prio_check(&cx->prio, id->prio);
+	ret = v4l2_prio_check(&cx->prio, &id->prio);
 	if (ret)
 		return ret;
 
@@ -297,13 +295,14 @@ int cx18_s_ext_ctrls(struct file *file, void *fh, struct v4l2_ext_controls *c)
 		if (p.video_encoding != cx->params.video_encoding) {
 			int is_mpeg1 = p.video_encoding ==
 						V4L2_MPEG_VIDEO_ENCODING_MPEG_1;
-			struct v4l2_mbus_framefmt fmt;
+			struct v4l2_format fmt;
 
 			/* fix videodecoder resolution */
-			fmt.width = cx->params.width / (is_mpeg1 ? 2 : 1);
-			fmt.height = cx->params.height;
-			fmt.code = V4L2_MBUS_FMT_FIXED;
-			v4l2_subdev_call(cx->sd_av, video, s_mbus_fmt, &fmt);
+			fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+			fmt.fmt.pix.width = cx->params.width
+						/ (is_mpeg1 ? 2 : 1);
+			fmt.fmt.pix.height = cx->params.height;
+			v4l2_subdev_call(cx->sd_av, video, s_fmt, &fmt);
 		}
 		priv.cx = cx;
 		priv.s = &cx->streams[id->type];
@@ -318,7 +317,7 @@ int cx18_s_ext_ctrls(struct file *file, void *fh, struct v4l2_ext_controls *c)
 		idx = p.audio_properties & 0x03;
 		/* The audio clock of the digitizer must match the codec sample
 		   rate otherwise you get some very strange effects. */
-		if (idx < ARRAY_SIZE(freqs))
+		if (idx < sizeof(freqs))
 			cx18_call_all(cx, audio, s_clock_freq, freqs[idx]);
 		return err;
 	}

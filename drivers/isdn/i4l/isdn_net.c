@@ -23,7 +23,6 @@
  */
 
 #include <linux/isdn.h>
-#include <linux/slab.h>
 #include <net/arp.h>
 #include <net/dst.h>
 #include <net/pkt_sched.h>
@@ -177,8 +176,7 @@ static __inline__ void isdn_net_zero_frame_cnt(isdn_net_local *lp)
 /* Prototypes */
 
 static int isdn_net_force_dial_lp(isdn_net_local *);
-static netdev_tx_t isdn_net_start_xmit(struct sk_buff *,
-					     struct net_device *);
+static int isdn_net_start_xmit(struct sk_buff *, struct net_device *);
 
 static void isdn_net_ciscohdlck_connected(isdn_net_local *lp);
 static void isdn_net_ciscohdlck_disconnected(isdn_net_local *lp);
@@ -1053,12 +1051,12 @@ isdn_net_xmit(struct net_device *ndev, struct sk_buff *skb)
 	isdn_net_dev *nd;
 	isdn_net_local *slp;
 	isdn_net_local *lp = (isdn_net_local *) netdev_priv(ndev);
-	int retv = NETDEV_TX_OK;
+	int retv = 0;
 
 	if (((isdn_net_local *) netdev_priv(ndev))->master) {
 		printk("isdn BUG at %s:%d!\n", __FILE__, __LINE__);
 		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;
+		return 0;
 	}
 
 	/* For the other encaps the header has already been built */
@@ -1071,7 +1069,7 @@ isdn_net_xmit(struct net_device *ndev, struct sk_buff *skb)
 	lp = isdn_net_get_locked_lp(nd);
 	if (!lp) {
 		printk(KERN_WARNING "%s: all channels busy - requeuing!\n", ndev->name);
-		return NETDEV_TX_BUSY;
+		return 1;
 	}
 	/* we have our lp locked from now on */
 
@@ -1162,7 +1160,7 @@ static void isdn_net_tx_timeout(struct net_device * ndev)
  * If this interface isn't connected to a ISDN-Channel, find a free channel,
  * and start dialing.
  */
-static netdev_tx_t
+static int
 isdn_net_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	isdn_net_local *lp = (isdn_net_local *) netdev_priv(ndev);
@@ -1204,7 +1202,7 @@ isdn_net_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 			if (!(ISDN_NET_DIALMODE(*lp) == ISDN_NET_DM_AUTO)) {
 				isdn_net_unreachable(ndev, skb, "dial rejected: interface not in dialmode `auto'");
 				dev_kfree_skb(skb);
-				return NETDEV_TX_OK;
+				return 0;
 			}
 			if (lp->phone[1]) {
 				ulong flags;
@@ -1217,7 +1215,7 @@ isdn_net_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 					if(time_before(jiffies, lp->dialwait_timer)) {
 						isdn_net_unreachable(ndev, skb, "dial rejected: retry-time not reached");
 						dev_kfree_skb(skb);
-						return NETDEV_TX_OK;
+						return 0;
 					} else
 						lp->dialwait_timer = 0;
 				}
@@ -1245,7 +1243,7 @@ isdn_net_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 					isdn_net_unreachable(ndev, skb,
 							   "No channel");
 					dev_kfree_skb(skb);
-					return NETDEV_TX_OK;
+					return 0;
 				}
 				/* Log packet, which triggered dialing */
 				if (dev->net_verbose)
@@ -1260,7 +1258,7 @@ isdn_net_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 						dev_kfree_skb(skb);
 						isdn_net_unbind_channel(lp);
 						spin_unlock_irqrestore(&dev->lock, flags);
-						return NETDEV_TX_OK;	/* STN (skb to nirvana) ;) */
+						return 0;	/* STN (skb to nirvana) ;) */
 					}
 #ifdef CONFIG_IPPP_FILTER
 					if (isdn_ppp_autodial_filter(skb, lp)) {
@@ -1269,25 +1267,25 @@ isdn_net_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 						spin_unlock_irqrestore(&dev->lock, flags);
 						isdn_net_unreachable(ndev, skb, "dial rejected: packet filtered");
 						dev_kfree_skb(skb);
-						return NETDEV_TX_OK;
+						return 0;
 					}
 #endif
 					spin_unlock_irqrestore(&dev->lock, flags);
 					isdn_net_dial();	/* Initiate dialing */
 					netif_stop_queue(ndev);
-					return NETDEV_TX_BUSY;	/* let upper layer requeue skb packet */
+					return 1;	/* let upper layer requeue skb packet */
 				}
 #endif
 				/* Initiate dialing */
 				spin_unlock_irqrestore(&dev->lock, flags);
 				isdn_net_dial();
 				isdn_net_device_stop_queue(lp);
-				return NETDEV_TX_BUSY;
+				return 1;
 			} else {
 				isdn_net_unreachable(ndev, skb,
 						     "No phone number");
 				dev_kfree_skb(skb);
-				return NETDEV_TX_OK;
+				return 0;
 			}
 		} else {
 			/* Device is connected to an ISDN channel */ 
@@ -1302,7 +1300,7 @@ isdn_net_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 				netif_stop_queue(ndev);
 		}
 	}
-	return NETDEV_TX_BUSY;
+	return 1;
 }
 
 /*
@@ -1564,7 +1562,7 @@ isdn_net_ciscohdlck_slarp_send_keepalive(unsigned long data)
 	*(__be32 *)(p +  4) = cpu_to_be32(CISCO_SLARP_KEEPALIVE);
 	*(__be32 *)(p +  8) = cpu_to_be32(lp->cisco_myseq);
 	*(__be32 *)(p + 12) = cpu_to_be32(lp->cisco_yourseq);
-	*(__be16 *)(p + 16) = cpu_to_be16(0xffff); // reliability, always 0xffff
+	*(__be16 *)(p + 16) = cpu_to_be16(0xffff); // reliablity, always 0xffff
 	p += 18;
 
 	isdn_net_write_super(lp, skb);
@@ -2924,17 +2922,16 @@ isdn_net_getcfg(isdn_net_ioctl_cfg * cfg)
 		cfg->dialtimeout = lp->dialtimeout >= 0 ? lp->dialtimeout / HZ : -1;
 		cfg->dialwait = lp->dialwait / HZ;
 		if (lp->slave) {
-			if (strlen(lp->slave->name) >= 10)
+			if (strlen(lp->slave->name) > 8)
 				strcpy(cfg->slave, "too-long");
 			else
 				strcpy(cfg->slave, lp->slave->name);
 		} else
 			cfg->slave[0] = '\0';
 		if (lp->master) {
-			if (strlen(lp->master->name) >= 10)
+			if (strlen(lp->master->name) > 8)
 				strcpy(cfg->master, "too-long");
-			else
-				strcpy(cfg->master, lp->master->name);
+			strcpy(cfg->master, lp->master->name);
 		} else
 			cfg->master[0] = '\0';
 		return 0;

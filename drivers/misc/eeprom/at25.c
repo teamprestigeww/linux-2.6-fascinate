@@ -30,7 +30,6 @@
 
 struct at25_data {
 	struct spi_device	*spi;
-	struct memory_accessor	mem;
 	struct mutex		lock;
 	struct spi_eeprom	chip;
 	struct bin_attribute	bin;
@@ -76,13 +75,6 @@ at25_ee_read(
 	struct spi_transfer	t[2];
 	struct spi_message	m;
 
-	if (unlikely(offset >= at25->bin.size))
-		return 0;
-	if ((offset + count) > at25->bin.size)
-		count = at25->bin.size - offset;
-	if (unlikely(!count))
-		return count;
-
 	cp = command;
 	*cp++ = AT25_READ;
 
@@ -126,8 +118,7 @@ at25_ee_read(
 }
 
 static ssize_t
-at25_bin_read(struct file *filp, struct kobject *kobj,
-	      struct bin_attribute *bin_attr,
+at25_bin_read(struct kobject *kobj, struct bin_attribute *bin_attr,
 	      char *buf, loff_t off, size_t count)
 {
 	struct device		*dev;
@@ -136,25 +127,24 @@ at25_bin_read(struct file *filp, struct kobject *kobj,
 	dev = container_of(kobj, struct device, kobj);
 	at25 = dev_get_drvdata(dev);
 
+	if (unlikely(off >= at25->bin.size))
+		return 0;
+	if ((off + count) > at25->bin.size)
+		count = at25->bin.size - off;
+	if (unlikely(!count))
+		return count;
+
 	return at25_ee_read(at25, buf, off, count);
 }
 
 
 static ssize_t
-at25_ee_write(struct at25_data *at25, const char *buf, loff_t off,
-	      size_t count)
+at25_ee_write(struct at25_data *at25, char *buf, loff_t off, size_t count)
 {
 	ssize_t			status = 0;
 	unsigned		written = 0;
 	unsigned		buf_size;
 	u8			*bounce;
-
-	if (unlikely(off >= at25->bin.size))
-		return -EFBIG;
-	if ((off + count) > at25->bin.size)
-		count = at25->bin.size - off;
-	if (unlikely(!count))
-		return count;
 
 	/* Temp buffer starts with command and address */
 	buf_size = at25->chip.page_size;
@@ -174,7 +164,6 @@ at25_ee_write(struct at25_data *at25, const char *buf, loff_t off,
 		unsigned	segment;
 		unsigned	offset = (unsigned) off;
 		u8		*cp = bounce + 1;
-		int		sr;
 
 		*cp = AT25_WREN;
 		status = spi_write(at25->spi, cp, 1);
@@ -216,6 +205,7 @@ at25_ee_write(struct at25_data *at25, const char *buf, loff_t off,
 		timeout = jiffies + msecs_to_jiffies(EE_TIMEOUT);
 		retries = 0;
 		do {
+			int	sr;
 
 			sr = spi_w8r8(at25->spi, AT25_RDSR);
 			if (sr < 0 || (sr & AT25_SR_nRDY)) {
@@ -229,7 +219,7 @@ at25_ee_write(struct at25_data *at25, const char *buf, loff_t off,
 				break;
 		} while (retries++ < 3 || time_before_eq(jiffies, timeout));
 
-		if ((sr < 0) || (sr & AT25_SR_nRDY)) {
+		if (time_after(jiffies, timeout)) {
 			dev_err(&at25->spi->dev,
 				"write %d bytes offset %d, "
 				"timeout after %u msecs\n",
@@ -254,8 +244,7 @@ at25_ee_write(struct at25_data *at25, const char *buf, loff_t off,
 }
 
 static ssize_t
-at25_bin_write(struct file *filp, struct kobject *kobj,
-	       struct bin_attribute *bin_attr,
+at25_bin_write(struct kobject *kobj, struct bin_attribute *bin_attr,
 	       char *buf, loff_t off, size_t count)
 {
 	struct device		*dev;
@@ -264,27 +253,14 @@ at25_bin_write(struct file *filp, struct kobject *kobj,
 	dev = container_of(kobj, struct device, kobj);
 	at25 = dev_get_drvdata(dev);
 
+	if (unlikely(off >= at25->bin.size))
+		return -EFBIG;
+	if ((off + count) > at25->bin.size)
+		count = at25->bin.size - off;
+	if (unlikely(!count))
+		return count;
+
 	return at25_ee_write(at25, buf, off, count);
-}
-
-/*-------------------------------------------------------------------------*/
-
-/* Let in-kernel code access the eeprom data. */
-
-static ssize_t at25_mem_read(struct memory_accessor *mem, char *buf,
-			 off_t offset, size_t count)
-{
-	struct at25_data *at25 = container_of(mem, struct at25_data, mem);
-
-	return at25_ee_read(at25, buf, offset, count);
-}
-
-static ssize_t at25_mem_write(struct memory_accessor *mem, const char *buf,
-			  off_t offset, size_t count)
-{
-	struct at25_data *at25 = container_of(mem, struct at25_data, mem);
-
-	return at25_ee_write(at25, buf, offset, count);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -341,33 +317,23 @@ static int at25_probe(struct spi_device *spi)
 	at25->addrlen = addrlen;
 
 	/* Export the EEPROM bytes through sysfs, since that's convenient.
-	 * And maybe to other kernel code; it might hold a board's Ethernet
-	 * address, or board-specific calibration data generated on the
-	 * manufacturing floor.
-	 *
 	 * Default to root-only access to the data; EEPROMs often hold data
 	 * that's sensitive for read and/or write, like ethernet addresses,
 	 * security codes, board-specific manufacturing calibrations, etc.
 	 */
-	sysfs_bin_attr_init(&at25->bin);
 	at25->bin.attr.name = "eeprom";
 	at25->bin.attr.mode = S_IRUSR;
 	at25->bin.read = at25_bin_read;
-	at25->mem.read = at25_mem_read;
 
 	at25->bin.size = at25->chip.byte_len;
 	if (!(chip->flags & EE_READONLY)) {
 		at25->bin.write = at25_bin_write;
 		at25->bin.attr.mode |= S_IWUSR;
-		at25->mem.write = at25_mem_write;
 	}
 
 	err = sysfs_create_bin_file(&spi->dev.kobj, &at25->bin);
 	if (err)
 		goto fail;
-
-	if (chip->setup)
-		chip->setup(&at25->mem, chip->context);
 
 	dev_info(&spi->dev, "%Zd %s %s eeprom%s, pagesize %u\n",
 		(at25->bin.size < 1024)
@@ -420,4 +386,4 @@ module_exit(at25_exit);
 MODULE_DESCRIPTION("Driver for most SPI EEPROMs");
 MODULE_AUTHOR("David Brownell");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("spi:at25");
+

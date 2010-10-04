@@ -3,7 +3,7 @@
  *
  *      (c) Copyright 2000 Red Hat Software
  *      (c) Copyright 2000 Helge Deller <hdeller@redhat.com>
- *      (c) Copyright 2001-2009 Helge Deller <deller@gmx.de>
+ *      (c) Copyright 2001-2005 Helge Deller <deller@gmx.de>
  *      (c) Copyright 2001 Randolph Chung <tausq@debian.org>
  *
  *      This program is free software; you can redistribute it and/or modify
@@ -38,7 +38,6 @@
 #include <linux/kernel_stat.h>
 #include <linux/reboot.h>
 #include <linux/proc_fs.h>
-#include <linux/seq_file.h>
 #include <linux/ctype.h>
 #include <linux/blkdev.h>
 #include <linux/workqueue.h>
@@ -148,46 +147,51 @@ device_initcall(start_task);
 static void (*led_func_ptr) (unsigned char) __read_mostly;
 
 #ifdef CONFIG_PROC_FS
-static int led_proc_show(struct seq_file *m, void *v)
+static int led_proc_read(char *page, char **start, off_t off, int count, 
+	int *eof, void *data)
 {
-	switch ((long)m->private)
+	char *out = page;
+	int len;
+
+	switch ((long)data)
 	{
 	case LED_NOLCD:
-		seq_printf(m, "Heartbeat: %d\n", led_heartbeat);
-		seq_printf(m, "Disk IO: %d\n", led_diskio);
-		seq_printf(m, "LAN Rx/Tx: %d\n", led_lanrxtx);
+		out += sprintf(out, "Heartbeat: %d\n", led_heartbeat);
+		out += sprintf(out, "Disk IO: %d\n", led_diskio);
+		out += sprintf(out, "LAN Rx/Tx: %d\n", led_lanrxtx);
 		break;
 	case LED_HASLCD:
-		seq_printf(m, "%s\n", lcd_text);
+		out += sprintf(out, "%s\n", lcd_text);
 		break;
 	default:
+		*eof = 1;
 		return 0;
 	}
-	return 0;
+
+	len = out - page - off;
+	if (len < count) {
+		*eof = 1;
+		if (len <= 0) return 0;
+	} else {
+		len = count;
+	}
+	*start = page + off;
+	return len;
 }
 
-static int led_proc_open(struct inode *inode, struct file *file)
+static int led_proc_write(struct file *file, const char *buf, 
+	unsigned long count, void *data)
 {
-	return single_open(file, led_proc_show, PDE(inode)->data);
-}
-
-
-static ssize_t led_proc_write(struct file *file, const char *buf,
-	size_t count, loff_t *pos)
-{
-	void *data = PDE(file->f_path.dentry->d_inode)->data;
-	char *cur, lbuf[32];
+	char *cur, lbuf[count + 1];
 	int d;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 
-	if (count >= sizeof(lbuf))
-		count = sizeof(lbuf)-1;
+	memset(lbuf, 0, count + 1);
 
 	if (copy_from_user(lbuf, buf, count))
 		return -EFAULT;
-	lbuf[count] = 0;
 
 	cur = lbuf;
 
@@ -230,15 +234,6 @@ parse_error:
 	return -EINVAL;
 }
 
-static const struct file_operations led_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= led_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-	.write		= led_proc_write,
-};
-
 static int __init led_create_procfs(void)
 {
 	struct proc_dir_entry *proc_pdc_root = NULL;
@@ -248,15 +243,22 @@ static int __init led_create_procfs(void)
 
 	proc_pdc_root = proc_mkdir("pdc", 0);
 	if (!proc_pdc_root) return -1;
-	ent = proc_create_data("led", S_IRUGO|S_IWUSR, proc_pdc_root,
-				&led_proc_fops, (void *)LED_NOLCD); /* LED */
+	proc_pdc_root->owner = THIS_MODULE;
+	ent = create_proc_entry("led", S_IFREG|S_IRUGO|S_IWUSR, proc_pdc_root);
 	if (!ent) return -1;
+	ent->data = (void *)LED_NOLCD; /* LED */
+	ent->read_proc = led_proc_read;
+	ent->write_proc = led_proc_write;
+	ent->owner = THIS_MODULE;
 
 	if (led_type == LED_HASLCD)
 	{
-		ent = proc_create_data("lcd", S_IRUGO|S_IWUSR, proc_pdc_root,
-					&led_proc_fops, (void *)LED_HASLCD); /* LCD */
+		ent = create_proc_entry("lcd", S_IFREG|S_IRUGO|S_IWUSR, proc_pdc_root);
 		if (!ent) return -1;
+		ent->data = (void *)LED_HASLCD; /* LCD */
+		ent->read_proc = led_proc_read;
+		ent->write_proc = led_proc_write;
+		ent->owner = THIS_MODULE;
 	}
 
 	return 0;
@@ -353,21 +355,23 @@ static __inline__ int led_get_net_activity(void)
 
 	rx_total = tx_total = 0;
 	
-	/* we are running as a workqueue task, so we can use an RCU lookup */
+	/* we are running as a workqueue task, so locking dev_base 
+	 * for reading should be OK */
+	read_lock(&dev_base_lock);
 	rcu_read_lock();
-	for_each_netdev_rcu(&init_net, dev) {
+	for_each_netdev(&init_net, dev) {
 	    const struct net_device_stats *stats;
-	    struct rtnl_link_stats64 temp;
 	    struct in_device *in_dev = __in_dev_get_rcu(dev);
 	    if (!in_dev || !in_dev->ifa_list)
 		continue;
 	    if (ipv4_is_loopback(in_dev->ifa_list->ifa_local))
 		continue;
-	    stats = dev_get_stats(dev, &temp);
+	    stats = dev_get_stats(dev);
 	    rx_total += stats->rx_packets;
 	    tx_total += stats->tx_packets;
 	}
 	rcu_read_unlock();
+	read_unlock(&dev_base_lock);
 
 	retval = 0;
 
@@ -459,20 +463,9 @@ static void led_work_func (struct work_struct *unused)
 	if (likely(led_lanrxtx))  currentleds |= led_get_net_activity();
 	if (likely(led_diskio))   currentleds |= led_get_diskio_activity();
 
-	/* blink LEDs if we got an Oops (HPMC) */
-	if (unlikely(oops_in_progress)) {
-		if (boot_cpu_data.cpu_type >= pcxl2) {
-			/* newer machines don't have loadavg. LEDs, so we
-			 * let all LEDs blink twice per second instead */
-			currentleds = (count_HZ <= (HZ/2)) ? 0 : 0xff;
-		} else {
-			/* old machines: blink loadavg. LEDs twice per second */
-			if (count_HZ <= (HZ/2))
-				currentleds &= ~(LED4|LED5|LED6|LED7);
-			else
-				currentleds |= (LED4|LED5|LED6|LED7);
-		}
-	}
+	/* blink all LEDs twice a second if we got an Oops (HPMC) */
+	if (unlikely(oops_in_progress)) 
+		currentleds = (count_HZ<=(HZ/2)) ? 0 : 0xff;
 
 	if (currentleds != lastleds)
 	{
@@ -518,7 +511,7 @@ static int led_halt(struct notifier_block *nb, unsigned long event, void *buf)
 	
 	/* Cancel the work item and delete the queue */
 	if (led_wq) {
-		cancel_delayed_work_sync(&led_task);
+		cancel_rearming_delayed_workqueue(led_wq, &led_task);
 		destroy_workqueue(led_wq);
 		led_wq = NULL;
 	}
@@ -637,7 +630,7 @@ int lcd_print( const char *str )
 	
 	/* temporarily disable the led work task */
 	if (led_wq)
-		cancel_delayed_work_sync(&led_task);
+		cancel_rearming_delayed_workqueue(led_wq, &led_task);
 
 	/* copy display string to buffer for procfs */
 	strlcpy(lcd_text, str, sizeof(lcd_text));

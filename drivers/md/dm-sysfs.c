@@ -57,25 +57,16 @@ static ssize_t dm_attr_uuid_show(struct mapped_device *md, char *buf)
 	return strlen(buf);
 }
 
-static ssize_t dm_attr_suspended_show(struct mapped_device *md, char *buf)
-{
-	sprintf(buf, "%d\n", dm_suspended_md(md));
-
-	return strlen(buf);
-}
-
 static DM_ATTR_RO(name);
 static DM_ATTR_RO(uuid);
-static DM_ATTR_RO(suspended);
 
 static struct attribute *dm_attrs[] = {
 	&dm_attr_name.attr,
 	&dm_attr_uuid.attr,
-	&dm_attr_suspended.attr,
 	NULL,
 };
 
-static const struct sysfs_ops dm_sysfs_ops = {
+static struct sysfs_ops dm_sysfs_ops = {
 	.show	= dm_attr_show,
 };
 

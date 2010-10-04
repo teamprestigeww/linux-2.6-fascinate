@@ -16,7 +16,6 @@
  */
 #include "layer2.h"
 #include <linux/random.h>
-#include <linux/slab.h>
 #include "core.h"
 
 #define ID_REQUEST	1
@@ -123,11 +122,8 @@ da_deactivate(struct FsmInst *fi, int event, void *arg)
 	}
 	read_unlock_irqrestore(&mgr->lock, flags);
 	/* All TEI are inactiv */
-	if (!test_bit(OPTION_L1_HOLD, &mgr->options)) {
-		mISDN_FsmAddTimer(&mgr->datimer, DATIMER_VAL, EV_DATIMER,
-			NULL, 1);
-		mISDN_FsmChangeState(fi, ST_L1_DEACT_PENDING);
-	}
+	mISDN_FsmAddTimer(&mgr->datimer, DATIMER_VAL, EV_DATIMER, NULL, 1);
+	mISDN_FsmChangeState(fi, ST_L1_DEACT_PENDING);
 }
 
 static void
@@ -136,11 +132,9 @@ da_ui(struct FsmInst *fi, int event, void *arg)
 	struct manager	*mgr = fi->userdata;
 
 	/* restart da timer */
-	if (!test_bit(OPTION_L1_HOLD, &mgr->options)) {
-		mISDN_FsmDelTimer(&mgr->datimer, 2);
-		mISDN_FsmAddTimer(&mgr->datimer, DATIMER_VAL, EV_DATIMER,
-			NULL, 2);
-	}
+	mISDN_FsmDelTimer(&mgr->datimer, 2);
+	mISDN_FsmAddTimer(&mgr->datimer, DATIMER_VAL, EV_DATIMER, NULL, 2);
+
 }
 
 static void
@@ -228,7 +222,7 @@ tei_debug(struct FsmInst *fi, char *fmt, ...)
 	if (!(*debug & DEBUG_L2_TEIFSM))
 		return;
 	va_start(va, fmt);
-	printk(KERN_DEBUG "sapi(%d) tei(%d): ", tm->l2->sapi, tm->l2->tei);
+	printk(KERN_DEBUG "tei(%d): ", tm->l2->tei);
 	vprintk(fmt, va);
 	printk("\n");
 	va_end(va);
@@ -427,7 +421,7 @@ done:
 }
 
 static void
-put_tei_msg(struct manager *mgr, u_char m_id, unsigned int ri, int tei)
+put_tei_msg(struct manager *mgr, u_char m_id, unsigned int ri, u_char tei)
 {
 	struct sk_buff *skb;
 	u_char bp[8];
@@ -441,8 +435,9 @@ put_tei_msg(struct manager *mgr, u_char m_id, unsigned int ri, int tei)
 	bp[4] = ri >> 8;
 	bp[5] = ri & 0xff;
 	bp[6] = m_id;
-	bp[7] = ((tei << 1) & 0xff) | 1;
-	skb = _alloc_mISDN_skb(PH_DATA_REQ, new_id(mgr), 8, bp, GFP_ATOMIC);
+	bp[7] = (tei << 1) | 1;
+	skb = _alloc_mISDN_skb(PH_DATA_REQ, new_id(mgr),
+	    8, bp, GFP_ATOMIC);
 	if (!skb) {
 		printk(KERN_WARNING "%s: no skb for tei msg\n", __func__);
 		return;
@@ -457,7 +452,7 @@ tei_id_request(struct FsmInst *fi, int event, void *arg)
 
 	if (tm->l2->tei != GROUP_TEI) {
 		tm->tei_m.printdebug(&tm->tei_m,
-			"assign request for already assigned tei %d",
+			"assign request for allready assigned tei %d",
 			tm->l2->tei);
 		return;
 	}
@@ -726,7 +721,7 @@ tei_id_ver_tout_net(struct FsmInst *fi, int event, void *arg)
 	if (tm->rcnt == 1) {
 		if (*debug & DEBUG_L2_TEI)
 			tm->tei_m.printdebug(fi,
-			    "check req for tei %d successful\n", tm->l2->tei);
+			    "check req for tei %d sucessful\n", tm->l2->tei);
 		mISDN_FsmChangeState(fi, ST_TEI_NOP);
 	} else if (tm->rcnt > 1) {
 		/* duplicate assignment; remove */
@@ -777,7 +772,7 @@ tei_ph_data_ind(struct teimgr *tm, u_int mt, u_char *dp, int len)
 }
 
 static struct layer2 *
-create_new_tei(struct manager *mgr, int tei, int sapi)
+create_new_tei(struct manager *mgr, int tei)
 {
 	u_long		opt = 0;
 	u_long		flags;
@@ -786,12 +781,12 @@ create_new_tei(struct manager *mgr, int tei, int sapi)
 
 	if (!mgr->up)
 		return NULL;
-	if ((tei >= 0) && (tei < 64))
+	if (tei < 64)
 		test_and_set_bit(OPTION_L2_FIXEDTEI, &opt);
 	if (mgr->ch.st->dev->Dprotocols
 	  & ((1 << ISDN_P_TE_E1) | (1 << ISDN_P_NT_E1)))
 		test_and_set_bit(OPTION_L2_PMX, &opt);
-	l2 = create_l2(mgr->up, ISDN_P_LAPD_NT, opt, tei, sapi);
+	l2 = create_l2(mgr->up, ISDN_P_LAPD_NT, (u_int)opt, (u_long)tei);
 	if (!l2) {
 		printk(KERN_WARNING "%s:no memory for layer2\n", __func__);
 		return NULL;
@@ -839,17 +834,12 @@ new_tei_req(struct manager *mgr, u_char *dp)
 	ri += dp[1];
 	if (!mgr->up)
 		goto denied;
-	if (!(dp[3] & 1)) /* Extension bit != 1 */
-		goto denied;
-	if (dp[3] != 0xff)
-		tei = dp[3] >> 1; /* 3GPP TS 08.56 6.1.11.2 */
-	else
-		tei = get_free_tei(mgr);
+	tei = get_free_tei(mgr);
 	if (tei < 0) {
 		printk(KERN_WARNING "%s:No free tei\n", __func__);
 		goto denied;
 	}
-	l2 = create_new_tei(mgr, tei, CTRL_SAPI);
+	l2 = create_new_tei(mgr, tei);
 	if (!l2)
 		goto denied;
 	else
@@ -863,7 +853,8 @@ static int
 ph_data_ind(struct manager *mgr, struct sk_buff *skb)
 {
 	int		ret = -EINVAL;
-	struct layer2	*l2, *nl2;
+	struct layer2	*l2;
+	u_long		flags;
 	u_char		mt;
 
 	if (skb->len < 8) {
@@ -872,6 +863,7 @@ ph_data_ind(struct manager *mgr, struct sk_buff *skb)
 			    __func__, skb->len);
 		goto done;
 	}
+	if (*debug  & DEBUG_L2_TEI)
 
 	if ((skb->data[0] >> 2) != TEI_SAPI) /* not for us */
 		goto done;
@@ -908,9 +900,11 @@ ph_data_ind(struct manager *mgr, struct sk_buff *skb)
 		new_tei_req(mgr, &skb->data[4]);
 		goto done;
 	}
-	list_for_each_entry_safe(l2, nl2, &mgr->layer2, list) {
+	read_lock_irqsave(&mgr->lock, flags);
+	list_for_each_entry(l2, &mgr->layer2, list) {
 		tei_ph_data_ind(l2->tm, mt, &skb->data[4], skb->len - 4);
 	}
+	read_unlock_irqrestore(&mgr->lock, flags);
 done:
 	return ret;
 }
@@ -977,6 +971,8 @@ create_teimgr(struct manager *mgr, struct channel_req *crq)
 			__func__, dev_name(&mgr->ch.st->dev->dev),
 			crq->protocol, crq->adr.dev, crq->adr.channel,
 			crq->adr.sapi, crq->adr.tei);
+	if (crq->adr.sapi != 0) /* not supported yet */
+		return -EINVAL;
 	if (crq->adr.tei > GROUP_TEI)
 		return -EINVAL;
 	if (crq->adr.tei < 64)
@@ -1023,8 +1019,8 @@ create_teimgr(struct manager *mgr, struct channel_req *crq)
 		}
 		return 0;
 	}
-	l2 = create_l2(crq->ch, crq->protocol, opt,
-		crq->adr.tei, crq->adr.sapi);
+	l2 = create_l2(crq->ch, crq->protocol, (u_int)opt,
+		(u_long)crq->adr.tei);
 	if (!l2)
 		return -ENOMEM;
 	l2->tm = kzalloc(sizeof(struct teimgr), GFP_KERNEL);
@@ -1107,7 +1103,6 @@ free_teimanager(struct manager *mgr)
 {
 	struct layer2	*l2, *nl2;
 
-	test_and_clear_bit(OPTION_L1_HOLD, &mgr->options);
 	if (test_bit(MGR_OPT_NETWORK, &mgr->options)) {
 		/* not locked lock is taken in release tei */
 		mgr->up = NULL;
@@ -1138,26 +1133,13 @@ static int
 ctrl_teimanager(struct manager *mgr, void *arg)
 {
 	/* currently we only have one option */
-	int	*val = (int *)arg;
-	int	ret = 0;
+	int	clean = *((int *)arg);
 
-	switch (val[0]) {
-	case IMCLEAR_L2:
-		if (val[1])
-			test_and_set_bit(OPTION_L2_CLEANUP, &mgr->options);
-		else
-			test_and_clear_bit(OPTION_L2_CLEANUP, &mgr->options);
-		break;
-	case IMHOLD_L1:
-		if (val[1])
-			test_and_set_bit(OPTION_L1_HOLD, &mgr->options);
-		else
-			test_and_clear_bit(OPTION_L1_HOLD, &mgr->options);
-		break;
-	default:
-		ret = -EINVAL;
-	}
-	return ret;
+	if (clean)
+		test_and_set_bit(OPTION_L2_CLEANUP, &mgr->options);
+	else
+		test_and_clear_bit(OPTION_L2_CLEANUP, &mgr->options);
+	return 0;
 }
 
 /* This function does create a L2 for fixed TEI in NT Mode */
@@ -1165,7 +1147,7 @@ static int
 check_data(struct manager *mgr, struct sk_buff *skb)
 {
 	struct mISDNhead	*hh =  mISDN_HEAD_P(skb);
-	int			ret, tei, sapi;
+	int			ret, tei;
 	struct layer2		*l2;
 
 	if (*debug & DEBUG_L2_CTRL)
@@ -1177,27 +1159,20 @@ check_data(struct manager *mgr, struct sk_buff *skb)
 		return -ENOTCONN;
 	if (skb->len != 3)
 		return -ENOTCONN;
-	if (skb->data[0] & 3) /* EA0 and CR must be  0 */
-		return -EINVAL;
-	sapi = skb->data[0] >> 2;
+	if (skb->data[0] != 0)
+		/* only SAPI 0 command */
+		return -ENOTCONN;
 	if (!(skb->data[1] & 1)) /* invalid EA1 */
 		return -EINVAL;
-	tei = skb->data[1] >> 1;
+	tei = skb->data[1] >> 0;
 	if (tei > 63) /* not a fixed tei */
 		return -ENOTCONN;
 	if ((skb->data[2] & ~0x10) != SABME)
 		return -ENOTCONN;
 	/* We got a SABME for a fixed TEI */
-	if (*debug & DEBUG_L2_CTRL)
-		printk(KERN_DEBUG "%s: SABME sapi(%d) tei(%d)\n",
-		    __func__, sapi, tei);
-	l2 = create_new_tei(mgr, tei, sapi);
-	if (!l2) {
-		if (*debug & DEBUG_L2_CTRL)
-			printk(KERN_DEBUG "%s: failed to create new tei\n",
-			    __func__);
+	l2 = create_new_tei(mgr, tei);
+	if (!l2)
 		return -ENOMEM;
-	}
 	ret = l2->ch.send(&l2->ch, skb);
 	return ret;
 }

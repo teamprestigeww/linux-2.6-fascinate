@@ -33,11 +33,13 @@
 #include <linux/timer.h>
 #include <linux/list.h>
 #include <linux/interrupt.h>
+#include <linux/reboot.h>
 #include <linux/usb.h>
-#include <linux/usb/hcd.h>
 #include <linux/moduleparam.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
+
+#include "../core/hcd.h"
 
 #include <asm/irq.h>
 #include <asm/system.h>
@@ -659,13 +661,13 @@ static struct ehci_qh *oxu_qh_alloc(struct oxu_hcd *oxu)
 		if (qh->dummy == NULL) {
 			oxu_dbg(oxu, "no dummy td\n");
 			oxu->qh_used[i] = 0;
-			qh = NULL;
-			goto unlock;
+
+			return NULL;
 		}
 
 		oxu->qh_used[i] = 1;
 	}
-unlock:
+
 	spin_unlock(&oxu->mem_lock);
 
 	return qh;
@@ -843,14 +845,14 @@ static inline void qh_update(struct oxu_hcd *oxu,
 		is_out = !(qtd->hw_token & cpu_to_le32(1 << 8));
 		epnum = (le32_to_cpup(&qh->hw_info1) >> 8) & 0x0f;
 		if (unlikely(!usb_gettoggle(qh->dev, epnum, is_out))) {
-			qh->hw_token &= ~cpu_to_le32(QTD_TOGGLE);
+			qh->hw_token &= ~__constant_cpu_to_le32(QTD_TOGGLE);
 			usb_settoggle(qh->dev, epnum, is_out, 1);
 		}
 	}
 
 	/* HC must see latest qtd and qh data before we clear ACTIVE+HALT */
 	wmb();
-	qh->hw_token &= cpu_to_le32(QTD_TOGGLE | QTD_STS_PING);
+	qh->hw_token &= __constant_cpu_to_le32(QTD_TOGGLE | QTD_STS_PING);
 }
 
 /* If it weren't for a common silicon quirk (writing the dummy into the qh
@@ -935,7 +937,7 @@ __acquires(oxu->lock)
 		struct ehci_qh	*qh = (struct ehci_qh *) urb->hcpriv;
 
 		/* S-mask in a QH means it's an interrupt urb */
-		if ((qh->hw_info2 & cpu_to_le32(QH_SMASK)) != 0) {
+		if ((qh->hw_info2 & __constant_cpu_to_le32(QH_SMASK)) != 0) {
 
 			/* ... update hc-wide periodic stats (for usbfs) */
 			oxu_to_hcd(oxu)->self.bandwidth_int_reqs--;
@@ -979,7 +981,7 @@ static void unlink_async(struct oxu_hcd *oxu, struct ehci_qh *qh);
 static void intr_deschedule(struct oxu_hcd *oxu, struct ehci_qh *qh);
 static int qh_schedule(struct oxu_hcd *oxu, struct ehci_qh *qh);
 
-#define HALT_BIT cpu_to_le32(QTD_STS_HALT)
+#define HALT_BIT __constant_cpu_to_le32(QTD_STS_HALT)
 
 /* Process and free completed qtds for a qh, returning URBs to drivers.
  * Chases up to qh->hw_current.  Returns number of completions called,
@@ -1158,7 +1160,7 @@ halt:
 			/* should be rare for periodic transfers,
 			 * except maybe high bandwidth ...
 			 */
-			if ((cpu_to_le32(QH_SMASK)
+			if ((__constant_cpu_to_le32(QH_SMASK)
 					& qh->hw_info2) != 0) {
 				intr_deschedule(oxu, qh);
 				(void) qh_schedule(oxu, qh);
@@ -1348,7 +1350,7 @@ static struct list_head *qh_urb_transaction(struct oxu_hcd *oxu,
 	}
 
 	/* by default, enable interrupt on urb completion */
-		qtd->hw_token |= cpu_to_le32(QTD_IOC);
+		qtd->hw_token |= __constant_cpu_to_le32(QTD_IOC);
 	return head;
 
 cleanup:
@@ -1537,7 +1539,7 @@ static void qh_link_async(struct oxu_hcd *oxu, struct ehci_qh *qh)
 	/* qtd completions reported later by interrupt */
 }
 
-#define	QH_ADDR_MASK	cpu_to_le32(0x7f)
+#define	QH_ADDR_MASK	__constant_cpu_to_le32(0x7f)
 
 /*
  * For control/bulk/interrupt, return QH with these TDs appended.
@@ -1641,7 +1643,8 @@ static int submit_async(struct oxu_hcd	*oxu, struct urb *urb,
 #endif
 
 	spin_lock_irqsave(&oxu->lock, flags);
-	if (unlikely(!HCD_HW_ACCESSIBLE(oxu_to_hcd(oxu)))) {
+	if (unlikely(!test_bit(HCD_FLAG_HW_ACCESSIBLE,
+			       &oxu_to_hcd(oxu)->flags))) {
 		rc = -ESHUTDOWN;
 		goto done;
 	}
@@ -2009,7 +2012,7 @@ static void qh_unlink_periodic(struct oxu_hcd *oxu, struct ehci_qh *qh)
 	 *   and this qh is active in the current uframe
 	 *   (and overlay token SplitXstate is false?)
 	 * THEN
-	 *   qh->hw_info1 |= cpu_to_le32(1 << 7 "ignore");
+	 *   qh->hw_info1 |= __constant_cpu_to_le32(1 << 7 "ignore");
 	 */
 
 	/* high bandwidth, or otherwise part of every microframe */
@@ -2054,7 +2057,7 @@ static void intr_deschedule(struct oxu_hcd *oxu, struct ehci_qh *qh)
 	 * active high speed queues may need bigger delays...
 	 */
 	if (list_empty(&qh->qtd_list)
-		|| (cpu_to_le32(QH_CMASK) & qh->hw_info2) != 0)
+		|| (__constant_cpu_to_le32(QH_CMASK) & qh->hw_info2) != 0)
 		wait = 2;
 	else
 		wait = 55;	/* worst case: 3 * 1024 */
@@ -2180,10 +2183,10 @@ static int qh_schedule(struct oxu_hcd *oxu, struct ehci_qh *qh)
 		qh->start = frame;
 
 		/* reset S-frame and (maybe) C-frame masks */
-		qh->hw_info2 &= cpu_to_le32(~(QH_CMASK | QH_SMASK));
+		qh->hw_info2 &= __constant_cpu_to_le32(~(QH_CMASK | QH_SMASK));
 		qh->hw_info2 |= qh->period
 			? cpu_to_le32(1 << uframe)
-			: cpu_to_le32(QH_SMASK);
+			: __constant_cpu_to_le32(QH_SMASK);
 		qh->hw_info2 |= c_mask;
 	} else
 		oxu_dbg(oxu, "reused qh %p schedule\n", qh);
@@ -2208,7 +2211,8 @@ static int intr_submit(struct oxu_hcd *oxu, struct urb *urb,
 
 	spin_lock_irqsave(&oxu->lock, flags);
 
-	if (unlikely(!HCD_HW_ACCESSIBLE(oxu_to_hcd(oxu)))) {
+	if (unlikely(!test_bit(HCD_FLAG_HW_ACCESSIBLE,
+			       &oxu_to_hcd(oxu)->flags))) {
 		status = -ESHUTDOWN;
 		goto done;
 	}
@@ -2680,7 +2684,7 @@ static int oxu_reset(struct usb_hcd *hcd)
 	oxu->urb_len = 0;
 
 	/* FIMXE */
-	hcd->self.controller->dma_mask = NULL;
+	hcd->self.controller->dma_mask = 0UL;
 
 	if (oxu->is_otg) {
 		oxu->caps = hcd->regs + OXU_OTG_CAP_OFFSET;
@@ -2713,6 +2717,7 @@ static int oxu_run(struct usb_hcd *hcd)
 	u32 temp, hcc_params;
 
 	hcd->uses_new_polling = 1;
+	hcd->poll_rh = 0;
 
 	/* EHCI spec section 4.1 */
 	retval = ehci_reset(oxu);
@@ -3150,10 +3155,10 @@ static inline unsigned int oxu_port_speed(struct oxu_hcd *oxu,
 	case 0:
 		return 0;
 	case 1:
-		return USB_PORT_STAT_LOW_SPEED;
+		return 1 << USB_PORT_FEAT_LOWSPEED;
 	case 2:
 	default:
-		return USB_PORT_STAT_HIGH_SPEED;
+		return 1 << USB_PORT_FEAT_HIGHSPEED;
 	}
 }
 
@@ -3198,7 +3203,7 @@ static int oxu_hub_control(struct usb_hcd *hcd, u16 typeReq,
 		 * Even if OWNER is set, so the port is owned by the
 		 * companion controller, khubd needs to be able to clear
 		 * the port-change status bits (especially
-		 * USB_PORT_STAT_C_CONNECTION).
+		 * USB_PORT_FEAT_C_CONNECTION).
 		 */
 
 		switch (wValue) {
@@ -3260,11 +3265,11 @@ static int oxu_hub_control(struct usb_hcd *hcd, u16 typeReq,
 
 		/* wPortChange bits */
 		if (temp & PORT_CSC)
-			status |= USB_PORT_STAT_C_CONNECTION << 16;
+			status |= 1 << USB_PORT_FEAT_C_CONNECTION;
 		if (temp & PORT_PEC)
-			status |= USB_PORT_STAT_C_ENABLE << 16;
+			status |= 1 << USB_PORT_FEAT_C_ENABLE;
 		if ((temp & PORT_OCC) && !ignore_oc)
-			status |= USB_PORT_STAT_C_OVERCURRENT << 16;
+			status |= 1 << USB_PORT_FEAT_C_OVER_CURRENT;
 
 		/* whoever resumes must GetPortStatus to complete it!! */
 		if (temp & PORT_RESUME) {
@@ -3282,7 +3287,7 @@ static int oxu_hub_control(struct usb_hcd *hcd, u16 typeReq,
 			/* resume completed? */
 			else if (time_after_eq(jiffies,
 					oxu->reset_done[wIndex])) {
-				status |= USB_PORT_STAT_C_SUSPEND << 16;
+				status |= 1 << USB_PORT_FEAT_C_SUSPEND;
 				oxu->reset_done[wIndex] = 0;
 
 				/* stop resume signaling */
@@ -3305,7 +3310,7 @@ static int oxu_hub_control(struct usb_hcd *hcd, u16 typeReq,
 		if ((temp & PORT_RESET)
 				&& time_after_eq(jiffies,
 					oxu->reset_done[wIndex])) {
-			status |= USB_PORT_STAT_C_RESET << 16;
+			status |= 1 << USB_PORT_FEAT_C_RESET;
 			oxu->reset_done[wIndex] = 0;
 
 			/* force reset to complete */
@@ -3344,20 +3349,20 @@ static int oxu_hub_control(struct usb_hcd *hcd, u16 typeReq,
 		 */
 
 		if (temp & PORT_CONNECT) {
-			status |= USB_PORT_STAT_CONNECTION;
+			status |= 1 << USB_PORT_FEAT_CONNECTION;
 			/* status may be from integrated TT */
 			status |= oxu_port_speed(oxu, temp);
 		}
 		if (temp & PORT_PE)
-			status |= USB_PORT_STAT_ENABLE;
+			status |= 1 << USB_PORT_FEAT_ENABLE;
 		if (temp & (PORT_SUSPEND|PORT_RESUME))
-			status |= USB_PORT_STAT_SUSPEND;
+			status |= 1 << USB_PORT_FEAT_SUSPEND;
 		if (temp & PORT_OC)
-			status |= USB_PORT_STAT_OVERCURRENT;
+			status |= 1 << USB_PORT_FEAT_OVER_CURRENT;
 		if (temp & PORT_RESET)
-			status |= USB_PORT_STAT_RESET;
+			status |= 1 << USB_PORT_FEAT_RESET;
 		if (temp & PORT_POWER)
-			status |= USB_PORT_STAT_POWER;
+			status |= 1 << USB_PORT_FEAT_POWER;
 
 #ifndef	OXU_VERBOSE_DEBUG
 	if (status & ~0xffff)	/* only if wPortChange is interesting */

@@ -12,6 +12,8 @@
 #include <linux/param.h>
 #include <linux/time.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
+#include <linux/utsname.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/in.h>
@@ -118,8 +120,8 @@ xdr_decode_time(__be32 *p, struct timespec *timep)
 static __be32 *
 xdr_decode_fattr(__be32 *p, struct nfs_fattr *fattr)
 {
-	u32 rdev, type;
-	type = ntohl(*p++);
+	u32 rdev;
+	fattr->type = (enum nfs_ftype) ntohl(*p++);
 	fattr->mode = ntohl(*p++);
 	fattr->nlink = ntohl(*p++);
 	fattr->uid = ntohl(*p++);
@@ -134,9 +136,10 @@ xdr_decode_fattr(__be32 *p, struct nfs_fattr *fattr)
 	p = xdr_decode_time(p, &fattr->atime);
 	p = xdr_decode_time(p, &fattr->mtime);
 	p = xdr_decode_time(p, &fattr->ctime);
-	fattr->valid |= NFS_ATTR_FATTR_V2;
+	fattr->valid |= NFS_ATTR_FATTR;
 	fattr->rdev = new_decode_dev(rdev);
-	if (type == NFCHR && rdev == NFS2_FIFO_DEV) {
+	if (fattr->type == NFCHR && rdev == NFS2_FIFO_DEV) {
+		fattr->type = NFFIFO;
 		fattr->mode = (fattr->mode & ~S_IFMT) | S_IFIFO;
 		fattr->rdev = 0;
 	}
@@ -233,7 +236,7 @@ nfs_xdr_removeargs(struct rpc_rqst *req, __be32 *p, const struct nfs_removeargs 
 static int
 nfs_xdr_readargs(struct rpc_rqst *req, __be32 *p, struct nfs_readargs *args)
 {
-	struct rpc_auth	*auth = req->rq_cred->cr_auth;
+	struct rpc_auth	*auth = req->rq_task->tk_msg.rpc_cred->cr_auth;
 	unsigned int replen;
 	u32 offset = (u32)args->offset;
 	u32 count = args->count;
@@ -393,7 +396,8 @@ nfs_xdr_symlinkargs(struct rpc_rqst *req, __be32 *p, struct nfs_symlinkargs *arg
 static int
 nfs_xdr_readdirargs(struct rpc_rqst *req, __be32 *p, struct nfs_readdirargs *args)
 {
-	struct rpc_auth	*auth = req->rq_cred->cr_auth;
+	struct rpc_task	*task = req->rq_task;
+	struct rpc_auth	*auth = task->tk_msg.rpc_cred->cr_auth;
 	unsigned int replen;
 	u32 count = args->count;
 
@@ -574,7 +578,7 @@ nfs_xdr_diropres(struct rpc_rqst *req, __be32 *p, struct nfs_diropok *res)
 static int
 nfs_xdr_readlinkargs(struct rpc_rqst *req, __be32 *p, struct nfs_readlinkargs *args)
 {
-	struct rpc_auth	*auth = req->rq_cred->cr_auth;
+	struct rpc_auth	*auth = req->rq_task->tk_msg.rpc_cred->cr_auth;
 	unsigned int replen;
 
 	p = xdr_encode_fhandle(p, args->fh);
@@ -697,7 +701,7 @@ static struct {
 	{ NFSERR_BAD_COOKIE,	-EBADCOOKIE	},
 	{ NFSERR_NOTSUPP,	-ENOTSUPP	},
 	{ NFSERR_TOOSMALL,	-ETOOSMALL	},
-	{ NFSERR_SERVERFAULT,	-EREMOTEIO	},
+	{ NFSERR_SERVERFAULT,	-ESERVERFAULT	},
 	{ NFSERR_BADTYPE,	-EBADTYPE	},
 	{ NFSERR_JUKEBOX,	-EJUKEBOX	},
 	{ -1,			-EIO		}

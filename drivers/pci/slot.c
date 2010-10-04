@@ -1,12 +1,11 @@
 /*
  * drivers/pci/slot.c
  * Copyright (C) 2006 Matthew Wilcox <matthew@wil.cx>
- * Copyright (C) 2006-2009 Hewlett-Packard Development Company, L.P.
- *	Alex Chiang <achiang@hp.com>
+ * Copyright (C) 2006-2008 Hewlett-Packard Development Company, L.P.
+ * 	Alex Chiang <achiang@hp.com>
  */
 
 #include <linux/kobject.h>
-#include <linux/slab.h>
 #include <linux/pci.h>
 #include <linux/err.h>
 #include "pci.h"
@@ -30,7 +29,7 @@ static ssize_t pci_slot_attr_store(struct kobject *kobj,
 	return attribute->store ? attribute->store(slot, buf, len) : -EIO;
 }
 
-static const struct sysfs_ops pci_slot_sysfs_ops = {
+static struct sysfs_ops pci_slot_sysfs_ops = {
 	.show = pci_slot_attr_show,
 	.store = pci_slot_attr_store,
 };
@@ -48,62 +47,13 @@ static ssize_t address_read_file(struct pci_slot *slot, char *buf)
 				slot->number);
 }
 
-/* these strings match up with the values in pci_bus_speed */
-static const char *pci_bus_speed_strings[] = {
-	"33 MHz PCI",		/* 0x00 */
-	"66 MHz PCI",		/* 0x01 */
-	"66 MHz PCI-X", 	/* 0x02 */
-	"100 MHz PCI-X",	/* 0x03 */
-	"133 MHz PCI-X",	/* 0x04 */
-	NULL,			/* 0x05 */
-	NULL,			/* 0x06 */
-	NULL,			/* 0x07 */
-	NULL,			/* 0x08 */
-	"66 MHz PCI-X 266",	/* 0x09 */
-	"100 MHz PCI-X 266",	/* 0x0a */
-	"133 MHz PCI-X 266",	/* 0x0b */
-	"Unknown AGP",		/* 0x0c */
-	"1x AGP",		/* 0x0d */
-	"2x AGP",		/* 0x0e */
-	"4x AGP",		/* 0x0f */
-	"8x AGP",		/* 0x10 */
-	"66 MHz PCI-X 533",	/* 0x11 */
-	"100 MHz PCI-X 533",	/* 0x12 */
-	"133 MHz PCI-X 533",	/* 0x13 */
-	"2.5 GT/s PCIe",	/* 0x14 */
-	"5.0 GT/s PCIe",	/* 0x15 */
-	"8.0 GT/s PCIe",	/* 0x16 */
-};
-
-static ssize_t bus_speed_read(enum pci_bus_speed speed, char *buf)
-{
-	const char *speed_string;
-
-	if (speed < ARRAY_SIZE(pci_bus_speed_strings))
-		speed_string = pci_bus_speed_strings[speed];
-	else
-		speed_string = "Unknown";
-
-	return sprintf(buf, "%s\n", speed_string);
-}
-
-static ssize_t max_speed_read_file(struct pci_slot *slot, char *buf)
-{
-	return bus_speed_read(slot->bus->max_bus_speed, buf);
-}
-
-static ssize_t cur_speed_read_file(struct pci_slot *slot, char *buf)
-{
-	return bus_speed_read(slot->bus->cur_bus_speed, buf);
-}
-
 static void pci_slot_release(struct kobject *kobj)
 {
 	struct pci_dev *dev;
 	struct pci_slot *slot = to_pci_slot(kobj);
 
-	dev_dbg(&slot->bus->dev, "dev %02x, released physical slot %s\n",
-		slot->number, pci_slot_name(slot));
+	pr_debug("%s: releasing pci_slot on %x:%d\n", __func__,
+		 slot->bus->number, slot->number);
 
 	list_for_each_entry(dev, &slot->bus->devices, bus_list)
 		if (PCI_SLOT(dev->devfn) == slot->number)
@@ -116,15 +66,9 @@ static void pci_slot_release(struct kobject *kobj)
 
 static struct pci_slot_attribute pci_slot_attr_address =
 	__ATTR(address, (S_IFREG | S_IRUGO), address_read_file, NULL);
-static struct pci_slot_attribute pci_slot_attr_max_speed =
-	__ATTR(max_bus_speed, (S_IFREG | S_IRUGO), max_speed_read_file, NULL);
-static struct pci_slot_attribute pci_slot_attr_cur_speed =
-	__ATTR(cur_bus_speed, (S_IFREG | S_IRUGO), cur_speed_read_file, NULL);
 
 static struct attribute *pci_slot_default_attrs[] = {
 	&pci_slot_attr_address.attr,
-	&pci_slot_attr_max_speed.attr,
-	&pci_slot_attr_cur_speed.attr,
 	NULL,
 };
 
@@ -304,8 +248,9 @@ placeholder:
 		if (PCI_SLOT(dev->devfn) == slot_nr)
 			dev->slot = slot;
 
-	dev_dbg(&parent->dev, "dev %02x, created physical slot %s\n",
-		slot_nr, pci_slot_name(slot));
+	/* Don't care if debug printk has a -1 for slot_nr */
+	pr_debug("%s: created pci_slot on %04x:%02x:%02x\n",
+		 __func__, pci_domain_nr(parent), parent->number, slot_nr);
 
 out:
 	kfree(slot_name);
@@ -320,8 +265,8 @@ EXPORT_SYMBOL_GPL(pci_create_slot);
 
 /**
  * pci_renumber_slot - update %struct pci_slot -> number
- * @slot: &struct pci_slot to update
- * @slot_nr: new number for slot
+ * @slot - %struct pci_slot to update
+ * @slot_nr - new number for slot
  *
  * The primary purpose of this interface is to allow callers who earlier
  * created a placeholder slot in pci_create_slot() by passing a -1 as
@@ -354,53 +299,15 @@ EXPORT_SYMBOL_GPL(pci_renumber_slot);
  */
 void pci_destroy_slot(struct pci_slot *slot)
 {
-	dev_dbg(&slot->bus->dev, "dev %02x, dec refcount to %d\n",
-		slot->number, atomic_read(&slot->kobj.kref.refcount) - 1);
+	pr_debug("%s: dec refcount to %d on %04x:%02x:%02x\n", __func__,
+		 atomic_read(&slot->kobj.kref.refcount) - 1,
+		 pci_domain_nr(slot->bus), slot->bus->number, slot->number);
 
 	down_write(&pci_bus_sem);
 	kobject_put(&slot->kobj);
 	up_write(&pci_bus_sem);
 }
 EXPORT_SYMBOL_GPL(pci_destroy_slot);
-
-#if defined(CONFIG_HOTPLUG_PCI) || defined(CONFIG_HOTPLUG_PCI_MODULE)
-#include <linux/pci_hotplug.h>
-/**
- * pci_hp_create_link - create symbolic link to the hotplug driver module.
- * @pci_slot: struct pci_slot
- *
- * Helper function for pci_hotplug_core.c to create symbolic link to
- * the hotplug driver module.
- */
-void pci_hp_create_module_link(struct pci_slot *pci_slot)
-{
-	struct hotplug_slot *slot = pci_slot->hotplug;
-	struct kobject *kobj = NULL;
-	int no_warn;
-
-	if (!slot || !slot->ops)
-		return;
-	kobj = kset_find_obj(module_kset, slot->ops->mod_name);
-	if (!kobj)
-		return;
-	no_warn = sysfs_create_link(&pci_slot->kobj, kobj, "module");
-	kobject_put(kobj);
-}
-EXPORT_SYMBOL_GPL(pci_hp_create_module_link);
-
-/**
- * pci_hp_remove_link - remove symbolic link to the hotplug driver module.
- * @pci_slot: struct pci_slot
- *
- * Helper function for pci_hotplug_core.c to remove symbolic link to
- * the hotplug driver module.
- */
-void pci_hp_remove_module_link(struct pci_slot *pci_slot)
-{
-	sysfs_remove_link(&pci_slot->kobj, "module");
-}
-EXPORT_SYMBOL_GPL(pci_hp_remove_module_link);
-#endif
 
 static int pci_slot_init(void)
 {

@@ -9,7 +9,6 @@
 #include <mach/hardware.h>
 #include <asm/setup.h>
 #include <asm/mach-types.h>
-#include <asm/page.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
@@ -28,7 +27,7 @@ static struct mcp_plat_data lart_mcp_data = {
 
 static void __init lart_init(void)
 {
-	sa11x0_register_mcp(&lart_mcp_data);
+	sa11x0_set_mcp_data(&lart_mcp_data);
 }
 
 static struct map_desc lart_io_desc[] __initdata = {

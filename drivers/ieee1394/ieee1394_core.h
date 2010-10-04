@@ -5,7 +5,6 @@
 #include <linux/fs.h>
 #include <linux/list.h>
 #include <linux/types.h>
-#include <linux/cdev.h>
 #include <asm/atomic.h>
 
 #include "hosts.h"
@@ -156,10 +155,7 @@ void hpsb_packet_received(struct hpsb_host *host, quadlet_t *data, size_t size,
  */
 static inline unsigned char ieee1394_file_to_instance(struct file *file)
 {
-	int idx = cdev_index(file->f_path.dentry->d_inode);
-	if (idx < 0)
-		idx = 0;
-	return idx;
+	return file->f_path.dentry->d_inode->i_cindex;
 }
 
 extern int hpsb_disable_irm;

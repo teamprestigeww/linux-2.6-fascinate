@@ -24,7 +24,6 @@
 #include <linux/rtc.h>
 #include <linux/bcd.h>
 #include <linux/workqueue.h>
-#include <linux/slab.h>
 
 #define DS1374_REG_TOD0		0x00 /* Time of Day */
 #define DS1374_REG_TOD1		0x01
@@ -223,16 +222,16 @@ static int ds1374_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 	rtc_tm_to_time(&alarm->time, &new_alarm);
 	rtc_tm_to_time(&now, &itime);
 
+	new_alarm -= itime;
+
 	/* This can happen due to races, in addition to dates that are
 	 * truly in the past.  To avoid requiring the caller to check for
 	 * races, dates in the past are assumed to be in the recent past
 	 * (i.e. not something that we'd rather the caller know about via
 	 * an error), and the alarm is set to go off as soon as possible.
 	 */
-	if (time_before_eq(new_alarm, itime))
+	if (new_alarm <= 0)
 		new_alarm = 1;
-	else
-		new_alarm -= itime;
 
 	mutex_lock(&ds1374->mutex);
 
@@ -284,7 +283,7 @@ static void ds1374_work(struct work_struct *work)
 
 	stat = i2c_smbus_read_byte_data(client, DS1374_REG_SR);
 	if (stat < 0)
-		goto unlock;
+		return;
 
 	if (stat & DS1374_REG_SR_AF) {
 		stat &= ~DS1374_REG_SR_AF;
@@ -297,13 +296,18 @@ static void ds1374_work(struct work_struct *work)
 		control &= ~(DS1374_REG_CR_WACE | DS1374_REG_CR_AIE);
 		i2c_smbus_write_byte_data(client, DS1374_REG_CR, control);
 
+		/* rtc_update_irq() assumes that it is called
+		 * from IRQ-disabled context.
+		 */
+		local_irq_disable();
 		rtc_update_irq(ds1374->rtc, 1, RTC_AF | RTC_IRQF);
+		local_irq_enable();
 	}
 
 out:
 	if (!ds1374->exiting)
 		enable_irq(client->irq);
-unlock:
+
 	mutex_unlock(&ds1374->mutex);
 }
 
@@ -384,8 +388,6 @@ static int ds1374_probe(struct i2c_client *client,
 			dev_err(&client->dev, "unable to request IRQ\n");
 			goto out_free;
 		}
-
-		device_set_wakeup_capable(&client->dev, 1);
 	}
 
 	ds1374->rtc = rtc_device_register(client->name, &client->dev,
@@ -403,6 +405,7 @@ out_irq:
 		free_irq(client->irq, client);
 
 out_free:
+	i2c_set_clientdata(client, NULL);
 	kfree(ds1374);
 	return ret;
 }
@@ -421,6 +424,7 @@ static int __devexit ds1374_remove(struct i2c_client *client)
 	}
 
 	rtc_device_unregister(ds1374->rtc);
+	i2c_set_clientdata(client, NULL);
 	kfree(ds1374);
 	return 0;
 }

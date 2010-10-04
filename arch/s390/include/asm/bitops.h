@@ -57,7 +57,7 @@
  * with operation of the form "set_bit(bitnr, flags)".
  */
 
-/* bitmap tables from arch/s390/kernel/bitmap.c */
+/* bitmap tables from arch/S390/kernel/bitmap.S */
 extern const char _oi_bitmap[];
 extern const char _ni_bitmap[];
 extern const char _zb_findmap[];
@@ -71,6 +71,8 @@ extern const char _sb_findmap[];
 #define __BITOPS_AND		"nr"
 #define __BITOPS_XOR		"xr"
 
+#if __GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ > 2)
+
 #define __BITOPS_LOOP(__old, __new, __addr, __val, __op_string)	\
 	asm volatile(						\
 		"	l	%0,%2\n"			\
@@ -83,6 +85,22 @@ extern const char _sb_findmap[];
 		: "d" (__val), "Q" (*(unsigned long *) __addr)	\
 		: "cc");
 
+#else /* __GNUC__ */
+
+#define __BITOPS_LOOP(__old, __new, __addr, __val, __op_string)	\
+	asm volatile(						\
+		"	l	%0,0(%4)\n"			\
+		"0:	lr	%1,%0\n"			\
+		__op_string "	%1,%3\n"			\
+		"	cs	%0,%1,0(%4)\n"			\
+		"	jl	0b"				\
+		: "=&d" (__old), "=&d" (__new),			\
+		  "=m" (*(unsigned long *) __addr)		\
+		: "d" (__val), "a" (__addr),			\
+		  "m" (*(unsigned long *) __addr) : "cc");
+
+#endif /* __GNUC__ */
+
 #else /* __s390x__ */
 
 #define __BITOPS_ALIGN		7
@@ -90,6 +108,8 @@ extern const char _sb_findmap[];
 #define __BITOPS_OR		"ogr"
 #define __BITOPS_AND		"ngr"
 #define __BITOPS_XOR		"xgr"
+
+#if __GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ > 2)
 
 #define __BITOPS_LOOP(__old, __new, __addr, __val, __op_string)	\
 	asm volatile(						\
@@ -102,6 +122,23 @@ extern const char _sb_findmap[];
 		  "=Q" (*(unsigned long *) __addr)		\
 		: "d" (__val), "Q" (*(unsigned long *) __addr)	\
 		: "cc");
+
+#else /* __GNUC__ */
+
+#define __BITOPS_LOOP(__old, __new, __addr, __val, __op_string)	\
+	asm volatile(						\
+		"	lg	%0,0(%4)\n"			\
+		"0:	lgr	%1,%0\n"			\
+		__op_string "	%1,%3\n"			\
+		"	csg	%0,%1,0(%4)\n"			\
+		"	jl	0b"				\
+		: "=&d" (__old), "=&d" (__new),			\
+		  "=m" (*(unsigned long *) __addr)		\
+		: "d" (__val), "a" (__addr),			\
+		  "m" (*(unsigned long *) __addr) : "cc");
+
+
+#endif /* __GNUC__ */
 
 #endif /* __s390x__ */
 
@@ -224,8 +261,9 @@ static inline void __set_bit(unsigned long nr, volatile unsigned long *ptr)
 
 	addr = (unsigned long) ptr + ((nr ^ (__BITOPS_WORDSIZE - 8)) >> 3);
 	asm volatile(
-		"	oc	%O0(1,%R0),%1"
-		: "=Q" (*(char *) addr) : "Q" (_oi_bitmap[nr & 7]) : "cc" );
+		"	oc	0(1,%1),0(%2)"
+		: "=m" (*(char *) addr) : "a" (addr),
+		  "a" (_oi_bitmap + (nr & 7)), "m" (*(char *) addr) : "cc" );
 }
 
 static inline void 
@@ -252,8 +290,9 @@ __clear_bit(unsigned long nr, volatile unsigned long *ptr)
 
 	addr = (unsigned long) ptr + ((nr ^ (__BITOPS_WORDSIZE - 8)) >> 3);
 	asm volatile(
-		"	nc	%O0(1,%R0),%1"
-		: "=Q" (*(char *) addr) : "Q" (_ni_bitmap[nr & 7]) : "cc" );
+		"	nc	0(1,%1),0(%2)"
+		: "=m" (*(char *) addr)	: "a" (addr),
+		  "a" (_ni_bitmap + (nr & 7)), "m" (*(char *) addr) : "cc");
 }
 
 static inline void 
@@ -279,8 +318,9 @@ static inline void __change_bit(unsigned long nr, volatile unsigned long *ptr)
 
 	addr = (unsigned long) ptr + ((nr ^ (__BITOPS_WORDSIZE - 8)) >> 3);
 	asm volatile(
-		"	xc	%O0(1,%R0),%1"
-		: "=Q" (*(char *) addr) : "Q" (_oi_bitmap[nr & 7]) : "cc" );
+		"	xc	0(1,%1),0(%2)"
+		:  "=m" (*(char *) addr) : "a" (addr),
+		   "a" (_oi_bitmap + (nr & 7)), "m" (*(char *) addr) : "cc" );
 }
 
 static inline void 
@@ -309,9 +349,10 @@ test_and_set_bit_simple(unsigned long nr, volatile unsigned long *ptr)
 	addr = (unsigned long) ptr + ((nr ^ (__BITOPS_WORDSIZE - 8)) >> 3);
 	ch = *(unsigned char *) addr;
 	asm volatile(
-		"	oc	%O0(1,%R0),%1"
-		: "=Q" (*(char *) addr)	: "Q" (_oi_bitmap[nr & 7])
-		: "cc", "memory");
+		"	oc	0(1,%1),0(%2)"
+		: "=m" (*(char *) addr)
+		: "a" (addr), "a" (_oi_bitmap + (nr & 7)),
+		  "m" (*(char *) addr) : "cc", "memory");
 	return (ch >> (nr & 7)) & 1;
 }
 #define __test_and_set_bit(X,Y)		test_and_set_bit_simple(X,Y)
@@ -328,9 +369,10 @@ test_and_clear_bit_simple(unsigned long nr, volatile unsigned long *ptr)
 	addr = (unsigned long) ptr + ((nr ^ (__BITOPS_WORDSIZE - 8)) >> 3);
 	ch = *(unsigned char *) addr;
 	asm volatile(
-		"	nc	%O0(1,%R0),%1"
-		: "=Q" (*(char *) addr)	: "Q" (_ni_bitmap[nr & 7])
-		: "cc", "memory");
+		"	nc	0(1,%1),0(%2)"
+		: "=m" (*(char *) addr)
+		: "a" (addr), "a" (_ni_bitmap + (nr & 7)),
+		  "m" (*(char *) addr) : "cc", "memory");
 	return (ch >> (nr & 7)) & 1;
 }
 #define __test_and_clear_bit(X,Y)	test_and_clear_bit_simple(X,Y)
@@ -347,9 +389,10 @@ test_and_change_bit_simple(unsigned long nr, volatile unsigned long *ptr)
 	addr = (unsigned long) ptr + ((nr ^ (__BITOPS_WORDSIZE - 8)) >> 3);
 	ch = *(unsigned char *) addr;
 	asm volatile(
-		"	xc	%O0(1,%R0),%1"
-		: "=Q" (*(char *) addr)	: "Q" (_oi_bitmap[nr & 7])
-		: "cc", "memory");
+		"	xc	0(1,%1),0(%2)"
+		: "=m" (*(char *) addr)
+		: "a" (addr), "a" (_oi_bitmap + (nr & 7)),
+		  "m" (*(char *) addr) : "cc", "memory");
 	return (ch >> (nr & 7)) & 1;
 }
 #define __test_and_change_bit(X,Y)	test_and_change_bit_simple(X,Y)
@@ -482,16 +525,16 @@ static inline unsigned long __ffs_word_loop(const unsigned long *addr,
 static inline unsigned long __ffz_word(unsigned long nr, unsigned long word)
 {
 #ifdef __s390x__
-	if ((word & 0xffffffff) == 0xffffffff) {
+	if (likely((word & 0xffffffff) == 0xffffffff)) {
 		word >>= 32;
 		nr += 32;
 	}
 #endif
-	if ((word & 0xffff) == 0xffff) {
+	if (likely((word & 0xffff) == 0xffff)) {
 		word >>= 16;
 		nr += 16;
 	}
-	if ((word & 0xff) == 0xff) {
+	if (likely((word & 0xff) == 0xff)) {
 		word >>= 8;
 		nr += 8;
 	}
@@ -506,16 +549,16 @@ static inline unsigned long __ffz_word(unsigned long nr, unsigned long word)
 static inline unsigned long __ffs_word(unsigned long nr, unsigned long word)
 {
 #ifdef __s390x__
-	if ((word & 0xffffffff) == 0) {
+	if (likely((word & 0xffffffff) == 0)) {
 		word >>= 32;
 		nr += 32;
 	}
 #endif
-	if ((word & 0xffff) == 0) {
+	if (likely((word & 0xffff) == 0)) {
 		word >>= 16;
 		nr += 16;
 	}
-	if ((word & 0xff) == 0) {
+	if (likely((word & 0xff) == 0)) {
 		word >>= 8;
 		nr += 8;
 	}
@@ -548,11 +591,11 @@ static inline unsigned long __load_ulong_le(const unsigned long *p,
 	p = (unsigned long *)((unsigned long) p + offset);
 #ifndef __s390x__
 	asm volatile(
-		"	ic	%0,%O1(%R1)\n"
-		"	icm	%0,2,%O1+1(%R1)\n"
-		"	icm	%0,4,%O1+2(%R1)\n"
-		"	icm	%0,8,%O1+3(%R1)"
-		: "=&d" (word) : "Q" (*p) : "cc");
+		"	ic	%0,0(%1)\n"
+		"	icm	%0,2,1(%1)\n"
+		"	icm	%0,4,2(%1)\n"
+		"	icm	%0,8,3(%1)"
+		: "=&d" (word) : "a" (p), "m" (*p) : "cc");
 #else
 	asm volatile(
 		"	lrvg	%0,%1"

@@ -34,7 +34,6 @@
 #include <linux/socket.h>
 #include <linux/fs.h>
 #include <linux/seq_file.h>
-#include <linux/slab.h>
 
 #include <net/irda/irda.h>
 #include <net/irda/irlmp.h>

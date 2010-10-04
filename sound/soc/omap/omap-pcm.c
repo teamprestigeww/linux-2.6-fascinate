@@ -3,8 +3,7 @@
  *
  * Copyright (C) 2008 Nokia Corporation
  *
- * Contact: Jarkko Nikula <jhnikula@gmail.com>
- *          Peter Ujfalusi <peter.ujfalusi@nokia.com>
+ * Contact: Jarkko Nikula <jarkko.nikula@nokia.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -23,13 +22,12 @@
  */
 
 #include <linux/dma-mapping.h>
-#include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 
-#include <plat/dma.h>
+#include <mach/dma.h>
 #include "omap-pcm.h"
 
 static const struct snd_pcm_hardware omap_pcm_hardware = {
@@ -38,8 +36,7 @@ static const struct snd_pcm_hardware omap_pcm_hardware = {
 				  SNDRV_PCM_INFO_INTERLEAVED |
 				  SNDRV_PCM_INFO_PAUSE |
 				  SNDRV_PCM_INFO_RESUME,
-	.formats		= SNDRV_PCM_FMTBIT_S16_LE |
-				  SNDRV_PCM_FMTBIT_S32_LE,
+	.formats		= SNDRV_PCM_FMTBIT_S16_LE,
 	.period_bytes_min	= 32,
 	.period_bytes_max	= 64 * 1024,
 	.periods_min		= 2,
@@ -61,30 +58,16 @@ static void omap_pcm_dma_irq(int ch, u16 stat, void *data)
 	struct omap_runtime_data *prtd = runtime->private_data;
 	unsigned long flags;
 
-	if ((cpu_is_omap1510())) {
+	if (cpu_is_omap1510()) {
 		/*
-		 * OMAP1510 doesn't fully support DMA progress counter
-		 * and there is no software emulation implemented yet,
-		 * so have to maintain our own progress counters
-		 * that can be used by omap_pcm_pointer() instead.
+		 * OMAP1510 doesn't support DMA chaining so have to restart
+		 * the transfer after all periods are transferred
 		 */
 		spin_lock_irqsave(&prtd->lock, flags);
-		if ((stat == OMAP_DMA_LAST_IRQ) &&
-				(prtd->period_index == runtime->periods - 1)) {
-			/* we are in sync, do nothing */
-			spin_unlock_irqrestore(&prtd->lock, flags);
-			return;
-		}
 		if (prtd->period_index >= 0) {
-			if (stat & OMAP_DMA_BLOCK_IRQ) {
-				/* end of buffer reached, loop back */
+			if (++prtd->period_index == runtime->periods) {
 				prtd->period_index = 0;
-			} else if (stat & OMAP_DMA_LAST_IRQ) {
-				/* update the counter for the last period */
-				prtd->period_index = runtime->periods - 1;
-			} else if (++prtd->period_index >= runtime->periods) {
-				/* end of buffer missed? loop back */
-				prtd->period_index = 0;
+				omap_start_dma(prtd->dma_ch);
 			}
 		}
 		spin_unlock_irqrestore(&prtd->lock, flags);
@@ -100,15 +83,11 @@ static int omap_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct omap_runtime_data *prtd = runtime->private_data;
-	struct omap_pcm_dma_data *dma_data;
+	struct omap_pcm_dma_data *dma_data = rtd->dai->cpu_dai->dma_data;
 	int err = 0;
 
-	dma_data = snd_soc_dai_get_dma_data(rtd->dai->cpu_dai, substream);
-
-	/* return if this is a bufferless transfer e.g.
-	 * codec <--> BT codec or GSM modem -- lg FIXME */
 	if (!dma_data)
-		return 0;
+		return -ENODEV;
 
 	snd_pcm_set_runtime_buffer(substream, &substream->dma_buffer);
 	runtime->dma_bytes = params_buffer_bytes(params);
@@ -118,7 +97,7 @@ static int omap_pcm_hw_params(struct snd_pcm_substream *substream,
 	prtd->dma_data = dma_data;
 	err = omap_request_dma(dma_data->dma_req, dma_data->name,
 			       omap_pcm_dma_irq, substream, &prtd->dma_ch);
-	if (!err) {
+	if (!err && !cpu_is_omap1510()) {
 		/*
 		 * Link channel with itself so DMA doesn't need any
 		 * reprogramming while looping the buffer
@@ -137,7 +116,8 @@ static int omap_pcm_hw_free(struct snd_pcm_substream *substream)
 	if (prtd->dma_data == NULL)
 		return 0;
 
-	omap_dma_unlink_lch(prtd->dma_ch, prtd->dma_ch);
+	if (!cpu_is_omap1510())
+		omap_dma_unlink_lch(prtd->dma_ch, prtd->dma_ch);
 	omap_free_dma(prtd->dma_ch);
 	prtd->dma_data = NULL;
 
@@ -152,17 +132,15 @@ static int omap_pcm_prepare(struct snd_pcm_substream *substream)
 	struct omap_runtime_data *prtd = runtime->private_data;
 	struct omap_pcm_dma_data *dma_data = prtd->dma_data;
 	struct omap_dma_channel_params dma_params;
-	int bytes;
-
-	/* return if this is a bufferless transfer e.g.
-	 * codec <--> BT codec or GSM modem -- lg FIXME */
-	if (!prtd->dma_data)
-		return 0;
 
 	memset(&dma_params, 0, sizeof(dma_params));
-	dma_params.data_type			= dma_data->data_type;
+	/*
+	 * Note: Regardless of interface data formats supported by OMAP McBSP
+	 * or EAC blocks, internal representation is always fixed 16-bit/sample
+	 */
+	dma_params.data_type			= OMAP_DMA_DATA_TYPE_S16;
 	dma_params.trigger			= dma_data->dma_req;
-	dma_params.sync_mode			= dma_data->sync_mode;
+	dma_params.sync_mode			= OMAP_DMA_SYNC_ELEMENT;
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		dma_params.src_amode		= OMAP_DMA_AMODE_POST_INC;
 		dma_params.dst_amode		= OMAP_DMA_AMODE_CONSTANT;
@@ -170,7 +148,6 @@ static int omap_pcm_prepare(struct snd_pcm_substream *substream)
 		dma_params.src_start		= runtime->dma_addr;
 		dma_params.dst_start		= dma_data->port_addr;
 		dma_params.dst_port		= OMAP_DMA_PORT_MPUI;
-		dma_params.dst_fi		= dma_data->packet_size;
 	} else {
 		dma_params.src_amode		= OMAP_DMA_AMODE_CONSTANT;
 		dma_params.dst_amode		= OMAP_DMA_AMODE_POST_INC;
@@ -178,7 +155,6 @@ static int omap_pcm_prepare(struct snd_pcm_substream *substream)
 		dma_params.src_start		= dma_data->port_addr;
 		dma_params.dst_start		= runtime->dma_addr;
 		dma_params.src_port		= OMAP_DMA_PORT_MPUI;
-		dma_params.src_fi		= dma_data->packet_size;
 	}
 	/*
 	 * Set DMA transfer frame size equal to ALSA period size and frame
@@ -186,23 +162,11 @@ static int omap_pcm_prepare(struct snd_pcm_substream *substream)
 	 * we can transfer the whole ALSA buffer with single DMA transfer but
 	 * still can get an interrupt at each period bounary
 	 */
-	bytes = snd_pcm_lib_period_bytes(substream);
-	dma_params.elem_count	= bytes >> dma_data->data_type;
+	dma_params.elem_count	= snd_pcm_lib_period_bytes(substream) / 2;
 	dma_params.frame_count	= runtime->periods;
 	omap_set_dma_params(prtd->dma_ch, &dma_params);
 
-	if ((cpu_is_omap1510()))
-		omap_enable_dma_irq(prtd->dma_ch, OMAP_DMA_FRAME_IRQ |
-			      OMAP_DMA_LAST_IRQ | OMAP_DMA_BLOCK_IRQ);
-	else
-		omap_enable_dma_irq(prtd->dma_ch, OMAP_DMA_FRAME_IRQ);
-
-	if (!(cpu_class_is_omap1())) {
-		omap_set_dma_src_burst_mode(prtd->dma_ch,
-						OMAP_DMA_DATA_BURST_16);
-		omap_set_dma_dest_burst_mode(prtd->dma_ch,
-						OMAP_DMA_DATA_BURST_16);
-	}
+	omap_enable_dma_irq(prtd->dma_ch, OMAP_DMA_FRAME_IRQ);
 
 	return 0;
 }
@@ -211,7 +175,6 @@ static int omap_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct omap_runtime_data *prtd = runtime->private_data;
-	struct omap_pcm_dma_data *dma_data = prtd->dma_data;
 	unsigned long flags;
 	int ret = 0;
 
@@ -221,10 +184,6 @@ static int omap_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		prtd->period_index = 0;
-		/* Configure McBSP internal buffer usage */
-		if (dma_data->set_threshold)
-			dma_data->set_threshold(substream);
-
 		omap_start_dma(prtd->dma_ch);
 		break;
 
@@ -249,16 +208,12 @@ static snd_pcm_uframes_t omap_pcm_pointer(struct snd_pcm_substream *substream)
 	dma_addr_t ptr;
 	snd_pcm_uframes_t offset;
 
-	if (cpu_is_omap1510()) {
-		offset = prtd->period_index * runtime->period_size;
-	} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
-		ptr = omap_get_dma_dst_pos(prtd->dma_ch);
-		offset = bytes_to_frames(runtime, ptr - runtime->dma_addr);
-	} else {
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		ptr = omap_get_dma_src_pos(prtd->dma_ch);
-		offset = bytes_to_frames(runtime, ptr - runtime->dma_addr);
-	}
+	else
+		ptr = omap_get_dma_dst_pos(prtd->dma_ch);
 
+	offset = bytes_to_frames(runtime, ptr - runtime->dma_addr);
 	if (offset >= runtime->buffer_size)
 		offset = 0;
 
@@ -310,7 +265,7 @@ static int omap_pcm_mmap(struct snd_pcm_substream *substream,
 				     runtime->dma_bytes);
 }
 
-static struct snd_pcm_ops omap_pcm_ops = {
+struct snd_pcm_ops omap_pcm_ops = {
 	.open		= omap_pcm_open,
 	.close		= omap_pcm_close,
 	.ioctl		= snd_pcm_lib_ioctl,
@@ -322,7 +277,7 @@ static struct snd_pcm_ops omap_pcm_ops = {
 	.mmap		= omap_pcm_mmap,
 };
 
-static u64 omap_pcm_dmamask = DMA_BIT_MASK(64);
+static u64 omap_pcm_dmamask = DMA_BIT_MASK(32);
 
 static int omap_pcm_preallocate_dma_buffer(struct snd_pcm *pcm,
 	int stream)
@@ -364,7 +319,7 @@ static void omap_pcm_free_dma_buffers(struct snd_pcm *pcm)
 	}
 }
 
-static int omap_pcm_new(struct snd_card *card, struct snd_soc_dai *dai,
+int omap_pcm_new(struct snd_card *card, struct snd_soc_dai *dai,
 		 struct snd_pcm *pcm)
 {
 	int ret = 0;
@@ -372,7 +327,7 @@ static int omap_pcm_new(struct snd_card *card, struct snd_soc_dai *dai,
 	if (!card->dev->dma_mask)
 		card->dev->dma_mask = &omap_pcm_dmamask;
 	if (!card->dev->coherent_dma_mask)
-		card->dev->coherent_dma_mask = DMA_BIT_MASK(64);
+		card->dev->coherent_dma_mask = DMA_32BIT_MASK;
 
 	if (dai->playback.channels_min) {
 		ret = omap_pcm_preallocate_dma_buffer(pcm,
@@ -412,6 +367,6 @@ static void __exit omap_soc_platform_exit(void)
 }
 module_exit(omap_soc_platform_exit);
 
-MODULE_AUTHOR("Jarkko Nikula <jhnikula@gmail.com>");
+MODULE_AUTHOR("Jarkko Nikula <jarkko.nikula@nokia.com>");
 MODULE_DESCRIPTION("OMAP PCM DMA module");
 MODULE_LICENSE("GPL");

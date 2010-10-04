@@ -8,7 +8,6 @@
 #include "linux/smp_lock.h"
 #include "linux/ptrace.h"
 #include "linux/sched.h"
-#include "linux/slab.h"
 #include "asm/current.h"
 #include "asm/processor.h"
 #include "asm/uaccess.h"
@@ -44,9 +43,8 @@ void start_thread(struct pt_regs *regs, unsigned long eip, unsigned long esp)
 	PT_REGS_SP(regs) = esp;
 }
 
-static long execve1(const char *file,
-		    const char __user *const __user *argv,
-		    const char __user *const __user *env)
+static long execve1(char *file, char __user * __user *argv,
+		    char __user *__user *env)
 {
 	long error;
 
@@ -62,7 +60,7 @@ static long execve1(const char *file,
 	return error;
 }
 
-long um_execve(const char *file, const char __user *const __user *argv, const char __user *const __user *env)
+long um_execve(char *file, char __user *__user *argv, char __user *__user *env)
 {
 	long err;
 
@@ -72,8 +70,8 @@ long um_execve(const char *file, const char __user *const __user *argv, const ch
 	return err;
 }
 
-long sys_execve(const char __user *file, const char __user *const __user *argv,
-		const char __user *const __user *env)
+long sys_execve(char __user *file, char __user *__user *argv,
+		char __user *__user *env)
 {
 	long error;
 	char *filename;

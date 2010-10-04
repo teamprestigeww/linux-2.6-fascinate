@@ -11,8 +11,6 @@
 #ifndef _LINUX_FIEMAP_H
 #define _LINUX_FIEMAP_H
 
-#include <linux/types.h>
-
 struct fiemap_extent {
 	__u64 fe_logical;  /* logical offset in bytes for the start of
 			    * the extent from the beginning of the file */
@@ -62,7 +60,5 @@ struct fiemap {
 #define FIEMAP_EXTENT_MERGED		0x00001000 /* File does not natively
 						    * support extents. Result
 						    * merged for efficiency. */
-#define FIEMAP_EXTENT_SHARED		0x00002000 /* Space shared with other
-						    * files. */
 
 #endif /* _LINUX_FIEMAP_H */

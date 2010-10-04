@@ -50,11 +50,12 @@
  *
  * ROADMAP
  *
- * i2400m_dev_initialize()       Called by i2400m_dev_start()
+ * i2400m_dev_initalize()       Called by i2400m_dev_start()
  *   i2400m_set_init_config()
+ *   i2400m_firmware_check()
  *   i2400m_cmd_get_state()
  * i2400m_dev_shutdown()        Called by i2400m_dev_stop()
- *   i2400m_reset()
+ *   i2400m->bus_reset()
  *
  * i2400m_{cmd,get,set}_*()
  *   i2400m_msg_to_dev()
@@ -76,34 +77,11 @@
 #include <stdarg.h>
 #include "i2400m.h"
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/wimax/i2400m.h>
 
 
 #define D_SUBMODULE control
 #include "debug-levels.h"
-
-static int i2400m_idle_mode_disabled;/* 0 (idle mode enabled) by default */
-module_param_named(idle_mode_disabled, i2400m_idle_mode_disabled, int, 0644);
-MODULE_PARM_DESC(idle_mode_disabled,
-		 "If true, the device will not enable idle mode negotiation "
-		 "with the base station (when connected) to save power.");
-
-/* 0 (power saving enabled) by default */
-static int i2400m_power_save_disabled;
-module_param_named(power_save_disabled, i2400m_power_save_disabled, int, 0644);
-MODULE_PARM_DESC(power_save_disabled,
-		 "If true, the driver will not tell the device to enter "
-		 "power saving mode when it reports it is ready for it. "
-		 "False by default (so the device is told to do power "
-		 "saving).");
-
-int i2400m_passive_mode;	/* 0 (passive mode disabled) by default */
-module_param_named(passive_mode, i2400m_passive_mode, int, 0644);
-MODULE_PARM_DESC(passive_mode,
-		 "If true, the driver will not do any device setup "
-		 "and leave it up to user space, who must be properly "
-		 "setup.");
 
 
 /*
@@ -286,7 +264,7 @@ int i2400m_msg_check_status(const struct i2400m_l3l4_hdr *l3l4_hdr,
 
 	if (status == 0)
 		return 0;
-	if (status >= ARRAY_SIZE(ms_to_errno)) {
+	if (status > ARRAY_SIZE(ms_to_errno)) {
 		str = "unknown status code";
 		result = -EBADR;
 	} else {
@@ -315,6 +293,8 @@ void i2400m_report_tlv_system_state(struct i2400m *i2400m,
 
 	d_fnstart(3, dev, "(i2400m %p ss %p [%u])\n", i2400m, ss, i2400m_state);
 
+	if (unlikely(i2400m->ready == 0))	/* act if up */
+		goto out;
 	if (i2400m->state != i2400m_state) {
 		i2400m->state = i2400m_state;
 		wake_up_all(&i2400m->state_wq);
@@ -359,9 +339,10 @@ void i2400m_report_tlv_system_state(struct i2400m *i2400m,
 		/* Huh? just in case, shut it down */
 		dev_err(dev, "HW BUG? unknown state %u: shutting down\n",
 			i2400m_state);
-		i2400m_reset(i2400m, I2400M_RT_WARM);
+		i2400m->bus_reset(i2400m, I2400M_RT_WARM);
 		break;
-	}
+	};
+out:
 	d_fnend(3, dev, "(i2400m %p ss %p [%u]) = void\n",
 		i2400m, ss, i2400m_state);
 }
@@ -392,6 +373,8 @@ void i2400m_report_tlv_media_status(struct i2400m *i2400m,
 
 	d_fnstart(3, dev, "(i2400m %p ms %p [%u])\n", i2400m, ms, status);
 
+	if (unlikely(i2400m->ready == 0))	/* act if up */
+		goto out;
 	switch (status) {
 	case I2400M_MEDIA_STATUS_LINK_UP:
 		netif_carrier_on(net_dev);
@@ -410,60 +393,15 @@ void i2400m_report_tlv_media_status(struct i2400m *i2400m,
 	default:
 		dev_err(dev, "HW BUG? unknown media status %u\n",
 			status);
-	}
+	};
+out:
 	d_fnend(3, dev, "(i2400m %p ms %p [%u]) = void\n",
 		i2400m, ms, status);
 }
 
 
 /*
- * Process a TLV from a 'state report'
- *
- * @i2400m: device descriptor
- * @tlv: pointer to the TLV header; it has been already validated for
- *     consistent size.
- * @tag: for error messages
- *
- * Act on the TLVs from a 'state report'.
- */
-static
-void i2400m_report_state_parse_tlv(struct i2400m *i2400m,
-				   const struct i2400m_tlv_hdr *tlv,
-				   const char *tag)
-{
-	struct device *dev = i2400m_dev(i2400m);
-	const struct i2400m_tlv_media_status *ms;
-	const struct i2400m_tlv_system_state *ss;
-	const struct i2400m_tlv_rf_switches_status *rfss;
-
-	if (0 == i2400m_tlv_match(tlv, I2400M_TLV_SYSTEM_STATE, sizeof(*ss))) {
-		ss = container_of(tlv, typeof(*ss), hdr);
-		d_printf(2, dev, "%s: system state TLV "
-			 "found (0x%04x), state 0x%08x\n",
-			 tag, I2400M_TLV_SYSTEM_STATE,
-			 le32_to_cpu(ss->state));
-		i2400m_report_tlv_system_state(i2400m, ss);
-	}
-	if (0 == i2400m_tlv_match(tlv, I2400M_TLV_RF_STATUS, sizeof(*rfss))) {
-		rfss = container_of(tlv, typeof(*rfss), hdr);
-		d_printf(2, dev, "%s: RF status TLV "
-			 "found (0x%04x), sw 0x%02x hw 0x%02x\n",
-			 tag, I2400M_TLV_RF_STATUS,
-			 le32_to_cpu(rfss->sw_rf_switch),
-			 le32_to_cpu(rfss->hw_rf_switch));
-		i2400m_report_tlv_rf_switches_status(i2400m, rfss);
-	}
-	if (0 == i2400m_tlv_match(tlv, I2400M_TLV_MEDIA_STATUS, sizeof(*ms))) {
-		ms = container_of(tlv, typeof(*ms), hdr);
-		d_printf(2, dev, "%s: Media Status TLV: %u\n",
-			 tag, le32_to_cpu(ms->media_status));
-		i2400m_report_tlv_media_status(i2400m, ms);
-	}
-}
-
-
-/*
- * Parse a 'state report' and extract information
+ * Parse a 'state report' and extract carrier on/off information
  *
  * @i2400m: device descriptor
  * @l3l4_hdr: pointer to message; it has been already validated for
@@ -472,7 +410,13 @@ void i2400m_report_state_parse_tlv(struct i2400m *i2400m,
  *        declaration is assumed to be congruent with @size (as in
  *        sizeof(*l3l4_hdr) + l3l4_hdr->length == size)
  *
- * Walk over the TLVs in a report state and act on them.
+ * Extract from the report state the system state TLV and infer from
+ * there if we have a carrier or not. Update our local state and tell
+ * netdev.
+ *
+ * When setting the carrier, it's fine to set OFF twice (for example),
+ * as netif_carrier_off() will not generate two OFF events (just on
+ * the transitions).
  */
 static
 void i2400m_report_state_hook(struct i2400m *i2400m,
@@ -481,6 +425,9 @@ void i2400m_report_state_hook(struct i2400m *i2400m,
 {
 	struct device *dev = i2400m_dev(i2400m);
 	const struct i2400m_tlv_hdr *tlv;
+	const struct i2400m_tlv_system_state *ss;
+	const struct i2400m_tlv_rf_switches_status *rfss;
+	const struct i2400m_tlv_media_status *ms;
 	size_t tlv_size = le16_to_cpu(l3l4_hdr->length);
 
 	d_fnstart(4, dev, "(i2400m %p, l3l4_hdr %p, size %zu, %s)\n",
@@ -488,8 +435,34 @@ void i2400m_report_state_hook(struct i2400m *i2400m,
 	tlv = NULL;
 
 	while ((tlv = i2400m_tlv_buffer_walk(i2400m, &l3l4_hdr->pl,
-					     tlv_size, tlv)))
-		i2400m_report_state_parse_tlv(i2400m, tlv, tag);
+					     tlv_size, tlv))) {
+		if (0 == i2400m_tlv_match(tlv, I2400M_TLV_SYSTEM_STATE,
+					  sizeof(*ss))) {
+			ss = container_of(tlv, typeof(*ss), hdr);
+			d_printf(2, dev, "%s: system state TLV "
+				 "found (0x%04x), state 0x%08x\n",
+				 tag, I2400M_TLV_SYSTEM_STATE,
+				 le32_to_cpu(ss->state));
+			i2400m_report_tlv_system_state(i2400m, ss);
+		}
+		if (0 == i2400m_tlv_match(tlv, I2400M_TLV_RF_STATUS,
+					  sizeof(*rfss))) {
+			rfss = container_of(tlv, typeof(*rfss), hdr);
+			d_printf(2, dev, "%s: RF status TLV "
+				 "found (0x%04x), sw 0x%02x hw 0x%02x\n",
+				 tag, I2400M_TLV_RF_STATUS,
+				 le32_to_cpu(rfss->sw_rf_switch),
+				 le32_to_cpu(rfss->hw_rf_switch));
+			i2400m_report_tlv_rf_switches_status(i2400m, rfss);
+		}
+		if (0 == i2400m_tlv_match(tlv, I2400M_TLV_MEDIA_STATUS,
+					  sizeof(*ms))) {
+			ms = container_of(tlv, typeof(*ms), hdr);
+			d_printf(2, dev, "%s: Media Status TLV: %u\n",
+				 tag, le32_to_cpu(ms->media_status));
+			i2400m_report_tlv_media_status(i2400m, ms);
+		}
+	}
 	d_fnend(4, dev, "(i2400m %p, l3l4_hdr %p, size %zu, %s) = void\n",
 		i2400m, l3l4_hdr, size, tag);
 }
@@ -528,18 +501,11 @@ void i2400m_report_hook(struct i2400m *i2400m,
 	 * it. */
 	case I2400M_MT_REPORT_POWERSAVE_READY:	/* zzzzz */
 		if (l3l4_hdr->status == cpu_to_le16(I2400M_MS_DONE_OK)) {
-			if (i2400m_power_save_disabled)
-				d_printf(1, dev, "ready for powersave, "
-					 "not requesting (disabled by module "
-					 "parameter)\n");
-			else {
-				d_printf(1, dev, "ready for powersave, "
-					 "requesting\n");
-				i2400m_cmd_enter_powersave(i2400m);
-			}
+			d_printf(1, dev, "ready for powersave, requesting\n");
+			i2400m_cmd_enter_powersave(i2400m);
 		}
 		break;
-	}
+	};
 	d_fnend(3, dev, "(i2400m %p l3l4_hdr %p size %zu) = void\n",
 		i2400m, l3l4_hdr, size);
 }
@@ -582,7 +548,8 @@ void i2400m_msg_ack_hook(struct i2400m *i2400m,
 					 size);
 		}
 		break;
-	}
+	};
+	return;
 }
 
 
@@ -717,9 +684,8 @@ struct sk_buff *i2400m_msg_to_dev(struct i2400m *i2400m,
 	d_fnstart(3, dev, "(i2400m %p buf %p len %zu)\n",
 		  i2400m, buf, buf_len);
 
-	rmb();		/* Make sure we see what i2400m_dev_reset_handle() */
 	if (i2400m->boot_mode)
-		return ERR_PTR(-EL3RST);
+		return ERR_PTR(-ENODEV);
 
 	msg_l3l4_hdr = buf;
 	/* Check msg & payload consistency */
@@ -754,10 +720,8 @@ struct sk_buff *i2400m_msg_to_dev(struct i2400m *i2400m,
 		break;
 	default:
 		ack_timeout = HZ;
-	}
+	};
 
-	if (unlikely(i2400m->trace_msg_from_user))
-		wimax_msg(&i2400m->wimax_dev, "echo", buf, buf_len, GFP_KERNEL);
 	/* The RX path in rx.c will put any response for this message
 	 * in i2400m->ack_skb and wake us up. If we cancel the wait,
 	 * we need to change the value of i2400m->ack_skb to something
@@ -792,9 +756,6 @@ struct sk_buff *i2400m_msg_to_dev(struct i2400m *i2400m,
 	ack_l3l4_hdr = wimax_msg_data_len(ack_skb, &ack_len);
 
 	/* Check the ack and deliver it if it is ok */
-	if (unlikely(i2400m->trace_msg_from_user))
-		wimax_msg(&i2400m->wimax_dev, "echo",
-			  ack_l3l4_hdr, ack_len, GFP_KERNEL);
 	result = i2400m_msg_size_check(i2400m, ack_l3l4_hdr, ack_len);
 	if (result < 0) {
 		dev_err(dev, "HW BUG? reply to message 0x%04x: %d\n",
@@ -848,7 +809,7 @@ struct i2400m_cmd_enter_power_save {
 	struct i2400m_l3l4_hdr hdr;
 	struct i2400m_tlv_hdr tlv;
 	__le32 val;
-} __packed;
+} __attribute__((packed));
 
 
 /*
@@ -981,8 +942,8 @@ error_cmd_failed:
 /* Firmware interface versions we support */
 enum {
 	I2400M_HDIv_MAJOR = 9,
+	I2400M_HDIv_MAJOR_2 = 8,
 	I2400M_HDIv_MINOR = 1,
-	I2400M_HDIv_MINOR_2 = 2,
 };
 
 
@@ -998,10 +959,6 @@ enum {
  * Long function, but quite simple; first chunk launches the command
  * and double checks the reply for the right TLV. Then we process the
  * TLV (where the meat is).
- *
- * Once we process the TLV that gives us the firmware's interface
- * version, we encode it and save it in i2400m->fw_version for future
- * reference.
  */
 int i2400m_firmware_check(struct i2400m *i2400m)
 {
@@ -1052,20 +1009,22 @@ int i2400m_firmware_check(struct i2400m *i2400m)
 	minor = le16_to_cpu(l4mv->minor);
 	branch = le16_to_cpu(l4mv->branch);
 	result = -EINVAL;
-	if (major != I2400M_HDIv_MAJOR) {
-		dev_err(dev, "unsupported major fw version "
+	if (major != I2400M_HDIv_MAJOR
+	    && major != I2400M_HDIv_MAJOR_2) {
+		dev_err(dev, "unsupported major fw interface version "
 			"%u.%u.%u\n", major, minor, branch);
 		goto error_bad_major;
 	}
+	if (major == I2400M_HDIv_MAJOR_2)
+		dev_err(dev, "deprecated major fw interface version "
+			"%u.%u.%u\n", major, minor, branch);
 	result = 0;
-	if (minor < I2400M_HDIv_MINOR_2 && minor > I2400M_HDIv_MINOR)
-		dev_warn(dev, "untested minor fw version %u.%u.%u\n",
+	if (minor != I2400M_HDIv_MINOR)
+		dev_warn(dev, "untested minor fw firmware version %u.%u.%u\n",
 			 major, minor, branch);
-	/* Yes, we ignore the branch -- we don't have to track it */
-	i2400m->fw_version = major << 16 | minor;
+error_bad_major:
 	dev_info(dev, "firmware interface version %u.%u.%u\n",
 		 major, minor, branch);
-error_bad_major:
 error_no_tlv:
 error_cmd_failed:
 	kfree_skb(ack_skb);
@@ -1262,77 +1221,6 @@ EXPORT_SYMBOL_GPL(i2400m_set_init_config);
 
 
 /**
- * i2400m_set_idle_timeout - Set the device's idle mode timeout
- *
- * @i2400m: i2400m device descriptor
- *
- * @msecs: milliseconds for the timeout to enter idle mode. Between
- *     100 to 300000 (5m); 0 to disable. In increments of 100.
- *
- * After this @msecs of the link being idle (no data being sent or
- * received), the device will negotiate with the basestation entering
- * idle mode for saving power. The connection is maintained, but
- * getting out of it (done in tx.c) will require some negotiation,
- * possible crypto re-handshake and a possible DHCP re-lease.
- *
- * Only available if fw_version >= 0x00090002.
- *
- * Returns: 0 if ok, < 0 errno code on error.
- */
-int i2400m_set_idle_timeout(struct i2400m *i2400m, unsigned msecs)
-{
-	int result;
-	struct device *dev = i2400m_dev(i2400m);
-	struct sk_buff *ack_skb;
-	struct {
-		struct i2400m_l3l4_hdr hdr;
-		struct i2400m_tlv_config_idle_timeout cit;
-	} *cmd;
-	const struct i2400m_l3l4_hdr *ack;
-	size_t ack_len;
-	char strerr[32];
-
-	result = -ENOSYS;
-	if (i2400m_le_v1_3(i2400m))
-		goto error_alloc;
-	result = -ENOMEM;
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
-	if (cmd == NULL)
-		goto error_alloc;
-	cmd->hdr.type = cpu_to_le16(I2400M_MT_GET_STATE);
-	cmd->hdr.length = cpu_to_le16(sizeof(*cmd) - sizeof(cmd->hdr));
-	cmd->hdr.version = cpu_to_le16(I2400M_L3L4_VERSION);
-
-	cmd->cit.hdr.type =
-		cpu_to_le16(I2400M_TLV_CONFIG_IDLE_TIMEOUT);
-	cmd->cit.hdr.length = cpu_to_le16(sizeof(cmd->cit.timeout));
-	cmd->cit.timeout = cpu_to_le32(msecs);
-
-	ack_skb = i2400m_msg_to_dev(i2400m, cmd, sizeof(*cmd));
-	if (IS_ERR(ack_skb)) {
-		dev_err(dev, "Failed to issue 'set idle timeout' command: "
-			"%ld\n", PTR_ERR(ack_skb));
-		result = PTR_ERR(ack_skb);
-		goto error_msg_to_dev;
-	}
-	ack = wimax_msg_data_len(ack_skb, &ack_len);
-	result = i2400m_msg_check_status(ack, strerr, sizeof(strerr));
-	if (result < 0) {
-		dev_err(dev, "'set idle timeout' (0x%04x) command failed: "
-			"%d - %s\n", I2400M_MT_GET_STATE, result, strerr);
-		goto error_cmd_failed;
-	}
-	result = 0;
-	kfree_skb(ack_skb);
-error_cmd_failed:
-error_msg_to_dev:
-	kfree(cmd);
-error_alloc:
-	return result;
-}
-
-
-/**
  * i2400m_dev_initialize - Initialize the device once communications are ready
  *
  * @i2400m: device descriptor
@@ -1350,58 +1238,26 @@ int i2400m_dev_initialize(struct i2400m *i2400m)
 	int result;
 	struct device *dev = i2400m_dev(i2400m);
 	struct i2400m_tlv_config_idle_parameters idle_params;
-	struct i2400m_tlv_config_idle_timeout idle_timeout;
-	struct i2400m_tlv_config_d2h_data_format df;
-	struct i2400m_tlv_config_dl_host_reorder dlhr;
 	const struct i2400m_tlv_hdr *args[9];
 	unsigned argc = 0;
 
 	d_fnstart(3, dev, "(i2400m %p)\n", i2400m);
-	if (i2400m_passive_mode)
-		goto out_passive;
-	/* Disable idle mode? (enabled by default) */
+	/* Useless for now...might change */
 	if (i2400m_idle_mode_disabled) {
-		if (i2400m_le_v1_3(i2400m)) {
-			idle_params.hdr.type =
-				cpu_to_le16(I2400M_TLV_CONFIG_IDLE_PARAMETERS);
-			idle_params.hdr.length = cpu_to_le16(
-				sizeof(idle_params) - sizeof(idle_params.hdr));
-			idle_params.idle_timeout = 0;
-			idle_params.idle_paging_interval = 0;
-			args[argc++] = &idle_params.hdr;
-		} else {
-			idle_timeout.hdr.type =
-				cpu_to_le16(I2400M_TLV_CONFIG_IDLE_TIMEOUT);
-			idle_timeout.hdr.length = cpu_to_le16(
-				sizeof(idle_timeout) - sizeof(idle_timeout.hdr));
-			idle_timeout.timeout = 0;
-			args[argc++] = &idle_timeout.hdr;
-		}
-	}
-	if (i2400m_ge_v1_4(i2400m)) {
-		/* Enable extended RX data format? */
-		df.hdr.type =
-			cpu_to_le16(I2400M_TLV_CONFIG_D2H_DATA_FORMAT);
-		df.hdr.length = cpu_to_le16(
-			sizeof(df) - sizeof(df.hdr));
-		df.format = 1;
-		args[argc++] = &df.hdr;
-
-		/* Enable RX data reordering?
-		 * (switch flipped in rx.c:i2400m_rx_setup() after fw upload) */
-		if (i2400m->rx_reorder) {
-			dlhr.hdr.type =
-				cpu_to_le16(I2400M_TLV_CONFIG_DL_HOST_REORDER);
-			dlhr.hdr.length = cpu_to_le16(
-				sizeof(dlhr) - sizeof(dlhr.hdr));
-			dlhr.reorder = 1;
-			args[argc++] = &dlhr.hdr;
-		}
+		idle_params.hdr.type =
+			cpu_to_le16(I2400M_TLV_CONFIG_IDLE_PARAMETERS);
+		idle_params.hdr.length = cpu_to_le16(
+			sizeof(idle_params) - sizeof(idle_params.hdr));
+		idle_params.idle_timeout = 0;
+		idle_params.idle_paging_interval = 0;
+		args[argc++] = &idle_params.hdr;
 	}
 	result = i2400m_set_init_config(i2400m, args, argc);
 	if (result < 0)
 		goto error;
-out_passive:
+	result = i2400m_firmware_check(i2400m);	/* fw versions ok? */
+	if (result < 0)
+		goto error;
 	/*
 	 * Update state: Here it just calls a get state; parsing the
 	 * result (System State TLV and RF Status TLV [done in the rx
@@ -1410,8 +1266,6 @@ out_passive:
 	 */
 	result = i2400m_cmd_get_state(i2400m);
 error:
-	if (result < 0)
-		dev_err(dev, "failed to initialize the device: %d\n", result);
 	d_fnend(3, dev, "(i2400m %p) = %d\n", i2400m, result);
 	return result;
 }
@@ -1422,15 +1276,16 @@ error:
  *
  * @i2400m: device descriptor
  *
- * Release resources acquired during the running of the device; in
- * theory, should also tell the device to go to sleep, switch off the
- * radio, all that, but at this point, in most cases (driver
- * disconnection, reset handling) we can't even talk to the device.
+ * Gracefully stops the device, moving it to the lowest power
+ * consumption state possible.
  */
 void i2400m_dev_shutdown(struct i2400m *i2400m)
 {
+	int result = -ENODEV;
 	struct device *dev = i2400m_dev(i2400m);
 
 	d_fnstart(3, dev, "(i2400m %p)\n", i2400m);
-	d_fnend(3, dev, "(i2400m %p) = void\n", i2400m);
+	result = i2400m->bus_reset(i2400m, I2400M_RT_WARM);
+	d_fnend(3, dev, "(i2400m %p) = void [%d]\n", i2400m, result);
+	return;
 }

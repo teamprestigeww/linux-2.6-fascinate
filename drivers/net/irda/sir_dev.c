@@ -13,7 +13,6 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 
@@ -583,8 +582,7 @@ EXPORT_SYMBOL(sirdev_receive);
 
 /* callbacks from network layer */
 
-static netdev_tx_t sirdev_hard_xmit(struct sk_buff *skb,
-					  struct net_device *ndev)
+static int sirdev_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct sir_dev *dev = netdev_priv(ndev);
 	unsigned long flags;
@@ -592,7 +590,7 @@ static netdev_tx_t sirdev_hard_xmit(struct sk_buff *skb,
 	int err;
 	s32 speed;
 
-	IRDA_ASSERT(dev != NULL, return NETDEV_TX_OK;);
+	IRDA_ASSERT(dev != NULL, return 0;);
 
 	netif_stop_queue(ndev);
 
@@ -609,7 +607,7 @@ static netdev_tx_t sirdev_hard_xmit(struct sk_buff *skb,
 				 * stopped so the network layer will retry after the
 				 * fsm completes and wakes the queue.
 				 */
-				 return NETDEV_TX_BUSY;
+				 return 1;
 			}
 			else if (unlikely(err)) {
 				/* other fatal error - forget the speed change and
@@ -623,7 +621,7 @@ static netdev_tx_t sirdev_hard_xmit(struct sk_buff *skb,
 			 */
 
 			dev_kfree_skb_any(skb);
-			return NETDEV_TX_OK;
+			return 0;
 		} else
 			dev->new_speed = speed;
 	}
@@ -655,6 +653,7 @@ static netdev_tx_t sirdev_hard_xmit(struct sk_buff *skb,
 
 	if (likely(actual > 0)) {
 		dev->tx_skb = skb;
+		ndev->trans_start = jiffies;
 		dev->tx_buff.data += actual;
 		dev->tx_buff.len -= actual;
 	}
@@ -669,7 +668,7 @@ static netdev_tx_t sirdev_hard_xmit(struct sk_buff *skb,
 	}
 	spin_unlock_irqrestore(&dev->tx_lock, flags);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /* called from network layer with rtnl hold */
@@ -754,8 +753,7 @@ static int sirdev_alloc_buffers(struct sir_dev *dev)
 	dev->rx_buff.truesize = IRDA_SKB_MAX_MTU; 
 
 	/* Bootstrap ZeroCopy Rx */
-	dev->rx_buff.skb = __netdev_alloc_skb(dev->netdev, dev->rx_buff.truesize,
-					      GFP_KERNEL);
+	dev->rx_buff.skb = __dev_alloc_skb(dev->rx_buff.truesize, GFP_KERNEL);
 	if (dev->rx_buff.skb == NULL)
 		return -ENOMEM;
 	skb_reserve(dev->rx_buff.skb, 1);
@@ -781,7 +779,8 @@ static int sirdev_alloc_buffers(struct sir_dev *dev)
 
 static void sirdev_free_buffers(struct sir_dev *dev)
 {
-	kfree_skb(dev->rx_buff.skb);
+	if (dev->rx_buff.skb)
+		kfree_skb(dev->rx_buff.skb);
 	kfree(dev->tx_buff.head);
 	dev->rx_buff.head = dev->tx_buff.head = NULL;
 	dev->rx_buff.skb = NULL;
@@ -866,12 +865,6 @@ out:
 	return 0;
 }
 
-static const struct net_device_ops sirdev_ops = {
-	.ndo_start_xmit	= sirdev_hard_xmit,
-	.ndo_open	= sirdev_open,
-	.ndo_stop	= sirdev_close,
-	.ndo_do_ioctl	= sirdev_ioctl,
-};
 /* ----------------------------------------------------------------------------- */
 
 struct sir_dev * sirdev_get_instance(const struct sir_driver *drv, const char *name)
@@ -915,7 +908,10 @@ struct sir_dev * sirdev_get_instance(const struct sir_driver *drv, const char *n
 	dev->netdev = ndev;
 
 	/* Override the network functions we need to use */
-	ndev->netdev_ops = &sirdev_ops;
+	ndev->hard_start_xmit = sirdev_hard_xmit;
+	ndev->open = sirdev_open;
+	ndev->stop = sirdev_close;
+	ndev->do_ioctl = sirdev_ioctl;
 
 	if (register_netdev(ndev)) {
 		IRDA_ERROR("%s(), register_netdev() failed!\n", __func__);

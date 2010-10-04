@@ -24,6 +24,7 @@
 
 #include <linux/fs.h>
 #include <linux/string.h>
+#include <linux/slab.h>
 #include <linux/buffer_head.h>
 
 uint32_t udf_get_pblock(struct super_block *sb, uint32_t block,
@@ -272,7 +273,7 @@ static uint32_t udf_try_read_meta(struct inode *inode, uint32_t block,
 {
 	struct super_block *sb = inode->i_sb;
 	struct udf_part_map *map;
-	struct kernel_lb_addr eloc;
+	kernel_lb_addr eloc;
 	uint32_t elen;
 	sector_t ext_offset;
 	struct extent_position epos = {};

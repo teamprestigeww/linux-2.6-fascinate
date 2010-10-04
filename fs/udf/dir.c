@@ -45,13 +45,13 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 	int block, iblock;
 	loff_t nf_pos = (filp->f_pos - 1) << 2;
 	int flen;
-	unsigned char *fname = NULL;
-	unsigned char *nameptr;
+	char *fname = NULL;
+	char *nameptr;
 	uint16_t liu;
 	uint8_t lfi;
 	loff_t size = udf_ext0_offset(dir) + dir->i_size;
 	struct buffer_head *tmp, *bha[16];
-	struct kernel_lb_addr eloc;
+	kernel_lb_addr eloc;
 	uint32_t elen;
 	sector_t offset;
 	int i, num, ret = 0;
@@ -80,13 +80,13 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 			ret = -ENOENT;
 			goto out;
 		}
-		block = udf_get_lb_pblock(dir->i_sb, &eloc, offset);
+		block = udf_get_lb_pblock(dir->i_sb, eloc, offset);
 		if ((++offset << dir->i_sb->s_blocksize_bits) < elen) {
 			if (iinfo->i_alloc_type == ICBTAG_FLAG_AD_SHORT)
-				epos.offset -= sizeof(struct short_ad);
+				epos.offset -= sizeof(short_ad);
 			else if (iinfo->i_alloc_type ==
 					ICBTAG_FLAG_AD_LONG)
-				epos.offset -= sizeof(struct long_ad);
+				epos.offset -= sizeof(long_ad);
 		} else {
 			offset = 0;
 		}
@@ -101,7 +101,7 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 			if (i + offset > (elen >> dir->i_sb->s_blocksize_bits))
 				i = (elen >> dir->i_sb->s_blocksize_bits) - offset;
 			for (num = 0; i > 0; i--) {
-				block = udf_get_lb_pblock(dir->i_sb, &eloc, offset + i);
+				block = udf_get_lb_pblock(dir->i_sb, eloc, offset + i);
 				tmp = udf_tgetblk(dir->i_sb, block);
 				if (tmp && !buffer_uptodate(tmp) && !buffer_locked(tmp))
 					bha[num++] = tmp;
@@ -161,9 +161,9 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 			memcpy(fname, "..", flen);
 			dt_type = DT_DIR;
 		} else {
-			struct kernel_lb_addr tloc = lelb_to_cpu(cfi.icb.extLocation);
+			kernel_lb_addr tloc = lelb_to_cpu(cfi.icb.extLocation);
 
-			iblock = udf_get_lb_pblock(dir->i_sb, &tloc, 0);
+			iblock = udf_get_lb_pblock(dir->i_sb, tloc, 0);
 			flen = udf_get_filename(dir->i_sb, nameptr, fname, lfi);
 			dt_type = DT_UNKNOWN;
 		}
@@ -207,9 +207,8 @@ static int udf_readdir(struct file *filp, void *dirent, filldir_t filldir)
 
 /* readdir and lookup functions */
 const struct file_operations udf_dir_operations = {
-	.llseek			= generic_file_llseek,
 	.read			= generic_read_dir,
 	.readdir		= udf_readdir,
-	.unlocked_ioctl		= udf_ioctl,
-	.fsync			= generic_file_fsync,
+	.ioctl			= udf_ioctl,
+	.fsync			= udf_fsync_file,
 };

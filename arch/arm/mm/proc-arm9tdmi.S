@@ -36,6 +36,8 @@ ENTRY(cpu_arm9tdmi_switch_mm)
  * cpu_arm9tdmi_proc_fin()
  */
 ENTRY(cpu_arm9tdmi_proc_fin)
+		mov	r0, #PSR_F_BIT | PSR_I_BIT | SVC_MODE
+		msr	cpsr_c, r0
 		mov	pc, lr
 
 /*
@@ -62,7 +64,7 @@ __arm9tdmi_setup:
 		.type	arm9tdmi_processor_functions, #object
 ENTRY(arm9tdmi_processor_functions)
 		.word	nommu_early_abort
-		.word	legacy_pabort
+		.word	pabort_noifar
 		.word	cpu_arm9tdmi_proc_init
 		.word	cpu_arm9tdmi_proc_fin
 		.word	cpu_arm9tdmi_reset

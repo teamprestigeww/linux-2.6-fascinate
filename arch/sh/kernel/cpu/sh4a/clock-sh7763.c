@@ -12,8 +12,6 @@
  */
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/io.h>
-#include <asm/clkdev.h>
 #include <asm/clock.h>
 #include <asm/freq.h>
 #include <asm/io.h>
@@ -24,35 +22,40 @@ static int cfc_divisors[] = { 1, 1, 4, 1, 1, 1, 1, 1 };
 
 static void master_clk_init(struct clk *clk)
 {
-	clk->rate *= p0fc_divisors[(__raw_readl(FRQCR) >> 4) & 0x07];
+	clk->rate *= p0fc_divisors[(ctrl_inl(FRQCR) >> 4) & 0x07];
 }
 
 static struct clk_ops sh7763_master_clk_ops = {
 	.init		= master_clk_init,
 };
 
-static unsigned long module_clk_recalc(struct clk *clk)
+static void module_clk_recalc(struct clk *clk)
 {
-	int idx = ((__raw_readl(FRQCR) >> 4) & 0x07);
-	return clk->parent->rate / p0fc_divisors[idx];
+	int idx = ((ctrl_inl(FRQCR) >> 4) & 0x07);
+	clk->rate = clk->parent->rate / p0fc_divisors[idx];
 }
 
 static struct clk_ops sh7763_module_clk_ops = {
 	.recalc		= module_clk_recalc,
 };
 
-static unsigned long bus_clk_recalc(struct clk *clk)
+static void bus_clk_recalc(struct clk *clk)
 {
-	int idx = ((__raw_readl(FRQCR) >> 16) & 0x07);
-	return clk->parent->rate / bfc_divisors[idx];
+	int idx = ((ctrl_inl(FRQCR) >> 16) & 0x07);
+	clk->rate = clk->parent->rate / bfc_divisors[idx];
 }
 
 static struct clk_ops sh7763_bus_clk_ops = {
 	.recalc		= bus_clk_recalc,
 };
 
+static void cpu_clk_recalc(struct clk *clk)
+{
+	clk->rate = clk->parent->rate;
+}
+
 static struct clk_ops sh7763_cpu_clk_ops = {
-	.recalc		= followparent_recalc,
+	.recalc		= cpu_clk_recalc,
 };
 
 static struct clk_ops *sh7763_clk_ops[] = {
@@ -68,10 +71,10 @@ void __init arch_init_clk_ops(struct clk_ops **ops, int idx)
 		*ops = sh7763_clk_ops[idx];
 }
 
-static unsigned long shyway_clk_recalc(struct clk *clk)
+static void shyway_clk_recalc(struct clk *clk)
 {
-	int idx = ((__raw_readl(FRQCR) >> 20) & 0x07);
-	return clk->parent->rate / cfc_divisors[idx];
+	int idx = ((ctrl_inl(FRQCR) >> 20) & 0x07);
+	clk->rate = clk->parent->rate / cfc_divisors[idx];
 }
 
 static struct clk_ops sh7763_shyway_clk_ops = {
@@ -79,7 +82,8 @@ static struct clk_ops sh7763_shyway_clk_ops = {
 };
 
 static struct clk sh7763_shyway_clk = {
-	.flags		= CLK_ENABLE_ON_INIT,
+	.name		= "shyway_clk",
+	.flags		= CLK_ALWAYS_ENABLED,
 	.ops		= &sh7763_shyway_clk_ops,
 };
 
@@ -91,31 +95,31 @@ static struct clk *sh7763_onchip_clocks[] = {
 	&sh7763_shyway_clk,
 };
 
-#define CLKDEV_CON_ID(_id, _clk) { .con_id = _id, .clk = _clk }
-
-static struct clk_lookup lookups[] = {
-	/* main clocks */
-	CLKDEV_CON_ID("shyway_clk", &sh7763_shyway_clk),
-};
-
-int __init arch_clk_init(void)
+static int __init sh7763_clk_init(void)
 {
-	struct clk *clk;
-	int i, ret = 0;
+	struct clk *clk = clk_get(NULL, "master_clk");
+	int i;
 
-	cpg_clk_init();
-
-	clk = clk_get(NULL, "master_clk");
 	for (i = 0; i < ARRAY_SIZE(sh7763_onchip_clocks); i++) {
 		struct clk *clkp = sh7763_onchip_clocks[i];
 
 		clkp->parent = clk;
-		ret |= clk_register(clkp);
+		clk_register(clkp);
+		clk_enable(clkp);
 	}
+
+	/*
+	 * Now that we have the rest of the clocks registered, we need to
+	 * force the parent clock to propagate so that these clocks will
+	 * automatically figure out their rate. We cheat by handing the
+	 * parent clock its current rate and forcing child propagation.
+	 */
+	clk_set_rate(clk, clk_get_rate(clk));
 
 	clk_put(clk);
 
-	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
-
-	return ret;
+	return 0;
 }
+
+arch_initcall(sh7763_clk_init);
+

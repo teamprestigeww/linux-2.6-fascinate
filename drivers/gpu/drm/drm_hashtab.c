@@ -35,7 +35,6 @@
 #include "drmP.h"
 #include "drm_hashtab.h"
 #include <linux/hash.h>
-#include <linux/slab.h>
 
 int drm_ht_create(struct drm_open_hash *ht, unsigned int order)
 {
@@ -47,7 +46,8 @@ int drm_ht_create(struct drm_open_hash *ht, unsigned int order)
 	ht->table = NULL;
 	ht->use_vmalloc = ((ht->size * sizeof(*ht->table)) > PAGE_SIZE);
 	if (!ht->use_vmalloc) {
-		ht->table = kcalloc(ht->size, sizeof(*ht->table), GFP_KERNEL);
+		ht->table = drm_calloc(ht->size, sizeof(*ht->table),
+				       DRM_MEM_HASHTAB);
 	}
 	if (!ht->table) {
 		ht->use_vmalloc = 1;
@@ -62,7 +62,6 @@ int drm_ht_create(struct drm_open_hash *ht, unsigned int order)
 	}
 	return 0;
 }
-EXPORT_SYMBOL(drm_ht_create);
 
 void drm_ht_verbose_list(struct drm_open_hash *ht, unsigned long key)
 {
@@ -157,7 +156,6 @@ int drm_ht_just_insert_please(struct drm_open_hash *ht, struct drm_hash_item *it
 	}
 	return 0;
 }
-EXPORT_SYMBOL(drm_ht_just_insert_please);
 
 int drm_ht_find_item(struct drm_open_hash *ht, unsigned long key,
 		     struct drm_hash_item **item)
@@ -171,7 +169,6 @@ int drm_ht_find_item(struct drm_open_hash *ht, unsigned long key,
 	*item = hlist_entry(list, struct drm_hash_item, head);
 	return 0;
 }
-EXPORT_SYMBOL(drm_ht_find_item);
 
 int drm_ht_remove_key(struct drm_open_hash *ht, unsigned long key)
 {
@@ -200,8 +197,8 @@ void drm_ht_remove(struct drm_open_hash *ht)
 		if (ht->use_vmalloc)
 			vfree(ht->table);
 		else
-			kfree(ht->table);
+			drm_free(ht->table, ht->size * sizeof(*ht->table),
+				 DRM_MEM_HASHTAB);
 		ht->table = NULL;
 	}
 }
-EXPORT_SYMBOL(drm_ht_remove);

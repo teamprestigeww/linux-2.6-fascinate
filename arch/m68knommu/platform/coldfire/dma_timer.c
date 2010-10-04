@@ -34,7 +34,7 @@
 #define DMA_DTMR_CLK_DIV_16	(2 << 1)
 #define DMA_DTMR_ENABLE		(1 << 0)
 
-static cycle_t cf_dt_get_cycles(struct clocksource *cs)
+static cycle_t cf_dt_get_cycles(void)
 {
 	return __raw_readl(DTCN0);
 }

@@ -18,7 +18,7 @@ KBUILD_DEFCONFIG := multi_defconfig
 # override top level makefile
 AS += -m68020
 LDFLAGS := -m m68kelf
-KBUILD_LDFLAGS_MODULE += -T $(srctree)/arch/m68k/kernel/module.lds
+LDFLAGS_MODULE += -T $(srctree)/arch/m68k/kernel/module.lds
 ifneq ($(SUBARCH),$(ARCH))
 	ifeq ($(CROSS_COMPILE),)
 		CROSS_COMPILE := $(call cc-cross-prefix, \
@@ -117,6 +117,3 @@ endif
 
 archclean:
 	rm -f vmlinux.gz vmlinux.bz2
-
-install:
-	sh $(srctree)/arch/m68k/install.sh $(KERNELRELEASE) vmlinux.gz System.map "$(INSTALL_PATH)"

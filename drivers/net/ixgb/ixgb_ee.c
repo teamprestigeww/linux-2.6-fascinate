@@ -26,8 +26,6 @@
 
 *******************************************************************************/
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include "ixgb_hw.h"
 #include "ixgb_ee.h"
 /* Local prototypes */
@@ -58,6 +56,7 @@ ixgb_raise_clock(struct ixgb_hw *hw,
 	*eecd_reg = *eecd_reg | IXGB_EECD_SK;
 	IXGB_WRITE_REG(hw, EECD, *eecd_reg);
 	udelay(50);
+	return;
 }
 
 /******************************************************************************
@@ -76,6 +75,7 @@ ixgb_lower_clock(struct ixgb_hw *hw,
 	*eecd_reg = *eecd_reg & ~IXGB_EECD_SK;
 	IXGB_WRITE_REG(hw, EECD, *eecd_reg);
 	udelay(50);
+	return;
 }
 
 /******************************************************************************
@@ -125,6 +125,7 @@ ixgb_shift_out_bits(struct ixgb_hw *hw,
 	/* We leave the "DI" bit set to "0" when we leave this routine. */
 	eecd_reg &= ~IXGB_EECD_DI;
 	IXGB_WRITE_REG(hw, EECD, eecd_reg);
+	return;
 }
 
 /******************************************************************************
@@ -189,6 +190,7 @@ ixgb_setup_eeprom(struct ixgb_hw *hw)
 	/*  Set CS  */
 	eecd_reg |= IXGB_EECD_CS;
 	IXGB_WRITE_REG(hw, EECD, eecd_reg);
+	return;
 }
 
 /******************************************************************************
@@ -222,6 +224,7 @@ ixgb_standby_eeprom(struct ixgb_hw *hw)
 	eecd_reg &= ~IXGB_EECD_SK;
 	IXGB_WRITE_REG(hw, EECD, eecd_reg);
 	udelay(50);
+	return;
 }
 
 /******************************************************************************
@@ -245,6 +248,7 @@ ixgb_clock_eeprom(struct ixgb_hw *hw)
 	eecd_reg &= ~IXGB_EECD_SK;
 	IXGB_WRITE_REG(hw, EECD, eecd_reg);
 	udelay(50);
+	return;
 }
 
 /******************************************************************************
@@ -264,6 +268,7 @@ ixgb_cleanup_eeprom(struct ixgb_hw *hw)
 	IXGB_WRITE_REG(hw, EECD, eecd_reg);
 
 	ixgb_clock_eeprom(hw);
+	return;
 }
 
 /******************************************************************************
@@ -352,6 +357,7 @@ ixgb_update_eeprom_checksum(struct ixgb_hw *hw)
 	checksum = (u16) EEPROM_SUM - checksum;
 
 	ixgb_write_eeprom(hw, EEPROM_CHECKSUM_REG, checksum);
+	return;
 }
 
 /******************************************************************************
@@ -406,6 +412,8 @@ ixgb_write_eeprom(struct ixgb_hw *hw, u16 offset, u16 data)
 
 	/* clear the init_ctrl_reg_1 to signify that the cache is invalidated */
 	ee_map->init_ctrl_reg_1 = cpu_to_le16(EEPROM_ICW1_SIGNATURE_CLEAR);
+
+	return;
 }
 
 /******************************************************************************
@@ -459,11 +467,11 @@ ixgb_get_eeprom_data(struct ixgb_hw *hw)
 	u16 checksum = 0;
 	struct ixgb_ee_map_type *ee_map;
 
-	ENTER();
+	DEBUGFUNC("ixgb_get_eeprom_data");
 
 	ee_map = (struct ixgb_ee_map_type *)hw->eeprom;
 
-	pr_debug("Reading eeprom data\n");
+	DEBUGOUT("ixgb_ee: Reading eeprom data\n");
 	for (i = 0; i < IXGB_EEPROM_SIZE ; i++) {
 		u16 ee_data;
 		ee_data = ixgb_read_eeprom(hw, i);
@@ -472,7 +480,7 @@ ixgb_get_eeprom_data(struct ixgb_hw *hw)
 	}
 
 	if (checksum != (u16) EEPROM_SUM) {
-		pr_debug("Checksum invalid\n");
+		DEBUGOUT("ixgb_ee: Checksum invalid.\n");
 		/* clear the init_ctrl_reg_1 to signify that the cache is
 		 * invalidated */
 		ee_map->init_ctrl_reg_1 = cpu_to_le16(EEPROM_ICW1_SIGNATURE_CLEAR);
@@ -481,7 +489,7 @@ ixgb_get_eeprom_data(struct ixgb_hw *hw)
 
 	if ((ee_map->init_ctrl_reg_1 & cpu_to_le16(EEPROM_ICW1_SIGNATURE_MASK))
 		 != cpu_to_le16(EEPROM_ICW1_SIGNATURE_VALID)) {
-		pr_debug("Signature invalid\n");
+		DEBUGOUT("ixgb_ee: Signature invalid.\n");
 		return(false);
 	}
 
@@ -547,13 +555,13 @@ ixgb_get_ee_mac_addr(struct ixgb_hw *hw,
 	int i;
 	struct ixgb_ee_map_type *ee_map = (struct ixgb_ee_map_type *)hw->eeprom;
 
-	ENTER();
+	DEBUGFUNC("ixgb_get_ee_mac_addr");
 
 	if (ixgb_check_and_get_eeprom_data(hw) == true) {
 		for (i = 0; i < IXGB_ETH_LENGTH_OF_ADDRESS; i++) {
 			mac_addr[i] = ee_map->mac_addr[i];
+			DEBUGOUT2("mac(%d) = %.2X\n", i, mac_addr[i]);
 		}
-		pr_debug("eeprom mac address = %pM\n", mac_addr);
 	}
 }
 

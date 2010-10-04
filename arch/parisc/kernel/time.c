@@ -24,7 +24,6 @@
 #include <linux/profile.h>
 #include <linux/clocksource.h>
 #include <linux/platform_device.h>
-#include <linux/ftrace.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -54,11 +53,11 @@ static unsigned long clocktick __read_mostly;	/* timer cycles per tick */
  * held off for an arbitrarily long period of time by interrupts being
  * disabled, so we may miss one or more ticks.
  */
-irqreturn_t __irq_entry timer_interrupt(int irq, void *dev_id)
+irqreturn_t timer_interrupt(int irq, void *dev_id)
 {
-	unsigned long now, now2;
+	unsigned long now;
 	unsigned long next_tick;
-	unsigned long cycles_elapsed, ticks_elapsed = 1;
+	unsigned long cycles_elapsed, ticks_elapsed;
 	unsigned long cycles_remainder;
 	unsigned int cpu = smp_processor_id();
 	struct cpuinfo_parisc *cpuinfo = &per_cpu(cpu_data, cpu);
@@ -71,24 +70,44 @@ irqreturn_t __irq_entry timer_interrupt(int irq, void *dev_id)
 	/* Initialize next_tick to the expected tick time. */
 	next_tick = cpuinfo->it_value;
 
-	/* Get current cycle counter (Control Register 16). */
+	/* Get current interval timer.
+	 * CR16 reads as 64 bits in CPU wide mode.
+	 * CR16 reads as 32 bits in CPU narrow mode.
+	 */
 	now = mfctl(16);
 
 	cycles_elapsed = now - next_tick;
 
-	if ((cycles_elapsed >> 6) < cpt) {
+	if ((cycles_elapsed >> 5) < cpt) {
 		/* use "cheap" math (add/subtract) instead
 		 * of the more expensive div/mul method
 		 */
 		cycles_remainder = cycles_elapsed;
+		ticks_elapsed = 1;
 		while (cycles_remainder > cpt) {
 			cycles_remainder -= cpt;
 			ticks_elapsed++;
 		}
 	} else {
-		/* TODO: Reduce this to one fdiv op */
 		cycles_remainder = cycles_elapsed % cpt;
-		ticks_elapsed += cycles_elapsed / cpt;
+		ticks_elapsed = 1 + cycles_elapsed / cpt;
+	}
+
+	/* Can we differentiate between "early CR16" (aka Scenario 1) and
+	 * "long delay" (aka Scenario 3)? I don't think so.
+	 *
+	 * We expected timer_interrupt to be delivered at least a few hundred
+	 * cycles after the IT fires. But it's arbitrary how much time passes
+	 * before we call it "late". I've picked one second.
+	 */
+	if (unlikely(ticks_elapsed > HZ)) {
+		/* Scenario 3: very long delay?  bad in any case */
+		printk (KERN_CRIT "timer_interrupt(CPU %d): delayed!"
+			" cycles %lX rem %lX "
+			" next/now %lX/%lX\n",
+			cpu,
+			cycles_elapsed, cycles_remainder,
+			next_tick, now );
 	}
 
 	/* convert from "division remainder" to "remainder of clock tick" */
@@ -102,56 +121,18 @@ irqreturn_t __irq_entry timer_interrupt(int irq, void *dev_id)
 
 	cpuinfo->it_value = next_tick;
 
-	/* Program the IT when to deliver the next interrupt.
-	 * Only bottom 32-bits of next_tick are writable in CR16!
+	/* Skip one clocktick on purpose if we are likely to miss next_tick.
+	 * We want to avoid the new next_tick being less than CR16.
+	 * If that happened, itimer wouldn't fire until CR16 wrapped.
+	 * We'll catch the tick we missed on the tick after that.
 	 */
+	if (!(cycles_remainder >> 13))
+		next_tick += cpt;
+
+	/* Program the IT when to deliver the next interrupt. */
+	/* Only bottom 32-bits of next_tick are written to cr16.  */
 	mtctl(next_tick, 16);
 
-	/* Skip one clocktick on purpose if we missed next_tick.
-	 * The new CR16 must be "later" than current CR16 otherwise
-	 * itimer would not fire until CR16 wrapped - e.g 4 seconds
-	 * later on a 1Ghz processor. We'll account for the missed
-	 * tick on the next timer interrupt.
-	 *
-	 * "next_tick - now" will always give the difference regardless
-	 * if one or the other wrapped. If "now" is "bigger" we'll end up
-	 * with a very large unsigned number.
-	 */
-	now2 = mfctl(16);
-	if (next_tick - now2 > cpt)
-		mtctl(next_tick+cpt, 16);
-
-#if 1
-/*
- * GGG: DEBUG code for how many cycles programming CR16 used.
- */
-	if (unlikely(now2 - now > 0x3000)) 	/* 12K cycles */
-		printk (KERN_CRIT "timer_interrupt(CPU %d): SLOW! 0x%lx cycles!"
-			" cyc %lX rem %lX "
-			" next/now %lX/%lX\n",
-			cpu, now2 - now, cycles_elapsed, cycles_remainder,
-			next_tick, now );
-#endif
-
-	/* Can we differentiate between "early CR16" (aka Scenario 1) and
-	 * "long delay" (aka Scenario 3)? I don't think so.
-	 *
-	 * Timer_interrupt will be delivered at least a few hundred cycles
-	 * after the IT fires. But it's arbitrary how much time passes
-	 * before we call it "late". I've picked one second.
-	 *
-	 * It's important NO printk's are between reading CR16 and
-	 * setting up the next value. May introduce huge variance.
-	 */
-	if (unlikely(ticks_elapsed > HZ)) {
-		/* Scenario 3: very long delay?  bad in any case */
-		printk (KERN_CRIT "timer_interrupt(CPU %d): delayed!"
-			" cycles %lX rem %lX "
-			" next/now %lX/%lX\n",
-			cpu,
-			cycles_elapsed, cycles_remainder,
-			next_tick, now );
-	}
 
 	/* Done mucking with unreliable delivery of interrupts.
 	 * Go do system house keeping.
@@ -191,7 +172,7 @@ EXPORT_SYMBOL(profile_pc);
 
 /* clock source code */
 
-static cycle_t read_cr16(struct clocksource *cs)
+static cycle_t read_cr16(void)
 {
 	return get_cycles();
 }
@@ -235,14 +216,17 @@ void __init start_cpu_itimer(void)
 	per_cpu(cpu_data, cpu).it_value = next_tick;
 }
 
-static struct platform_device rtc_generic_dev = {
-	.name = "rtc-generic",
+struct platform_device rtc_parisc_dev = {
+	.name = "rtc-parisc",
 	.id = -1,
 };
 
 static int __init rtc_init(void)
 {
-	if (platform_device_register(&rtc_generic_dev) < 0)
+	int ret;
+
+	ret = platform_device_register(&rtc_parisc_dev);
+	if (ret < 0)
 		printk(KERN_ERR "unable to register rtc device...\n");
 
 	/* not necessarily an error */
@@ -250,21 +234,9 @@ static int __init rtc_init(void)
 }
 module_init(rtc_init);
 
-void read_persistent_clock(struct timespec *ts)
-{
-	static struct pdc_tod tod_data;
-	if (pdc_tod_read(&tod_data) == 0) {
-		ts->tv_sec = tod_data.tod_sec;
-		ts->tv_nsec = tod_data.tod_usec * 1000;
-	} else {
-		printk(KERN_ERR "Error reading tod clock\n");
-	        ts->tv_sec = 0;
-		ts->tv_nsec = 0;
-	}
-}
-
 void __init time_init(void)
 {
+	static struct pdc_tod tod_data;
 	unsigned long current_cr16_khz;
 
 	clocktick = (100 * PAGE0->mem_10msec) / HZ;
@@ -276,4 +248,19 @@ void __init time_init(void)
 	clocksource_cr16.mult = clocksource_khz2mult(current_cr16_khz,
 						clocksource_cr16.shift);
 	clocksource_register(&clocksource_cr16);
+
+	if (pdc_tod_read(&tod_data) == 0) {
+		unsigned long flags;
+
+		write_seqlock_irqsave(&xtime_lock, flags);
+		xtime.tv_sec = tod_data.tod_sec;
+		xtime.tv_nsec = tod_data.tod_usec * 1000;
+		set_normalized_timespec(&wall_to_monotonic,
+		                        -xtime.tv_sec, -xtime.tv_nsec);
+		write_sequnlock_irqrestore(&xtime_lock, flags);
+	} else {
+		printk(KERN_ERR "Error reading tod clock\n");
+	        xtime.tv_sec = 0;
+		xtime.tv_nsec = 0;
+	}
 }

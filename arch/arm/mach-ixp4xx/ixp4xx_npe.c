@@ -20,6 +20,7 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <mach/npe.h>
 
 #define DEBUG_MSG			0
@@ -385,6 +386,15 @@ static int npe_reset(struct npe *npe)
 	/* reset the NPE */
 	ixp4xx_write_feature_bits(val &
 				  ~(IXP4XX_FEATURE_RESET_NPEA << npe->id));
+	for (i = 0; i < MAX_RETRIES; i++) {
+		if (!(ixp4xx_read_feature_bits() &
+		      (IXP4XX_FEATURE_RESET_NPEA << npe->id)))
+			break;	/* reset completed */
+		udelay(1);
+	}
+	if (i == MAX_RETRIES)
+		return -ETIMEDOUT;
+
 	/* deassert reset */
 	ixp4xx_write_feature_bits(val |
 				  (IXP4XX_FEATURE_RESET_NPEA << npe->id));
@@ -565,8 +575,8 @@ int npe_load_firmware(struct npe *npe, const char *name, struct device *dev)
 		for (i = 0; i < image->size; i++)
 			image->data[i] = swab32(image->data[i]);
 
-	if (cpu_is_ixp42x() && ((image->id >> 28) & 0xF /* device ID */)) {
-		print_npe(KERN_INFO, npe, "IXP43x/IXP46x firmware ignored on "
+	if (!cpu_is_ixp46x() && ((image->id >> 28) & 0xF /* device ID */)) {
+		print_npe(KERN_INFO, npe, "IXP46x firmware ignored on "
 			  "IXP42x\n");
 		goto err;
 	}
@@ -586,7 +596,7 @@ int npe_load_firmware(struct npe *npe, const char *name, struct device *dev)
 		  "revision 0x%X:%X\n", (image->id >> 16) & 0xFF,
 		  (image->id >> 8) & 0xFF, image->id & 0xFF);
 
-	if (cpu_is_ixp42x()) {
+	if (!cpu_is_ixp46x()) {
 		if (!npe->id)
 			instr_size = NPE_A_42X_INSTR_SIZE;
 		else
@@ -664,7 +674,7 @@ err:
 }
 
 
-struct npe *npe_request(unsigned id)
+struct npe *npe_request(int id)
 {
 	if (id < NPE_COUNT)
 		if (npe_tab[id].valid)
@@ -704,7 +714,7 @@ static int __init npe_init_module(void)
 	}
 
 	if (!found)
-		return -ENODEV;
+		return -ENOSYS;
 	return 0;
 }
 

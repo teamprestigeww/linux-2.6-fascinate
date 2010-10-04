@@ -27,7 +27,6 @@
 #include <linux/err.h>
 #include <linux/mutex.h>
 #include <linux/sysfs.h>
-#include <linux/slab.h>
 
 
 /* AD7414 registers */

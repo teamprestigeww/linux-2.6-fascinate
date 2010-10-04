@@ -138,7 +138,7 @@ struct i2400m_bcf_hdr {
 	__le32 module_id;
 	__le32 module_vendor;
 	__le32 date;		/* BCD YYYMMDD */
-	__le32 size;            /* in dwords */
+	__le32 size;
 	__le32 key_size;	/* in dwords */
 	__le32 modulus_size;	/* in dwords */
 	__le32 exponent_size;	/* in dwords */
@@ -165,6 +165,16 @@ enum i2400m_brh {
 	I2400M_BRH_DIRECT_ACCESS = 0x00000400,
 	I2400M_BRH_RESPONSE_REQUIRED = 0x00000200,
 	I2400M_BRH_USE_CHECKSUM = 0x00000100,
+};
+
+
+/* Constants for bcf->module_id */
+enum i2400m_bcf_mod_id {
+	/* Firmware file carries its own pokes -- pokes are a set of
+	 * magical values that have to be written in certain memory
+	 * addresses to get the device up and ready for firmware
+	 * download when it is in non-signed boot mode. */
+	I2400M_BCF_MOD_ID_POKES = 0x000000001,
 };
 
 
@@ -197,7 +207,6 @@ enum i2400m_pt {
 	I2400M_PT_TRACE,	/* For device debug */
 	I2400M_PT_RESET_WARM,	/* device reset */
 	I2400M_PT_RESET_COLD,	/* USB[transport] reset, like reconnect */
-	I2400M_PT_EDATA,	/* Extended RX data */
 	I2400M_PT_ILLEGAL
 };
 
@@ -212,51 +221,9 @@ struct i2400m_pl_data_hdr {
 } __attribute__((packed));
 
 
-/*
- * Payload for an extended data packet
- *
- * New in fw v1.4
- *
- * @reorder: if this payload has to be reorder or not (and how)
- * @cs: the type of data in the packet, as defined per (802.16e
- *     T11.13.19.1). Currently only 2 (IPv4 packet) supported.
- *
- * This is prefixed to each and every INCOMING DATA packet.
- */
-struct i2400m_pl_edata_hdr {
-	__le32 reorder;		/* bits defined in i2400m_ro */
-	__u8 cs;
-	__u8 reserved[11];
-} __attribute__((packed));
-
-enum i2400m_cs {
-	I2400M_CS_IPV4_0 = 0,
-	I2400M_CS_IPV4 = 2,
-};
-
-enum i2400m_ro {
-	I2400M_RO_NEEDED     = 0x01,
-	I2400M_RO_TYPE       = 0x03,
-	I2400M_RO_TYPE_SHIFT = 1,
-	I2400M_RO_CIN        = 0x0f,
-	I2400M_RO_CIN_SHIFT  = 4,
-	I2400M_RO_FBN        = 0x07ff,
-	I2400M_RO_FBN_SHIFT  = 8,
-	I2400M_RO_SN         = 0x07ff,
-	I2400M_RO_SN_SHIFT   = 21,
-};
-
-enum i2400m_ro_type {
-	I2400M_RO_TYPE_RESET = 0,
-	I2400M_RO_TYPE_PACKET,
-	I2400M_RO_TYPE_WS,
-	I2400M_RO_TYPE_PACKET_WS,
-};
-
-
 /* Misc constants */
 enum {
-	I2400M_PL_ALIGN = 16,	/* Payload data size alignment */
+	I2400M_PL_PAD = 16,	/* Payload data size alignment */
 	I2400M_PL_SIZE_MAX = 0x3EFF,
 	I2400M_MAX_PLS_IN_MSG = 60,
 	/* protocol barkers: sync sequences; for notifications they
@@ -266,7 +233,6 @@ enum {
 	I2400M_WARM_RESET_BARKER = 0x50f750f7,
 	I2400M_NBOOT_BARKER = 0xdeadbeef,
 	I2400M_SBOOT_BARKER = 0x0ff1c1a1,
-	I2400M_SBOOT_BARKER_6050 = 0x80000001,
 	I2400M_ACK_BARKER = 0xfeedbabe,
 	I2400M_D2H_MSG_BARKER = 0xbeefbabe,
 };
@@ -415,9 +381,6 @@ enum i2400m_tlv {
 	I2400M_TLV_RF_STATUS = 163,
 	I2400M_TLV_DEVICE_RESET_TYPE = 132,
 	I2400M_TLV_CONFIG_IDLE_PARAMETERS = 601,
-	I2400M_TLV_CONFIG_IDLE_TIMEOUT = 611,
-	I2400M_TLV_CONFIG_D2H_DATA_FORMAT = 614,
-	I2400M_TLV_CONFIG_DL_HOST_REORDER = 615,
 };
 
 
@@ -545,28 +508,5 @@ struct i2400m_tlv_media_status {
 	struct i2400m_tlv_hdr hdr;
 	__le32 media_status;
 } __attribute__((packed));
-
-
-/* New in v1.4 */
-struct i2400m_tlv_config_idle_timeout {
-	struct i2400m_tlv_hdr hdr;
-	__le32 timeout;	/* 100 to 300000 ms [5min], 100 increments
-			 * 0 disabled */
-} __attribute__((packed));
-
-/* New in v1.4 -- for backward compat, will be removed */
-struct i2400m_tlv_config_d2h_data_format {
-	struct i2400m_tlv_hdr hdr;
-	__u8 format; 		/* 0 old format, 1 enhanced */
-	__u8 reserved[3];
-} __attribute__((packed));
-
-/* New in v1.4 */
-struct i2400m_tlv_config_dl_host_reorder {
-	struct i2400m_tlv_hdr hdr;
-	__u8 reorder; 		/* 0 disabled, 1 enabled */
-	__u8 reserved[3];
-} __attribute__((packed));
-
 
 #endif /* #ifndef __LINUX__WIMAX__I2400M_H__ */

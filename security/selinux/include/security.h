@@ -8,12 +8,13 @@
 #ifndef _SELINUX_SECURITY_H_
 #define _SELINUX_SECURITY_H_
 
-#include <linux/magic.h>
 #include "flask.h"
 
 #define SECSID_NULL			0x00000000 /* unspecified SID */
 #define SECSID_WILD			0xffffffff /* wildcard SID */
 #define SECCLASS_NULL			0x0000 /* no class */
+
+#define SELINUX_MAGIC 0xf97cff8c
 
 /* Identify specific policy version changes */
 #define POLICYDB_VERSION_BASE		15
@@ -36,27 +37,20 @@
 #define POLICYDB_VERSION_MAX	POLICYDB_VERSION_BOUNDARY
 #endif
 
-/* Mask for just the mount related flags */
-#define SE_MNTMASK	0x0f
-/* Super block security struct flags for mount options */
 #define CONTEXT_MNT	0x01
 #define FSCONTEXT_MNT	0x02
 #define ROOTCONTEXT_MNT	0x04
 #define DEFCONTEXT_MNT	0x08
-/* Non-mount related flags */
-#define SE_SBINITIALIZED	0x10
-#define SE_SBPROC		0x20
-#define SE_SBLABELSUPP	0x40
 
 #define CONTEXT_STR	"context="
 #define FSCONTEXT_STR	"fscontext="
 #define ROOTCONTEXT_STR	"rootcontext="
 #define DEFCONTEXT_STR	"defcontext="
-#define LABELSUPP_STR "seclabel"
 
 struct netlbl_lsm_secattr;
 
 extern int selinux_enabled;
+extern int selinux_mls_enabled;
 
 /* Policy capabilities */
 enum {
@@ -79,8 +73,6 @@ extern int selinux_policycap_openperm;
 /* limitation of boundary depth  */
 #define POLICYDB_BOUNDS_MAXDEPTH	4
 
-int security_mls_enabled(void);
-
 int security_load_policy(void *data, size_t len);
 
 int security_policycap_supported(unsigned int req_cap);
@@ -88,26 +80,20 @@ int security_policycap_supported(unsigned int req_cap);
 #define SEL_VEC_MAX 32
 struct av_decision {
 	u32 allowed;
+	u32 decided;
 	u32 auditallow;
 	u32 auditdeny;
 	u32 seqno;
-	u32 flags;
 };
 
-/* definitions of av_decision.flags */
-#define AVD_FLAGS_PERMISSIVE	0x0001
+int security_permissive_sid(u32 sid);
 
-void security_compute_av(u32 ssid, u32 tsid,
-			 u16 tclass, struct av_decision *avd);
-
-void security_compute_av_user(u32 ssid, u32 tsid,
-			     u16 tclass, struct av_decision *avd);
+int security_compute_av(u32 ssid, u32 tsid,
+	u16 tclass, u32 requested,
+	struct av_decision *avd);
 
 int security_transition_sid(u32 ssid, u32 tsid,
-			    u16 tclass, u32 *out_sid);
-
-int security_transition_sid_user(u32 ssid, u32 tsid,
-				 u16 tclass, u32 *out_sid);
+	u16 tclass, u32 *out_sid);
 
 int security_member_sid(u32 ssid, u32 tsid,
 	u16 tclass, u32 *out_sid);

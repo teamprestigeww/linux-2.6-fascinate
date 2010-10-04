@@ -33,8 +33,6 @@
 #include <linux/random.h>
 #include <linux/crc32.h>
 #include <linux/time.h>
-#include <linux/debugfs.h>
-#include <linux/slab.h>
 
 #include "heartbeat.h"
 #include "tcp.h"
@@ -62,11 +60,6 @@ static unsigned long o2hb_live_node_bitmap[BITS_TO_LONGS(O2NM_MAX_NODES)];
 static LIST_HEAD(o2hb_node_events);
 static DECLARE_WAIT_QUEUE_HEAD(o2hb_steady_queue);
 
-#define O2HB_DEBUG_DIR			"o2hb"
-#define O2HB_DEBUG_LIVENODES		"livenodes"
-static struct dentry *o2hb_debug_dir;
-static struct dentry *o2hb_debug_livenodes;
-
 static LIST_HEAD(o2hb_all_regions);
 
 static struct o2hb_callback {
@@ -79,7 +72,7 @@ static struct o2hb_callback *hbcall_from_type(enum o2hb_callback_type type);
 
 unsigned int o2hb_dead_threshold = O2HB_DEFAULT_DEAD_THRESHOLD;
 
-/* Only sets a new threshold if there are no active regions.
+/* Only sets a new threshold if there are no active regions. 
  *
  * No locking or otherwise interesting code is required for reading
  * o2hb_dead_threshold as it can't change once regions are active and
@@ -171,14 +164,13 @@ static void o2hb_write_timeout(struct work_struct *work)
 
 	mlog(ML_ERROR, "Heartbeat write timeout to device %s after %u "
 	     "milliseconds\n", reg->hr_dev_name,
-	     jiffies_to_msecs(jiffies - reg->hr_last_timeout_start));
+	     jiffies_to_msecs(jiffies - reg->hr_last_timeout_start)); 
 	o2quo_disk_timeout();
 }
 
 static void o2hb_arm_write_timeout(struct o2hb_region *reg)
 {
-	mlog(ML_HEARTBEAT, "Queue write timeout for %u ms\n",
-	     O2HB_MAX_WRITE_TIMEOUT_MS);
+	mlog(0, "Queue write timeout for %u ms\n", O2HB_MAX_WRITE_TIMEOUT_MS);
 
 	cancel_delayed_work(&reg->hr_write_timeout_work);
 	reg->hr_last_timeout_start = jiffies;
@@ -625,7 +617,7 @@ static int o2hb_check_slot(struct o2hb_region *reg,
 	     "seq %llu last %llu changed %u equal %u\n",
 	     slot->ds_node_num, (long long)slot->ds_last_generation,
 	     le32_to_cpu(hb_block->hb_cksum),
-	     (unsigned long long)le64_to_cpu(hb_block->hb_seq),
+	     (unsigned long long)le64_to_cpu(hb_block->hb_seq), 
 	     (unsigned long long)slot->ds_last_time, slot->ds_changed_samples,
 	     slot->ds_equal_samples);
 
@@ -876,8 +868,7 @@ static int o2hb_thread(void *data)
 		do_gettimeofday(&after_hb);
 		elapsed_msec = o2hb_elapsed_msecs(&before_hb, &after_hb);
 
-		mlog(ML_HEARTBEAT,
-		     "start = %lu.%lu, end = %lu.%lu, msec = %u\n",
+		mlog(0, "start = %lu.%lu, end = %lu.%lu, msec = %u\n",
 		     before_hb.tv_sec, (unsigned long) before_hb.tv_usec,
 		     after_hb.tv_sec, (unsigned long) after_hb.tv_usec,
 		     elapsed_msec);
@@ -914,77 +905,7 @@ static int o2hb_thread(void *data)
 	return 0;
 }
 
-#ifdef CONFIG_DEBUG_FS
-static int o2hb_debug_open(struct inode *inode, struct file *file)
-{
-	unsigned long map[BITS_TO_LONGS(O2NM_MAX_NODES)];
-	char *buf = NULL;
-	int i = -1;
-	int out = 0;
-
-	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!buf)
-		goto bail;
-
-	o2hb_fill_node_map(map, sizeof(map));
-
-	while ((i = find_next_bit(map, O2NM_MAX_NODES, i + 1)) < O2NM_MAX_NODES)
-		out += snprintf(buf + out, PAGE_SIZE - out, "%d ", i);
-	out += snprintf(buf + out, PAGE_SIZE - out, "\n");
-
-	i_size_write(inode, out);
-
-	file->private_data = buf;
-
-	return 0;
-bail:
-	return -ENOMEM;
-}
-
-static int o2hb_debug_release(struct inode *inode, struct file *file)
-{
-	kfree(file->private_data);
-	return 0;
-}
-
-static ssize_t o2hb_debug_read(struct file *file, char __user *buf,
-				 size_t nbytes, loff_t *ppos)
-{
-	return simple_read_from_buffer(buf, nbytes, ppos, file->private_data,
-				       i_size_read(file->f_mapping->host));
-}
-#else
-static int o2hb_debug_open(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-static int o2hb_debug_release(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-static ssize_t o2hb_debug_read(struct file *file, char __user *buf,
-			       size_t nbytes, loff_t *ppos)
-{
-	return 0;
-}
-#endif  /* CONFIG_DEBUG_FS */
-
-static const struct file_operations o2hb_debug_fops = {
-	.open =		o2hb_debug_open,
-	.release =	o2hb_debug_release,
-	.read =		o2hb_debug_read,
-	.llseek =	generic_file_llseek,
-};
-
-void o2hb_exit(void)
-{
-	if (o2hb_debug_livenodes)
-		debugfs_remove(o2hb_debug_livenodes);
-	if (o2hb_debug_dir)
-		debugfs_remove(o2hb_debug_dir);
-}
-
-int o2hb_init(void)
+void o2hb_init(void)
 {
 	int i;
 
@@ -997,24 +918,6 @@ int o2hb_init(void)
 	INIT_LIST_HEAD(&o2hb_node_events);
 
 	memset(o2hb_live_node_bitmap, 0, sizeof(o2hb_live_node_bitmap));
-
-	o2hb_debug_dir = debugfs_create_dir(O2HB_DEBUG_DIR, NULL);
-	if (!o2hb_debug_dir) {
-		mlog_errno(-ENOMEM);
-		return -ENOMEM;
-	}
-
-	o2hb_debug_livenodes = debugfs_create_file(O2HB_DEBUG_LIVENODES,
-						   S_IFREG|S_IRUSR,
-						   o2hb_debug_dir, NULL,
-						   &o2hb_debug_fops);
-	if (!o2hb_debug_livenodes) {
-		mlog_errno(-ENOMEM);
-		debugfs_remove(o2hb_debug_dir);
-		return -ENOMEM;
-	}
-
-	return 0;
 }
 
 /* if we're already in a callback then we're already serialized by the sem */
@@ -1374,7 +1277,7 @@ static ssize_t o2hb_region_dev_write(struct o2hb_region *reg,
 
 	bdevname(reg->hr_bdev, reg->hr_dev_name);
 
-	sectsize = bdev_logical_block_size(reg->hr_bdev);
+	sectsize = bdev_hardsect_size(reg->hr_bdev);
 	if (sectsize != reg->hr_block_bytes) {
 		mlog(ML_ERROR,
 		     "blocksize %u incorrect for device, expected %d",

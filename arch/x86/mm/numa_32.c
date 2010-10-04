@@ -194,7 +194,7 @@ void *alloc_remap(int nid, unsigned long size)
 	size = ALIGN(size, L1_CACHE_BYTES);
 
 	if (!allocation || (allocation + size) >= node_remap_end_vaddr[nid])
-		return NULL;
+		return 0;
 
 	node_remap_alloc_vaddr[nid] += size;
 	memset(allocation, 0, size);
@@ -257,7 +257,7 @@ void resume_map_numa_kva(pgd_t *pgd_base)
 }
 #endif
 
-static __init unsigned long calculate_numa_remap_pages(void)
+static unsigned long calculate_numa_remap_pages(void)
 {
 	int nid;
 	unsigned long size, reserve_pages = 0;
@@ -347,8 +347,8 @@ static void init_remap_allocator(int nid)
 		(ulong) node_remap_end_vaddr[nid]);
 }
 
-void __init initmem_init(unsigned long start_pfn, unsigned long end_pfn,
-				int acpi, int k8)
+void __init initmem_init(unsigned long start_pfn,
+				  unsigned long end_pfn)
 {
 	int nid;
 	long kva_target_pfn;
@@ -416,15 +416,37 @@ void __init initmem_init(unsigned long start_pfn, unsigned long end_pfn,
 	for_each_online_node(nid)
 		propagate_e820_map_node(nid);
 
-	for_each_online_node(nid) {
+	for_each_online_node(nid)
 		memset(NODE_DATA(nid), 0, sizeof(struct pglist_data));
-		NODE_DATA(nid)->node_id = nid;
-#ifndef CONFIG_NO_BOOTMEM
-		NODE_DATA(nid)->bdata = &bootmem_node_data[nid];
-#endif
-	}
 
+	NODE_DATA(0)->bdata = &bootmem_node_data[0];
 	setup_bootmem_allocator();
+}
+
+void __init set_highmem_pages_init(void)
+{
+#ifdef CONFIG_HIGHMEM
+	struct zone *zone;
+	int nid;
+
+	for_each_zone(zone) {
+		unsigned long zone_start_pfn, zone_end_pfn;
+
+		if (!is_highmem(zone))
+			continue;
+
+		zone_start_pfn = zone->zone_start_pfn;
+		zone_end_pfn = zone_start_pfn + zone->spanned_pages;
+
+		nid = zone_to_nid(zone);
+		printk(KERN_INFO "Initializing %s for node %d (%08lx:%08lx)\n",
+				zone->name, nid, zone_start_pfn, zone_end_pfn);
+
+		add_highpages_with_active_regions(nid, zone_start_pfn,
+				 zone_end_pfn);
+	}
+	totalram_pages += totalhigh_pages;
+#endif
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG

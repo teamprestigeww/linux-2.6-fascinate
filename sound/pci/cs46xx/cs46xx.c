@@ -64,10 +64,10 @@ MODULE_PARM_DESC(thinkpad, "Force to enable Thinkpad's CLKRUN control.");
 module_param_array(mmap_valid, bool, NULL, 0444);
 MODULE_PARM_DESC(mmap_valid, "Support OSS mmap.");
 
-static DEFINE_PCI_DEVICE_TABLE(snd_cs46xx_ids) = {
-	{ PCI_VDEVICE(CIRRUS, 0x6001), 0, },   /* CS4280 */
-	{ PCI_VDEVICE(CIRRUS, 0x6003), 0, },   /* CS4612 */
-	{ PCI_VDEVICE(CIRRUS, 0x6004), 0, },   /* CS4615 */
+static struct pci_device_id snd_cs46xx_ids[] = {
+        { 0x1013, 0x6001, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0, },   /* CS4280 */
+        { 0x1013, 0x6003, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0, },   /* CS4612 */
+        { 0x1013, 0x6004, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0, },   /* CS4615 */
 	{ 0, }
 };
 
@@ -88,9 +88,9 @@ static int __devinit snd_card_cs46xx_probe(struct pci_dev *pci,
 		return -ENOENT;
 	}
 
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
-	if (err < 0)
-		return err;
+	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
+	if (card == NULL)
+		return -ENOMEM;
 	if ((err = snd_cs46xx_create(card, pci,
 				     external_amp[dev], thinkpad[dev],
 				     &chip)) < 0) {

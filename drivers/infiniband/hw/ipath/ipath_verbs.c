@@ -34,7 +34,6 @@
 #include <rdma/ib_mad.h>
 #include <rdma/ib_user_verbs.h>
 #include <linux/io.h>
-#include <linux/slab.h>
 #include <linux/utsname.h>
 #include <linux/rculist.h>
 
@@ -1586,7 +1585,7 @@ static int ipath_query_port(struct ib_device *ibdev,
 	u64 ibcstat;
 
 	memset(props, 0, sizeof(*props));
-	props->lid = lid ? lid : be16_to_cpu(IB_LID_PERMISSIVE);
+	props->lid = lid ? lid : __constant_be16_to_cpu(IB_LID_PERMISSIVE);
 	props->lmc = dd->ipath_lmc;
 	props->sm_lid = dev->sm_lid;
 	props->sm_sl = dev->sm_sl;
@@ -2182,7 +2181,7 @@ int ipath_register_ib_device(struct ipath_devdata *dd)
 	snprintf(dev->node_desc, sizeof(dev->node_desc),
 		 IPATH_IDSTR " %s", init_utsname()->nodename);
 
-	ret = ib_register_device(dev, NULL);
+	ret = ib_register_device(dev);
 	if (ret)
 		goto err_reg;
 

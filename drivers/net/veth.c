@@ -9,7 +9,6 @@
  */
 
 #include <linux/netdevice.h>
-#include <linux/slab.h>
 #include <linux/ethtool.h>
 #include <linux/etherdevice.h>
 
@@ -20,22 +19,17 @@
 #define DRV_NAME	"veth"
 #define DRV_VERSION	"1.0"
 
-#define MIN_MTU 68		/* Min L3 MTU */
-#define MAX_MTU 65535		/* Max L3 MTU (arbitrary) */
-#define MTU_PAD (ETH_HLEN + 4)  /* Max difference between L2 and L3 size MTU */
-
 struct veth_net_stats {
 	unsigned long	rx_packets;
 	unsigned long	tx_packets;
 	unsigned long	rx_bytes;
 	unsigned long	tx_bytes;
 	unsigned long	tx_dropped;
-	unsigned long	rx_dropped;
 };
 
 struct veth_priv {
 	struct net_device *peer;
-	struct veth_net_stats __percpu *stats;
+	struct veth_net_stats *stats;
 	unsigned ip_summed;
 };
 
@@ -130,7 +124,7 @@ static int veth_set_tx_csum(struct net_device *dev, u32 data)
 	return 0;
 }
 
-static const struct ethtool_ops veth_ethtool_ops = {
+static struct ethtool_ops veth_ethtool_ops = {
 	.get_settings		= veth_get_settings,
 	.get_drvinfo		= veth_get_drvinfo,
 	.get_link		= ethtool_op_get_link,
@@ -149,46 +143,52 @@ static const struct ethtool_ops veth_ethtool_ops = {
  * xmit
  */
 
-static netdev_tx_t veth_xmit(struct sk_buff *skb, struct net_device *dev)
+static int veth_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct net_device *rcv = NULL;
 	struct veth_priv *priv, *rcv_priv;
-	struct veth_net_stats *stats, *rcv_stats;
-	int length;
+	struct veth_net_stats *stats;
+	int length, cpu;
+
+	skb_orphan(skb);
 
 	priv = netdev_priv(dev);
 	rcv = priv->peer;
 	rcv_priv = netdev_priv(rcv);
 
-	stats = this_cpu_ptr(priv->stats);
-	rcv_stats = this_cpu_ptr(rcv_priv->stats);
+	cpu = smp_processor_id();
+	stats = per_cpu_ptr(priv->stats, cpu);
 
 	if (!(rcv->flags & IFF_UP))
-		goto tx_drop;
+		goto outf;
 
+	skb->pkt_type = PACKET_HOST;
+	skb->protocol = eth_type_trans(skb, rcv);
 	if (dev->features & NETIF_F_NO_CSUM)
 		skb->ip_summed = rcv_priv->ip_summed;
 
-	length = skb->len + ETH_HLEN;
-	if (dev_forward_skb(rcv, skb) != NET_RX_SUCCESS)
-		goto rx_drop;
+	dst_release(skb->dst);
+	skb->dst = NULL;
+	skb->mark = 0;
+	secpath_reset(skb);
+	nf_reset(skb);
+
+	length = skb->len;
 
 	stats->tx_bytes += length;
 	stats->tx_packets++;
 
-	rcv_stats->rx_bytes += length;
-	rcv_stats->rx_packets++;
+	stats = per_cpu_ptr(rcv_priv->stats, cpu);
+	stats->rx_bytes += length;
+	stats->rx_packets++;
 
-	return NETDEV_TX_OK;
+	netif_rx(skb);
+	return 0;
 
-tx_drop:
+outf:
 	kfree_skb(skb);
 	stats->tx_dropped++;
-	return NETDEV_TX_OK;
-
-rx_drop:
-	rcv_stats->rx_dropped++;
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -198,29 +198,30 @@ rx_drop:
 static struct net_device_stats *veth_get_stats(struct net_device *dev)
 {
 	struct veth_priv *priv;
+	struct net_device_stats *dev_stats;
 	int cpu;
-	struct veth_net_stats *stats, total = {0};
+	struct veth_net_stats *stats;
 
 	priv = netdev_priv(dev);
+	dev_stats = &dev->stats;
 
-	for_each_possible_cpu(cpu) {
+	dev_stats->rx_packets = 0;
+	dev_stats->tx_packets = 0;
+	dev_stats->rx_bytes = 0;
+	dev_stats->tx_bytes = 0;
+	dev_stats->tx_dropped = 0;
+
+	for_each_online_cpu(cpu) {
 		stats = per_cpu_ptr(priv->stats, cpu);
 
-		total.rx_packets += stats->rx_packets;
-		total.tx_packets += stats->tx_packets;
-		total.rx_bytes   += stats->rx_bytes;
-		total.tx_bytes   += stats->tx_bytes;
-		total.tx_dropped += stats->tx_dropped;
-		total.rx_dropped += stats->rx_dropped;
+		dev_stats->rx_packets += stats->rx_packets;
+		dev_stats->tx_packets += stats->tx_packets;
+		dev_stats->rx_bytes += stats->rx_bytes;
+		dev_stats->tx_bytes += stats->tx_bytes;
+		dev_stats->tx_dropped += stats->tx_dropped;
 	}
-	dev->stats.rx_packets = total.rx_packets;
-	dev->stats.tx_packets = total.tx_packets;
-	dev->stats.rx_bytes   = total.rx_bytes;
-	dev->stats.tx_bytes   = total.tx_bytes;
-	dev->stats.tx_dropped = total.tx_dropped;
-	dev->stats.rx_dropped = total.rx_dropped;
 
-	return &dev->stats;
+	return dev_stats;
 }
 
 static int veth_open(struct net_device *dev)
@@ -248,22 +249,9 @@ static int veth_close(struct net_device *dev)
 	return 0;
 }
 
-static int is_valid_veth_mtu(int new_mtu)
-{
-	return (new_mtu >= MIN_MTU && new_mtu <= MAX_MTU);
-}
-
-static int veth_change_mtu(struct net_device *dev, int new_mtu)
-{
-	if (!is_valid_veth_mtu(new_mtu))
-		return -EINVAL;
-	dev->mtu = new_mtu;
-	return 0;
-}
-
 static int veth_dev_init(struct net_device *dev)
 {
-	struct veth_net_stats __percpu *stats;
+	struct veth_net_stats *stats;
 	struct veth_priv *priv;
 
 	stats = alloc_percpu(struct veth_net_stats);
@@ -289,7 +277,6 @@ static const struct net_device_ops veth_netdev_ops = {
 	.ndo_open            = veth_open,
 	.ndo_stop            = veth_close,
 	.ndo_start_xmit      = veth_xmit,
-	.ndo_change_mtu      = veth_change_mtu,
 	.ndo_get_stats       = veth_get_stats,
 	.ndo_set_mac_address = eth_mac_addr,
 };
@@ -316,16 +303,12 @@ static int veth_validate(struct nlattr *tb[], struct nlattr *data[])
 		if (!is_valid_ether_addr(nla_data(tb[IFLA_ADDRESS])))
 			return -EADDRNOTAVAIL;
 	}
-	if (tb[IFLA_MTU]) {
-		if (!is_valid_veth_mtu(nla_get_u32(tb[IFLA_MTU])))
-			return -EINVAL;
-	}
 	return 0;
 }
 
 static struct rtnl_link_ops veth_link_ops;
 
-static int veth_newlink(struct net *src_net, struct net_device *dev,
+static int veth_newlink(struct net_device *dev,
 			 struct nlattr *tb[], struct nlattr *data[])
 {
 	int err;
@@ -333,17 +316,18 @@ static int veth_newlink(struct net *src_net, struct net_device *dev,
 	struct veth_priv *priv;
 	char ifname[IFNAMSIZ];
 	struct nlattr *peer_tb[IFLA_MAX + 1], **tbp;
-	struct ifinfomsg *ifmp;
-	struct net *net;
 
 	/*
 	 * create and register peer first
+	 *
+	 * struct ifinfomsg is at the head of VETH_INFO_PEER, but we
+	 * skip it since no info from it is useful yet
 	 */
+
 	if (data != NULL && data[VETH_INFO_PEER] != NULL) {
 		struct nlattr *nla_peer;
 
 		nla_peer = data[VETH_INFO_PEER];
-		ifmp = nla_data(nla_peer);
 		err = nla_parse(peer_tb, IFLA_MAX,
 				nla_data(nla_peer) + sizeof(struct ifinfomsg),
 				nla_len(nla_peer) - sizeof(struct ifinfomsg),
@@ -356,40 +340,26 @@ static int veth_newlink(struct net *src_net, struct net_device *dev,
 			return err;
 
 		tbp = peer_tb;
-	} else {
-		ifmp = NULL;
+	} else
 		tbp = tb;
-	}
 
 	if (tbp[IFLA_IFNAME])
 		nla_strlcpy(ifname, tbp[IFLA_IFNAME], IFNAMSIZ);
 	else
 		snprintf(ifname, IFNAMSIZ, DRV_NAME "%%d");
 
-	net = rtnl_link_get_net(src_net, tbp);
-	if (IS_ERR(net))
-		return PTR_ERR(net);
-
-	peer = rtnl_create_link(src_net, net, ifname, &veth_link_ops, tbp);
-	if (IS_ERR(peer)) {
-		put_net(net);
+	peer = rtnl_create_link(dev_net(dev), ifname, &veth_link_ops, tbp);
+	if (IS_ERR(peer))
 		return PTR_ERR(peer);
-	}
 
 	if (tbp[IFLA_ADDRESS] == NULL)
 		random_ether_addr(peer->dev_addr);
 
 	err = register_netdevice(peer);
-	put_net(net);
-	net = NULL;
 	if (err < 0)
 		goto err_register_peer;
 
 	netif_carrier_off(peer);
-
-	err = rtnl_configure_link(peer, ifmp);
-	if (err < 0)
-		goto err_configure_peer;
 
 	/*
 	 * register dev last
@@ -432,7 +402,6 @@ static int veth_newlink(struct net *src_net, struct net_device *dev,
 err_register_dev:
 	/* nothing to do */
 err_alloc_name:
-err_configure_peer:
 	unregister_netdevice(peer);
 	return err;
 
@@ -441,7 +410,7 @@ err_register_peer:
 	return err;
 }
 
-static void veth_dellink(struct net_device *dev, struct list_head *head)
+static void veth_dellink(struct net_device *dev)
 {
 	struct veth_priv *priv;
 	struct net_device *peer;
@@ -449,8 +418,8 @@ static void veth_dellink(struct net_device *dev, struct list_head *head)
 	priv = netdev_priv(dev);
 	peer = priv->peer;
 
-	unregister_netdevice_queue(dev, head);
-	unregister_netdevice_queue(peer, head);
+	unregister_netdevice(dev);
+	unregister_netdevice(peer);
 }
 
 static const struct nla_policy veth_policy[VETH_INFO_MAX + 1];

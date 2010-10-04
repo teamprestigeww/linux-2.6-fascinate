@@ -196,7 +196,7 @@
  * for them and trying to understand what they mean.
  *
  * CONFIG_xxx:	These are the obvious machine configuration defines created
- * during configuration.  These are defined in autoconf.h.
+ * during configuration.  These are defined in include/linux/autoconf.h.
  *
  * CONSOLE:	There is support for head.S console in this file.  This
  * console can talk to a Mac frame buffer, but could easily be extrapolated
@@ -577,7 +577,7 @@ func_define	putn,1
 #endif
 .endm
 
-__HEAD
+.section ".text.head","ax"
 ENTRY(_stext)
 /*
  * Version numbers of the bootinfo interface

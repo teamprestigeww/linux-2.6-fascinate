@@ -126,8 +126,8 @@ DECLARE_PCI_FIXUP_FINAL(PCI_ANY_ID, PCI_ANY_ID, pcibios_fixup_final);
 #define MB			(1024*KB)
 #define GB			(1024*MB)
 
-resource_size_t
-pcibios_align_resource(void *data, const struct resource *res,
+void
+pcibios_align_resource(void *data, struct resource *res,
 		       resource_size_t size, resource_size_t align)
 {
 	struct pci_dev *dev = data;
@@ -168,7 +168,7 @@ pcibios_align_resource(void *data, const struct resource *res,
 		 */
 
 		/* Align to multiple of size of minimum base.  */
-		alignto = max_t(resource_size_t, 0x1000, align);
+		alignto = max(0x1000UL, align);
 		start = ALIGN(start, alignto);
 		if (hose->sparse_mem_base && size <= 7 * 16*MB) {
 			if (((start / (16*MB)) & 0x7) == 0) {
@@ -184,7 +184,7 @@ pcibios_align_resource(void *data, const struct resource *res,
 		}
 	}
 
-	return start;
+	res->start = start;
 }
 #undef KB
 #undef MB

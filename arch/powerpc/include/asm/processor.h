@@ -161,41 +161,9 @@ struct thread_struct {
 #ifdef CONFIG_PPC32
 	void		*pgdir;		/* root of page-table tree */
 #endif
-#ifdef CONFIG_PPC_ADV_DEBUG_REGS
-	/*
-	 * The following help to manage the use of Debug Control Registers
-	 * om the BookE platforms.
-	 */
-	unsigned long	dbcr0;
+#if defined(CONFIG_4xx) || defined (CONFIG_BOOKE)
+	unsigned long	dbcr0;		/* debug control register values */
 	unsigned long	dbcr1;
-#ifdef CONFIG_BOOKE
-	unsigned long	dbcr2;
-#endif
-	/*
-	 * The stored value of the DBSR register will be the value at the
-	 * last debug interrupt. This register can only be read from the
-	 * user (will never be written to) and has value while helping to
-	 * describe the reason for the last debug trap.  Torez
-	 */
-	unsigned long	dbsr;
-	/*
-	 * The following will contain addresses used by debug applications
-	 * to help trace and trap on particular address locations.
-	 * The bits in the Debug Control Registers above help define which
-	 * of the following registers will contain valid data and/or addresses.
-	 */
-	unsigned long	iac1;
-	unsigned long	iac2;
-#if CONFIG_PPC_ADV_DEBUG_IACS > 2
-	unsigned long	iac3;
-	unsigned long	iac4;
-#endif
-	unsigned long	dac1;
-	unsigned long	dac2;
-#if CONFIG_PPC_ADV_DEBUG_DVCS > 0
-	unsigned long	dvc1;
-	unsigned long	dvc2;
-#endif
 #endif
 	/* FP and VSX 0-31 register set */
 	double		fpr[32][TS_FPRWIDTH];
@@ -209,14 +177,6 @@ struct thread_struct {
 #ifdef CONFIG_PPC64
 	unsigned long	start_tb;	/* Start purr when proc switched in */
 	unsigned long	accum_tb;	/* Total accumilated purr for process */
-#ifdef CONFIG_HAVE_HW_BREAKPOINT
-	struct perf_event *ptrace_bps[HBP_NUM];
-	/*
-	 * Helps identify source of single-step exception and subsequent
-	 * hw-breakpoint enablement
-	 */
-	struct perf_event *last_hit_ubp;
-#endif /* CONFIG_HAVE_HW_BREAKPOINT */
 #endif
 	unsigned long	dabr;		/* Data address breakpoint register */
 #ifdef CONFIG_ALTIVEC
@@ -237,9 +197,6 @@ struct thread_struct {
 	unsigned long	spefscr;	/* SPE & eFP status */
 	int		used_spe;	/* set if process has used spe */
 #endif /* CONFIG_SPE */
-#ifdef CONFIG_KVM_BOOK3S_32_HANDLER
-	void*		kvm_shadow_vcpu; /* KVM internal data */
-#endif /* CONFIG_KVM_BOOK3S_32_HANDLER */
 };
 
 #define ARCH_MIN_TASKALIGN 16
@@ -354,25 +311,6 @@ static inline void prefetchw(const void *x)
 
 #ifdef CONFIG_PPC64
 #define HAVE_ARCH_PICK_MMAP_LAYOUT
-#endif
-
-#ifdef CONFIG_PPC64
-static inline unsigned long get_clean_sp(struct pt_regs *regs, int is_32)
-{
-	unsigned long sp;
-
-	if (is_32)
-		sp = regs->gpr[1] & 0x0ffffffffUL;
-	else
-		sp = regs->gpr[1];
-
-	return sp;
-}
-#else
-static inline unsigned long get_clean_sp(struct pt_regs *regs, int is_32)
-{
-	return regs->gpr[1];
-}
 #endif
 
 #endif /* __KERNEL__ */

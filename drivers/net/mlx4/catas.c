@@ -42,6 +42,7 @@ enum {
 static DEFINE_SPINLOCK(catas_lock);
 
 static LIST_HEAD(catas_list);
+static struct workqueue_struct *catas_wq;
 static struct work_struct catas_work;
 
 static int internal_err_reset = 1;
@@ -76,7 +77,7 @@ static void poll_catas(unsigned long dev_ptr)
 			list_add(&priv->catas_err.list, &catas_list);
 			spin_unlock(&catas_lock);
 
-			queue_work(mlx4_wq, &catas_work);
+			queue_work(catas_wq, &catas_work);
 		}
 	} else
 		mod_timer(&priv->catas_err.timer,
@@ -96,17 +97,12 @@ static void catas_reset(struct work_struct *work)
 	spin_unlock_irq(&catas_lock);
 
 	list_for_each_entry_safe(priv, tmppriv, &tlist, catas_err.list) {
-		struct pci_dev *pdev = priv->dev.pdev;
-
 		ret = mlx4_restart_one(priv->dev.pdev);
-		/* 'priv' now is not valid */
+		dev = &priv->dev;
 		if (ret)
-			pr_err("mlx4 %s: Reset failed (%d)\n",
-			       pci_name(pdev), ret);
-		else {
-			dev  = pci_get_drvdata(pdev);
+			mlx4_err(dev, "Reset failed (%d)\n", ret);
+		else
 			mlx4_dbg(dev, "Reset succeeded\n");
-		}
 	}
 }
 
@@ -150,7 +146,18 @@ void mlx4_stop_catas_poll(struct mlx4_dev *dev)
 	spin_unlock_irq(&catas_lock);
 }
 
-void  __init mlx4_catas_init(void)
+int __init mlx4_catas_init(void)
 {
 	INIT_WORK(&catas_work, catas_reset);
+
+	catas_wq = create_singlethread_workqueue("mlx4_err");
+	if (!catas_wq)
+		return -ENOMEM;
+
+	return 0;
+}
+
+void mlx4_catas_cleanup(void)
+{
+	destroy_workqueue(catas_wq);
 }

@@ -4,7 +4,7 @@
  * Based on code by Ingo Molnar and Andi Kleen, copyrighted
  * as follows:
  *
- * Copyright 2003-2009 Red Hat Inc.
+ * Copyright 2003-2004 Red Hat Inc., Durham, North Carolina.
  * All Rights Reserved.
  * Copyright 2005 Andi Kleen, SUSE Labs.
  * Copyright 2007 Jiri Kosina, SUSE Labs.
@@ -29,26 +29,13 @@
 #include <linux/random.h>
 #include <linux/limits.h>
 #include <linux/sched.h>
-#include <asm/elf.h>
-
-static unsigned int stack_maxrandom_size(void)
-{
-	unsigned int max = 0;
-	if ((current->flags & PF_RANDOMIZE) &&
-		!(current->personality & ADDR_NO_RANDOMIZE)) {
-		max = ((-1U) & STACK_RND_MASK) << PAGE_SHIFT;
-	}
-
-	return max;
-}
-
 
 /*
  * Top of mmap area (just below the process stack).
  *
- * Leave an at least ~128 MB hole with possible stack randomization.
+ * Leave an at least ~128 MB hole.
  */
-#define MIN_GAP (128*1024*1024UL + stack_maxrandom_size())
+#define MIN_GAP (128*1024*1024)
 #define MAX_GAP (TASK_SIZE/6*5)
 
 /*
@@ -71,7 +58,7 @@ static int mmap_is_legacy(void)
 	if (current->personality & ADDR_COMPAT_LAYOUT)
 		return 1;
 
-	if (rlimit(RLIMIT_STACK) == RLIM_INFINITY)
+	if (current->signal->rlim[RLIMIT_STACK].rlim_cur == RLIM_INFINITY)
 		return 1;
 
 	return sysctl_legacy_va_layout;
@@ -96,7 +83,7 @@ static unsigned long mmap_rnd(void)
 
 static unsigned long mmap_base(void)
 {
-	unsigned long gap = rlimit(RLIMIT_STACK);
+	unsigned long gap = current->signal->rlim[RLIMIT_STACK].rlim_cur;
 
 	if (gap < MIN_GAP)
 		gap = MIN_GAP;

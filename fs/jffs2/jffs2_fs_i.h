@@ -2,7 +2,6 @@
  * JFFS2 -- Journalling Flash File System, Version 2.
  *
  * Copyright © 2001-2007 Red Hat, Inc.
- * Copyright © 2004-2010 David Woodhouse <dwmw2@infradead.org>
  *
  * Created by David Woodhouse <dwmw2@infradead.org>
  *
@@ -51,6 +50,10 @@ struct jffs2_inode_info {
 	uint16_t flags;
 	uint8_t usercompr;
 	struct inode vfs_inode;
+#ifdef CONFIG_JFFS2_FS_POSIX_ACL
+	struct posix_acl *i_acl_access;
+	struct posix_acl *i_acl_default;
+#endif
 };
 
 #endif /* _JFFS2_FS_I */

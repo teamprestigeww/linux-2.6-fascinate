@@ -13,9 +13,6 @@
 #include <linux/statfs.h>
 #include <linux/magic.h>
 #include <linux/sched.h>
-#include <linux/smp_lock.h>
-#include <linux/bitmap.h>
-#include <linux/slab.h>
 
 /* Mark the filesystem dirty, so that chkdsk checks it when os/2 booted */
 
@@ -102,28 +99,25 @@ int hpfs_stop_cycles(struct super_block *s, int key, int *c1, int *c2,
 static void hpfs_put_super(struct super_block *s)
 {
 	struct hpfs_sb_info *sbi = hpfs_sb(s);
-
-	lock_kernel();
-
 	kfree(sbi->sb_cp_table);
 	kfree(sbi->sb_bmp_dir);
 	unmark_dirty(s);
 	s->s_fs_info = NULL;
 	kfree(sbi);
-
-	unlock_kernel();
 }
 
 unsigned hpfs_count_one_bitmap(struct super_block *s, secno secno)
 {
 	struct quad_buffer_head qbh;
-	unsigned long *bits;
-	unsigned count;
-
-	bits = hpfs_map_4sectors(s, secno, &qbh, 4);
-	if (!bits)
-		return 0;
-	count = bitmap_weight(bits, 2048 * BITS_PER_BYTE);
+	unsigned *bits;
+	unsigned i, count;
+	if (!(bits = hpfs_map_4sectors(s, secno, &qbh, 4))) return 0;
+	count = 0;
+	for (i = 0; i < 2048 / sizeof(unsigned); i++) {
+		unsigned b; 
+		if (!bits[i]) continue;
+		for (b = bits[i]; b; b>>=1) count += b & 1;
+	}
 	hpfs_brelse4(&qbh);
 	return count;
 }
@@ -142,7 +136,6 @@ static int hpfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
 	struct super_block *s = dentry->d_sb;
 	struct hpfs_sb_info *sbi = hpfs_sb(s);
-	u64 id = huge_encode_dev(s->s_bdev->bd_dev);
 	lock_kernel();
 
 	/*if (sbi->sb_n_free == -1) {*/
@@ -156,8 +149,6 @@ static int hpfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bavail = sbi->sb_n_free;
 	buf->f_files = sbi->sb_dirband_size / 4;
 	buf->f_ffree = sbi->sb_n_free_dnodes;
-	buf->f_fsid.val[0] = (u32)id;
-	buf->f_fsid.val[1] = (u32)(id >> 32);
 	buf->f_namelen = 254;
 
 	unlock_kernel();
@@ -399,8 +390,6 @@ static int hpfs_remount_fs(struct super_block *s, int *flags, char *data)
 	
 	*flags |= MS_NOATIME;
 	
-	lock_kernel();
-	lock_super(s);
 	uid = sbi->sb_uid; gid = sbi->sb_gid;
 	umask = 0777 & ~sbi->sb_mode;
 	lowercase = sbi->sb_lowercase; conv = sbi->sb_conv;
@@ -431,15 +420,12 @@ static int hpfs_remount_fs(struct super_block *s, int *flags, char *data)
 
 	if (!(*flags & MS_RDONLY)) mark_dirty(s);
 
-	replace_mount_options(s, new_opts);
+	kfree(s->s_options);
+	s->s_options = new_opts;
 
-	unlock_super(s);
-	unlock_kernel();
 	return 0;
 
 out_err:
-	unlock_super(s);
-	unlock_kernel();
 	kfree(new_opts);
 	return -EINVAL;
 }
@@ -450,7 +436,7 @@ static const struct super_operations hpfs_sops =
 {
 	.alloc_inode	= hpfs_alloc_inode,
 	.destroy_inode	= hpfs_destroy_inode,
-	.evict_inode	= hpfs_evict_inode,
+	.delete_inode	= hpfs_delete_inode,
 	.put_super	= hpfs_put_super,
 	.statfs		= hpfs_statfs,
 	.remount_fs	= hpfs_remount_fs,
@@ -491,7 +477,7 @@ static int hpfs_fill_super(struct super_block *s, void *options, int silent)
 
 	uid = current_uid();
 	gid = current_gid();
-	umask = current_umask();
+	umask = current->fs->umask;
 	lowercase = 0;
 	conv = CONV_BINARY;
 	eas = 2;

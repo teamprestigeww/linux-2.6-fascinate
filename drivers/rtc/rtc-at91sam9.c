@@ -18,7 +18,6 @@
 #include <linux/rtc.h>
 #include <linux/interrupt.h>
 #include <linux/ioctl.h>
-#include <linux/slab.h>
 
 #include <mach/board.h>
 #include <mach/at91_rtt.h>
@@ -162,7 +161,7 @@ static int at91_rtc_readalarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (offset == 0)
 		return -EILSEQ;
 
-	memset(alrm, 0, sizeof(*alrm));
+	memset(alrm, 0, sizeof(alrm));
 	if (alarm != ALARM_DISABLED && offset != 0) {
 		rtc_time_to_tm(offset + alarm, tm);
 
@@ -352,7 +351,7 @@ static int __init at91_rtc_probe(struct platform_device *pdev)
 	/* register irq handler after we know what name we'll use */
 	ret = request_irq(AT91_ID_SYS, at91_rtc_interrupt,
 				IRQF_DISABLED | IRQF_SHARED,
-				dev_name(&rtc->rtcdev->dev), rtc);
+				rtc->rtcdev->dev.bus_id, rtc);
 	if (ret) {
 		dev_dbg(&pdev->dev, "can't share IRQ %d?\n", AT91_ID_SYS);
 		rtc_device_unregister(rtc->rtcdev);
@@ -367,7 +366,7 @@ static int __init at91_rtc_probe(struct platform_device *pdev)
 
 	if (gpbr_readl(rtc) == 0)
 		dev_warn(&pdev->dev, "%s: SET TIME!\n",
-				dev_name(&rtc->rtcdev->dev));
+				rtc->rtcdev->dev.bus_id);
 
 	return 0;
 

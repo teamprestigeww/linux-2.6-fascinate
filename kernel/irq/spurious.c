@@ -28,7 +28,7 @@ static int try_one_irq(int irq, struct irq_desc *desc)
 	struct irqaction *action;
 	int ok = 0, work = 0;
 
-	raw_spin_lock(&desc->lock);
+	spin_lock(&desc->lock);
 	/* Already running on another processor */
 	if (desc->status & IRQ_INPROGRESS) {
 		/*
@@ -37,13 +37,13 @@ static int try_one_irq(int irq, struct irq_desc *desc)
 		 */
 		if (desc->action && (desc->action->flags & IRQF_SHARED))
 			desc->status |= IRQ_PENDING;
-		raw_spin_unlock(&desc->lock);
+		spin_unlock(&desc->lock);
 		return ok;
 	}
 	/* Honour the normal IRQ locking */
 	desc->status |= IRQ_INPROGRESS;
 	action = desc->action;
-	raw_spin_unlock(&desc->lock);
+	spin_unlock(&desc->lock);
 
 	while (action) {
 		/* Only shared IRQ handlers are safe to call */
@@ -56,7 +56,7 @@ static int try_one_irq(int irq, struct irq_desc *desc)
 	}
 	local_irq_disable();
 	/* Now clean up the flags */
-	raw_spin_lock(&desc->lock);
+	spin_lock(&desc->lock);
 	action = desc->action;
 
 	/*
@@ -68,9 +68,9 @@ static int try_one_irq(int irq, struct irq_desc *desc)
 		 * Perform real IRQ processing for the IRQ we deferred
 		 */
 		work = 1;
-		raw_spin_unlock(&desc->lock);
+		spin_unlock(&desc->lock);
 		handle_IRQ_event(irq, action);
-		raw_spin_lock(&desc->lock);
+		spin_lock(&desc->lock);
 		desc->status &= ~IRQ_PENDING;
 	}
 	desc->status &= ~IRQ_INPROGRESS;
@@ -80,7 +80,7 @@ static int try_one_irq(int irq, struct irq_desc *desc)
 	 */
 	if (work && desc->chip && desc->chip->end)
 		desc->chip->end(irq);
-	raw_spin_unlock(&desc->lock);
+	spin_unlock(&desc->lock);
 
 	return ok;
 }
@@ -121,9 +121,7 @@ static void poll_spurious_irqs(unsigned long dummy)
 		if (!(status & IRQ_SPURIOUS_DISABLED))
 			continue;
 
-		local_irq_disable();
 		try_one_irq(i, desc);
-		local_irq_enable();
 	}
 
 	mod_timer(&poll_spurious_irq_timer,
@@ -220,7 +218,7 @@ void note_interrupt(unsigned int irq, struct irq_desc *desc,
 		/*
 		 * If we are seeing only the odd spurious IRQ caused by
 		 * bus asynchronicity then don't eventually trigger an error,
-		 * otherwise the counter becomes a doomsday timer for otherwise
+		 * otherwise the couter becomes a doomsday timer for otherwise
 		 * working systems
 		 */
 		if (time_after(jiffies, desc->last_unhandled + HZ/10))
@@ -287,6 +285,7 @@ static int __init irqfixup_setup(char *str)
 
 __setup("irqfixup", irqfixup_setup);
 module_param(irqfixup, int, 0644);
+MODULE_PARM_DESC("irqfixup", "0: No fixup, 1: irqfixup mode, 2: irqpoll mode");
 
 static int __init irqpoll_setup(char *str)
 {

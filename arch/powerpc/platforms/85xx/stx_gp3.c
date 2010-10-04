@@ -134,7 +134,7 @@ static void stx_gp3_show_cpuinfo(struct seq_file *m)
 	pvid = mfspr(SPRN_PVR);
 	svid = mfspr(SPRN_SVR);
 
-	seq_printf(m, "Vendor\t\t: RPC Electronics STx\n");
+	seq_printf(m, "Vendor\t\t: RPC Electronics STx \n");
 	seq_printf(m, "PVR\t\t: 0x%x\n", pvid);
 	seq_printf(m, "SVR\t\t: 0x%x\n", svid);
 
@@ -145,7 +145,6 @@ static void stx_gp3_show_cpuinfo(struct seq_file *m)
 
 static struct of_device_id __initdata of_bus_ids[] = {
 	{ .compatible = "simple-bus", },
-	{ .compatible = "gianfar", },
 	{},
 };
 

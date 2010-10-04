@@ -82,6 +82,7 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/kref.h>
 #include <linux/usb.h>
 #include <linux/device.h>
 #include <linux/crc32.h>
@@ -117,7 +118,7 @@ struct ksdazzle_speedparams {
 	__le32 baudrate;	/* baud rate, little endian */
 	__u8 flags;
 	__u8 reserved[3];
-} __packed;
+} __attribute__ ((packed));
 
 #define KS_DATA_5_BITS 0x00
 #define KS_DATA_6_BITS 0x01
@@ -297,12 +298,14 @@ static void ksdazzle_send_irq(struct urb *urb)
 /*
  * Called from net/core when new frame is available.
  */
-static netdev_tx_t ksdazzle_hard_xmit(struct sk_buff *skb,
-					    struct net_device *netdev)
+static int ksdazzle_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct ksdazzle_cb *kingsun;
 	unsigned int wraplen;
 	int ret = 0;
+
+	if (skb == NULL || netdev == NULL)
+		return -EINVAL;
 
 	netif_stop_queue(netdev);
 
@@ -338,7 +341,7 @@ static netdev_tx_t ksdazzle_hard_xmit(struct sk_buff *skb,
 	dev_kfree_skb(skb);
 	spin_unlock(&kingsun->lock);
 
-	return NETDEV_TX_OK;
+	return ret;
 }
 
 /* Receive callback function */
@@ -559,13 +562,6 @@ static int ksdazzle_net_ioctl(struct net_device *netdev, struct ifreq *rq,
 	return ret;
 }
 
-static const struct net_device_ops ksdazzle_ops = {
-	.ndo_start_xmit	= ksdazzle_hard_xmit,
-	.ndo_open	= ksdazzle_net_open,
-	.ndo_stop	= ksdazzle_net_close,
-	.ndo_do_ioctl	= ksdazzle_net_ioctl,
-};
-
 /*
  * This routine is called by the USB subsystem for each new device
  * in the system. We need to check if the device is ours, and in
@@ -688,7 +684,10 @@ static int ksdazzle_probe(struct usb_interface *intf,
 	irda_qos_bits_to_value(&kingsun->qos);
 
 	/* Override the network functions we need to use */
-	net->netdev_ops = &ksdazzle_ops;
+	net->hard_start_xmit = ksdazzle_hard_xmit;
+	net->open = ksdazzle_net_open;
+	net->stop = ksdazzle_net_close;
+	net->do_ioctl = ksdazzle_net_ioctl;
 
 	ret = register_netdev(net);
 	if (ret != 0)

@@ -15,7 +15,6 @@
 #include <linux/string.h>
 #include <linux/net.h>
 #include <linux/socket.h>
-#include <linux/slab.h>
 #include <linux/sockios.h>
 #include <linux/init.h>
 #include <linux/skbuff.h>
@@ -376,8 +375,7 @@ static void dn_rtmsg_fib(int event, struct dn_fib_node *f, int z, u32 tb_id,
 		kfree_skb(skb);
 		goto errout;
 	}
-	rtnl_notify(skb, &init_net, pid, RTNLGRP_DECnet_ROUTE, nlh, GFP_KERNEL);
-	return;
+	err = rtnl_notify(skb, &init_net, pid, RTNLGRP_DECnet_ROUTE, nlh, GFP_KERNEL);
 errout:
 	if (err < 0)
 		rtnl_set_sk_err(&init_net, RTNLGRP_DECnet_ROUTE, err);
@@ -472,7 +470,7 @@ int dn_fib_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	struct hlist_node *node;
 	int dumped = 0;
 
-	if (!net_eq(net, &init_net))
+	if (net != &init_net)
 		return 0;
 
 	if (NLMSG_PAYLOAD(cb->nlh, 0) >= sizeof(struct rtmsg) &&
@@ -582,9 +580,8 @@ static int dn_fib_table_insert(struct dn_fib_table *tb, struct rtmsg *r, struct 
 		DN_FIB_SCAN_KEY(f, fp, key) {
 			if (fi->fib_priority != DN_FIB_INFO(f)->fib_priority)
 				break;
-			if (f->fn_type == type &&
-			    f->fn_scope == r->rtm_scope &&
-			    DN_FIB_INFO(f) == fi)
+			if (f->fn_type == type && f->fn_scope == r->rtm_scope
+					&& DN_FIB_INFO(f) == fi)
 				goto out;
 		}
 

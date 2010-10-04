@@ -150,11 +150,11 @@ static __be16 ppp_type_trans(struct sk_buff *skb, struct net_device *dev)
 		return htons(ETH_P_HDLC);
 
 	switch (data->protocol) {
-	case cpu_to_be16(PID_IP):
+	case __constant_htons(PID_IP):
 		skb_pull(skb, sizeof(struct hdlc_header));
 		return htons(ETH_P_IP);
 
-	case cpu_to_be16(PID_IPV6):
+	case __constant_htons(PID_IPV6):
 		skb_pull(skb, sizeof(struct hdlc_header));
 		return htons(ETH_P_IPV6);
 
@@ -389,7 +389,6 @@ static void ppp_cp_parse_cr(struct net_device *dev, u16 pid, u8 id,
 	for (opt = data; len; len -= opt[1], opt += opt[1]) {
 		if (len < 2 || len < opt[1]) {
 			dev->stats.rx_errors++;
-			kfree(out);
 			return; /* bad packet, drop silently */
 		}
 
@@ -559,6 +558,7 @@ out:
 	return NET_RX_DROP;
 }
 
+
 static void ppp_timer(unsigned long arg)
 {
 	struct proto *proto = (struct proto *)arg;
@@ -628,15 +628,9 @@ static void ppp_stop(struct net_device *dev)
 	ppp_cp_event(dev, PID_LCP, STOP, 0, 0, 0, NULL);
 }
 
-static void ppp_close(struct net_device *dev)
-{
-	ppp_tx_flush();
-}
-
 static struct hdlc_proto proto = {
 	.start		= ppp_start,
 	.stop		= ppp_stop,
-	.close		= ppp_close,
 	.type_trans	= ppp_type_trans,
 	.ioctl		= ppp_ioctl,
 	.netif_rx	= ppp_rx,
@@ -685,6 +679,7 @@ static int ppp_ioctl(struct net_device *dev, struct ifreq *ifr)
 		ppp->keepalive_interval = 10;
 		ppp->keepalive_timeout = 60;
 
+		dev->hard_start_xmit = hdlc->xmit;
 		dev->hard_header_len = sizeof(struct hdlc_header);
 		dev->header_ops = &ppp_header_ops;
 		dev->type = ARPHRD_PPP;

@@ -10,12 +10,13 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/miscdevice.h>
+#include <linux/smp_lock.h>
 #include <linux/watchdog.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/io.h>
-#include <linux/uaccess.h>
-#include <linux/slab.h>
+
+#include <asm/io.h>
+#include <asm/uaccess.h>
 
 
 /* RIO uses the NatSemi Super I/O power management logical device
@@ -75,6 +76,7 @@ static void riowd_writereg(struct riowd *p, u8 val, int index)
 
 static int riowd_open(struct inode *inode, struct file *filp)
 {
+	cycle_kernel_lock();
 	nonseekable_open(inode, filp);
 	return 0;
 }
@@ -84,9 +86,10 @@ static int riowd_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static long riowd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static int riowd_ioctl(struct inode *inode, struct file *filp,
+		       unsigned int cmd, unsigned long arg)
 {
-	static const struct watchdog_info info = {
+	static struct watchdog_info info = {
 		.options		= WDIOF_SETTIMEOUT,
 		.firmware_version	= 1,
 		.identity		= DRIVER_NAME,
@@ -144,8 +147,7 @@ static long riowd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	return 0;
 }
 
-static ssize_t riowd_write(struct file *file, const char __user *buf,
-						size_t count, loff_t *ppos)
+static ssize_t riowd_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
 	struct riowd *p = riowd_device;
 
@@ -158,12 +160,12 @@ static ssize_t riowd_write(struct file *file, const char __user *buf,
 }
 
 static const struct file_operations riowd_fops = {
-	.owner =		THIS_MODULE,
-	.llseek =		no_llseek,
-	.unlocked_ioctl =	riowd_ioctl,
-	.open =			riowd_open,
-	.write =		riowd_write,
-	.release =		riowd_release,
+	.owner =	THIS_MODULE,
+	.llseek =	no_llseek,
+	.ioctl =	riowd_ioctl,
+	.open =		riowd_open,
+	.write =	riowd_write,
+	.release =	riowd_release,
 };
 
 static struct miscdevice riowd_miscdev = {
@@ -172,7 +174,7 @@ static struct miscdevice riowd_miscdev = {
 	.fops	= &riowd_fops
 };
 
-static int __devinit riowd_probe(struct platform_device *op,
+static int __devinit riowd_probe(struct of_device *op,
 				 const struct of_device_id *match)
 {
 	struct riowd *p;
@@ -193,8 +195,6 @@ static int __devinit riowd_probe(struct platform_device *op,
 		printk(KERN_ERR PFX "Cannot map registers.\n");
 		goto out_free;
 	}
-	/* Make miscdev useable right away */
-	riowd_device = p;
 
 	err = misc_register(&riowd_miscdev);
 	if (err) {
@@ -206,10 +206,10 @@ static int __devinit riowd_probe(struct platform_device *op,
 	       "regs at %p\n", riowd_timeout, p->regs);
 
 	dev_set_drvdata(&op->dev, p);
-	return 0;
+	riowd_device = p;
+	err = 0;
 
 out_iounmap:
-	riowd_device = NULL;
 	of_iounmap(&op->resource[0], p->regs, 2);
 
 out_free:
@@ -219,7 +219,7 @@ out:
 	return err;
 }
 
-static int __devexit riowd_remove(struct platform_device *op)
+static int __devexit riowd_remove(struct of_device *op)
 {
 	struct riowd *p = dev_get_drvdata(&op->dev);
 
@@ -239,23 +239,20 @@ static const struct of_device_id riowd_match[] = {
 MODULE_DEVICE_TABLE(of, riowd_match);
 
 static struct of_platform_driver riowd_driver = {
-	.driver = {
-		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
-		.of_match_table = riowd_match,
-	},
+	.name		= DRIVER_NAME,
+	.match_table	= riowd_match,
 	.probe		= riowd_probe,
 	.remove		= __devexit_p(riowd_remove),
 };
 
 static int __init riowd_init(void)
 {
-	return of_register_platform_driver(&riowd_driver);
+	return of_register_driver(&riowd_driver, &of_bus_type);
 }
 
 static void __exit riowd_exit(void)
 {
-	of_unregister_platform_driver(&riowd_driver);
+	of_unregister_driver(&riowd_driver);
 }
 
 module_init(riowd_init);

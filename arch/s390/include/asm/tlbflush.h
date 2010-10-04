@@ -51,7 +51,7 @@ static inline void __tlb_flush_full(struct mm_struct *mm)
 	 * If the process only ran on the local cpu, do a local flush.
 	 */
 	local_cpumask = cpumask_of_cpu(smp_processor_id());
-	if (cpumask_equal(mm_cpumask(mm), &local_cpumask))
+	if (cpus_equal(mm->cpu_vm_mask, local_cpumask))
 		__tlb_flush_local();
 	else
 		__tlb_flush_global();
@@ -73,7 +73,7 @@ static inline void __tlb_flush_idte(unsigned long asce)
 
 static inline void __tlb_flush_mm(struct mm_struct * mm)
 {
-	if (unlikely(cpumask_empty(mm_cpumask(mm))))
+	if (unlikely(cpus_empty(mm->cpu_vm_mask)))
 		return;
 	/*
 	 * If the machine has IDTE we prefer to do a per mm flush
@@ -94,12 +94,8 @@ static inline void __tlb_flush_mm(struct mm_struct * mm)
 
 static inline void __tlb_flush_mm_cond(struct mm_struct * mm)
 {
-	spin_lock(&mm->page_table_lock);
-	if (mm->context.flush_mm) {
+	if (atomic_read(&mm->mm_users) <= 1 && mm == current->active_mm)
 		__tlb_flush_mm(mm);
-		mm->context.flush_mm = 0;
-	}
-	spin_unlock(&mm->page_table_lock);
 }
 
 /*

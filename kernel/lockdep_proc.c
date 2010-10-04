@@ -25,12 +25,38 @@
 
 static void *l_next(struct seq_file *m, void *v, loff_t *pos)
 {
-	return seq_list_next(v, &all_lock_classes, pos);
+	struct lock_class *class;
+
+	(*pos)++;
+
+	if (v == SEQ_START_TOKEN)
+		class = m->private;
+	else {
+		class = v;
+
+		if (class->lock_entry.next != &all_lock_classes)
+			class = list_entry(class->lock_entry.next,
+					   struct lock_class, lock_entry);
+		else
+			class = NULL;
+	}
+
+	return class;
 }
 
 static void *l_start(struct seq_file *m, loff_t *pos)
 {
-	return seq_list_start_head(&all_lock_classes, *pos);
+	struct lock_class *class;
+	loff_t i = 0;
+
+	if (*pos == 0)
+		return SEQ_START_TOKEN;
+
+	list_for_each_entry(class, &all_lock_classes, lock_entry) {
+		if (++i == *pos)
+		return class;
+	}
+	return NULL;
 }
 
 static void l_stop(struct seq_file *m, void *v)
@@ -56,11 +82,11 @@ static void print_name(struct seq_file *m, struct lock_class *class)
 
 static int l_show(struct seq_file *m, void *v)
 {
-	struct lock_class *class = list_entry(v, struct lock_class, lock_entry);
+	struct lock_class *class = v;
 	struct lock_list *entry;
-	char usage[LOCK_USAGE_CHARS];
+	char c1, c2, c3, c4;
 
-	if (v == &all_lock_classes) {
+	if (v == SEQ_START_TOKEN) {
 		seq_printf(m, "all lock classes:\n");
 		return 0;
 	}
@@ -74,8 +100,8 @@ static int l_show(struct seq_file *m, void *v)
 	seq_printf(m, " BD:%5ld", lockdep_count_backward_deps(class));
 #endif
 
-	get_usage_chars(class, usage);
-	seq_printf(m, " %s", usage);
+	get_usage_chars(class, &c1, &c2, &c3, &c4);
+	seq_printf(m, " %c%c%c%c", c1, c2, c3, c4);
 
 	seq_printf(m, ": ");
 	print_name(m, class);
@@ -102,7 +128,17 @@ static const struct seq_operations lockdep_ops = {
 
 static int lockdep_open(struct inode *inode, struct file *file)
 {
-	return seq_open(file, &lockdep_ops);
+	int res = seq_open(file, &lockdep_ops);
+	if (!res) {
+		struct seq_file *m = file->private_data;
+
+		if (!list_empty(&all_lock_classes))
+			m->private = list_entry(all_lock_classes.next,
+					struct lock_class, lock_entry);
+		else
+			m->private = NULL;
+	}
+	return res;
 }
 
 static const struct file_operations proc_lockdep_operations = {
@@ -113,21 +149,35 @@ static const struct file_operations proc_lockdep_operations = {
 };
 
 #ifdef CONFIG_PROVE_LOCKING
+static void *lc_next(struct seq_file *m, void *v, loff_t *pos)
+{
+	struct lock_chain *chain;
+
+	(*pos)++;
+
+	if (v == SEQ_START_TOKEN)
+		chain = m->private;
+	else {
+		chain = v;
+
+		if (*pos < nr_lock_chains)
+			chain = lock_chains + *pos;
+		else
+			chain = NULL;
+	}
+
+	return chain;
+}
+
 static void *lc_start(struct seq_file *m, loff_t *pos)
 {
 	if (*pos == 0)
 		return SEQ_START_TOKEN;
 
-	if (*pos - 1 < nr_lock_chains)
-		return lock_chains + (*pos - 1);
+	if (*pos < nr_lock_chains)
+		return lock_chains + *pos;
 
 	return NULL;
-}
-
-static void *lc_next(struct seq_file *m, void *v, loff_t *pos)
-{
-	(*pos)++;
-	return lc_start(m, pos);
 }
 
 static void lc_stop(struct seq_file *m, void *v)
@@ -170,7 +220,16 @@ static const struct seq_operations lockdep_chains_ops = {
 
 static int lockdep_chains_open(struct inode *inode, struct file *file)
 {
-	return seq_open(file, &lockdep_chains_ops);
+	int res = seq_open(file, &lockdep_chains_ops);
+	if (!res) {
+		struct seq_file *m = file->private_data;
+
+		if (nr_lock_chains)
+			m->private = lock_chains;
+		else
+			m->private = NULL;
+	}
+	return res;
 }
 
 static const struct file_operations proc_lockdep_chains_operations = {
@@ -184,34 +243,40 @@ static const struct file_operations proc_lockdep_chains_operations = {
 static void lockdep_stats_debug_show(struct seq_file *m)
 {
 #ifdef CONFIG_DEBUG_LOCKDEP
-	unsigned long long hi1 = debug_atomic_read(hardirqs_on_events),
-			   hi2 = debug_atomic_read(hardirqs_off_events),
-			   hr1 = debug_atomic_read(redundant_hardirqs_on),
-			   hr2 = debug_atomic_read(redundant_hardirqs_off),
-			   si1 = debug_atomic_read(softirqs_on_events),
-			   si2 = debug_atomic_read(softirqs_off_events),
-			   sr1 = debug_atomic_read(redundant_softirqs_on),
-			   sr2 = debug_atomic_read(redundant_softirqs_off);
+	unsigned int hi1 = debug_atomic_read(&hardirqs_on_events),
+		     hi2 = debug_atomic_read(&hardirqs_off_events),
+		     hr1 = debug_atomic_read(&redundant_hardirqs_on),
+		     hr2 = debug_atomic_read(&redundant_hardirqs_off),
+		     si1 = debug_atomic_read(&softirqs_on_events),
+		     si2 = debug_atomic_read(&softirqs_off_events),
+		     sr1 = debug_atomic_read(&redundant_softirqs_on),
+		     sr2 = debug_atomic_read(&redundant_softirqs_off);
 
-	seq_printf(m, " chain lookup misses:           %11llu\n",
-		debug_atomic_read(chain_lookup_misses));
-	seq_printf(m, " chain lookup hits:             %11llu\n",
-		debug_atomic_read(chain_lookup_hits));
-	seq_printf(m, " cyclic checks:                 %11llu\n",
-		debug_atomic_read(nr_cyclic_checks));
-	seq_printf(m, " find-mask forwards checks:     %11llu\n",
-		debug_atomic_read(nr_find_usage_forwards_checks));
-	seq_printf(m, " find-mask backwards checks:    %11llu\n",
-		debug_atomic_read(nr_find_usage_backwards_checks));
+	seq_printf(m, " chain lookup misses:           %11u\n",
+		debug_atomic_read(&chain_lookup_misses));
+	seq_printf(m, " chain lookup hits:             %11u\n",
+		debug_atomic_read(&chain_lookup_hits));
+	seq_printf(m, " cyclic checks:                 %11u\n",
+		debug_atomic_read(&nr_cyclic_checks));
+	seq_printf(m, " cyclic-check recursions:       %11u\n",
+		debug_atomic_read(&nr_cyclic_check_recursions));
+	seq_printf(m, " find-mask forwards checks:     %11u\n",
+		debug_atomic_read(&nr_find_usage_forwards_checks));
+	seq_printf(m, " find-mask forwards recursions: %11u\n",
+		debug_atomic_read(&nr_find_usage_forwards_recursions));
+	seq_printf(m, " find-mask backwards checks:    %11u\n",
+		debug_atomic_read(&nr_find_usage_backwards_checks));
+	seq_printf(m, " find-mask backwards recursions:%11u\n",
+		debug_atomic_read(&nr_find_usage_backwards_recursions));
 
-	seq_printf(m, " hardirq on events:             %11llu\n", hi1);
-	seq_printf(m, " hardirq off events:            %11llu\n", hi2);
-	seq_printf(m, " redundant hardirq ons:         %11llu\n", hr1);
-	seq_printf(m, " redundant hardirq offs:        %11llu\n", hr2);
-	seq_printf(m, " softirq on events:             %11llu\n", si1);
-	seq_printf(m, " softirq off events:            %11llu\n", si2);
-	seq_printf(m, " redundant softirq ons:         %11llu\n", sr1);
-	seq_printf(m, " redundant softirq offs:        %11llu\n", sr2);
+	seq_printf(m, " hardirq on events:             %11u\n", hi1);
+	seq_printf(m, " hardirq off events:            %11u\n", hi2);
+	seq_printf(m, " redundant hardirq ons:         %11u\n", hr1);
+	seq_printf(m, " redundant hardirq offs:        %11u\n", hr2);
+	seq_printf(m, " softirq on events:             %11u\n", si1);
+	seq_printf(m, " softirq off events:            %11u\n", si2);
+	seq_printf(m, " redundant softirq ons:         %11u\n", sr1);
+	seq_printf(m, " redundant softirq offs:        %11u\n", sr2);
 #endif
 }
 
@@ -235,27 +300,27 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 			nr_uncategorized++;
 		if (class->usage_mask & LOCKF_USED_IN_IRQ)
 			nr_irq_safe++;
-		if (class->usage_mask & LOCKF_ENABLED_IRQ)
+		if (class->usage_mask & LOCKF_ENABLED_IRQS)
 			nr_irq_unsafe++;
 		if (class->usage_mask & LOCKF_USED_IN_SOFTIRQ)
 			nr_softirq_safe++;
-		if (class->usage_mask & LOCKF_ENABLED_SOFTIRQ)
+		if (class->usage_mask & LOCKF_ENABLED_SOFTIRQS)
 			nr_softirq_unsafe++;
 		if (class->usage_mask & LOCKF_USED_IN_HARDIRQ)
 			nr_hardirq_safe++;
-		if (class->usage_mask & LOCKF_ENABLED_HARDIRQ)
+		if (class->usage_mask & LOCKF_ENABLED_HARDIRQS)
 			nr_hardirq_unsafe++;
 		if (class->usage_mask & LOCKF_USED_IN_IRQ_READ)
 			nr_irq_read_safe++;
-		if (class->usage_mask & LOCKF_ENABLED_IRQ_READ)
+		if (class->usage_mask & LOCKF_ENABLED_IRQS_READ)
 			nr_irq_read_unsafe++;
 		if (class->usage_mask & LOCKF_USED_IN_SOFTIRQ_READ)
 			nr_softirq_read_safe++;
-		if (class->usage_mask & LOCKF_ENABLED_SOFTIRQ_READ)
+		if (class->usage_mask & LOCKF_ENABLED_SOFTIRQS_READ)
 			nr_softirq_read_unsafe++;
 		if (class->usage_mask & LOCKF_USED_IN_HARDIRQ_READ)
 			nr_hardirq_read_safe++;
-		if (class->usage_mask & LOCKF_ENABLED_HARDIRQ_READ)
+		if (class->usage_mask & LOCKF_ENABLED_HARDIRQS_READ)
 			nr_hardirq_read_unsafe++;
 
 #ifdef CONFIG_PROVE_LOCKING
@@ -263,7 +328,7 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 #endif
 	}
 #ifdef CONFIG_DEBUG_LOCKDEP
-	DEBUG_LOCKS_WARN_ON(debug_atomic_read(nr_unused_locks) != nr_unused);
+	DEBUG_LOCKS_WARN_ON(debug_atomic_read(&nr_unused_locks) != nr_unused);
 #endif
 	seq_printf(m, " lock-classes:                  %11lu [max: %lu]\n",
 			nr_lock_classes, MAX_LOCKDEP_KEYS);
@@ -344,10 +409,8 @@ static int lockdep_stats_show(struct seq_file *m, void *v)
 			nr_unused);
 	seq_printf(m, " max locking depth:             %11u\n",
 			max_lockdep_depth);
-#ifdef CONFIG_PROVE_LOCKING
-	seq_printf(m, " max bfs queue depth:           %11u\n",
-			max_bfs_queue_depth);
-#endif
+	seq_printf(m, " max recursion depth:           %11u\n",
+			max_recursion_depth);
 	lockdep_stats_debug_show(m);
 	seq_printf(m, " debug_locks:                   %11u\n",
 			debug_locks);
@@ -375,6 +438,7 @@ struct lock_stat_data {
 };
 
 struct lock_stat_seq {
+	struct lock_stat_data *iter;
 	struct lock_stat_data *iter_end;
 	struct lock_stat_data stats[MAX_LOCKDEP_KEYS];
 };
@@ -537,10 +601,6 @@ static void seq_stats(struct seq_file *m, struct lock_stat_data *data)
 static void seq_header(struct seq_file *m)
 {
 	seq_printf(m, "lock_stat version 0.3\n");
-
-	if (unlikely(!debug_locks))
-		seq_printf(m, "*WARNING* lock debugging disabled!! - possibly due to a lockdep warning\n");
-
 	seq_line(m, '-', 0, 40 + 1 + 10 * (14 + 1));
 	seq_printf(m, "%40s %14s %14s %14s %14s %14s %14s %14s %14s "
 			"%14s %14s\n",
@@ -562,22 +622,34 @@ static void seq_header(struct seq_file *m)
 static void *ls_start(struct seq_file *m, loff_t *pos)
 {
 	struct lock_stat_seq *data = m->private;
-	struct lock_stat_data *iter;
 
 	if (*pos == 0)
 		return SEQ_START_TOKEN;
 
-	iter = data->stats + (*pos - 1);
-	if (iter >= data->iter_end)
-		iter = NULL;
+	data->iter = data->stats + *pos;
+	if (data->iter >= data->iter_end)
+		data->iter = NULL;
 
-	return iter;
+	return data->iter;
 }
 
 static void *ls_next(struct seq_file *m, void *v, loff_t *pos)
 {
+	struct lock_stat_seq *data = m->private;
+
 	(*pos)++;
-	return ls_start(m, pos);
+
+	if (v == SEQ_START_TOKEN)
+		data->iter = data->stats;
+	else {
+		data->iter = v;
+		data->iter++;
+	}
+
+	if (data->iter == data->iter_end)
+		data->iter = NULL;
+
+	return data->iter;
 }
 
 static void ls_stop(struct seq_file *m, void *v)
@@ -594,7 +666,7 @@ static int ls_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static const struct seq_operations lockstat_ops = {
+static struct seq_operations lockstat_ops = {
 	.start	= ls_start,
 	.next	= ls_next,
 	.stop	= ls_stop,
@@ -615,6 +687,7 @@ static int lock_stat_open(struct inode *inode, struct file *file)
 		struct lock_stat_data *iter = data->stats;
 		struct seq_file *m = file->private_data;
 
+		data->iter = iter;
 		list_for_each_entry(class, &all_lock_classes, lock_entry) {
 			iter->class = class;
 			iter->stats = lock_stats(class);
@@ -622,7 +695,7 @@ static int lock_stat_open(struct inode *inode, struct file *file)
 		}
 		data->iter_end = iter;
 
-		sort(data->stats, data->iter_end - data->stats,
+		sort(data->stats, data->iter_end - data->iter,
 				sizeof(struct lock_stat_data),
 				lock_stat_cmp, NULL);
 
@@ -657,6 +730,7 @@ static int lock_stat_release(struct inode *inode, struct file *file)
 	struct seq_file *seq = file->private_data;
 
 	vfree(seq->private);
+	seq->private = NULL;
 	return seq_release(inode, file);
 }
 
@@ -680,8 +754,7 @@ static int __init lockdep_proc_init(void)
 		    &proc_lockdep_stats_operations);
 
 #ifdef CONFIG_LOCK_STAT
-	proc_create("lock_stat", S_IRUSR | S_IWUSR, NULL,
-		    &proc_lock_stat_operations);
+	proc_create("lock_stat", S_IRUSR, NULL, &proc_lock_stat_operations);
 #endif
 
 	return 0;

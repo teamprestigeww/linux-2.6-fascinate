@@ -25,10 +25,8 @@ static int pxa2xx_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct pxa2xx_runtime_data *prtd = runtime->private_data;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct pxa2xx_pcm_dma_params *dma;
+	struct pxa2xx_pcm_dma_params *dma = rtd->dai->cpu_dai->dma_data;
 	int ret;
-
-	dma = snd_soc_dai_get_dma_data(rtd->dai->cpu_dai, substream);
 
 	/* return if this is a bufferless transfer e.g.
 	 * codec <--> BT codec or GSM modem -- lg FIXME */
@@ -83,7 +81,7 @@ static struct snd_pcm_ops pxa2xx_pcm_ops = {
 	.mmap		= pxa2xx_pcm_mmap,
 };
 
-static u64 pxa2xx_pcm_dmamask = DMA_BIT_MASK(32);
+static u64 pxa2xx_pcm_dmamask = DMA_32BIT_MASK;
 
 static int pxa2xx_soc_pcm_new(struct snd_card *card, struct snd_soc_dai *dai,
 	struct snd_pcm *pcm)
@@ -93,7 +91,7 @@ static int pxa2xx_soc_pcm_new(struct snd_card *card, struct snd_soc_dai *dai,
 	if (!card->dev->dma_mask)
 		card->dev->dma_mask = &pxa2xx_pcm_dmamask;
 	if (!card->dev->coherent_dma_mask)
-		card->dev->coherent_dma_mask = DMA_BIT_MASK(32);
+		card->dev->coherent_dma_mask = DMA_32BIT_MASK;
 
 	if (dai->playback.channels_min) {
 		ret = pxa2xx_pcm_preallocate_dma_buffer(pcm,

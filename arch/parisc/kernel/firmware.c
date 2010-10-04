@@ -527,11 +527,7 @@ int pdc_model_capabilities(unsigned long *capabilities)
         pdc_result[0] = 0; /* preset zero (call may not be implemented!) */
         retval = mem_pdc_call(PDC_MODEL, PDC_MODEL_CAPABILITIES, __pa(pdc_result), 0);
         convert_to_wide(pdc_result);
-        if (retval == PDC_OK) {
-                *capabilities = pdc_result[0];
-        } else {
-                *capabilities = PDC_MODEL_OS32;
-        }
+        *capabilities = pdc_result[0];
         spin_unlock_irqrestore(&pdc_lock, flags);
 
         return retval;
@@ -1123,6 +1119,7 @@ static char __attribute__((aligned(64))) iodc_dbuf[4096];
  */
 int pdc_iodc_print(const unsigned char *str, unsigned count)
 {
+	static int posx;        /* for simple TAB-Simulation... */
 	unsigned int i;
 	unsigned long flags;
 
@@ -1132,12 +1129,19 @@ int pdc_iodc_print(const unsigned char *str, unsigned count)
 			iodc_dbuf[i+0] = '\r';
 			iodc_dbuf[i+1] = '\n';
 			i += 2;
+			posx = 0;
 			goto print;
+		case '\t':
+			while (posx & 7) {
+				iodc_dbuf[i] = ' ';
+				i++, posx++;
+			}
+			break;
 		case '\b':	/* BS */
-			i--; /* overwrite last */
+			posx -= 2;
 		default:
 			iodc_dbuf[i] = str[i];
-			i++;
+			i++, posx++;
 			break;
 		}
 	}

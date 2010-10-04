@@ -31,8 +31,6 @@
  * the OS/400 partition.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/major.h>
 #include <linux/blkdev.h>
 #include <linux/cdrom.h>
@@ -42,7 +40,6 @@
 #include <linux/module.h>
 #include <linux/completion.h>
 #include <linux/proc_fs.h>
-#include <linux/smp_lock.h>
 #include <linux/seq_file.h>
 #include <linux/scatterlist.h>
 
@@ -55,6 +52,9 @@
 #define VIOCD_DEVICE			"iseries/vcd"
 
 #define VIOCD_VERS "1.06"
+
+#define VIOCD_KERN_WARNING		KERN_WARNING "viocd: "
+#define VIOCD_KERN_INFO			KERN_INFO "viocd: "
 
 /*
  * Should probably make this a module parameter....sigh
@@ -154,21 +154,13 @@ static const struct file_operations proc_viocd_operations = {
 static int viocd_blk_open(struct block_device *bdev, fmode_t mode)
 {
 	struct disk_info *di = bdev->bd_disk->private_data;
-	int ret;
-
-	lock_kernel();
-	ret = cdrom_open(&di->viocd_info, bdev, mode);
-	unlock_kernel();
-
-	return ret;
+	return cdrom_open(&di->viocd_info, bdev, mode);
 }
 
 static int viocd_blk_release(struct gendisk *disk, fmode_t mode)
 {
 	struct disk_info *di = disk->private_data;
-	lock_kernel();
 	cdrom_release(&di->viocd_info, mode);
-	unlock_kernel();
 	return 0;
 }
 
@@ -176,13 +168,7 @@ static int viocd_blk_ioctl(struct block_device *bdev, fmode_t mode,
 		unsigned cmd, unsigned long arg)
 {
 	struct disk_info *di = bdev->bd_disk->private_data;
-	int ret;
-
-	lock_kernel();
-	ret = cdrom_ioctl(&di->viocd_info, bdev, mode, cmd, arg);
-	unlock_kernel();
-
-	return ret;
+	return cdrom_ioctl(&di->viocd_info, bdev, mode, cmd, arg);
 }
 
 static int viocd_blk_media_changed(struct gendisk *disk)
@@ -191,11 +177,11 @@ static int viocd_blk_media_changed(struct gendisk *disk)
 	return cdrom_media_changed(&di->viocd_info);
 }
 
-static const struct block_device_operations viocd_fops = {
+struct block_device_operations viocd_fops = {
 	.owner =		THIS_MODULE,
 	.open =			viocd_blk_open,
 	.release =		viocd_blk_release,
-	.ioctl =		viocd_blk_ioctl,
+	.locked_ioctl =		viocd_blk_ioctl,
 	.media_changed =	viocd_blk_media_changed,
 };
 
@@ -216,8 +202,9 @@ static int viocd_open(struct cdrom_device_info *cdi, int purpose)
 			(u64)&we, VIOVERSION << 16, ((u64)device_no << 48),
 			0, 0, 0);
 	if (hvrc != 0) {
-		pr_warning("bad rc on HvCallEvent_signalLpEventFast %d\n",
-			   (int)hvrc);
+		printk(VIOCD_KERN_WARNING
+				"bad rc on HvCallEvent_signalLpEventFast %d\n",
+				(int)hvrc);
 		return -EIO;
 	}
 
@@ -226,8 +213,8 @@ static int viocd_open(struct cdrom_device_info *cdi, int purpose)
 	if (we.rc) {
 		const struct vio_error_entry *err =
 			vio_lookup_rc(viocd_err_table, we.sub_result);
-		pr_warning("bad rc %d:0x%04X on open: %s\n",
-			   we.rc, we.sub_result, err->msg);
+		printk(VIOCD_KERN_WARNING "bad rc %d:0x%04X on open: %s\n",
+				we.rc, we.sub_result, err->msg);
 		return -err->errno;
 	}
 
@@ -247,8 +234,9 @@ static void viocd_release(struct cdrom_device_info *cdi)
 			viopath_targetinst(viopath_hostLp), 0,
 			VIOVERSION << 16, ((u64)device_no << 48), 0, 0, 0);
 	if (hvrc != 0)
-		pr_warning("bad rc on HvCallEvent_signalLpEventFast %d\n",
-			   (int)hvrc);
+		printk(VIOCD_KERN_WARNING
+				"bad rc on HvCallEvent_signalLpEventFast %d\n",
+				(int)hvrc);
 }
 
 /* Send a read or write request to OS/400 */
@@ -274,12 +262,13 @@ static int send_request(struct request *req)
 
 	sg_init_table(&sg, 1);
         if (blk_rq_map_sg(req->q, req, &sg) == 0) {
-		pr_warning("error setting up scatter/gather list\n");
+		printk(VIOCD_KERN_WARNING
+				"error setting up scatter/gather list\n");
 		return -1;
 	}
 
 	if (dma_map_sg(diskinfo->dev, &sg, 1, direction) == 0) {
-		pr_warning("error allocating sg tce\n");
+		printk(VIOCD_KERN_WARNING "error allocating sg tce\n");
 		return -1;
 	}
 	dmaaddr = sg_dma_address(&sg);
@@ -293,13 +282,30 @@ static int send_request(struct request *req)
 			viopath_targetinst(viopath_hostLp),
 			(u64)req, VIOVERSION << 16,
 			((u64)DEVICE_NR(diskinfo) << 48) | dmaaddr,
-			(u64)blk_rq_pos(req) * 512, len, 0);
+			(u64)req->sector * 512, len, 0);
 	if (hvrc != HvLpEvent_Rc_Good) {
-		pr_warning("hv error on op %d\n", (int)hvrc);
+		printk(VIOCD_KERN_WARNING "hv error on op %d\n", (int)hvrc);
 		return -1;
 	}
 
 	return 0;
+}
+
+static void viocd_end_request(struct request *req, int error)
+{
+	int nsectors = req->hard_nr_sectors;
+
+	/*
+	 * Make sure it's fully ended, and ensure that we process
+	 * at least one sector.
+	 */
+	if (blk_pc_request(req))
+		nsectors = (req->data_len + 511) >> 9;
+	if (!nsectors)
+		nsectors = 1;
+
+	if (__blk_end_request(req, error, nsectors << 9))
+		BUG();
 }
 
 static int rwreq;
@@ -308,12 +314,13 @@ static void do_viocd_request(struct request_queue *q)
 {
 	struct request *req;
 
-	while ((rwreq == 0) && ((req = blk_fetch_request(q)) != NULL)) {
-		if (req->cmd_type != REQ_TYPE_FS)
-			__blk_end_request_all(req, -EIO);
+	while ((rwreq == 0) && ((req = elv_next_request(q)) != NULL)) {
+		if (!blk_fs_request(req))
+			viocd_end_request(req, -EIO);
 		else if (send_request(req) < 0) {
-			pr_warning("unable to send message to OS/400!\n");
-			__blk_end_request_all(req, -EIO);
+			printk(VIOCD_KERN_WARNING
+					"unable to send message to OS/400!");
+			viocd_end_request(req, -EIO);
 		} else
 			rwreq++;
 	}
@@ -337,8 +344,8 @@ static int viocd_media_changed(struct cdrom_device_info *cdi, int disc_nr)
 			(u64)&we, VIOVERSION << 16, ((u64)device_no << 48),
 			0, 0, 0);
 	if (hvrc != 0) {
-		pr_warning("bad rc on HvCallEvent_signalLpEventFast %d\n",
-			   (int)hvrc);
+		printk(VIOCD_KERN_WARNING "bad rc on HvCallEvent_signalLpEventFast %d\n",
+				(int)hvrc);
 		return -EIO;
 	}
 
@@ -348,8 +355,9 @@ static int viocd_media_changed(struct cdrom_device_info *cdi, int disc_nr)
 	if (we.rc) {
 		const struct vio_error_entry *err =
 			vio_lookup_rc(viocd_err_table, we.sub_result);
-		pr_warning("bad rc %d:0x%04X on check_change: %s; Assuming no change\n",
-			   we.rc, we.sub_result, err->msg);
+		printk(VIOCD_KERN_WARNING
+				"bad rc %d:0x%04X on check_change: %s; Assuming no change\n",
+				we.rc, we.sub_result, err->msg);
 		return 0;
 	}
 
@@ -376,8 +384,8 @@ static int viocd_lock_door(struct cdrom_device_info *cdi, int locking)
 			(u64)&we, VIOVERSION << 16,
 			(device_no << 48) | (flags << 32), 0, 0, 0);
 	if (hvrc != 0) {
-		pr_warning("bad rc on HvCallEvent_signalLpEventFast %d\n",
-			   (int)hvrc);
+		printk(VIOCD_KERN_WARNING "bad rc on HvCallEvent_signalLpEventFast %d\n",
+				(int)hvrc);
 		return -EIO;
 	}
 
@@ -464,7 +472,8 @@ static void vio_handle_cd_event(struct HvLpEvent *event)
 		return;
 	/* First, we should NEVER get an int here...only acks */
 	if (hvlpevent_is_int(event)) {
-		pr_warning("Yikes! got an int in viocd event handler!\n");
+		printk(VIOCD_KERN_WARNING
+				"Yikes! got an int in viocd event handler!\n");
 		if (hvlpevent_need_ack(event)) {
 			event->xRc = HvLpEvent_Rc_InvalidSubtype;
 			HvCallEvent_ackLpEvent(event);
@@ -477,8 +486,8 @@ static void vio_handle_cd_event(struct HvLpEvent *event)
 	case viocdopen:
 		if (event->xRc == 0) {
 			di = &viocd_diskinfo[bevent->disk];
-			blk_queue_logical_block_size(di->viocd_disk->queue,
-						     bevent->block_size);
+			blk_queue_hardsect_size(di->viocd_disk->queue,
+					bevent->block_size);
 			set_capacity(di->viocd_disk,
 					bevent->media_size *
 					bevent->block_size / 512);
@@ -518,12 +527,13 @@ return_complete:
 			const struct vio_error_entry *err =
 				vio_lookup_rc(viocd_err_table,
 						bevent->sub_result);
-			pr_warning("request %p failed with rc %d:0x%04X: %s\n",
-				   req, event->xRc,
-				   bevent->sub_result, err->msg);
-			__blk_end_request_all(req, -EIO);
+			printk(VIOCD_KERN_WARNING "request %p failed "
+					"with rc %d:0x%04X: %s\n",
+					req, event->xRc,
+					bevent->sub_result, err->msg);
+			viocd_end_request(req, -EIO);
 		} else
-			__blk_end_request_all(req, 0);
+			viocd_end_request(req, 0);
 
 		/* restart handling of incoming requests */
 		spin_unlock_irqrestore(&viocd_reqlock, flags);
@@ -531,8 +541,9 @@ return_complete:
 		break;
 
 	default:
-		pr_warning("message with invalid subtype %0x04X!\n",
-			   event->xSubtype & VIOMINOR_SUBTYPE_MASK);
+		printk(VIOCD_KERN_WARNING
+				"message with invalid subtype %0x04X!\n",
+				event->xSubtype & VIOMINOR_SUBTYPE_MASK);
 		if (hvlpevent_need_ack(event)) {
 			event->xRc = HvLpEvent_Rc_InvalidSubtype;
 			HvCallEvent_ackLpEvent(event);
@@ -573,10 +584,10 @@ static int viocd_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	struct disk_info *d;
 	struct cdrom_device_info *c;
 	struct request_queue *q;
-	struct device_node *node = vdev->dev.of_node;
+	struct device_node *node = vdev->dev.archdata.of_node;
 
 	deviceno = vdev->unit_address;
-	if (deviceno >= VIOCD_MAX_CD)
+	if (deviceno > VIOCD_MAX_CD)
 		return -ENODEV;
 	if (!node)
 		return -ENODEV;
@@ -599,27 +610,32 @@ static int viocd_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	sprintf(c->name, VIOCD_DEVICE "%c", 'a' + deviceno);
 
 	if (register_cdrom(c) != 0) {
-		pr_warning("Cannot register viocd CD-ROM %s!\n", c->name);
+		printk(VIOCD_KERN_WARNING "Cannot register viocd CD-ROM %s!\n",
+				c->name);
 		goto out;
 	}
-	pr_info("cd %s is iSeries resource %10.10s type %4.4s, model %3.3s\n",
-		c->name, d->rsrcname, d->type, d->model);
+	printk(VIOCD_KERN_INFO "cd %s is iSeries resource %10.10s "
+			"type %4.4s, model %3.3s\n",
+			c->name, d->rsrcname, d->type, d->model);
 	q = blk_init_queue(do_viocd_request, &viocd_reqlock);
 	if (q == NULL) {
-		pr_warning("Cannot allocate queue for %s!\n", c->name);
+		printk(VIOCD_KERN_WARNING "Cannot allocate queue for %s!\n",
+				c->name);
 		goto out_unregister_cdrom;
 	}
 	gendisk = alloc_disk(1);
 	if (gendisk == NULL) {
-		pr_warning("Cannot create gendisk for %s!\n", c->name);
+		printk(VIOCD_KERN_WARNING "Cannot create gendisk for %s!\n",
+				c->name);
 		goto out_cleanup_queue;
 	}
 	gendisk->major = VIOCD_MAJOR;
 	gendisk->first_minor = deviceno;
 	strncpy(gendisk->disk_name, c->name,
 			sizeof(gendisk->disk_name));
-	blk_queue_max_segments(q, 1);
-	blk_queue_max_hw_sectors(q, 4096 / 512);
+	blk_queue_max_hw_segments(q, 1);
+	blk_queue_max_phys_segments(q, 1);
+	blk_queue_max_sectors(q, 4096 / 512);
 	gendisk->queue = q;
 	gendisk->fops = &viocd_fops;
 	gendisk->flags = GENHD_FL_CD|GENHD_FL_REMOVABLE;
@@ -684,19 +700,21 @@ static int __init viocd_init(void)
 			return -ENODEV;
 	}
 
-	pr_info("vers " VIOCD_VERS ", hosting partition %d\n", viopath_hostLp);
+	printk(VIOCD_KERN_INFO "vers " VIOCD_VERS ", hosting partition %d\n",
+			viopath_hostLp);
 
 	if (register_blkdev(VIOCD_MAJOR, VIOCD_DEVICE) != 0) {
-		pr_warning("Unable to get major %d for %s\n",
-			   VIOCD_MAJOR, VIOCD_DEVICE);
+		printk(VIOCD_KERN_WARNING "Unable to get major %d for %s\n",
+				VIOCD_MAJOR, VIOCD_DEVICE);
 		return -EIO;
 	}
 
 	ret = viopath_open(viopath_hostLp, viomajorsubtype_cdio,
 			MAX_CD_REQ + 2);
 	if (ret) {
-		pr_warning("error opening path to host partition %d\n",
-			   viopath_hostLp);
+		printk(VIOCD_KERN_WARNING
+				"error opening path to host partition %d\n",
+				viopath_hostLp);
 		goto out_unregister;
 	}
 

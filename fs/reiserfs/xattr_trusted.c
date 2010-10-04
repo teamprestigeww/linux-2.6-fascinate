@@ -8,49 +8,71 @@
 #include <asm/uaccess.h>
 
 static int
-trusted_get(struct dentry *dentry, const char *name, void *buffer, size_t size,
-	    int handler_flags)
+trusted_get(struct inode *inode, const char *name, void *buffer, size_t size)
 {
 	if (strlen(name) < sizeof(XATTR_TRUSTED_PREFIX))
 		return -EINVAL;
 
-	if (!capable(CAP_SYS_ADMIN) || IS_PRIVATE(dentry->d_inode))
+	if (!reiserfs_xattrs(inode->i_sb))
+		return -EOPNOTSUPP;
+
+	if (!(capable(CAP_SYS_ADMIN) || is_reiserfs_priv_object(inode)))
 		return -EPERM;
 
-	return reiserfs_xattr_get(dentry->d_inode, name, buffer, size);
+	return reiserfs_xattr_get(inode, name, buffer, size);
 }
 
 static int
-trusted_set(struct dentry *dentry, const char *name, const void *buffer,
-	    size_t size, int flags, int handler_flags)
+trusted_set(struct inode *inode, const char *name, const void *buffer,
+	    size_t size, int flags)
 {
 	if (strlen(name) < sizeof(XATTR_TRUSTED_PREFIX))
 		return -EINVAL;
 
-	if (!capable(CAP_SYS_ADMIN) || IS_PRIVATE(dentry->d_inode))
+	if (!reiserfs_xattrs(inode->i_sb))
+		return -EOPNOTSUPP;
+
+	if (!(capable(CAP_SYS_ADMIN) || is_reiserfs_priv_object(inode)))
 		return -EPERM;
 
-	return reiserfs_xattr_set(dentry->d_inode, name, buffer, size, flags);
+	return reiserfs_xattr_set(inode, name, buffer, size, flags);
 }
 
-static size_t trusted_list(struct dentry *dentry, char *list, size_t list_size,
-			   const char *name, size_t name_len, int handler_flags)
+static int trusted_del(struct inode *inode, const char *name)
 {
-	const size_t len = name_len + 1;
+	if (strlen(name) < sizeof(XATTR_TRUSTED_PREFIX))
+		return -EINVAL;
 
-	if (!capable(CAP_SYS_ADMIN) || IS_PRIVATE(dentry->d_inode))
+	if (!reiserfs_xattrs(inode->i_sb))
+		return -EOPNOTSUPP;
+
+	if (!(capable(CAP_SYS_ADMIN) || is_reiserfs_priv_object(inode)))
+		return -EPERM;
+
+	return 0;
+}
+
+static int
+trusted_list(struct inode *inode, const char *name, int namelen, char *out)
+{
+	int len = namelen;
+
+	if (!reiserfs_xattrs(inode->i_sb))
 		return 0;
 
-	if (list && len <= list_size) {
-		memcpy(list, name, name_len);
-		list[name_len] = '\0';
-	}
+	if (!(capable(CAP_SYS_ADMIN) || is_reiserfs_priv_object(inode)))
+		return 0;
+
+	if (out)
+		memcpy(out, name, len);
+
 	return len;
 }
 
-const struct xattr_handler reiserfs_xattr_trusted_handler = {
+struct reiserfs_xattr_handler trusted_handler = {
 	.prefix = XATTR_TRUSTED_PREFIX,
 	.get = trusted_get,
 	.set = trusted_set,
+	.del = trusted_del,
 	.list = trusted_list,
 };

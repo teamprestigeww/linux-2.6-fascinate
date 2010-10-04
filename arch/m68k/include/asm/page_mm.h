@@ -223,6 +223,6 @@ static inline __attribute_const__ int __virt_to_node_shift(void)
 #define VM_DATA_DEFAULT_FLAGS	(VM_READ | VM_WRITE | VM_EXEC | \
 				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
 
-#include <asm-generic/getorder.h>
+#include <asm-generic/page.h>
 
 #endif /* _M68K_PAGE_H */

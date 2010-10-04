@@ -9,7 +9,28 @@
  * High loaded stuff by Hans Lermen & Werner Almesberger, Feb. 1996
  */
 
-#include "misc.h"
+/*
+ * we have to be careful, because no indirections are allowed here, and
+ * paravirt_ops is a kind of one. As it will only run in baremetal anyway,
+ * we just keep it from happening
+ */
+#undef CONFIG_PARAVIRT
+#ifdef CONFIG_X86_32
+#define _ASM_X86_DESC_H 1
+#endif
+
+#ifdef CONFIG_X86_64
+#define _LINUX_STRING_H_ 1
+#define __LINUX_BITMAP_H 1
+#endif
+
+#include <linux/linkage.h>
+#include <linux/screen_info.h>
+#include <linux/elf.h>
+#include <linux/io.h>
+#include <asm/page.h>
+#include <asm/boot.h>
+#include <asm/bootparam.h>
 
 /* WARNING!!
  * This code is compiled with -fPIC and it is relocated dynamically
@@ -95,24 +116,89 @@
 /*
  * gzip declarations
  */
+
+#define OF(args)	args
 #define STATIC		static
 
 #undef memset
 #undef memcpy
 #define memzero(s, n)	memset((s), 0, (n))
 
+typedef unsigned char	uch;
+typedef unsigned short	ush;
+typedef unsigned long	ulg;
 
+/*
+ * Window size must be at least 32k, and a power of two.
+ * We don't actually have a window just a huge output buffer,
+ * so we report a 2G window size, as that should always be
+ * larger than our output buffer:
+ */
+#define WSIZE		0x80000000
+
+/* Input buffer: */
+static unsigned char	*inbuf;
+
+/* Sliding window buffer (and final output buffer): */
+static unsigned char	*window;
+
+/* Valid bytes in inbuf: */
+static unsigned		insize;
+
+/* Index of next byte to be processed in inbuf: */
+static unsigned		inptr;
+
+/* Bytes in output buffer: */
+static unsigned		outcnt;
+
+/* gzip flag byte */
+#define ASCII_FLAG	0x01 /* bit 0 set: file probably ASCII text */
+#define CONTINUATION	0x02 /* bit 1 set: continuation of multi-part gz file */
+#define EXTRA_FIELD	0x04 /* bit 2 set: extra field present */
+#define ORIG_NAM	0x08 /* bit 3 set: original file name present */
+#define COMMENT		0x10 /* bit 4 set: file comment present */
+#define ENCRYPTED	0x20 /* bit 5 set: file is encrypted */
+#define RESERVED	0xC0 /* bit 6, 7:  reserved */
+
+#define get_byte()	(inptr < insize ? inbuf[inptr++] : fill_inbuf())
+
+/* Diagnostic functions */
+#ifdef DEBUG
+#  define Assert(cond, msg) do { if (!(cond)) error(msg); } while (0)
+#  define Trace(x)	do { fprintf x; } while (0)
+#  define Tracev(x)	do { if (verbose) fprintf x ; } while (0)
+#  define Tracevv(x)	do { if (verbose > 1) fprintf x ; } while (0)
+#  define Tracec(c, x)	do { if (verbose && (c)) fprintf x ; } while (0)
+#  define Tracecv(c, x)	do { if (verbose > 1 && (c)) fprintf x ; } while (0)
+#else
+#  define Assert(cond, msg)
+#  define Trace(x)
+#  define Tracev(x)
+#  define Tracevv(x)
+#  define Tracec(c, x)
+#  define Tracecv(c, x)
+#endif
+
+static int  fill_inbuf(void);
+static void flush_window(void);
 static void error(char *m);
 
 /*
  * This is set up by the setup-routine at boot-time
  */
-struct boot_params *real_mode;		/* Pointer to real-mode data */
+static struct boot_params *real_mode;		/* Pointer to real-mode data */
 static int quiet;
-static int debug;
 
-void *memset(void *s, int c, size_t n);
-void *memcpy(void *dest, const void *src, size_t n);
+extern unsigned char input_data[];
+extern int input_len;
+
+static long bytes_out;
+
+static void *memset(void *s, int c, unsigned n);
+static void *memcpy(void *dest, const void *src, unsigned n);
+
+static void __putstr(int, const char *);
+#define putstr(__x)  __putstr(0, __x)
 
 #ifdef CONFIG_X86_64
 #define memptr long
@@ -127,21 +213,7 @@ static char *vidmem;
 static int vidport;
 static int lines, cols;
 
-#ifdef CONFIG_KERNEL_GZIP
-#include "../../../../lib/decompress_inflate.c"
-#endif
-
-#ifdef CONFIG_KERNEL_BZIP2
-#include "../../../../lib/decompress_bunzip2.c"
-#endif
-
-#ifdef CONFIG_KERNEL_LZMA
-#include "../../../../lib/decompress_unlzma.c"
-#endif
-
-#ifdef CONFIG_KERNEL_LZO
-#include "../../../../lib/decompress_unlzo.c"
-#endif
+#include "../../../../lib/inflate.c"
 
 static void scroll(void)
 {
@@ -152,21 +224,7 @@ static void scroll(void)
 		vidmem[i] = ' ';
 }
 
-#define XMTRDY          0x20
-
-#define TXR             0       /*  Transmit register (WRITE) */
-#define LSR             5       /*  Line Status               */
-static void serial_putchar(int ch)
-{
-	unsigned timeout = 0xffff;
-
-	while ((inb(early_serial_base + LSR) & XMTRDY) == 0 && --timeout)
-		cpu_relax();
-
-	outb(ch, early_serial_base + TXR);
-}
-
-void __putstr(int error, const char *s)
+static void __putstr(int error, const char *s)
 {
 	int x, y, pos;
 	char c;
@@ -175,18 +233,12 @@ void __putstr(int error, const char *s)
 	if (!error)
 		return;
 #endif
-	if (early_serial_base) {
-		const char *str = s;
-		while (*str) {
-			if (*str == '\n')
-				serial_putchar('\r');
-			serial_putchar(*str++);
-		}
-	}
 
+#ifdef CONFIG_X86_32
 	if (real_mode->screen_info.orig_video_mode == 0 &&
 	    lines == 0 && cols == 0)
 		return;
+#endif
 
 	x = real_mode->screen_info.orig_x;
 	y = real_mode->screen_info.orig_y;
@@ -220,7 +272,7 @@ void __putstr(int error, const char *s)
 	outb(0xff & (pos >> 1), vidport+1);
 }
 
-void *memset(void *s, int c, size_t n)
+static void *memset(void *s, int c, unsigned n)
 {
 	int i;
 	char *ss = s;
@@ -230,7 +282,7 @@ void *memset(void *s, int c, size_t n)
 	return s;
 }
 
-void *memcpy(void *dest, const void *src, size_t n)
+static void *memcpy(void *dest, const void *src, unsigned n)
 {
 	int i;
 	const char *s = src;
@@ -241,6 +293,38 @@ void *memcpy(void *dest, const void *src, size_t n)
 	return dest;
 }
 
+/* ===========================================================================
+ * Fill the input buffer. This is called only when the buffer is empty
+ * and at least one byte is really needed.
+ */
+static int fill_inbuf(void)
+{
+	error("ran out of input data");
+	return 0;
+}
+
+/* ===========================================================================
+ * Write the output window window[0..outcnt-1] and update crc and bytes_out.
+ * (Used for the decompressed data only.)
+ */
+static void flush_window(void)
+{
+	/* With my window equal to my output buffer
+	 * I only need to compute the crc here.
+	 */
+	unsigned long c = crc;         /* temporary variable */
+	unsigned n;
+	unsigned char *in, ch;
+
+	in = window;
+	for (n = 0; n < outcnt; n++) {
+		ch = *in++;
+		c = crc_32_tab[((int)c ^ ch) & 0xff] ^ (c >> 8);
+	}
+	crc = c;
+	bytes_out += (unsigned long)outcnt;
+	outcnt = 0;
+}
 
 static void error(char *x)
 {
@@ -309,10 +393,8 @@ asmlinkage void decompress_kernel(void *rmode, memptr heap,
 {
 	real_mode = rmode;
 
-	if (cmdline_find_option_bool("quiet"))
+	if (real_mode->hdr.loadflags & QUIET_FLAG)
 		quiet = 1;
-	if (cmdline_find_option_bool("debug"))
-		debug = 1;
 
 	if (real_mode->screen_info.orig_video_mode == 7) {
 		vidmem = (char *) 0xb0000;
@@ -325,30 +407,33 @@ asmlinkage void decompress_kernel(void *rmode, memptr heap,
 	lines = real_mode->screen_info.orig_video_lines;
 	cols = real_mode->screen_info.orig_video_cols;
 
-	console_init();
-	if (debug)
-		putstr("early console in decompress_kernel\n");
-
+	window = output;		/* Output buffer (Normally at 1M) */
 	free_mem_ptr     = heap;	/* Heap */
 	free_mem_end_ptr = heap + BOOT_HEAP_SIZE;
+	inbuf  = input_data;		/* Input buffer */
+	insize = input_len;
+	inptr  = 0;
 
-	if ((unsigned long)output & (MIN_KERNEL_ALIGN - 1))
-		error("Destination address inappropriately aligned");
 #ifdef CONFIG_X86_64
-	if (heap > 0x3fffffffffffUL)
+	if ((unsigned long)output & (__KERNEL_ALIGN - 1))
+		error("Destination address not 2M aligned");
+	if ((unsigned long)output >= 0xffffffffffUL)
 		error("Destination address too large");
 #else
+	if ((u32)output & (CONFIG_PHYSICAL_ALIGN - 1))
+		error("Destination address not CONFIG_PHYSICAL_ALIGN aligned");
 	if (heap > ((-__PAGE_OFFSET-(512<<20)-1) & 0x7fffffff))
 		error("Destination address too large");
-#endif
 #ifndef CONFIG_RELOCATABLE
-	if ((unsigned long)output != LOAD_PHYSICAL_ADDR)
+	if ((u32)output != LOAD_PHYSICAL_ADDR)
 		error("Wrong destination address");
 #endif
+#endif
 
+	makecrc();
 	if (!quiet)
 		putstr("\nDecompressing Linux... ");
-	decompress(input_data, input_len, NULL, NULL, output, NULL, error);
+	gunzip();
 	parse_elf(output);
 	if (!quiet)
 		putstr("done.\nBooting the kernel.\n");

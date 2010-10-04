@@ -193,7 +193,7 @@ void ib_dealloc_device(struct ib_device *device)
 
 	BUG_ON(device->reg_state != IB_DEV_UNREGISTERED);
 
-	kobject_put(&device->dev.kobj);
+	ib_device_unregister_sysfs(device);
 }
 EXPORT_SYMBOL(ib_dealloc_device);
 
@@ -267,9 +267,7 @@ out:
  * callback for each device that is added. @device must be allocated
  * with ib_alloc_device().
  */
-int ib_register_device(struct ib_device *device,
-		       int (*port_callback)(struct ib_device *,
-					    u8, struct kobject *))
+int ib_register_device(struct ib_device *device)
 {
 	int ret;
 
@@ -298,7 +296,7 @@ int ib_register_device(struct ib_device *device,
 		goto out;
 	}
 
-	ret = ib_device_register_sysfs(device, port_callback);
+	ret = ib_device_register_sysfs(device);
 	if (ret) {
 		printk(KERN_WARNING "Couldn't register device %s with driver model\n",
 		       device->name);
@@ -349,8 +347,6 @@ void ib_unregister_device(struct ib_device *device)
 	kfree(device->pkey_tbl_len);
 
 	mutex_unlock(&device_mutex);
-
-	ib_device_unregister_sysfs(device);
 
 	spin_lock_irqsave(&device->client_data_lock, flags);
 	list_for_each_entry_safe(context, tmp, &device->client_data_list, list)

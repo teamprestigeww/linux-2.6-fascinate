@@ -24,8 +24,6 @@ struct pda_power_pdata {
 	int (*is_usb_online)(void);
 	void (*set_charge)(int flags);
 	void (*exit)(struct device *dev);
-	int (*suspend)(pm_message_t state);
-	int (*resume)(void);
 
 	char **supplied_to;
 	size_t num_supplicants;
@@ -33,8 +31,6 @@ struct pda_power_pdata {
 	unsigned int wait_for_status; /* msecs, default is 500 */
 	unsigned int wait_for_charger; /* msecs, default is 500 */
 	unsigned int polling_interval; /* msecs, default is 2000 */
-
-	unsigned long ac_max_uA; /* current to draw when on AC */
 };
 
 #endif /* __PDA_POWER_H__ */

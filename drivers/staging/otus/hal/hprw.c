@@ -29,10 +29,8 @@ u16_t zfFlushDelayWrite(zdev_t* dev);
 
 void zfInitCmdQueue(zdev_t* dev)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv = (struct zsHpPriv*)(wd->hpPrivate);
+    struct zsHpPriv* hpPriv = (struct zsHpPriv*)(wd->hpPrivate);
 
     zmw_declare_for_critical_section();
 
@@ -50,10 +48,9 @@ void zfInitCmdQueue(zdev_t* dev)
 u16_t zfPutCmd(zdev_t* dev, u32_t* cmd, u16_t cmdLen, u16_t src, u8_t* buf)
 {
     u16_t i;
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     /* Make sure command length < ZM_MAX_CMD_SIZE */
     zm_assert(cmdLen <= ZM_MAX_CMD_SIZE);
@@ -80,10 +77,9 @@ u16_t zfPutCmd(zdev_t* dev, u32_t* cmd, u16_t cmdLen, u16_t src, u8_t* buf)
 u16_t zfGetCmd(zdev_t* dev, u32_t* cmd, u16_t* cmdLen, u16_t* src, u8_t** buf)
 {
     u16_t i;
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     if (hpPriv->cmdTail == hpPriv->cmdHead)
     {
@@ -110,10 +106,9 @@ void zfSendCmdEx(zdev_t* dev)
     u16_t ncmdLen = 0;
     u16_t cmdFlag = 0;
     u16_t i;
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     zmw_declare_for_critical_section();
 
@@ -146,10 +141,8 @@ void zfSendCmdEx(zdev_t* dev)
 
 void zfiSendCmdComp(zdev_t* dev)
 {
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     zmw_declare_for_critical_section();
 
@@ -165,10 +158,9 @@ u16_t zfIssueCmd(zdev_t* dev, u32_t* cmd, u16_t cmdLen, u16_t src, u8_t* buf)
 {
     u16_t cmdFlag = 0;
     u16_t ret;
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     zmw_declare_for_critical_section();
 
@@ -222,10 +214,9 @@ void zfIdlRsp(zdev_t* dev, u32_t* rsp, u16_t rspLen)
     u16_t i;
     s32_t nf;
     s32_t noisefloor[4];
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
 
     zmw_declare_for_critical_section();
@@ -282,6 +273,7 @@ void zfIdlRsp(zdev_t* dev, u32_t* rsp, u16_t rspLen)
     else if (src == ZM_OID_FLASH_READ)
     {
         u32_t  datalen;
+        u16_t i;
 
         datalen = (rsp[0] & 255);
 
@@ -834,10 +826,9 @@ u16_t zfDelayWriteInternalReg(zdev_t* dev, u32_t addr, u32_t val)
     u32_t cmd[(ZM_MAX_CMD_SIZE/4)];
     u16_t i;
     u16_t ret;
-    struct zsHpPriv* hpPriv;
 
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     zmw_declare_for_critical_section();
 
@@ -901,10 +892,8 @@ u16_t zfFlushDelayWrite(zdev_t* dev)
     u32_t cmd[(ZM_MAX_CMD_SIZE/4)];
     u16_t i;
     u16_t ret;
-    struct zsHpPriv* hpPriv;
-
     zmw_get_wlan_dev(dev);
-    hpPriv=wd->hpPrivate;
+    struct zsHpPriv* hpPriv=wd->hpPrivate;
 
     zmw_declare_for_critical_section();
 

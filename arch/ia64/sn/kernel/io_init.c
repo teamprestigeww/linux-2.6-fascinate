@@ -6,7 +6,6 @@
  * Copyright (C) 1992 - 1997, 2000-2006 Silicon Graphics, Inc. All rights reserved.
  */
 
-#include <linux/slab.h>
 #include <asm/sn/types.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/io.h>
@@ -129,7 +128,8 @@ sn_legacy_pci_window_fixup(struct pci_controller *controller,
 {
 		controller->window = kcalloc(2, sizeof(struct pci_window),
 					     GFP_KERNEL);
-		BUG_ON(controller->window == NULL);
+		if (controller->window == NULL)
+			BUG();
 		controller->window[0].offset = legacy_io;
 		controller->window[0].resource.name = "legacy_io";
 		controller->window[0].resource.flags = IORESOURCE_IO;
@@ -168,7 +168,8 @@ sn_pci_window_fixup(struct pci_dev *dev, unsigned int count,
 	idx = controller->windows;
 	new_count = controller->windows + count;
 	new_window = kcalloc(new_count, sizeof(struct pci_window), GFP_KERNEL);
-	BUG_ON(new_window == NULL);
+	if (new_window == NULL)
+		BUG();
 	if (controller->window) {
 		memcpy(new_window, controller->window,
 		       sizeof(struct pci_window) * controller->windows);
@@ -221,7 +222,8 @@ sn_io_slot_fixup(struct pci_dev *dev)
 		(u64) __pa(pcidev_info),
 		(u64) __pa(sn_irq_info));
 
-	BUG_ON(status); /* Cannot get platform pci device information */
+	if (status)
+		BUG(); /* Cannot get platform pci device information */
 
 
 	/* Copy over PIO Mapped Addresses */
@@ -305,7 +307,8 @@ sn_pci_controller_fixup(int segment, int busnum, struct pci_bus *bus)
 	prom_bussoft_ptr = __va(prom_bussoft_ptr);
 
 	controller = kzalloc(sizeof(*controller), GFP_KERNEL);
-	BUG_ON(!controller);
+	if (!controller)
+		BUG();
 	controller->segment = segment;
 
 	/*

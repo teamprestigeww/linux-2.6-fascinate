@@ -38,7 +38,7 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/in.h>
-#include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -57,7 +57,6 @@
 #include <linux/bitops.h>
 #include <linux/mutex.h>
 #include <linux/mm.h>
-#include <linux/gfp.h>
 
 #include <asm/system.h>
 #include <asm/io.h>
@@ -107,7 +106,7 @@ MODULE_LICENSE("GPL");
 #define GEM_MODULE_NAME	"gem"
 #define PFX GEM_MODULE_NAME ": "
 
-static DEFINE_PCI_DEVICE_TABLE(gem_pci_tbl) = {
+static struct pci_device_id gem_pci_tbl[] = {
 	{ PCI_VENDOR_ID_SUN, PCI_DEVICE_ID_SUN_GEM,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0UL },
 
@@ -782,7 +781,7 @@ static int gem_rx(struct gem *gp, int work_to_do)
 			break;
 
 		/* When writing back RX descriptor, GEM writes status
-		 * then buffer address, possibly in separate transactions.
+		 * then buffer address, possibly in seperate transactions.
 		 * If we don't wait for the chip to write both, we could
 		 * post a new buffer to this descriptor then have GEM spam
 		 * on the buffer address.  We sync on the RX completion
@@ -922,7 +921,7 @@ static int gem_poll(struct napi_struct *napi, int budget)
 		gp->status = readl(gp->regs + GREG_STAT);
 	} while (gp->status & GREG_STAT_NAPI);
 
-	__napi_complete(napi);
+	__netif_rx_complete(napi);
 	gem_enable_ints(gp);
 
 	spin_unlock_irqrestore(&gp->lock, flags);
@@ -945,7 +944,7 @@ static irqreturn_t gem_interrupt(int irq, void *dev_id)
 
 	spin_lock_irqsave(&gp->lock, flags);
 
-	if (napi_schedule_prep(&gp->napi)) {
+	if (netif_rx_schedule_prep(&gp->napi)) {
 		u32 gem_status = readl(gp->regs + GREG_STAT);
 
 		if (gem_status == 0) {
@@ -955,7 +954,7 @@ static irqreturn_t gem_interrupt(int irq, void *dev_id)
 		}
 		gp->status = gem_status;
 		gem_disable_ints(gp);
-		__napi_schedule(&gp->napi);
+		__netif_rx_schedule(&gp->napi);
 	}
 
 	spin_unlock_irqrestore(&gp->lock, flags);
@@ -1016,8 +1015,7 @@ static __inline__ int gem_intme(int entry)
 	return 0;
 }
 
-static netdev_tx_t gem_start_xmit(struct sk_buff *skb,
-				  struct net_device *dev)
+static int gem_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct gem *gp = netdev_priv(dev);
 	int entry;
@@ -1034,8 +1032,10 @@ static netdev_tx_t gem_start_xmit(struct sk_buff *skb,
 			(csum_stuff_off << 21));
 	}
 
-	if (!spin_trylock_irqsave(&gp->tx_lock, flags)) {
+	local_irq_save(flags);
+	if (!spin_trylock(&gp->tx_lock)) {
 		/* Tell upper layer to requeue */
+		local_irq_restore(flags);
 		return NETDEV_TX_LOCKED;
 	}
 	/* We raced with gem_do_stop() */
@@ -1136,7 +1136,7 @@ static netdev_tx_t gem_start_xmit(struct sk_buff *skb,
 	writel(gp->tx_new, gp->regs + TXDMA_KICK);
 	spin_unlock_irqrestore(&gp->tx_lock, flags);
 
-	dev->trans_start = jiffies; /* NETIF_F_LLTX driver :( */
+	dev->trans_start = jiffies;
 
 	return NETDEV_TX_OK;
 }
@@ -1837,7 +1837,7 @@ static u32 gem_setup_multicast(struct gem *gp)
 	int i;
 
 	if ((gp->dev->flags & IFF_ALLMULTI) ||
-	    (netdev_mc_count(gp->dev) > 256)) {
+	    (gp->dev->mc_count > 256)) {
 	    	for (i=0; i<16; i++)
 			writel(0xffff, gp->regs + MAC_HASH0 + (i << 2));
 		rxcfg |= MAC_RXCFG_HFE;
@@ -1846,12 +1846,16 @@ static u32 gem_setup_multicast(struct gem *gp)
 	} else {
 		u16 hash_table[16];
 		u32 crc;
-		struct netdev_hw_addr *ha;
+		struct dev_mc_list *dmi = gp->dev->mc_list;
 		int i;
 
-		memset(hash_table, 0, sizeof(hash_table));
-		netdev_for_each_mc_addr(ha, gp->dev) {
-			char *addrs = ha->addr;
+		for (i = 0; i < 16; i++)
+			hash_table[i] = 0;
+
+		for (i = 0; i < gp->dev->mc_count; i++) {
+			char *addrs = dmi->dmi_addr;
+
+			dmi = dmi->next;
 
 			if (!(*addrs & 1))
 				continue;
@@ -2057,15 +2061,7 @@ static int gem_check_invariants(struct gem *gp)
 		mif_cfg &= ~MIF_CFG_PSELECT;
 		writel(mif_cfg, gp->regs + MIF_CFG);
 	} else {
-#ifdef CONFIG_SPARC
-		const char *p;
-
-		p = of_get_property(gp->of_node, "shared-pins", NULL);
-		if (p && !strcmp(p, "serdes"))
-			gp->phy_type = phy_serdes;
-		else
-#endif
-			gp->phy_type = phy_serialink;
+		gp->phy_type = phy_serialink;
 	}
 	if (gp->phy_type == phy_mii_mdio1 ||
 	    gp->phy_type == phy_mii_mdio0) {
@@ -2855,7 +2851,9 @@ static int gem_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	case SIOCSMIIREG:		/* Write MII PHY register. */
-		if (!gp->running)
+		if (!capable(CAP_NET_ADMIN))
+			rc = -EPERM;
+		else if (!gp->running)
 			rc = -EAGAIN;
 		else {
 			__phy_write(gp, data->phy_id & 0x1f, data->reg_num & 0x1f,
@@ -2923,6 +2921,7 @@ static void get_gem_mac_nonobp(struct pci_dev *pdev, unsigned char *dev_addr)
 	dev_addr[1] = 0x00;
 	dev_addr[2] = 0x20;
 	get_random_bytes(dev_addr + 3, 3);
+	return;
 }
 #endif /* not Sparc and not PPC */
 
@@ -3043,10 +3042,10 @@ static int __devinit gem_init_one(struct pci_dev *pdev,
 	 */
 	if (pdev->vendor == PCI_VENDOR_ID_SUN &&
 	    pdev->device == PCI_DEVICE_ID_SUN_GEM &&
-	    !pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
+	    !pci_set_dma_mask(pdev, DMA_64BIT_MASK)) {
 		pci_using_dac = 1;
 	} else {
-		err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+		err = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 		if (err) {
 			printk(KERN_ERR PFX "No usable DMA configuration, "
 			       "aborting.\n");

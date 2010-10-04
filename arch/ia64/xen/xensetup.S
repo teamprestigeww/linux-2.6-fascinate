@@ -14,7 +14,7 @@
 #include <linux/init.h>
 #include <xen/interface/elfnote.h>
 
-	.section .data..read_mostly
+	.section .data.read_mostly
 	.align 8
 	.global xen_domain_type
 xen_domain_type:
@@ -53,6 +53,8 @@ END(startup_xen)
 	ELFNOTE(Xen, XEN_ELFNOTE_ENTRY,		data8.ua startup_xen - LOAD_OFFSET)
 
 #define isBP	p3	// are we the Bootstrap Processor?
+
+	.text
 
 GLOBAL_ENTRY(xen_setup_hook)
 	mov r8=XEN_PV_DOMAIN_ASM

@@ -23,11 +23,6 @@ static inline void paravirt_release_pud(unsigned long pfn) {}
 #endif
 
 /*
- * Flags to use when allocating a user page table page.
- */
-extern gfp_t __userpte_alloc_gfp;
-
-/*
  * Allocate and free page tables.
  */
 extern pgd_t *pgd_alloc(struct mm_struct *);
@@ -51,13 +46,7 @@ static inline void pte_free(struct mm_struct *mm, struct page *pte)
 	__free_page(pte);
 }
 
-extern void ___pte_free_tlb(struct mmu_gather *tlb, struct page *pte);
-
-static inline void __pte_free_tlb(struct mmu_gather *tlb, struct page *pte,
-				  unsigned long address)
-{
-	___pte_free_tlb(tlb, pte);
-}
+extern void __pte_free_tlb(struct mmu_gather *tlb, struct page *pte);
 
 static inline void pmd_populate_kernel(struct mm_struct *mm,
 				       pmd_t *pmd, pte_t *pte)
@@ -89,13 +78,7 @@ static inline void pmd_free(struct mm_struct *mm, pmd_t *pmd)
 	free_page((unsigned long)pmd);
 }
 
-extern void ___pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd);
-
-static inline void __pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd,
-				  unsigned long adddress)
-{
-	___pmd_free_tlb(tlb, pmd);
-}
+extern void __pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd);
 
 #ifdef CONFIG_X86_PAE
 extern void pud_populate(struct mm_struct *mm, pud_t *pudp, pmd_t *pmd);
@@ -125,14 +108,7 @@ static inline void pud_free(struct mm_struct *mm, pud_t *pud)
 	free_page((unsigned long)pud);
 }
 
-extern void ___pud_free_tlb(struct mmu_gather *tlb, pud_t *pud);
-
-static inline void __pud_free_tlb(struct mmu_gather *tlb, pud_t *pud,
-				  unsigned long address)
-{
-	___pud_free_tlb(tlb, pud);
-}
-
+extern void __pud_free_tlb(struct mmu_gather *tlb, pud_t *pud);
 #endif	/* PAGETABLE_LEVELS > 3 */
 #endif	/* PAGETABLE_LEVELS > 2 */
 

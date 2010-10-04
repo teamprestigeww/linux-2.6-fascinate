@@ -20,11 +20,11 @@
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/fcntl.h>
-#include <linux/gfp.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/in.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -33,7 +33,6 @@
 #include <linux/skbuff.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
-#include <linux/slab.h>
 
 #include <asm/io.h>
 #include <asm/pgtable.h>
@@ -93,20 +92,12 @@ static unsigned short known_revisions[] =
 
 static int xtsonic_open(struct net_device *dev)
 {
-	int retval;
-
-	retval = request_irq(dev->irq, sonic_interrupt, IRQF_DISABLED,
-				"sonic", dev);
-	if (retval) {
+	if (request_irq(dev->irq,&sonic_interrupt,IRQF_DISABLED,"sonic",dev)) {
 		printk(KERN_ERR "%s: unable to get IRQ %d.\n",
 		       dev->name, dev->irq);
 		return -EAGAIN;
 	}
-
-	retval = sonic_open(dev);
-	if (retval)
-		free_irq(dev->irq, dev);
-	return retval;
+	return sonic_open(dev);
 }
 
 static int xtsonic_close(struct net_device *dev)
@@ -116,18 +107,6 @@ static int xtsonic_close(struct net_device *dev)
 	free_irq(dev->irq, dev);
 	return err;
 }
-
-static const struct net_device_ops xtsonic_netdev_ops = {
-	.ndo_open		= xtsonic_open,
-	.ndo_stop		= xtsonic_close,
-	.ndo_start_xmit		= sonic_send_packet,
-	.ndo_get_stats		= sonic_get_stats,
-	.ndo_set_multicast_list	= sonic_multicast_list,
-	.ndo_tx_timeout		= sonic_tx_timeout,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_mac_address	= eth_mac_addr,
-};
 
 static int __init sonic_probe1(struct net_device *dev)
 {
@@ -204,7 +183,7 @@ static int __init sonic_probe1(struct net_device *dev)
 
 	if (lp->descriptors == NULL) {
 		printk(KERN_ERR "%s: couldn't alloc DMA memory for "
-				" descriptors.\n", dev_name(lp->device));
+				" descriptors.\n", lp->device->bus_id);
 		goto out;
 	}
 
@@ -226,7 +205,12 @@ static int __init sonic_probe1(struct net_device *dev)
 	lp->rra_laddr = lp->rda_laddr + (SIZEOF_SONIC_RD * SONIC_NUM_RDS
 					 * SONIC_BUS_SCALE(lp->dma_bitmode));
 
-	dev->netdev_ops		= &xtsonic_netdev_ops;
+	dev->open = xtsonic_open;
+	dev->stop = xtsonic_close;
+	dev->hard_start_xmit	= sonic_send_packet;
+	dev->get_stats		= sonic_get_stats;
+	dev->set_multicast_list	= &sonic_multicast_list;
+	dev->tx_timeout		= sonic_tx_timeout;
 	dev->watchdog_timeo	= TX_TIMEOUT;
 
 	/*
@@ -248,7 +232,7 @@ out:
  * Actually probing is superfluous but we're paranoid.
  */
 
-int __devinit xtsonic_probe(struct platform_device *pdev)
+int __init xtsonic_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
 	struct sonic_local *lp;

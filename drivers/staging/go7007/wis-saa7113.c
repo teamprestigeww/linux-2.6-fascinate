@@ -20,7 +20,6 @@
 #include <linux/i2c.h>
 #include <linux/videodev2.h>
 #include <linux/ioctl.h>
-#include <linux/slab.h>
 
 #include "wis-i2c.h"
 
@@ -262,19 +261,34 @@ static int wis_saa7113_command(struct i2c_client *client,
 	return 0;
 }
 
-static int wis_saa7113_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static struct i2c_driver wis_saa7113_driver;
+
+static struct i2c_client wis_saa7113_client_templ = {
+	.name		= "SAA7113 (WIS)",
+	.driver		= &wis_saa7113_driver,
+};
+
+static int wis_saa7113_detect(struct i2c_adapter *adapter, int addr, int kind)
 {
-	struct i2c_adapter *adapter = client->adapter;
+	struct i2c_client *client;
 	struct wis_saa7113 *dec;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -ENODEV;
+		return 0;
+
+	client = kmalloc(sizeof(struct i2c_client), GFP_KERNEL);
+	if (client == NULL)
+		return -ENOMEM;
+	memcpy(client, &wis_saa7113_client_templ,
+			sizeof(wis_saa7113_client_templ));
+	client->adapter = adapter;
+	client->addr = addr;
 
 	dec = kmalloc(sizeof(struct wis_saa7113), GFP_KERNEL);
-	if (dec == NULL)
+	if (dec == NULL) {
+		kfree(client);
 		return -ENOMEM;
-
+	}
 	dec->norm = V4L2_STD_NTSC;
 	dec->brightness = 128;
 	dec->contrast = 71;
@@ -284,48 +298,56 @@ static int wis_saa7113_probe(struct i2c_client *client,
 
 	printk(KERN_DEBUG
 		"wis-saa7113: initializing SAA7113 at address %d on %s\n",
-		client->addr, adapter->name);
+		addr, adapter->name);
 
 	if (write_regs(client, initial_registers) < 0) {
 		printk(KERN_ERR
 			"wis-saa7113: error initializing SAA7113\n");
+		kfree(client);
 		kfree(dec);
-		return -ENODEV;
+		return 0;
 	}
 
+	i2c_attach_client(client);
 	return 0;
 }
 
-static int wis_saa7113_remove(struct i2c_client *client)
+static int wis_saa7113_detach(struct i2c_client *client)
 {
 	struct wis_saa7113 *dec = i2c_get_clientdata(client);
+	int r;
 
+	r = i2c_detach_client(client);
+	if (r < 0)
+		return r;
+
+	kfree(client);
 	kfree(dec);
 	return 0;
 }
-
-static const struct i2c_device_id wis_saa7113_id[] = {
-	{ "wis_saa7113", 0 },
-	{ }
-};
 
 static struct i2c_driver wis_saa7113_driver = {
 	.driver = {
 		.name	= "WIS SAA7113 I2C driver",
 	},
-	.probe		= wis_saa7113_probe,
-	.remove		= wis_saa7113_remove,
+	.id		= I2C_DRIVERID_WIS_SAA7113,
+	.detach_client	= wis_saa7113_detach,
 	.command	= wis_saa7113_command,
-	.id_table	= wis_saa7113_id,
 };
 
 static int __init wis_saa7113_init(void)
 {
-	return i2c_add_driver(&wis_saa7113_driver);
+	int r;
+
+	r = i2c_add_driver(&wis_saa7113_driver);
+	if (r < 0)
+		return r;
+	return wis_i2c_add_driver(wis_saa7113_driver.id, wis_saa7113_detect);
 }
 
 static void __exit wis_saa7113_cleanup(void)
 {
+	wis_i2c_del_driver(wis_saa7113_detect);
 	i2c_del_driver(&wis_saa7113_driver);
 }
 

@@ -42,20 +42,19 @@ static DEFINE_SPINLOCK(atiixp_lock);
 
 /**
  *	atiixp_set_pio_mode	-	set host controller for PIO mode
- *	@hwif: port
  *	@drive: drive
+ *	@pio: PIO mode number
  *
  *	Set the interface PIO mode.
  */
 
-static void atiixp_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void atiixp_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
-	struct pci_dev *dev = to_pci_dev(hwif->dev);
+	struct pci_dev *dev = to_pci_dev(drive->hwif->dev);
 	unsigned long flags;
 	int timing_shift = (drive->dn ^ 1) * 8;
 	u32 pio_timing_data;
 	u16 pio_mode_data;
-	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 	spin_lock_irqsave(&atiixp_lock, flags);
 
@@ -75,22 +74,21 @@ static void atiixp_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 
 /**
  *	atiixp_set_dma_mode	-	set host controller for DMA mode
- *	@hwif: port
  *	@drive: drive
+ *	@speed: DMA mode
  *
  *	Set a ATIIXP host controller to the desired DMA mode.  This involves
  *	programming the right timing data into the PCI configuration space.
  */
 
-static void atiixp_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void atiixp_set_dma_mode(ide_drive_t *drive, const u8 speed)
 {
-	struct pci_dev *dev = to_pci_dev(hwif->dev);
+	struct pci_dev *dev = to_pci_dev(drive->hwif->dev);
 	unsigned long flags;
 	int timing_shift = (drive->dn ^ 1) * 8;
 	u32 tmp32;
 	u16 tmp16;
 	u16 udma_ctl = 0;
-	const u8 speed = drive->dma_mode;
 
 	spin_lock_irqsave(&atiixp_lock, flags);
 
@@ -144,6 +142,7 @@ static const struct ide_port_info atiixp_pci_info[] __devinitdata = {
 		.name		= DRV_NAME,
 		.enablebits	= {{0x48,0x01,0x00}, {0x48,0x08,0x00}},
 		.port_ops	= &atiixp_port_ops,
+		.host_flags	= IDE_HFLAG_LEGACY_IRQS,
 		.pio_mask	= ATA_PIO4,
 		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask	= ATA_UDMA5,
@@ -152,7 +151,7 @@ static const struct ide_port_info atiixp_pci_info[] __devinitdata = {
 		.name		= DRV_NAME,
 		.enablebits	= {{0x48,0x01,0x00}, {0x00,0x00,0x00}},
 		.port_ops	= &atiixp_port_ops,
-		.host_flags	= IDE_HFLAG_SINGLE,
+		.host_flags	= IDE_HFLAG_SINGLE | IDE_HFLAG_LEGACY_IRQS,
 		.pio_mask	= ATA_PIO4,
 		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask	= ATA_UDMA5,
@@ -179,7 +178,6 @@ static const struct pci_device_id atiixp_pci_tbl[] = {
 	{ PCI_VDEVICE(ATI, PCI_DEVICE_ID_ATI_IXP400_IDE), 0 },
 	{ PCI_VDEVICE(ATI, PCI_DEVICE_ID_ATI_IXP600_IDE), 1 },
 	{ PCI_VDEVICE(ATI, PCI_DEVICE_ID_ATI_IXP700_IDE), 0 },
-	{ PCI_VDEVICE(AMD, PCI_DEVICE_ID_AMD_HUDSON2_IDE), 0 },
 	{ 0, },
 };
 MODULE_DEVICE_TABLE(pci, atiixp_pci_tbl);

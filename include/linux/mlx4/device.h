@@ -61,7 +61,6 @@ enum {
 	MLX4_DEV_CAP_FLAG_BAD_PKEY_CNTR	= 1 <<  8,
 	MLX4_DEV_CAP_FLAG_BAD_QKEY_CNTR	= 1 <<  9,
 	MLX4_DEV_CAP_FLAG_DPDP		= 1 << 12,
-	MLX4_DEV_CAP_FLAG_BLH		= 1 << 15,
 	MLX4_DEV_CAP_FLAG_MEM_WINDOW	= 1 << 16,
 	MLX4_DEV_CAP_FLAG_APM		= 1 << 17,
 	MLX4_DEV_CAP_FLAG_ATOMIC	= 1 << 18,
@@ -123,8 +122,8 @@ enum {
 	MLX4_OPCODE_RDMA_READ		= 0x10,
 	MLX4_OPCODE_ATOMIC_CS		= 0x11,
 	MLX4_OPCODE_ATOMIC_FA		= 0x12,
-	MLX4_OPCODE_MASKED_ATOMIC_CS	= 0x14,
-	MLX4_OPCODE_MASKED_ATOMIC_FA	= 0x15,
+	MLX4_OPCODE_ATOMIC_MASK_CS	= 0x14,
+	MLX4_OPCODE_ATOMIC_MASK_FA	= 0x15,
 	MLX4_OPCODE_BIND_MW		= 0x18,
 	MLX4_OPCODE_FMR			= 0x19,
 	MLX4_OPCODE_LOCAL_INVAL		= 0x1b,
@@ -156,9 +155,8 @@ enum mlx4_qp_region {
 };
 
 enum mlx4_port_type {
-	MLX4_PORT_TYPE_IB	= 1,
-	MLX4_PORT_TYPE_ETH	= 2,
-	MLX4_PORT_TYPE_AUTO	= 3
+	MLX4_PORT_TYPE_IB	= 1 << 0,
+	MLX4_PORT_TYPE_ETH	= 1 << 1,
 };
 
 enum mlx4_special_vlan_idx {
@@ -211,7 +209,6 @@ struct mlx4_caps {
 	int			num_comp_vectors;
 	int			num_mpts;
 	int			num_mtt_segs;
-	int			mtts_per_seg;
 	int			fmr_reserved_mtts;
 	int			reserved_mtts;
 	int			reserved_mrws;
@@ -240,7 +237,6 @@ struct mlx4_caps {
 	enum mlx4_port_type	port_type[MLX4_MAX_PORTS + 1];
 	u8			supported_type[MLX4_MAX_PORTS + 1];
 	u32			port_mask;
-	enum mlx4_port_type	possible_type[MLX4_MAX_PORTS + 1];
 };
 
 struct mlx4_buf_list {

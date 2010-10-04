@@ -21,6 +21,7 @@
 #include <linux/module.h>
 #include <linux/bitops.h>
 #include <linux/mutex.h>
+#include <linux/smp_lock.h>
 
 #include <asm/io.h>
 #include <asm/uaccess.h>
@@ -96,19 +97,14 @@ EXPORT_SYMBOL(tty_driver_flush_buffer);
  *	@tty: terminal
  *
  *	Indicate that a tty should stop transmitting data down the stack.
- *	Takes the termios mutex to protect against parallel throttle/unthrottle
- *	and also to ensure the driver can consistently reference its own
- *	termios data at this point when implementing software flow control.
  */
 
 void tty_throttle(struct tty_struct *tty)
 {
-	mutex_lock(&tty->termios_mutex);
 	/* check TTY_THROTTLED first so it indicates our state */
 	if (!test_and_set_bit(TTY_THROTTLED, &tty->flags) &&
 	    tty->ops->throttle)
 		tty->ops->throttle(tty);
-	mutex_unlock(&tty->termios_mutex);
 }
 EXPORT_SYMBOL(tty_throttle);
 
@@ -117,21 +113,13 @@ EXPORT_SYMBOL(tty_throttle);
  *	@tty: terminal
  *
  *	Indicate that a tty may continue transmitting data down the stack.
- *	Takes the termios mutex to protect against parallel throttle/unthrottle
- *	and also to ensure the driver can consistently reference its own
- *	termios data at this point when implementing software flow control.
- *
- *	Drivers should however remember that the stack can issue a throttle,
- *	then change flow control method, then unthrottle.
  */
 
 void tty_unthrottle(struct tty_struct *tty)
 {
-	mutex_lock(&tty->termios_mutex);
 	if (test_and_clear_bit(TTY_THROTTLED, &tty->flags) &&
 	    tty->ops->unthrottle)
 		tty->ops->unthrottle(tty);
-	mutex_unlock(&tty->termios_mutex);
 }
 EXPORT_SYMBOL(tty_unthrottle);
 
@@ -315,7 +303,7 @@ EXPORT_SYMBOL(tty_termios_input_baud_rate);
  *	For maximal back compatibility with legacy SYS5/POSIX *nix behaviour
  *	we need to carefully set the bits when the user does not get the
  *	desired speed. We allow small margins and preserve as much of possible
- *	of the input intent to keep compatibility.
+ *	of the input intent to keep compatiblity.
  *
  *	Locking: Caller should hold termios lock. This is already held
  *	when calling this function from the driver termios handler.
@@ -393,7 +381,9 @@ void tty_termios_encode_baud_rate(struct ktermios *termios,
 		termios->c_cflag |= (BOTHER << IBSHIFT);
 #else
 	if (ifound == -1 || ofound == -1) {
-		printk_once(KERN_WARNING "tty: Unable to return correct "
+		static int warned;
+		if (!warned++)
+			printk(KERN_WARNING "tty: Unable to return correct "
 			  "speed data as your architecture needs updating.\n");
 	}
 #endif
@@ -517,25 +507,19 @@ static void change_termios(struct tty_struct *tty, struct ktermios *new_termios)
 
 	/* See if packet mode change of state. */
 	if (tty->link && tty->link->packet) {
-		int extproc = (old_termios.c_lflag & EXTPROC) |
-				(tty->termios->c_lflag & EXTPROC);
 		int old_flow = ((old_termios.c_iflag & IXON) &&
 				(old_termios.c_cc[VSTOP] == '\023') &&
 				(old_termios.c_cc[VSTART] == '\021'));
 		int new_flow = (I_IXON(tty) &&
 				STOP_CHAR(tty) == '\023' &&
 				START_CHAR(tty) == '\021');
-		if ((old_flow != new_flow) || extproc) {
+		if (old_flow != new_flow) {
 			spin_lock_irqsave(&tty->ctrl_lock, flags);
-			if (old_flow != new_flow) {
-				tty->ctrl_status &= ~(TIOCPKT_DOSTOP | TIOCPKT_NOSTOP);
-				if (new_flow)
-					tty->ctrl_status |= TIOCPKT_DOSTOP;
-				else
-					tty->ctrl_status |= TIOCPKT_NOSTOP;
-			}
-			if (extproc)
-				tty->ctrl_status |= TIOCPKT_IOCTL;
+			tty->ctrl_status &= ~(TIOCPKT_DOSTOP | TIOCPKT_NOSTOP);
+			if (new_flow)
+				tty->ctrl_status |= TIOCPKT_DOSTOP;
+			else
+				tty->ctrl_status |= TIOCPKT_NOSTOP;
 			spin_unlock_irqrestore(&tty->ctrl_lock, flags);
 			wake_up_interruptible(&tty->link->read_wait);
 		}
@@ -629,25 +613,9 @@ static int set_termios(struct tty_struct *tty, void __user *arg, int opt)
 	return 0;
 }
 
-static void copy_termios(struct tty_struct *tty, struct ktermios *kterm)
-{
-	mutex_lock(&tty->termios_mutex);
-	memcpy(kterm, tty->termios, sizeof(struct ktermios));
-	mutex_unlock(&tty->termios_mutex);
-}
-
-static void copy_termios_locked(struct tty_struct *tty, struct ktermios *kterm)
-{
-	mutex_lock(&tty->termios_mutex);
-	memcpy(kterm, tty->termios_locked, sizeof(struct ktermios));
-	mutex_unlock(&tty->termios_mutex);
-}
-
 static int get_termio(struct tty_struct *tty, struct termio __user *termio)
 {
-	struct ktermios kterm;
-	copy_termios(tty, &kterm);
-	if (kernel_termios_to_user_termio(termio, &kterm))
+	if (kernel_termios_to_user_termio(termio, tty->termios))
 		return -EFAULT;
 	return 0;
 }
@@ -949,7 +917,6 @@ int tty_mode_ioctl(struct tty_struct *tty, struct file *file,
 	struct tty_struct *real_tty;
 	void __user *p = (void __user *)arg;
 	int ret = 0;
-	struct ktermios kterm;
 
 	if (tty->driver->type == TTY_DRIVER_TYPE_PTY &&
 	    tty->driver->subtype == PTY_TYPE_MASTER)
@@ -985,20 +952,23 @@ int tty_mode_ioctl(struct tty_struct *tty, struct file *file,
 		return set_termios(real_tty, p, TERMIOS_OLD);
 #ifndef TCGETS2
 	case TCGETS:
-		copy_termios(real_tty, &kterm);
-		if (kernel_termios_to_user_termios((struct termios __user *)arg, &kterm))
+		mutex_lock(&real_tty->termios_mutex);
+		if (kernel_termios_to_user_termios((struct termios __user *)arg, real_tty->termios))
 			ret = -EFAULT;
+		mutex_unlock(&real_tty->termios_mutex);
 		return ret;
 #else
 	case TCGETS:
-		copy_termios(real_tty, &kterm);
-		if (kernel_termios_to_user_termios_1((struct termios __user *)arg, &kterm))
+		mutex_lock(&real_tty->termios_mutex);
+		if (kernel_termios_to_user_termios_1((struct termios __user *)arg, real_tty->termios))
 			ret = -EFAULT;
+		mutex_unlock(&real_tty->termios_mutex);
 		return ret;
 	case TCGETS2:
-		copy_termios(real_tty, &kterm);
-		if (kernel_termios_to_user_termios((struct termios2 __user *)arg, &kterm))
+		mutex_lock(&real_tty->termios_mutex);
+		if (kernel_termios_to_user_termios((struct termios2 __user *)arg, real_tty->termios))
 			ret = -EFAULT;
+		mutex_unlock(&real_tty->termios_mutex);
 		return ret;
 	case TCSETSF2:
 		return set_termios(real_tty, p,  TERMIOS_FLUSH | TERMIOS_WAIT);
@@ -1017,51 +987,46 @@ int tty_mode_ioctl(struct tty_struct *tty, struct file *file,
 		return set_termios(real_tty, p, TERMIOS_TERMIO);
 #ifndef TCGETS2
 	case TIOCGLCKTRMIOS:
-		copy_termios_locked(real_tty, &kterm);
-		if (kernel_termios_to_user_termios((struct termios __user *)arg, &kterm))
+		mutex_lock(&real_tty->termios_mutex);
+		if (kernel_termios_to_user_termios((struct termios __user *)arg, real_tty->termios_locked))
 			ret = -EFAULT;
+		mutex_unlock(&real_tty->termios_mutex);
 		return ret;
 	case TIOCSLCKTRMIOS:
 		if (!capable(CAP_SYS_ADMIN))
 			return -EPERM;
-		copy_termios_locked(real_tty, &kterm);
-		if (user_termios_to_kernel_termios(&kterm,
-					       (struct termios __user *) arg))
-			return -EFAULT;
 		mutex_lock(&real_tty->termios_mutex);
-		memcpy(real_tty->termios_locked, &kterm, sizeof(struct ktermios));
+		if (user_termios_to_kernel_termios(real_tty->termios_locked,
+					       (struct termios __user *) arg))
+			ret = -EFAULT;
 		mutex_unlock(&real_tty->termios_mutex);
-		return 0;
+		return ret;
 #else
 	case TIOCGLCKTRMIOS:
-		copy_termios_locked(real_tty, &kterm);
-		if (kernel_termios_to_user_termios_1((struct termios __user *)arg, &kterm))
+		mutex_lock(&real_tty->termios_mutex);
+		if (kernel_termios_to_user_termios_1((struct termios __user *)arg, real_tty->termios_locked))
 			ret = -EFAULT;
+		mutex_unlock(&real_tty->termios_mutex);
 		return ret;
 	case TIOCSLCKTRMIOS:
 		if (!capable(CAP_SYS_ADMIN))
-			return -EPERM;
-		copy_termios_locked(real_tty, &kterm);
-		if (user_termios_to_kernel_termios_1(&kterm,
-					       (struct termios __user *) arg))
-			return -EFAULT;
+			ret = -EPERM;
 		mutex_lock(&real_tty->termios_mutex);
-		memcpy(real_tty->termios_locked, &kterm, sizeof(struct ktermios));
+		if (user_termios_to_kernel_termios_1(real_tty->termios_locked,
+					       (struct termios __user *) arg))
+			ret = -EFAULT;
 		mutex_unlock(&real_tty->termios_mutex);
 		return ret;
 #endif
 #ifdef TCGETX
-	case TCGETX: {
-		struct termiox ktermx;
+	case TCGETX:
 		if (real_tty->termiox == NULL)
 			return -EINVAL;
 		mutex_lock(&real_tty->termios_mutex);
-		memcpy(&ktermx, real_tty->termiox, sizeof(struct termiox));
-		mutex_unlock(&real_tty->termios_mutex);
-		if (copy_to_user(p, &ktermx, sizeof(struct termiox)))
+		if (copy_to_user(p, real_tty->termiox, sizeof(struct termiox)))
 			ret = -EFAULT;
+		mutex_unlock(&real_tty->termios_mutex);
 		return ret;
-	}
 	case TCSETX:
 		return set_termiox(real_tty, p, 0);
 	case TCSETXW:
@@ -1070,9 +1035,10 @@ int tty_mode_ioctl(struct tty_struct *tty, struct file *file,
 		return set_termiox(real_tty, p, TERMIOS_FLUSH);
 #endif		
 	case TIOCGSOFTCAR:
-		copy_termios(real_tty, &kterm);
-		ret = put_user((kterm.c_cflag & CLOCAL) ? 1 : 0,
+		mutex_lock(&real_tty->termios_mutex);
+		ret = put_user(C_CLOCAL(real_tty) ? 1 : 0,
 						(int __user *)arg);
+		mutex_unlock(&real_tty->termios_mutex);
 		return ret;
 	case TIOCSSOFTCAR:
 		if (get_user(arg, (unsigned int __user *) arg))

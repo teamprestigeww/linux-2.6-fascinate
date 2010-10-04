@@ -22,23 +22,18 @@
 #define SCOOP_GPWR 0x24
 #define SCOOP_GPRR 0x28
 
-#define SCOOP_CPR_OUT	(1 << 7)
-#define SCOOP_CPR_SD_3V	(1 << 2)
-#define SCOOP_CPR_CF_XV	(1 << 1)
-#define SCOOP_CPR_CF_3V	(1 << 0)
-
-#define SCOOP_GPCR_PA22	(1 << 12)
-#define SCOOP_GPCR_PA21	(1 << 11)
-#define SCOOP_GPCR_PA20	(1 << 10)
-#define SCOOP_GPCR_PA19	(1 << 9)
-#define SCOOP_GPCR_PA18	(1 << 8)
-#define SCOOP_GPCR_PA17	(1 << 7)
-#define SCOOP_GPCR_PA16	(1 << 6)
-#define SCOOP_GPCR_PA15	(1 << 5)
-#define SCOOP_GPCR_PA14	(1 << 4)
-#define SCOOP_GPCR_PA13	(1 << 3)
-#define SCOOP_GPCR_PA12	(1 << 2)
-#define SCOOP_GPCR_PA11	(1 << 1)
+#define SCOOP_GPCR_PA22	( 1 << 12 )
+#define SCOOP_GPCR_PA21	( 1 << 11 )
+#define SCOOP_GPCR_PA20	( 1 << 10 )
+#define SCOOP_GPCR_PA19	( 1 << 9 )
+#define SCOOP_GPCR_PA18	( 1 << 8 )
+#define SCOOP_GPCR_PA17	( 1 << 7 )
+#define SCOOP_GPCR_PA16	( 1 << 6 )
+#define SCOOP_GPCR_PA15	( 1 << 5 )
+#define SCOOP_GPCR_PA14	( 1 << 4 )
+#define SCOOP_GPCR_PA13	( 1 << 3 )
+#define SCOOP_GPCR_PA12	( 1 << 2 )
+#define SCOOP_GPCR_PA11	( 1 << 1 )
 
 struct scoop_config {
 	unsigned short io_out;
@@ -68,5 +63,7 @@ struct scoop_pcmcia_config {
 extern struct scoop_pcmcia_config *platform_scoop_config;
 
 void reset_scoop(struct device *dev);
+unsigned short __deprecated set_scoop_gpio(struct device *dev, unsigned short bit);
+unsigned short __deprecated reset_scoop_gpio(struct device *dev, unsigned short bit);
 unsigned short read_scoop_reg(struct device *dev, unsigned short reg);
 void write_scoop_reg(struct device *dev, unsigned short reg, unsigned short data);

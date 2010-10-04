@@ -23,7 +23,6 @@
  */
 #include <linux/interrupt.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_transport_srp.h>
@@ -893,7 +892,7 @@ free_vport:
 
 static int ibmvstgt_remove(struct vio_dev *dev)
 {
-	struct srp_target *target = dev_get_drvdata(&dev->dev);
+	struct srp_target *target = (struct srp_target *) dev->dev.driver_data;
 	struct Scsi_Host *shost = target->shost;
 	struct vio_port *vport = target->ldata;
 
@@ -956,7 +955,7 @@ static struct srp_function_template ibmvstgt_transport_functions = {
 	.it_nexus_response = ibmvstgt_it_nexus_response,
 };
 
-static int __init ibmvstgt_init(void)
+static int ibmvstgt_init(void)
 {
 	int err = -ENOMEM;
 
@@ -987,7 +986,7 @@ release_transport:
 	return err;
 }
 
-static void __exit ibmvstgt_exit(void)
+static void ibmvstgt_exit(void)
 {
 	printk("Unregister IBM virtual SCSI driver\n");
 

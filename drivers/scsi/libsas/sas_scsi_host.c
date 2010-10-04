@@ -44,7 +44,6 @@
 #include <linux/err.h>
 #include <linux/blkdev.h>
 #include <linux/freezer.h>
-#include <linux/gfp.h>
 #include <linux/scatterlist.h>
 #include <linux/libata.h>
 
@@ -113,10 +112,10 @@ static void sas_scsi_task_done(struct sas_task *task)
 		case SAS_ABORTED_TASK:
 			hs = DID_ABORT;
 			break;
-		case SAM_STAT_CHECK_CONDITION:
+		case SAM_CHECK_COND:
 			memcpy(sc->sense_buffer, ts->buf,
 			       min(SCSI_SENSE_BUFFERSIZE, ts->buf_valid_size));
-			stat = SAM_STAT_CHECK_CONDITION;
+			stat = SAM_CHECK_COND;
 			break;
 		default:
 			stat = ts->stat;
@@ -818,16 +817,12 @@ void sas_slave_destroy(struct scsi_device *scsi_dev)
 	struct domain_device *dev = sdev_to_domain_dev(scsi_dev);
 
 	if (dev_is_sata(dev))
-		dev->sata_dev.ap->link.device[0].class = ATA_DEV_NONE;
+		ata_port_disable(dev->sata_dev.ap);
 }
 
-int sas_change_queue_depth(struct scsi_device *scsi_dev, int new_depth,
-			   int reason)
+int sas_change_queue_depth(struct scsi_device *scsi_dev, int new_depth)
 {
 	int res = min(new_depth, SAS_MAX_QD);
-
-	if (reason != SCSI_QDEPTH_DEFAULT)
-		return -EOPNOTSUPP;
 
 	if (scsi_dev->tagged_supported)
 		scsi_adjust_queue_depth(scsi_dev, scsi_get_tag_type(scsi_dev),
@@ -1041,15 +1036,11 @@ void sas_task_abort(struct sas_task *task)
 
 	if (dev_is_sata(task->dev)) {
 		sas_ata_task_abort(task);
-	} else {
-		struct request_queue *q = sc->device->request_queue;
-		unsigned long flags;
-
-		spin_lock_irqsave(q->queue_lock, flags);
-		blk_abort_request(sc->request);
-		spin_unlock_irqrestore(q->queue_lock, flags);
-		scsi_schedule_eh(sc->device->host);
+		return;
 	}
+
+	blk_abort_request(sc->request);
+	scsi_schedule_eh(sc->device->host);
 }
 
 int sas_slave_alloc(struct scsi_device *scsi_dev)

@@ -8,7 +8,6 @@
 #define _ASM_MMZONE_H_
 #ifdef __KERNEL__
 
-#include <linux/cpumask.h>
 
 /*
  * generic non-linear memory support:
@@ -30,7 +29,7 @@ extern struct pglist_data *node_data[];
  */
 
 extern int numa_cpu_lookup_table[];
-extern cpumask_var_t node_to_cpumask_map[];
+extern cpumask_t numa_cpumask_lookup_table[];
 #ifdef CONFIG_MEMORY_HOTPLUG
 extern unsigned long max_pfn;
 #endif

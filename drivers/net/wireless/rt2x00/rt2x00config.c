@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
+	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -32,7 +32,7 @@
 void rt2x00lib_config_intf(struct rt2x00_dev *rt2x00dev,
 			   struct rt2x00_intf *intf,
 			   enum nl80211_iftype type,
-			   const u8 *mac, const u8 *bssid)
+			   u8 *mac, u8 *bssid)
 {
 	struct rt2x00intf_conf conf;
 	unsigned int flags = 0;
@@ -41,12 +41,8 @@ void rt2x00lib_config_intf(struct rt2x00_dev *rt2x00dev,
 
 	switch (type) {
 	case NL80211_IFTYPE_ADHOC:
-		conf.sync = TSF_SYNC_ADHOC;
-		break;
 	case NL80211_IFTYPE_AP:
-	case NL80211_IFTYPE_MESH_POINT:
-	case NL80211_IFTYPE_WDS:
-		conf.sync = TSF_SYNC_AP_NONE;
+		conf.sync = TSF_SYNC_BEACON;
 		break;
 	case NL80211_IFTYPE_STATION:
 		conf.sync = TSF_SYNC_INFRA;
@@ -96,11 +92,18 @@ void rt2x00lib_config_erp(struct rt2x00_dev *rt2x00dev,
 	erp.difs = bss_conf->use_short_slot ? SHORT_DIFS : DIFS;
 	erp.eifs = bss_conf->use_short_slot ? SHORT_EIFS : EIFS;
 
-	erp.basic_rates = bss_conf->basic_rates;
-	erp.beacon_int = bss_conf->beacon_int;
+	erp.ack_timeout = PLCP + erp.difs + GET_DURATION(ACK_SIZE, 10);
+	erp.ack_consume_time = SIFS + PLCP + GET_DURATION(ACK_SIZE, 10);
 
-	/* Update global beacon interval time, this is needed for PS support */
-	rt2x00dev->beacon_int = bss_conf->beacon_int;
+	if (bss_conf->use_short_preamble) {
+		erp.ack_timeout += SHORT_PREAMBLE;
+		erp.ack_consume_time += SHORT_PREAMBLE;
+	} else {
+		erp.ack_timeout += PREAMBLE;
+		erp.ack_consume_time += PREAMBLE;
+	}
+
+	erp.basic_rates = bss_conf->basic_rates;
 
 	rt2x00dev->ops->lib->config_erp(rt2x00dev, &erp);
 }
@@ -115,34 +118,24 @@ enum antenna rt2x00lib_config_antenna_check(enum antenna current_ant,
 }
 
 void rt2x00lib_config_antenna(struct rt2x00_dev *rt2x00dev,
-			      struct antenna_setup config)
+			      struct antenna_setup *ant)
 {
-	struct link_ant *ant = &rt2x00dev->link.ant;
 	struct antenna_setup *def = &rt2x00dev->default_ant;
 	struct antenna_setup *active = &rt2x00dev->link.ant.active;
 
 	/*
 	 * Failsafe: Make sure we are not sending the
 	 * ANTENNA_SW_DIVERSITY state to the driver.
-	 * If that happens, fallback to hardware defaults,
+	 * If that happes fallback to hardware default,
 	 * or our own default.
-	 * If diversity handling is active for a particular antenna,
-	 * we shouldn't overwrite that antenna.
 	 * The calls to rt2x00lib_config_antenna_check()
 	 * might have caused that we restore back to the already
 	 * active setting. If that has happened we can quit.
 	 */
-	if (!(ant->flags & ANTENNA_RX_DIVERSITY))
-		config.rx = rt2x00lib_config_antenna_check(config.rx, def->rx);
-	else
-		config.rx = active->rx;
+	ant->rx = rt2x00lib_config_antenna_check(ant->rx, def->rx);
+	ant->tx = rt2x00lib_config_antenna_check(ant->tx, def->tx);
 
-	if (!(ant->flags & ANTENNA_TX_DIVERSITY))
-		config.tx = rt2x00lib_config_antenna_check(config.tx, def->tx);
-	else
-		config.tx = active->tx;
-
-	if (config.rx == active->rx && config.tx == active->tx)
+	if (ant->rx == active->rx && ant->tx == active->tx)
 		return;
 
 	/*
@@ -157,11 +150,12 @@ void rt2x00lib_config_antenna(struct rt2x00_dev *rt2x00dev,
 	 * The latter is required since we need to recalibrate the
 	 * noise-sensitivity ratio for the new setup.
 	 */
-	rt2x00dev->ops->lib->config_ant(rt2x00dev, &config);
+	rt2x00dev->ops->lib->config_ant(rt2x00dev, ant);
 
-	rt2x00link_reset_tuner(rt2x00dev, true);
+	rt2x00lib_reset_link_tuner(rt2x00dev);
+	rt2x00_reset_link_ant_rssi(&rt2x00dev->link);
 
-	memcpy(active, &config, sizeof(config));
+	memcpy(active, ant, sizeof(*ant));
 
 	if (test_bit(DEVICE_STATE_ENABLED_RADIO, &rt2x00dev->flags))
 		rt2x00lib_toggle_rx(rt2x00dev, STATE_RADIO_RX_ON_LINK);
@@ -172,27 +166,18 @@ void rt2x00lib_config(struct rt2x00_dev *rt2x00dev,
 		      unsigned int ieee80211_flags)
 {
 	struct rt2x00lib_conf libconf;
-	u16 hw_value;
 
 	memset(&libconf, 0, sizeof(libconf));
 
 	libconf.conf = conf;
 
 	if (ieee80211_flags & IEEE80211_CONF_CHANGE_CHANNEL) {
-		if (conf_is_ht40(conf)) {
-			__set_bit(CONFIG_CHANNEL_HT40, &rt2x00dev->flags);
-			hw_value = rt2x00ht_center_channel(rt2x00dev, conf);
-		} else {
-			__clear_bit(CONFIG_CHANNEL_HT40, &rt2x00dev->flags);
-			hw_value = conf->channel->hw_value;
-		}
-
 		memcpy(&libconf.rf,
-		       &rt2x00dev->spec.channels[hw_value],
+		       &rt2x00dev->spec.channels[conf->channel->hw_value],
 		       sizeof(libconf.rf));
 
 		memcpy(&libconf.channel,
-		       &rt2x00dev->spec.channels_info[hw_value],
+		       &rt2x00dev->spec.channels_info[conf->channel->hw_value],
 		       sizeof(libconf.channel));
 	}
 
@@ -206,7 +191,7 @@ void rt2x00lib_config(struct rt2x00_dev *rt2x00dev,
 	 * which means we need to reset the link tuner.
 	 */
 	if (ieee80211_flags & IEEE80211_CONF_CHANGE_CHANNEL)
-		rt2x00link_reset_tuner(rt2x00dev, false);
+		rt2x00lib_reset_link_tuner(rt2x00dev);
 
 	rt2x00dev->curr_band = conf->channel->band;
 	rt2x00dev->tx_power = conf->power_level;

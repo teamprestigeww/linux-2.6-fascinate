@@ -76,30 +76,6 @@ static void edac_mc_dump_mci(struct mem_ctl_info *mci)
 	debugf3("\tpvt_info = %p\n\n", mci->pvt_info);
 }
 
-/*
- * keep those in sync with the enum mem_type
- */
-const char *edac_mem_types[] = {
-	"Empty csrow",
-	"Reserved csrow type",
-	"Unknown csrow type",
-	"Fast page mode RAM",
-	"Extended data out RAM",
-	"Burst Extended data out RAM",
-	"Single data rate SDRAM",
-	"Registered single data rate SDRAM",
-	"Double data rate SDRAM",
-	"Registered Double data rate SDRAM",
-	"Rambus DRAM",
-	"Unbuffered DDR2 RAM",
-	"Fully buffered DDR2",
-	"Registered DDR2 RAM",
-	"Rambus XDR",
-	"Unbuffered DDR3 RAM",
-	"Registered DDR3 RAM",
-};
-EXPORT_SYMBOL_GPL(edac_mem_types);
-
 #endif				/* CONFIG_EDAC_DEBUG */
 
 /* 'ptr' points to a possibly unaligned item X such that sizeof(X) is 'size'.
@@ -284,7 +260,7 @@ static int edac_mc_assert_error_check_and_clear(void)
  */
 static void edac_mc_workq_function(struct work_struct *work_req)
 {
-	struct delayed_work *d_work = to_delayed_work(work_req);
+	struct delayed_work *d_work = (struct delayed_work *)work_req;
 	struct mem_ctl_info *mci = to_edac_mem_ctl_work(d_work);
 
 	mutex_lock(&mem_ctls_mutex);
@@ -338,9 +314,6 @@ static void edac_mc_workq_setup(struct mem_ctl_info *mci, unsigned msec)
 static void edac_mc_workq_teardown(struct mem_ctl_info *mci)
 {
 	int status;
-
-	if (mci->op_state != OP_RUNNING_POLL)
-		return;
 
 	status = cancel_delayed_work(&mci->work);
 	if (status == 0) {
@@ -445,14 +418,16 @@ static void complete_mc_list_del(struct rcu_head *head)
 
 	mci = container_of(head, struct mem_ctl_info, rcu);
 	INIT_LIST_HEAD(&mci->link);
+	complete(&mci->complete);
 }
 
 static void del_mc_from_global_list(struct mem_ctl_info *mci)
 {
 	atomic_dec(&edac_handlers);
 	list_del_rcu(&mci->link);
+	init_completion(&mci->complete);
 	call_rcu(&mci->rcu, complete_mc_list_del);
-	rcu_barrier();
+	wait_for_completion(&mci->complete);
 }
 
 /**

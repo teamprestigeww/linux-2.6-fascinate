@@ -15,7 +15,6 @@
 #include <linux/errno.h>
 #include <linux/kmod.h>
 #include <linux/spinlock.h>
-#include <asm/byteorder.h>
 
 static struct nls_table default_table;
 static struct nls_table *tables = &default_table;
@@ -44,17 +43,10 @@ static const struct utf8_table utf8_table[] =
     {0,						       /* end of table    */}
 };
 
-#define UNICODE_MAX	0x0010ffff
-#define PLANE_SIZE	0x00010000
-
-#define SURROGATE_MASK	0xfffff800
-#define SURROGATE_PAIR	0x0000d800
-#define SURROGATE_LOW	0x00000400
-#define SURROGATE_BITS	0x000003ff
-
-int utf8_to_utf32(const u8 *s, int len, unicode_t *pu)
+int
+utf8_mbtowc(wchar_t *p, const __u8 *s, int n)
 {
-	unsigned long l;
+	long l;
 	int c0, c, nc;
 	const struct utf8_table *t;
   
@@ -65,13 +57,12 @@ int utf8_to_utf32(const u8 *s, int len, unicode_t *pu)
 		nc++;
 		if ((c0 & t->cmask) == t->cval) {
 			l &= t->lmask;
-			if (l < t->lval || l > UNICODE_MAX ||
-					(l & SURROGATE_MASK) == SURROGATE_PAIR)
+			if (l < t->lval)
 				return -1;
-			*pu = (unicode_t) l;
+			*p = l;
 			return nc;
 		}
-		if (len <= nc)
+		if (n <= nc)
 			return -1;
 		s++;
 		c = (*s ^ 0x80) & 0xFF;
@@ -81,133 +72,90 @@ int utf8_to_utf32(const u8 *s, int len, unicode_t *pu)
 	}
 	return -1;
 }
-EXPORT_SYMBOL(utf8_to_utf32);
 
-int utf32_to_utf8(unicode_t u, u8 *s, int maxlen)
+int
+utf8_mbstowcs(wchar_t *pwcs, const __u8 *s, int n)
 {
-	unsigned long l;
+	__u16 *op;
+	const __u8 *ip;
+	int size;
+
+	op = pwcs;
+	ip = s;
+	while (*ip && n > 0) {
+		if (*ip & 0x80) {
+			size = utf8_mbtowc(op, ip, n);
+			if (size == -1) {
+				/* Ignore character and move on */
+				ip++;
+				n--;
+			} else {
+				op++;
+				ip += size;
+				n -= size;
+			}
+		} else {
+			*op++ = *ip++;
+			n--;
+		}
+	}
+	return (op - pwcs);
+}
+
+int
+utf8_wctomb(__u8 *s, wchar_t wc, int maxlen)
+{
+	long l;
 	int c, nc;
 	const struct utf8_table *t;
-
+  
 	if (!s)
 		return 0;
-
-	l = u;
-	if (l > UNICODE_MAX || (l & SURROGATE_MASK) == SURROGATE_PAIR)
-		return -1;
-
+  
+	l = wc;
 	nc = 0;
 	for (t = utf8_table; t->cmask && maxlen; t++, maxlen--) {
 		nc++;
 		if (l <= t->lmask) {
 			c = t->shift;
-			*s = (u8) (t->cval | (l >> c));
+			*s = t->cval | (l >> c);
 			while (c > 0) {
 				c -= 6;
 				s++;
-				*s = (u8) (0x80 | ((l >> c) & 0x3F));
+				*s = 0x80 | ((l >> c) & 0x3F);
 			}
 			return nc;
 		}
 	}
 	return -1;
 }
-EXPORT_SYMBOL(utf32_to_utf8);
 
-int utf8s_to_utf16s(const u8 *s, int len, wchar_t *pwcs)
+int
+utf8_wcstombs(__u8 *s, const wchar_t *pwcs, int maxlen)
 {
-	u16 *op;
+	const __u16 *ip;
+	__u8 *op;
 	int size;
-	unicode_t u;
-
-	op = pwcs;
-	while (*s && len > 0) {
-		if (*s & 0x80) {
-			size = utf8_to_utf32(s, len, &u);
-			if (size < 0)
-				return -EINVAL;
-
-			if (u >= PLANE_SIZE) {
-				u -= PLANE_SIZE;
-				*op++ = (wchar_t) (SURROGATE_PAIR |
-						((u >> 10) & SURROGATE_BITS));
-				*op++ = (wchar_t) (SURROGATE_PAIR |
-						SURROGATE_LOW |
-						(u & SURROGATE_BITS));
-			} else {
-				*op++ = (wchar_t) u;
-			}
-			s += size;
-			len -= size;
-		} else {
-			*op++ = *s++;
-			len--;
-		}
-	}
-	return op - pwcs;
-}
-EXPORT_SYMBOL(utf8s_to_utf16s);
-
-static inline unsigned long get_utf16(unsigned c, enum utf16_endian endian)
-{
-	switch (endian) {
-	default:
-		return c;
-	case UTF16_LITTLE_ENDIAN:
-		return __le16_to_cpu(c);
-	case UTF16_BIG_ENDIAN:
-		return __be16_to_cpu(c);
-	}
-}
-
-int utf16s_to_utf8s(const wchar_t *pwcs, int len, enum utf16_endian endian,
-		u8 *s, int maxlen)
-{
-	u8 *op;
-	int size;
-	unsigned long u, v;
 
 	op = s;
-	while (len > 0 && maxlen > 0) {
-		u = get_utf16(*pwcs, endian);
-		if (!u)
-			break;
-		pwcs++;
-		len--;
-		if (u > 0x7f) {
-			if ((u & SURROGATE_MASK) == SURROGATE_PAIR) {
-				if (u & SURROGATE_LOW) {
-					/* Ignore character and move on */
-					continue;
-				}
-				if (len <= 0)
-					break;
-				v = get_utf16(*pwcs, endian);
-				if ((v & SURROGATE_MASK) != SURROGATE_PAIR ||
-						!(v & SURROGATE_LOW)) {
-					/* Ignore character and move on */
-					continue;
-				}
-				u = PLANE_SIZE + ((u & SURROGATE_BITS) << 10)
-						+ (v & SURROGATE_BITS);
-				pwcs++;
-				len--;
-			}
-			size = utf32_to_utf8(u, op, maxlen);
+	ip = pwcs;
+	while (*ip && maxlen > 0) {
+		if (*ip > 0x7f) {
+			size = utf8_wctomb(op, *ip, maxlen);
 			if (size == -1) {
 				/* Ignore character and move on */
+				maxlen--;
 			} else {
 				op += size;
 				maxlen -= size;
 			}
 		} else {
-			*op++ = (u8) u;
-			maxlen--;
+			*op++ = (__u8) *ip;
 		}
+		ip++;
 	}
-	return op - s;
+	return (op - s);
 }
-EXPORT_SYMBOL(utf16s_to_utf8s);
 
 int register_nls(struct nls_table * nls)
 {
@@ -270,8 +218,7 @@ struct nls_table *load_nls(char *charset)
 
 void unload_nls(struct nls_table *nls)
 {
-	if (nls)
-		module_put(nls->owner);
+	module_put(nls->owner);
 }
 
 static const wchar_t charset2uni[256] = {
@@ -520,5 +467,9 @@ EXPORT_SYMBOL(unregister_nls);
 EXPORT_SYMBOL(unload_nls);
 EXPORT_SYMBOL(load_nls);
 EXPORT_SYMBOL(load_nls_default);
+EXPORT_SYMBOL(utf8_mbtowc);
+EXPORT_SYMBOL(utf8_mbstowcs);
+EXPORT_SYMBOL(utf8_wctomb);
+EXPORT_SYMBOL(utf8_wcstombs);
 
 MODULE_LICENSE("Dual BSD/GPL");

@@ -61,7 +61,7 @@ static struct ctl_table_root net_sysctl_root = {
 static int net_ctl_ro_header_perms(struct ctl_table_root *root,
 		struct nsproxy *namespaces, struct ctl_table *table)
 {
-	if (net_eq(namespaces->net_ns, &init_net))
+	if (namespaces->net_ns == &init_net)
 		return table->mode;
 	else
 		return table->mode & ~0222;
@@ -71,7 +71,7 @@ static struct ctl_table_root net_sysctl_ro_root = {
 	.permissions = net_ctl_ro_header_perms,
 };
 
-static int __net_init sysctl_net_init(struct net *net)
+static int sysctl_net_init(struct net *net)
 {
 	setup_sysctl_set(&net->sysctls,
 			 &net_sysctl_ro_root.default_set,
@@ -79,9 +79,10 @@ static int __net_init sysctl_net_init(struct net *net)
 	return 0;
 }
 
-static void __net_exit sysctl_net_exit(struct net *net)
+static void sysctl_net_exit(struct net *net)
 {
 	WARN_ON(!list_empty(&net->sysctls.list));
+	return;
 }
 
 static struct pernet_operations sysctl_pernet_ops = {

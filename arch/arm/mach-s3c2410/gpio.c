@@ -28,7 +28,6 @@
 #include <linux/io.h>
 
 #include <mach/hardware.h>
-#include <mach/gpio-fns.h>
 #include <asm/irq.h>
 
 #include <mach/regs-gpio.h>
@@ -40,12 +39,12 @@ int s3c2410_gpio_irqfilter(unsigned int pin, unsigned int on,
 	unsigned long flags;
 	unsigned long val;
 
-	if (pin < S3C2410_GPG(8) || pin > S3C2410_GPG(15))
-		return -EINVAL;
+	if (pin < S3C2410_GPG8 || pin > S3C2410_GPG15)
+		return -1;
 
 	config &= 0xff;
 
-	pin -= S3C2410_GPG(8);
+	pin -= S3C2410_GPG8;
 	reg += pin & ~3;
 
 	local_irq_save(flags);

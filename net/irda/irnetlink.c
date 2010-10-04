@@ -15,7 +15,6 @@
 
 #include <linux/socket.h>
 #include <linux/irda.h>
-#include <linux/gfp.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <net/irda/irda.h>
@@ -88,7 +87,7 @@ static int irda_nl_get_mode(struct sk_buff *skb, struct genl_info *info)
 	if (!dev)
 		return -ENODEV;
 
-	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	msg = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (!msg) {
 		dev_put(dev);
 		return -ENOMEM;
@@ -116,7 +115,7 @@ static int irda_nl_get_mode(struct sk_buff *skb, struct genl_info *info)
 
 	genlmsg_end(msg, hdr);
 
-	return genlmsg_reply(msg, info);
+	return genlmsg_unicast(msg, info->snd_pid);
 
  err_out:
 	nlmsg_free(msg);
@@ -125,7 +124,7 @@ static int irda_nl_get_mode(struct sk_buff *skb, struct genl_info *info)
 	return ret;
 }
 
-static const struct nla_policy irda_nl_policy[IRDA_NL_ATTR_MAX + 1] = {
+static struct nla_policy irda_nl_policy[IRDA_NL_ATTR_MAX + 1] = {
 	[IRDA_NL_ATTR_IFNAME] = { .type = NLA_NUL_STRING,
 				  .len = IFNAMSIZ-1 },
 	[IRDA_NL_ATTR_MODE] = { .type = NLA_U32 },
@@ -149,8 +148,21 @@ static struct genl_ops irda_nl_ops[] = {
 
 int irda_nl_register(void)
 {
-	return genl_register_family_with_ops(&irda_nl_family,
-		irda_nl_ops, ARRAY_SIZE(irda_nl_ops));
+	int err, i;
+
+	err = genl_register_family(&irda_nl_family);
+	if (err)
+		return err;
+
+	for (i = 0; i < ARRAY_SIZE(irda_nl_ops); i++) {
+		err = genl_register_ops(&irda_nl_family, &irda_nl_ops[i]);
+		if (err)
+			goto err_out;
+	}
+	return 0;
+ err_out:
+	genl_unregister_family(&irda_nl_family);
+	return err;
 }
 
 void irda_nl_unregister(void)

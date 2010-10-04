@@ -429,21 +429,20 @@ EXPORT_SYMBOL(mangle_path);
  */
 int seq_path(struct seq_file *m, struct path *path, char *esc)
 {
-	char *buf;
-	size_t size = seq_get_buf(m, &buf);
-	int res = -1;
-
-	if (size) {
-		char *p = d_path(path, buf, size);
+	if (m->count < m->size) {
+		char *s = m->buf + m->count;
+		char *p = d_path(path, s, m->size - m->count);
 		if (!IS_ERR(p)) {
-			char *end = mangle_path(buf, p, esc);
-			if (end)
-				res = end - buf;
+			s = mangle_path(s, p, esc);
+			if (s) {
+				p = m->buf + m->count;
+				m->count = s - m->buf;
+				return s - p;
+			}
 		}
 	}
-	seq_commit(m, res);
-
-	return res;
+	m->count = m->size;
+	return -1;
 }
 EXPORT_SYMBOL(seq_path);
 
@@ -455,28 +454,26 @@ EXPORT_SYMBOL(seq_path);
 int seq_path_root(struct seq_file *m, struct path *path, struct path *root,
 		  char *esc)
 {
-	char *buf;
-	size_t size = seq_get_buf(m, &buf);
-	int res = -ENAMETOOLONG;
-
-	if (size) {
+	int err = -ENAMETOOLONG;
+	if (m->count < m->size) {
+		char *s = m->buf + m->count;
 		char *p;
 
 		spin_lock(&dcache_lock);
-		p = __d_path(path, root, buf, size);
+		p = __d_path(path, root, s, m->size - m->count);
 		spin_unlock(&dcache_lock);
-		res = PTR_ERR(p);
+		err = PTR_ERR(p);
 		if (!IS_ERR(p)) {
-			char *end = mangle_path(buf, p, esc);
-			if (end)
-				res = end - buf;
-			else
-				res = -ENAMETOOLONG;
+			s = mangle_path(s, p, esc);
+			if (s) {
+				p = m->buf + m->count;
+				m->count = s - m->buf;
+				return 0;
+			}
 		}
 	}
-	seq_commit(m, res);
-
-	return res < 0 ? res : 0;
+	m->count = m->size;
+	return err;
 }
 
 /*
@@ -484,21 +481,20 @@ int seq_path_root(struct seq_file *m, struct path *path, struct path *root,
  */
 int seq_dentry(struct seq_file *m, struct dentry *dentry, char *esc)
 {
-	char *buf;
-	size_t size = seq_get_buf(m, &buf);
-	int res = -1;
-
-	if (size) {
-		char *p = dentry_path(dentry, buf, size);
+	if (m->count < m->size) {
+		char *s = m->buf + m->count;
+		char *p = dentry_path(dentry, s, m->size - m->count);
 		if (!IS_ERR(p)) {
-			char *end = mangle_path(buf, p, esc);
-			if (end)
-				res = end - buf;
+			s = mangle_path(s, p, esc);
+			if (s) {
+				p = m->buf + m->count;
+				m->count = s - m->buf;
+				return s - p;
+			}
 		}
 	}
-	seq_commit(m, res);
-
-	return res;
+	m->count = m->size;
+	return -1;
 }
 
 int seq_bitmap(struct seq_file *m, const unsigned long *bits,
@@ -517,7 +513,7 @@ int seq_bitmap(struct seq_file *m, const unsigned long *bits,
 }
 EXPORT_SYMBOL(seq_bitmap);
 
-int seq_bitmap_list(struct seq_file *m, const unsigned long *bits,
+int seq_bitmap_list(struct seq_file *m, unsigned long *bits,
 		unsigned int nr_bits)
 {
 	if (m->count < m->size) {
@@ -644,26 +640,6 @@ int seq_puts(struct seq_file *m, const char *s)
 }
 EXPORT_SYMBOL(seq_puts);
 
-/**
- * seq_write - write arbitrary data to buffer
- * @seq: seq_file identifying the buffer to which data should be written
- * @data: data address
- * @len: number of bytes
- *
- * Return 0 on success, non-zero otherwise.
- */
-int seq_write(struct seq_file *seq, const void *data, size_t len)
-{
-	if (seq->count + len < seq->size) {
-		memcpy(seq->buf + seq->count, data, len);
-		seq->count += len;
-		return 0;
-	}
-	seq->count = seq->size;
-	return -1;
-}
-EXPORT_SYMBOL(seq_write);
-
 struct list_head *seq_list_start(struct list_head *head, loff_t pos)
 {
 	struct list_head *lh;
@@ -674,6 +650,7 @@ struct list_head *seq_list_start(struct list_head *head, loff_t pos)
 
 	return NULL;
 }
+
 EXPORT_SYMBOL(seq_list_start);
 
 struct list_head *seq_list_start_head(struct list_head *head, loff_t pos)
@@ -683,6 +660,7 @@ struct list_head *seq_list_start_head(struct list_head *head, loff_t pos)
 
 	return seq_list_start(head, pos - 1);
 }
+
 EXPORT_SYMBOL(seq_list_start_head);
 
 struct list_head *seq_list_next(void *v, struct list_head *head, loff_t *ppos)
@@ -693,131 +671,5 @@ struct list_head *seq_list_next(void *v, struct list_head *head, loff_t *ppos)
 	++*ppos;
 	return lh == head ? NULL : lh;
 }
+
 EXPORT_SYMBOL(seq_list_next);
-
-/**
- * seq_hlist_start - start an iteration of a hlist
- * @head: the head of the hlist
- * @pos:  the start position of the sequence
- *
- * Called at seq_file->op->start().
- */
-struct hlist_node *seq_hlist_start(struct hlist_head *head, loff_t pos)
-{
-	struct hlist_node *node;
-
-	hlist_for_each(node, head)
-		if (pos-- == 0)
-			return node;
-	return NULL;
-}
-EXPORT_SYMBOL(seq_hlist_start);
-
-/**
- * seq_hlist_start_head - start an iteration of a hlist
- * @head: the head of the hlist
- * @pos:  the start position of the sequence
- *
- * Called at seq_file->op->start(). Call this function if you want to
- * print a header at the top of the output.
- */
-struct hlist_node *seq_hlist_start_head(struct hlist_head *head, loff_t pos)
-{
-	if (!pos)
-		return SEQ_START_TOKEN;
-
-	return seq_hlist_start(head, pos - 1);
-}
-EXPORT_SYMBOL(seq_hlist_start_head);
-
-/**
- * seq_hlist_next - move to the next position of the hlist
- * @v:    the current iterator
- * @head: the head of the hlist
- * @ppos: the current position
- *
- * Called at seq_file->op->next().
- */
-struct hlist_node *seq_hlist_next(void *v, struct hlist_head *head,
-				  loff_t *ppos)
-{
-	struct hlist_node *node = v;
-
-	++*ppos;
-	if (v == SEQ_START_TOKEN)
-		return head->first;
-	else
-		return node->next;
-}
-EXPORT_SYMBOL(seq_hlist_next);
-
-/**
- * seq_hlist_start_rcu - start an iteration of a hlist protected by RCU
- * @head: the head of the hlist
- * @pos:  the start position of the sequence
- *
- * Called at seq_file->op->start().
- *
- * This list-traversal primitive may safely run concurrently with
- * the _rcu list-mutation primitives such as hlist_add_head_rcu()
- * as long as the traversal is guarded by rcu_read_lock().
- */
-struct hlist_node *seq_hlist_start_rcu(struct hlist_head *head,
-				       loff_t pos)
-{
-	struct hlist_node *node;
-
-	__hlist_for_each_rcu(node, head)
-		if (pos-- == 0)
-			return node;
-	return NULL;
-}
-EXPORT_SYMBOL(seq_hlist_start_rcu);
-
-/**
- * seq_hlist_start_head_rcu - start an iteration of a hlist protected by RCU
- * @head: the head of the hlist
- * @pos:  the start position of the sequence
- *
- * Called at seq_file->op->start(). Call this function if you want to
- * print a header at the top of the output.
- *
- * This list-traversal primitive may safely run concurrently with
- * the _rcu list-mutation primitives such as hlist_add_head_rcu()
- * as long as the traversal is guarded by rcu_read_lock().
- */
-struct hlist_node *seq_hlist_start_head_rcu(struct hlist_head *head,
-					    loff_t pos)
-{
-	if (!pos)
-		return SEQ_START_TOKEN;
-
-	return seq_hlist_start_rcu(head, pos - 1);
-}
-EXPORT_SYMBOL(seq_hlist_start_head_rcu);
-
-/**
- * seq_hlist_next_rcu - move to the next position of the hlist protected by RCU
- * @v:    the current iterator
- * @head: the head of the hlist
- * @ppos: the current position
- *
- * Called at seq_file->op->next().
- *
- * This list-traversal primitive may safely run concurrently with
- * the _rcu list-mutation primitives such as hlist_add_head_rcu()
- * as long as the traversal is guarded by rcu_read_lock().
- */
-struct hlist_node *seq_hlist_next_rcu(void *v,
-				      struct hlist_head *head,
-				      loff_t *ppos)
-{
-	struct hlist_node *node = v;
-
-	++*ppos;
-	if (v == SEQ_START_TOKEN)
-		return rcu_dereference(head->first);
-	else
-		return rcu_dereference(node->next);
-}
-EXPORT_SYMBOL(seq_hlist_next_rcu);

@@ -3,8 +3,8 @@
  */
 #include <asm/segment.h>
 #include <asm/msr-index.h>
-#include <asm/page_types.h>
-#include <asm/pgtable_types.h>
+#include <asm/page.h>
+#include <asm/pgtable.h>
 #include <asm/processor-flags.h>
 
 	.code16
@@ -104,7 +104,7 @@ _start:
 	movl	%eax, %ecx
 	orl	%edx, %ecx
 	jz	1f
-	movl	$MSR_EFER, %ecx
+	movl	$0xc0000080, %ecx
 	wrmsr
 1:
 

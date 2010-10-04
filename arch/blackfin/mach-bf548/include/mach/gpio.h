@@ -1,11 +1,33 @@
 /*
- * Copyright 2007-2009 Analog Devices Inc.
- * Licensed under the GPL-2 or later.
+ * File:         include/asm-blackfin/mach-bf548/gpio.h
+ * Based on:
+ * Author:	 Michael Hennerich (hennerich@blackfin.uclinux.org)
+ *
+ * Created:
+ * Description:
+ *
+ * Modified:
+ *               Copyright 2004-2007 Analog Devices Inc.
+ *
+ * Bugs:         Enter bugs at http://blackfin.uclinux.org/
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see the file COPYING, or write
+ * to the Free Software Foundation, Inc.,
+ * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 
-#ifndef _MACH_GPIO_H_
-#define _MACH_GPIO_H_
 
 #define GPIO_PA0	0
 #define GPIO_PA1	1
@@ -170,8 +192,6 @@
 
 #define MAX_BLACKFIN_GPIOS 160
 
-#ifndef __ASSEMBLY__
-
 struct gpio_port_t {
 	unsigned short port_fer;
 	unsigned short dummy1;
@@ -197,7 +217,3 @@ struct gpio_port_s {
 	unsigned short inen;
 	unsigned int mux;
 };
-
-#endif
-
-#endif /* _MACH_GPIO_H_ */

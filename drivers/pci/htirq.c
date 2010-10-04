@@ -10,6 +10,7 @@
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
+#include <linux/gfp.h>
 #include <linux/htirq.h>
 
 /* Global ht irq lock.
@@ -97,7 +98,6 @@ int __ht_create_irq(struct pci_dev *dev, int idx, ht_irq_update_t *update)
 	int max_irq;
 	int pos;
 	int irq;
-	int node;
 
 	pos = pci_find_ht_capability(dev, HT_CAPTYPE_IRQ);
 	if (!pos)
@@ -125,8 +125,7 @@ int __ht_create_irq(struct pci_dev *dev, int idx, ht_irq_update_t *update)
 	cfg->msg.address_lo = 0xffffffff;
 	cfg->msg.address_hi = 0xffffffff;
 
-	node = dev_to_node(&dev->dev);
-	irq = create_irq_nr(0, node);
+	irq = create_irq();
 
 	if (irq <= 0) {
 		kfree(cfg);
@@ -159,7 +158,6 @@ int ht_create_irq(struct pci_dev *dev, int idx)
 
 /**
  * ht_destroy_irq - destroy an irq created with ht_create_irq
- * @irq: irq to be destroyed
  *
  * This reverses ht_create_irq removing the specified irq from
  * existence.  The irq should be free before this happens.

@@ -11,8 +11,8 @@
  *
  * Copyright (c) 2002-5 Patrick Mochel
  * Copyright (c) 2002-3 Open Source Development Labs
- * Copyright (c) 2007-2009 Greg Kroah-Hartman <gregkh@suse.de>
- * Copyright (c) 2007-2009 Novell Inc.
+ * Copyright (c) 2007 Greg Kroah-Hartman <gregkh@suse.de>
+ * Copyright (c) 2007 Novell Inc.
  *
  * This file is released under the GPLv2
  */
@@ -23,7 +23,6 @@
 #include <linux/kthread.h>
 #include <linux/wait.h>
 #include <linux/async.h>
-#include <linux/pm_runtime.h>
 
 #include "base.h"
 #include "power/power.h"
@@ -31,7 +30,7 @@
 
 static void driver_bound(struct device *dev)
 {
-	if (klist_node_attached(&dev->p->knode_driver)) {
+	if (klist_node_attached(&dev->knode_driver)) {
 		printk(KERN_WARNING "%s: device %s already bound\n",
 			__func__, kobject_name(&dev->kobj));
 		return;
@@ -40,20 +39,16 @@ static void driver_bound(struct device *dev)
 	pr_debug("driver: '%s': %s: bound to device '%s'\n", dev_name(dev),
 		 __func__, dev->driver->name);
 
-	klist_add_tail(&dev->p->knode_driver, &dev->driver->p->klist_devices);
-
 	if (dev->bus)
 		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
 					     BUS_NOTIFY_BOUND_DRIVER, dev);
+
+	klist_add_tail(&dev->knode_driver, &dev->driver->p->klist_devices);
 }
 
 static int driver_sysfs_add(struct device *dev)
 {
 	int ret;
-
-	if (dev->bus)
-		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
-					     BUS_NOTIFY_BIND_DRIVER, dev);
 
 	ret = sysfs_create_link(&dev->driver->p->kobj, &dev->kobj,
 			  kobject_name(&dev->kobj));
@@ -89,7 +84,7 @@ static void driver_sysfs_remove(struct device *dev)
  * for before calling this. (It is ok to call with no other effort
  * from a driver's probe() method.)
  *
- * This function must be called with the device lock held.
+ * This function must be called with @dev->sem held.
  */
 int device_bind_driver(struct device *dev)
 {
@@ -177,25 +172,34 @@ int driver_probe_done(void)
 /**
  * wait_for_device_probe
  * Wait for device probing to be completed.
+ *
+ * Note: this function polls at 100 msec intervals.
  */
-void wait_for_device_probe(void)
+int wait_for_device_probe(void)
 {
 	/* wait for the known devices to complete their probing */
-	wait_event(probe_waitqueue, atomic_read(&probe_count) == 0);
+	while (driver_probe_done() != 0)
+		msleep(100);
 	async_synchronize_full();
+	return 0;
 }
-EXPORT_SYMBOL_GPL(wait_for_device_probe);
 
 /**
  * driver_probe_device - attempt to bind device & driver together
  * @drv: driver to bind a device to
  * @dev: device to try to bind to the driver
  *
- * This function returns -ENODEV if the device is not registered,
- * 1 if the device is bound successfully and 0 otherwise.
+ * First, we call the bus's match function, if one present, which should
+ * compare the device IDs the driver supports with the device IDs of the
+ * device. Note we don't do this ourselves because we don't know the
+ * format of the ID structures, nor what is to be considered a match and
+ * what is not.
  *
- * This function must be called with @dev lock held.  When called for a
- * USB interface, @dev->parent lock must be held as well.
+ * This function returns 1 if a match is found, -ENODEV if the device is
+ * not registered, and 0 otherwise.
+ *
+ * This function must be called with @dev->sem held.  When called for a
+ * USB interface, @dev->parent->sem must be held as well.
  */
 int driver_probe_device(struct device_driver *drv, struct device *dev)
 {
@@ -203,25 +207,21 @@ int driver_probe_device(struct device_driver *drv, struct device *dev)
 
 	if (!device_is_registered(dev))
 		return -ENODEV;
+	if (drv->bus->match && !drv->bus->match(dev, drv))
+		goto done;
 
 	pr_debug("bus: '%s': %s: matched device %s with driver %s\n",
 		 drv->bus->name, __func__, dev_name(dev), drv->name);
 
-	pm_runtime_get_noresume(dev);
-	pm_runtime_barrier(dev);
 	ret = really_probe(dev, drv);
-	pm_runtime_put_sync(dev);
 
+done:
 	return ret;
 }
 
 static int __device_attach(struct device_driver *drv, void *data)
 {
 	struct device *dev = data;
-
-	if (!driver_match_device(drv, dev))
-		return 0;
-
 	return driver_probe_device(drv, dev);
 }
 
@@ -234,16 +234,16 @@ static int __device_attach(struct device_driver *drv, void *data)
  * pair is found, break out and return.
  *
  * Returns 1 if the device was bound to a driver;
- * 0 if no matching driver was found;
+ * 0 if no matching device was found;
  * -ENODEV if the device is not registered.
  *
- * When called for a USB interface, @dev->parent lock must be held.
+ * When called for a USB interface, @dev->parent->sem must be held.
  */
 int device_attach(struct device *dev)
 {
 	int ret = 0;
 
-	device_lock(dev);
+	down(&dev->sem);
 	if (dev->driver) {
 		ret = device_bind_driver(dev);
 		if (ret == 0)
@@ -253,11 +253,9 @@ int device_attach(struct device *dev)
 			ret = 0;
 		}
 	} else {
-		pm_runtime_get_noresume(dev);
 		ret = bus_for_each_drv(dev->bus, NULL, dev, __device_attach);
-		pm_runtime_put_sync(dev);
 	}
-	device_unlock(dev);
+	up(&dev->sem);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(device_attach);
@@ -276,17 +274,17 @@ static int __driver_attach(struct device *dev, void *data)
 	 * is an error.
 	 */
 
-	if (!driver_match_device(drv, dev))
+	if (drv->bus->match && !drv->bus->match(dev, drv))
 		return 0;
 
 	if (dev->parent)	/* Needed for USB */
-		device_lock(dev->parent);
-	device_lock(dev);
+		down(&dev->parent->sem);
+	down(&dev->sem);
 	if (!dev->driver)
 		driver_probe_device(drv, dev);
-	device_unlock(dev);
+	up(&dev->sem);
 	if (dev->parent)
-		device_unlock(dev->parent);
+		up(&dev->parent->sem);
 
 	return 0;
 }
@@ -307,8 +305,8 @@ int driver_attach(struct device_driver *drv)
 EXPORT_SYMBOL_GPL(driver_attach);
 
 /*
- * __device_release_driver() must be called with @dev lock held.
- * When called for a USB interface, @dev->parent lock must be held as well.
+ * __device_release_driver() must be called with @dev->sem held.
+ * When called for a USB interface, @dev->parent->sem must be held as well.
  */
 static void __device_release_driver(struct device *dev)
 {
@@ -316,9 +314,6 @@ static void __device_release_driver(struct device *dev)
 
 	drv = dev->driver;
 	if (drv) {
-		pm_runtime_get_noresume(dev);
-		pm_runtime_barrier(dev);
-
 		driver_sysfs_remove(dev);
 
 		if (dev->bus)
@@ -332,13 +327,7 @@ static void __device_release_driver(struct device *dev)
 			drv->remove(dev);
 		devres_release_all(dev);
 		dev->driver = NULL;
-		klist_remove(&dev->p->knode_driver);
-		if (dev->bus)
-			blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
-						     BUS_NOTIFY_UNBOUND_DRIVER,
-						     dev);
-
-		pm_runtime_put_sync(dev);
+		klist_remove(&dev->knode_driver);
 	}
 }
 
@@ -347,7 +336,7 @@ static void __device_release_driver(struct device *dev)
  * @dev: device.
  *
  * Manually detach device from driver.
- * When called for a USB interface, @dev->parent lock must be held.
+ * When called for a USB interface, @dev->parent->sem must be held.
  */
 void device_release_driver(struct device *dev)
 {
@@ -356,9 +345,9 @@ void device_release_driver(struct device *dev)
 	 * within their ->remove callback for the same device, they
 	 * will deadlock right here.
 	 */
-	device_lock(dev);
+	down(&dev->sem);
 	__device_release_driver(dev);
-	device_unlock(dev);
+	up(&dev->sem);
 }
 EXPORT_SYMBOL_GPL(device_release_driver);
 
@@ -368,7 +357,6 @@ EXPORT_SYMBOL_GPL(device_release_driver);
  */
 void driver_detach(struct device_driver *drv)
 {
-	struct device_private *dev_prv;
 	struct device *dev;
 
 	for (;;) {
@@ -377,48 +365,19 @@ void driver_detach(struct device_driver *drv)
 			spin_unlock(&drv->p->klist_devices.k_lock);
 			break;
 		}
-		dev_prv = list_entry(drv->p->klist_devices.k_list.prev,
-				     struct device_private,
-				     knode_driver.n_node);
-		dev = dev_prv->device;
+		dev = list_entry(drv->p->klist_devices.k_list.prev,
+				struct device, knode_driver.n_node);
 		get_device(dev);
 		spin_unlock(&drv->p->klist_devices.k_lock);
 
 		if (dev->parent)	/* Needed for USB */
-			device_lock(dev->parent);
-		device_lock(dev);
+			down(&dev->parent->sem);
+		down(&dev->sem);
 		if (dev->driver == drv)
 			__device_release_driver(dev);
-		device_unlock(dev);
+		up(&dev->sem);
 		if (dev->parent)
-			device_unlock(dev->parent);
+			up(&dev->parent->sem);
 		put_device(dev);
 	}
 }
-
-/*
- * These exports can't be _GPL due to .h files using this within them, and it
- * might break something that was previously working...
- */
-void *dev_get_drvdata(const struct device *dev)
-{
-	if (dev && dev->p)
-		return dev->p->driver_data;
-	return NULL;
-}
-EXPORT_SYMBOL(dev_get_drvdata);
-
-void dev_set_drvdata(struct device *dev, void *data)
-{
-	int error;
-
-	if (!dev)
-		return;
-	if (!dev->p) {
-		error = device_private_init(dev);
-		if (error)
-			return;
-	}
-	dev->p->driver_data = data;
-}
-EXPORT_SYMBOL(dev_set_drvdata);

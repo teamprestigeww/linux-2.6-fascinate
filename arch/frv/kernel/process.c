@@ -83,9 +83,13 @@ void (*idle)(void) = core_sleep_idle;
  */
 void cpu_idle(void)
 {
+	int cpu = smp_processor_id();
+
 	/* endless idle loop with no priority at all */
 	while (1) {
 		while (!need_resched()) {
+			irq_stat[cpu].idle_timestamp = jiffies;
+
 			check_pgt_cache();
 
 			if (!frv_dma_inprogress && idle)
@@ -200,7 +204,7 @@ void prepare_to_copy(struct task_struct *tsk)
 /*
  * set up the kernel stack and exception frames for a new process
  */
-int copy_thread(unsigned long clone_flags,
+int copy_thread(int nr, unsigned long clone_flags,
 		unsigned long usp, unsigned long topstk,
 		struct task_struct *p, struct pt_regs *regs)
 {
@@ -250,19 +254,20 @@ int copy_thread(unsigned long clone_flags,
 /*
  * sys_execve() executes a new program.
  */
-asmlinkage int sys_execve(const char __user *name,
-			  const char __user *const __user *argv,
-			  const char __user *const __user *envp)
+asmlinkage int sys_execve(char __user *name, char __user * __user *argv, char __user * __user *envp)
 {
 	int error;
 	char * filename;
 
+	lock_kernel();
 	filename = getname(name);
 	error = PTR_ERR(filename);
 	if (IS_ERR(filename))
-		return error;
+		goto out;
 	error = do_execve(filename, argv, envp, __frame);
 	putname(filename);
+ out:
+	unlock_kernel();
 	return error;
 }
 

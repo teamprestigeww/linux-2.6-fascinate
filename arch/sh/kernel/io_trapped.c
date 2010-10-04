@@ -14,7 +14,6 @@
 #include <linux/bitops.h>
 #include <linux/vmalloc.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <asm/system.h>
 #include <asm/mmu_context.h>
 #include <asm/uaccess.h>
@@ -33,24 +32,12 @@ EXPORT_SYMBOL_GPL(trapped_mem);
 #endif
 static DEFINE_SPINLOCK(trapped_lock);
 
-static int trapped_io_disable __read_mostly;
-
-static int __init trapped_io_setup(char *__unused)
-{
-	trapped_io_disable = 1;
-	return 1;
-}
-__setup("noiotrap", trapped_io_setup);
-
 int register_trapped_io(struct trapped_io *tiop)
 {
 	struct resource *res;
 	unsigned long len = 0, flags = 0;
 	struct page *pages[TRAPPED_PAGES_MAX];
 	int k, n;
-
-	if (unlikely(trapped_io_disable))
-		return 0;
 
 	/* structure must be page aligned */
 	if ((unsigned long)tiop & (PAGE_SIZE - 1))
@@ -91,14 +78,10 @@ int register_trapped_io(struct trapped_io *tiop)
 	tiop->magic = IO_TRAPPED_MAGIC;
 	INIT_LIST_HEAD(&tiop->list);
 	spin_lock_irq(&trapped_lock);
-#ifdef CONFIG_HAS_IOPORT
 	if (flags & IORESOURCE_IO)
 		list_add(&tiop->list, &trapped_io);
-#endif
-#ifdef CONFIG_HAS_IOMEM
 	if (flags & IORESOURCE_MEM)
 		list_add(&tiop->list, &trapped_mem);
-#endif
 	spin_unlock_irq(&trapped_lock);
 
 	return 0;
@@ -116,15 +99,14 @@ void __iomem *match_trapped_io_handler(struct list_head *list,
 	struct trapped_io *tiop;
 	struct resource *res;
 	int k, len;
-	unsigned long flags;
 
-	spin_lock_irqsave(&trapped_lock, flags);
+	spin_lock_irq(&trapped_lock);
 	list_for_each_entry(tiop, list, list) {
 		voffs = 0;
 		for (k = 0; k < tiop->num_resources; k++) {
 			res = tiop->resource + k;
 			if (res->start == offset) {
-				spin_unlock_irqrestore(&trapped_lock, flags);
+				spin_unlock_irq(&trapped_lock);
 				return tiop->virt_base + voffs;
 			}
 
@@ -132,7 +114,7 @@ void __iomem *match_trapped_io_handler(struct list_head *list,
 			voffs += roundup(len, PAGE_SIZE);
 		}
 	}
-	spin_unlock_irqrestore(&trapped_lock, flags);
+	spin_unlock_irq(&trapped_lock);
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(match_trapped_io_handler);
@@ -188,31 +170,31 @@ static unsigned long long copy_word(unsigned long src_addr, int src_len,
 
 	switch (src_len) {
 	case 1:
-		tmp = __raw_readb(src_addr);
+		tmp = ctrl_inb(src_addr);
 		break;
 	case 2:
-		tmp = __raw_readw(src_addr);
+		tmp = ctrl_inw(src_addr);
 		break;
 	case 4:
-		tmp = __raw_readl(src_addr);
+		tmp = ctrl_inl(src_addr);
 		break;
 	case 8:
-		tmp = __raw_readq(src_addr);
+		tmp = ctrl_inq(src_addr);
 		break;
 	}
 
 	switch (dst_len) {
 	case 1:
-		__raw_writeb(tmp, dst_addr);
+		ctrl_outb(tmp, dst_addr);
 		break;
 	case 2:
-		__raw_writew(tmp, dst_addr);
+		ctrl_outw(tmp, dst_addr);
 		break;
 	case 4:
-		__raw_writel(tmp, dst_addr);
+		ctrl_outl(tmp, dst_addr);
 		break;
 	case 8:
-		__raw_writeq(tmp, dst_addr);
+		ctrl_outq(tmp, dst_addr);
 		break;
 	}
 
@@ -272,11 +254,9 @@ static struct mem_access trapped_io_access = {
 int handle_trapped_io(struct pt_regs *regs, unsigned long address)
 {
 	mm_segment_t oldfs;
-	insn_size_t instruction;
+	opcode_t instruction;
 	int tmp;
 
-	if (trapped_io_disable)
-		return 0;
 	if (!lookup_tiop(address))
 		return 0;
 
@@ -290,8 +270,7 @@ int handle_trapped_io(struct pt_regs *regs, unsigned long address)
 		return 0;
 	}
 
-	tmp = handle_unaligned_access(instruction, regs,
-				      &trapped_io_access, 1);
+	tmp = handle_unaligned_access(instruction, regs, &trapped_io_access);
 	set_fs(oldfs);
 	return tmp == 0;
 }

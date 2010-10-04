@@ -9,7 +9,7 @@
  *
  * Modifications from:
  *   CIH <cih@coventive.com>
- *   Nicolas Pitre <nico@fluxnic.net>
+ *   Nicolas Pitre <nico@cam.org>
  *   Andrew Christian <andrew.christian@hp.com>
  *
  * Converted to the RTC subsystem and Driver Model
@@ -35,8 +35,7 @@
 #include <asm/irq.h>
 
 #ifdef CONFIG_ARCH_PXA
-#include <mach/regs-rtc.h>
-#include <mach/regs-ost.h>
+#include <mach/pxa-regs.h>
 #endif
 
 #define RTC_DEF_DIVIDER		32768 - 1
@@ -393,34 +392,31 @@ static int sa1100_rtc_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_PM
-static int sa1100_rtc_suspend(struct device *dev)
+static int sa1100_rtc_suspend(struct platform_device *pdev, pm_message_t state)
 {
-	if (device_may_wakeup(dev))
+	if (device_may_wakeup(&pdev->dev))
 		enable_irq_wake(IRQ_RTCAlrm);
 	return 0;
 }
 
-static int sa1100_rtc_resume(struct device *dev)
+static int sa1100_rtc_resume(struct platform_device *pdev)
 {
-	if (device_may_wakeup(dev))
+	if (device_may_wakeup(&pdev->dev))
 		disable_irq_wake(IRQ_RTCAlrm);
 	return 0;
 }
-
-static const struct dev_pm_ops sa1100_rtc_pm_ops = {
-	.suspend	= sa1100_rtc_suspend,
-	.resume		= sa1100_rtc_resume,
-};
+#else
+#define sa1100_rtc_suspend	NULL
+#define sa1100_rtc_resume	NULL
 #endif
 
 static struct platform_driver sa1100_rtc_driver = {
 	.probe		= sa1100_rtc_probe,
 	.remove		= sa1100_rtc_remove,
+	.suspend	= sa1100_rtc_suspend,
+	.resume		= sa1100_rtc_resume,
 	.driver		= {
-		.name	= "sa1100-rtc",
-#ifdef CONFIG_PM
-		.pm	= &sa1100_rtc_pm_ops,
-#endif
+		.name		= "sa1100-rtc",
 	},
 };
 

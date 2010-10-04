@@ -66,7 +66,7 @@ static struct usb_device_descriptor device_desc = {
 	.bLength =		sizeof device_desc,
 	.bDescriptorType =	USB_DT_DEVICE,
 
-	.bcdUSB =		cpu_to_le16(0x0200),
+	.bcdUSB =		__constant_cpu_to_le16(0x0200),
 
 	.bDeviceClass =		USB_CLASS_COMM,
 	.bDeviceSubClass =	0,
@@ -74,8 +74,8 @@ static struct usb_device_descriptor device_desc = {
 	/* .bMaxPacketSize0 = f(hardware) */
 
 	/* Vendor and product id can be overridden by module parameters.  */
-	.idVendor =		cpu_to_le16(CDC_VENDOR_NUM),
-	.idProduct =		cpu_to_le16(CDC_PRODUCT_NUM),
+	.idVendor =		__constant_cpu_to_le16(CDC_VENDOR_NUM),
+	.idProduct =		__constant_cpu_to_le16(CDC_PRODUCT_NUM),
 	/* .bcdDevice = f(hardware) */
 	/* .iManufacturer = DYNAMIC */
 	/* .iProduct = DYNAMIC */
@@ -129,7 +129,7 @@ static u8 hostaddr[ETH_ALEN];
 /*
  * We _always_ have both CDC ECM and CDC ACM functions.
  */
-static int __ref cdc_do_config(struct usb_configuration *c)
+static int __init cdc_do_config(struct usb_configuration *c)
 {
 	int	status;
 
@@ -159,7 +159,7 @@ static struct usb_configuration cdc_config_driver = {
 
 /*-------------------------------------------------------------------------*/
 
-static int __ref cdc_bind(struct usb_composite_dev *cdev)
+static int __init cdc_bind(struct usb_composite_dev *cdev)
 {
 	int			gcnum;
 	struct usb_gadget	*gadget = cdev->gadget;
@@ -193,7 +193,7 @@ static int __ref cdc_bind(struct usb_composite_dev *cdev)
 				gadget->name,
 				cdc_config_driver.label);
 		device_desc.bcdDevice =
-			cpu_to_le16(0x0300 | 0x0099);
+			__constant_cpu_to_le16(0x0300 | 0x0099);
 	}
 
 

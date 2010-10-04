@@ -117,7 +117,7 @@ typedef unsigned long sigset_t;
 #define MINSIGSTKSZ	2048
 #define SIGSTKSZ	8192
 
-#include <asm-generic/signal-defs.h>
+#include <asm-generic/signal.h>
 
 #ifndef __ASSEMBLY__
 

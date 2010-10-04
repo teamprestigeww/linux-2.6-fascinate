@@ -4,8 +4,7 @@ spufs-y += inode.o file.o context.o syscalls.o coredump.o
 spufs-y += sched.o backing_ops.o hw_ops.o run.o gang.o
 spufs-y += switch.o fault.o lscsa_alloc.o
 
-# magic for the trace events
-CFLAGS_sched.o := -I$(src)
+obj-$(CONFIG_SPU_TRACE)	+= sputrace.o
 
 # Rules to build switch.o with the help of SPU tool chain
 SPU_CROSS	:= spu-
@@ -13,8 +12,10 @@ SPU_CC		:= $(SPU_CROSS)gcc
 SPU_AS		:= $(SPU_CROSS)gcc
 SPU_LD		:= $(SPU_CROSS)ld
 SPU_OBJCOPY	:= $(SPU_CROSS)objcopy
-SPU_CFLAGS	:= -O2 -Wall -I$(srctree)/include -D__KERNEL__
-SPU_AFLAGS	:= -c -D__ASSEMBLY__ -I$(srctree)/include -D__KERNEL__
+SPU_CFLAGS	:= -O2 -Wall -I$(srctree)/include \
+		   -I$(objtree)/include2 -D__KERNEL__
+SPU_AFLAGS	:= -c -D__ASSEMBLY__ -I$(srctree)/include \
+		   -I$(objtree)/include2 -D__KERNEL__
 SPU_LDFLAGS	:= -N -Ttext=0x0
 
 $(obj)/switch.o: $(obj)/spu_save_dump.h $(obj)/spu_restore_dump.h

@@ -20,7 +20,6 @@
 
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/smp.h>
 #include <linux/cpumask.h>
 #include <linux/interrupt.h>
 #include <linux/compiler.h>
@@ -37,24 +36,80 @@
 #include <asm/mipsregs.h>
 #include <asm/mipsmtregs.h>
 #include <asm/mips_mt.h>
-#include <asm/amon.h>
-#include <asm/gic.h>
+
+/*
+ * Crude manipulation of the CPU masks to control which
+ * which CPU's are brought online during initialisation
+ *
+ * Beware... this needs to be called after CPU discovery
+ * but before CPU bringup
+ */
+static int __init allowcpus(char *str)
+{
+	cpumask_t cpu_allow_map;
+	char buf[256];
+	int len;
+
+	cpus_clear(cpu_allow_map);
+	if (cpulist_parse(str, &cpu_allow_map) == 0) {
+		cpu_set(0, cpu_allow_map);
+		cpus_and(cpu_possible_map, cpu_possible_map, cpu_allow_map);
+		len = cpulist_scnprintf(buf, sizeof(buf)-1, &cpu_possible_map);
+		buf[len] = '\0';
+		pr_debug("Allowable CPUs: %s\n", buf);
+		return 1;
+	} else
+		return 0;
+}
+__setup("allowcpus=", allowcpus);
 
 static void ipi_call_function(unsigned int cpu)
 {
+	unsigned int action = 0;
+
 	pr_debug("CPU%d: %s cpu %d status %08x\n",
 		 smp_processor_id(), __func__, cpu, read_c0_status());
 
-	gic_send_ipi(plat_ipi_call_int_xlate(cpu));
+	switch (cpu) {
+	case 0:
+		action = GIC_IPI_EXT_INTR_CALLFNC_VPE0;
+		break;
+	case 1:
+		action = GIC_IPI_EXT_INTR_CALLFNC_VPE1;
+		break;
+	case 2:
+		action = GIC_IPI_EXT_INTR_CALLFNC_VPE2;
+		break;
+	case 3:
+		action = GIC_IPI_EXT_INTR_CALLFNC_VPE3;
+		break;
+	}
+	gic_send_ipi(action);
 }
 
 
 static void ipi_resched(unsigned int cpu)
 {
+	unsigned int action = 0;
+
 	pr_debug("CPU%d: %s cpu %d status %08x\n",
 		 smp_processor_id(), __func__, cpu, read_c0_status());
 
-	gic_send_ipi(plat_ipi_resched_int_xlate(cpu));
+	switch (cpu) {
+	case 0:
+		action = GIC_IPI_EXT_INTR_RESCHED_VPE0;
+		break;
+	case 1:
+		action = GIC_IPI_EXT_INTR_RESCHED_VPE1;
+		break;
+	case 2:
+		action = GIC_IPI_EXT_INTR_RESCHED_VPE2;
+		break;
+	case 3:
+		action = GIC_IPI_EXT_INTR_RESCHED_VPE3;
+		break;
+	}
+	gic_send_ipi(action);
 }
 
 /*
@@ -80,11 +135,11 @@ void cmp_send_ipi_single(int cpu, unsigned int action)
 	local_irq_restore(flags);
 }
 
-static void cmp_send_ipi_mask(const struct cpumask *mask, unsigned int action)
+static void cmp_send_ipi_mask(cpumask_t mask, unsigned int action)
 {
 	unsigned int i;
 
-	for_each_cpu(i, mask)
+	for_each_cpu_mask(i, mask)
 		cmp_send_ipi_single(i, action);
 }
 
@@ -150,7 +205,7 @@ static void cmp_boot_secondary(int cpu, struct task_struct *idle)
 			   (unsigned long)(gp + sizeof(struct thread_info)));
 #endif
 
-	amon_cpu_start(cpu, pc, sp, (unsigned long)gp, a0);
+	amon_cpu_start(cpu, pc, sp, gp, a0);
 }
 
 /*
@@ -171,7 +226,7 @@ void __init cmp_smp_setup(void)
 
 	for (i = 1; i < NR_CPUS; i++) {
 		if (amon_cpu_avail(i)) {
-			set_cpu_possible(i, true);
+			cpu_set(i, cpu_possible_map);
 			__cpu_number_map[i]	= ++ncpu;
 			__cpu_logical_map[ncpu]	= i;
 		}

@@ -64,13 +64,10 @@
 #define RIO_INB_MBOX_RESOURCE	1
 #define RIO_OUTB_MBOX_RESOURCE	2
 
-#define RIO_PW_MSG_SIZE		64
-
 extern struct bus_type rio_bus_type;
 extern struct list_head rio_devices;	/* list of all devices */
 
 struct rio_mport;
-union rio_pw_msg;
 
 /**
  * struct rio_dev - RIO device info
@@ -88,15 +85,11 @@ union rio_pw_msg;
  * @swpinfo: Switch port info
  * @src_ops: Source operation capabilities
  * @dst_ops: Destination operation capabilities
- * @comp_tag: RIO component tag
- * @phys_efptr: RIO device extended features pointer
- * @em_efptr: RIO Error Management features pointer
  * @dma_mask: Mask of bits of RIO address this device implements
  * @rswitch: Pointer to &struct rio_switch if valid for this device
  * @driver: Driver claiming this device
  * @dev: Device model device
  * @riores: RIO resources this device owns
- * @pwcback: port-write callback function for this device
  * @destid: Network destination ID
  */
 struct rio_dev {
@@ -114,15 +107,11 @@ struct rio_dev {
 	u32 swpinfo;		/* Only used for switches */
 	u32 src_ops;
 	u32 dst_ops;
-	u32 comp_tag;
-	u32 phys_efptr;
-	u32 em_efptr;
 	u64 dma_mask;
 	struct rio_switch *rswitch;	/* RIO switch info */
 	struct rio_driver *driver;	/* RIO driver claiming this device */
 	struct device dev;	/* LDM device structure */
 	struct resource riores[RIO_MAX_DEV_RESOURCES];
-	int (*pwcback) (struct rio_dev *rdev, union rio_pw_msg *msg, int step);
 	u16 destid;
 };
 
@@ -222,14 +211,8 @@ struct rio_net {
  * @hopcount: Hopcount to this switch
  * @destid: Associated destid in the path
  * @route_table: Copy of switch routing table
- * @port_ok: Status of each port (one bit per port) - OK=1 or UNINIT=0
  * @add_entry: Callback for switch-specific route add function
  * @get_entry: Callback for switch-specific route get function
- * @clr_table: Callback for switch-specific clear route table function
- * @set_domain: Callback for switch-specific domain setting function
- * @get_domain: Callback for switch-specific domain get function
- * @em_init: Callback for switch-specific error management initialization function
- * @em_handle: Callback for switch-specific error management handler function
  */
 struct rio_switch {
 	struct list_head node;
@@ -237,19 +220,10 @@ struct rio_switch {
 	u16 hopcount;
 	u16 destid;
 	u8 *route_table;
-	u32 port_ok;
 	int (*add_entry) (struct rio_mport * mport, u16 destid, u8 hopcount,
 			  u16 table, u16 route_destid, u8 route_port);
 	int (*get_entry) (struct rio_mport * mport, u16 destid, u8 hopcount,
 			  u16 table, u16 route_destid, u8 * route_port);
-	int (*clr_table) (struct rio_mport *mport, u16 destid, u8 hopcount,
-			  u16 table);
-	int (*set_domain) (struct rio_mport *mport, u16 destid, u8 hopcount,
-			   u8 sw_domain);
-	int (*get_domain) (struct rio_mport *mport, u16 destid, u8 hopcount,
-			   u8 *sw_domain);
-	int (*em_init) (struct rio_dev *dev);
-	int (*em_handle) (struct rio_dev *dev, u8 swport);
 };
 
 /* Low-level architecture-dependent routines */
@@ -261,7 +235,6 @@ struct rio_switch {
  * @cread: Callback to perform network read of config space.
  * @cwrite: Callback to perform network write of config space.
  * @dsend: Callback to send a doorbell message.
- * @pwenable: Callback to enable/disable port-write message handling.
  */
 struct rio_ops {
 	int (*lcread) (struct rio_mport *mport, int index, u32 offset, int len,
@@ -273,7 +246,6 @@ struct rio_ops {
 	int (*cwrite) (struct rio_mport *mport, int index, u16 destid,
 			u8 hopcount, u32 offset, int len, u32 data);
 	int (*dsend) (struct rio_mport *mport, int index, u16 destid, u16 data);
-	int (*pwenable) (struct rio_mport *mport, int enable);
 };
 
 #define RIO_RESOURCE_MEM	0x00000100
@@ -330,28 +302,21 @@ struct rio_device_id {
 };
 
 /**
- * struct rio_switch_ops - Per-switch operations
+ * struct rio_route_ops - Per-switch route operations
  * @vid: RIO vendor ID
  * @did: RIO device ID
- * @init_hook: Callback that performs switch device initialization
+ * @add_hook: Callback that adds a route entry
+ * @get_hook: Callback that gets a route entry
  *
- * Defines the operations that are necessary to initialize/control
- * a particular RIO switch device.
+ * Defines the operations that are necessary to manipulate the route
+ * tables for a particular RIO switch device.
  */
-struct rio_switch_ops {
+struct rio_route_ops {
 	u16 vid, did;
-	int (*init_hook) (struct rio_dev *rdev, int do_enum);
-};
-
-union rio_pw_msg {
-	struct {
-		u32 comptag;	/* Component Tag CSR */
-		u32 errdetect;	/* Port N Error Detect CSR */
-		u32 is_port;	/* Implementation specific + PortID */
-		u32 ltlerrdet;	/* LTL Error Detect CSR */
-		u32 padding[12];
-	} em;
-	u32 raw[RIO_PW_MSG_SIZE/sizeof(u32)];
+	int (*add_hook) (struct rio_mport * mport, u16 destid, u8 hopcount,
+			 u16 table, u16 route_destid, u8 route_port);
+	int (*get_hook) (struct rio_mport * mport, u16 destid, u8 hopcount,
+			 u16 table, u16 route_destid, u8 * route_port);
 };
 
 /* Architecture and hardware-specific functions */

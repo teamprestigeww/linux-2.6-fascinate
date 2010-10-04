@@ -45,7 +45,6 @@
 #include <asm/pcic.h>
 #include <asm/cacheflush.h>
 #include <asm/irq_regs.h>
-#include <asm/leon.h>
 
 #include "kernel.h"
 #include "irq.h"
@@ -440,6 +439,7 @@ static int request_fast_irq(unsigned int irq,
 	flush_cache_all();
 
 	action->flags = irqflags;
+	cpus_clear(action->mask);
 	action->name = devname;
 	action->dev_id = NULL;
 	action->next = NULL;
@@ -574,6 +574,7 @@ int request_irq(unsigned int irq,
 
 	action->handler = handler;
 	action->flags = irqflags;
+	cpus_clear(action->mask);
 	action->name = devname;
 	action->next = NULL;
 	action->dev_id = dev_id;
@@ -660,10 +661,6 @@ void __init init_IRQ(void)
 		
 	case sun4d:
 		sun4d_init_IRQ();
-		break;
-
-	case sparc_leon:
-		leon_init_IRQ();
 		break;
 
 	default:

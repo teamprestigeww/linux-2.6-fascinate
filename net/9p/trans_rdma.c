@@ -40,7 +40,6 @@
 #include <linux/file.h>
 #include <linux/parser.h>
 #include <linux/semaphore.h>
-#include <linux/slab.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 #include <net/9p/transport.h>
@@ -68,15 +67,14 @@
  * @pd: Protection Domain pointer
  * @qp: Queue Pair pointer
  * @cq: Completion Queue pointer
- * @dm_mr: DMA Memory Region pointer
  * @lkey: The local access only memory region key
  * @timeout: Number of uSecs to wait for connection management events
  * @sq_depth: The depth of the Send Queue
  * @sq_sem: Semaphore for the SQ
  * @rq_depth: The depth of the Receive Queue.
- * @rq_count: Count of requests in the Receive Queue.
  * @addr: The remote peer's address
  * @req_lock: Protects the active request list
+ * @send_wait: Wait list when the SQ fills up
  * @cm_done: Completion event for connection management tracking
  */
 struct p9_trans_rdma {
@@ -156,9 +154,9 @@ static match_table_t tokens = {
 };
 
 /**
- * parse_opts - parse mount options into rdma options structure
- * @params: options string passed from mount
- * @opts: rdma transport-specific structure to parse options into
+ * parse_options - parse mount options into session structure
+ * @options: options string passed from mount
+ * @opts: transport-specific structure to parse options into
  *
  * Returns 0 upon success, -ERRNO upon failure
  */
@@ -167,7 +165,7 @@ static int parse_opts(char *params, struct p9_rdma_opts *opts)
 	char *p;
 	substring_t args[MAX_OPT_ARGS];
 	int option;
-	char *options, *tmp_options;
+	char *options;
 	int ret;
 
 	opts->port = P9_PORT;
@@ -178,13 +176,12 @@ static int parse_opts(char *params, struct p9_rdma_opts *opts)
 	if (!params)
 		return 0;
 
-	tmp_options = kstrdup(params, GFP_KERNEL);
-	if (!tmp_options) {
+	options = kstrdup(params, GFP_KERNEL);
+	if (!options) {
 		P9_DPRINTK(P9_DEBUG_ERROR,
 			   "failed to allocate copy of option string\n");
 		return -ENOMEM;
 	}
-	options = tmp_options;
 
 	while ((p = strsep(&options, ",")) != NULL) {
 		int token;
@@ -218,7 +215,7 @@ static int parse_opts(char *params, struct p9_rdma_opts *opts)
 	}
 	/* RQ must be at least as large as the SQ */
 	opts->rq_depth = max(opts->rq_depth, opts->sq_depth);
-	kfree(tmp_options);
+	kfree(options);
 	return 0;
 }
 
@@ -298,7 +295,6 @@ handle_recv(struct p9_client *client, struct p9_trans_rdma *rdma,
 		goto err_out;
 
 	req->rc = c->rc;
-	req->status = REQ_STATUS_RCVD;
 	p9_client_cb(client, req);
 
 	return;
@@ -308,6 +304,7 @@ handle_recv(struct p9_client *client, struct p9_trans_rdma *rdma,
 		   req, err, status);
 	rdma->state = P9_RDMA_FLUSHING;
 	client->status = Disconnected;
+	return;
 }
 
 static void
@@ -426,10 +423,8 @@ static int rdma_request(struct p9_client *client, struct p9_req_t *req)
 
 	/* Allocate an fcall for the reply */
 	rpl_context = kmalloc(sizeof *rpl_context, GFP_KERNEL);
-	if (!rpl_context) {
-		err = -ENOMEM;
+	if (!rpl_context)
 		goto err_close;
-	}
 
 	/*
 	 * If the request has a buffer, steal it, otherwise
@@ -447,8 +442,8 @@ static int rdma_request(struct p9_client *client, struct p9_req_t *req)
 	}
 	rpl_context->rc = req->rc;
 	if (!rpl_context->rc) {
-		err = -ENOMEM;
-		goto err_free2;
+		kfree(rpl_context);
+		goto err_close;
 	}
 
 	/*
@@ -460,8 +455,11 @@ static int rdma_request(struct p9_client *client, struct p9_req_t *req)
 	 */
 	if (atomic_inc_return(&rdma->rq_count) <= rdma->rq_depth) {
 		err = post_recv(client, rpl_context);
-		if (err)
-			goto err_free1;
+		if (err) {
+			kfree(rpl_context->rc);
+			kfree(rpl_context);
+			goto err_close;
+		}
 	} else
 		atomic_dec(&rdma->rq_count);
 
@@ -470,10 +468,8 @@ static int rdma_request(struct p9_client *client, struct p9_req_t *req)
 
 	/* Post the request */
 	c = kmalloc(sizeof *c, GFP_KERNEL);
-	if (!c) {
-		err = -ENOMEM;
-		goto err_free1;
-	}
+	if (!c)
+		goto err_close;
 	c->req = req;
 
 	c->busa = ib_dma_map_single(rdma->cm_id->device,
@@ -500,15 +496,9 @@ static int rdma_request(struct p9_client *client, struct p9_req_t *req)
 	return ib_post_send(rdma->qp, &wr, &bad_wr);
 
  error:
-	kfree(c);
-	kfree(rpl_context->rc);
-	kfree(rpl_context);
 	P9_DPRINTK(P9_DEBUG_ERROR, "EIO\n");
 	return -EIO;
- err_free1:
-	kfree(rpl_context->rc);
- err_free2:
-	kfree(rpl_context);
+
  err_close:
 	spin_lock_irqsave(&rdma->req_lock, flags);
 	if (rdma->state < P9_RDMA_CLOSING) {

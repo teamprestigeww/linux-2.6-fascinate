@@ -114,7 +114,7 @@
 
 #endif /* __KERNEL__ */
 
-#include <asm-generic/signal-defs.h>
+#include <asm-generic/signal.h>
 
 # ifndef __ASSEMBLY__
 

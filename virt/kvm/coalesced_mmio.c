@@ -2,7 +2,6 @@
  * KVM coalesced MMIO
  *
  * Copyright (c) 2008 Bull S.A.S.
- * Copyright 2009 Red Hat, Inc. and/or its affiliates.
  *
  *  Author: Laurent Vivier <Laurent.Vivier@bull.net>
  *
@@ -11,23 +10,25 @@
 #include "iodev.h"
 
 #include <linux/kvm_host.h>
-#include <linux/slab.h>
 #include <linux/kvm.h>
 
 #include "coalesced_mmio.h"
 
-static inline struct kvm_coalesced_mmio_dev *to_mmio(struct kvm_io_device *dev)
+static int coalesced_mmio_in_range(struct kvm_io_device *this,
+				   gpa_t addr, int len, int is_write)
 {
-	return container_of(dev, struct kvm_coalesced_mmio_dev, dev);
-}
-
-static int coalesced_mmio_in_range(struct kvm_coalesced_mmio_dev *dev,
-				   gpa_t addr, int len)
-{
+	struct kvm_coalesced_mmio_dev *dev =
+				(struct kvm_coalesced_mmio_dev*)this->private;
 	struct kvm_coalesced_mmio_zone *zone;
-	struct kvm_coalesced_mmio_ring *ring;
-	unsigned avail;
+	int next;
 	int i;
+
+	if (!is_write)
+		return 0;
+
+	/* kvm->lock is taken by the caller and must be not released before
+         * dev.read/write
+         */
 
 	/* Are we able to batch it ? */
 
@@ -35,9 +36,10 @@ static int coalesced_mmio_in_range(struct kvm_coalesced_mmio_dev *dev,
 	 * check if we don't meet the first used entry
 	 * there is always one unused entry in the buffer
 	 */
-	ring = dev->kvm->coalesced_mmio_ring;
-	avail = (ring->first - ring->last - 1) % KVM_COALESCED_MMIO_MAX;
-	if (avail < KVM_MAX_VCPUS) {
+
+	next = (dev->kvm->coalesced_mmio_ring->last + 1) %
+							KVM_COALESCED_MMIO_MAX;
+	if (next == dev->kvm->coalesced_mmio_ring->first) {
 		/* full */
 		return 0;
 	}
@@ -58,15 +60,14 @@ static int coalesced_mmio_in_range(struct kvm_coalesced_mmio_dev *dev,
 	return 0;
 }
 
-static int coalesced_mmio_write(struct kvm_io_device *this,
-				gpa_t addr, int len, const void *val)
+static void coalesced_mmio_write(struct kvm_io_device *this,
+				 gpa_t addr, int len, const void *val)
 {
-	struct kvm_coalesced_mmio_dev *dev = to_mmio(this);
+	struct kvm_coalesced_mmio_dev *dev =
+				(struct kvm_coalesced_mmio_dev*)this->private;
 	struct kvm_coalesced_mmio_ring *ring = dev->kvm->coalesced_mmio_ring;
-	if (!coalesced_mmio_in_range(dev, addr, len))
-		return -EOPNOTSUPP;
 
-	spin_lock(&dev->lock);
+	/* kvm->lock must be taken by caller before call to in_range()*/
 
 	/* copy data in first free entry of the ring */
 
@@ -75,85 +76,49 @@ static int coalesced_mmio_write(struct kvm_io_device *this,
 	memcpy(ring->coalesced_mmio[ring->last].data, val, len);
 	smp_wmb();
 	ring->last = (ring->last + 1) % KVM_COALESCED_MMIO_MAX;
-	spin_unlock(&dev->lock);
-	return 0;
 }
 
 static void coalesced_mmio_destructor(struct kvm_io_device *this)
 {
-	struct kvm_coalesced_mmio_dev *dev = to_mmio(this);
-
-	kfree(dev);
+	kfree(this);
 }
-
-static const struct kvm_io_device_ops coalesced_mmio_ops = {
-	.write      = coalesced_mmio_write,
-	.destructor = coalesced_mmio_destructor,
-};
 
 int kvm_coalesced_mmio_init(struct kvm *kvm)
 {
 	struct kvm_coalesced_mmio_dev *dev;
-	struct page *page;
-	int ret;
 
-	ret = -ENOMEM;
-	page = alloc_page(GFP_KERNEL | __GFP_ZERO);
-	if (!page)
-		goto out_err;
-	kvm->coalesced_mmio_ring = page_address(page);
-
-	ret = -ENOMEM;
 	dev = kzalloc(sizeof(struct kvm_coalesced_mmio_dev), GFP_KERNEL);
 	if (!dev)
-		goto out_free_page;
-	spin_lock_init(&dev->lock);
-	kvm_iodevice_init(&dev->dev, &coalesced_mmio_ops);
+		return -ENOMEM;
+	dev->dev.write  = coalesced_mmio_write;
+	dev->dev.in_range  = coalesced_mmio_in_range;
+	dev->dev.destructor  = coalesced_mmio_destructor;
+	dev->dev.private  = dev;
 	dev->kvm = kvm;
 	kvm->coalesced_mmio_dev = dev;
+	kvm_io_bus_register_dev(&kvm->mmio_bus, &dev->dev);
 
-	mutex_lock(&kvm->slots_lock);
-	ret = kvm_io_bus_register_dev(kvm, KVM_MMIO_BUS, &dev->dev);
-	mutex_unlock(&kvm->slots_lock);
-	if (ret < 0)
-		goto out_free_dev;
-
-	return ret;
-
-out_free_dev:
-	kvm->coalesced_mmio_dev = NULL;
-	kfree(dev);
-out_free_page:
-	kvm->coalesced_mmio_ring = NULL;
-	__free_page(page);
-out_err:
-	return ret;
-}
-
-void kvm_coalesced_mmio_free(struct kvm *kvm)
-{
-	if (kvm->coalesced_mmio_ring)
-		free_page((unsigned long)kvm->coalesced_mmio_ring);
+	return 0;
 }
 
 int kvm_vm_ioctl_register_coalesced_mmio(struct kvm *kvm,
-					 struct kvm_coalesced_mmio_zone *zone)
+				         struct kvm_coalesced_mmio_zone *zone)
 {
 	struct kvm_coalesced_mmio_dev *dev = kvm->coalesced_mmio_dev;
 
 	if (dev == NULL)
-		return -ENXIO;
+		return -EINVAL;
 
-	mutex_lock(&kvm->slots_lock);
+	mutex_lock(&kvm->lock);
 	if (dev->nb_zones >= KVM_COALESCED_MMIO_ZONE_MAX) {
-		mutex_unlock(&kvm->slots_lock);
+		mutex_unlock(&kvm->lock);
 		return -ENOBUFS;
 	}
 
 	dev->zone[dev->nb_zones] = *zone;
 	dev->nb_zones++;
 
-	mutex_unlock(&kvm->slots_lock);
+	mutex_unlock(&kvm->lock);
 	return 0;
 }
 
@@ -165,12 +130,12 @@ int kvm_vm_ioctl_unregister_coalesced_mmio(struct kvm *kvm,
 	struct kvm_coalesced_mmio_zone *z;
 
 	if (dev == NULL)
-		return -ENXIO;
+		return -EINVAL;
 
-	mutex_lock(&kvm->slots_lock);
+	mutex_lock(&kvm->lock);
 
 	i = dev->nb_zones;
-	while (i) {
+	while(i) {
 		z = &dev->zone[i - 1];
 
 		/* unregister all zones
@@ -185,7 +150,7 @@ int kvm_vm_ioctl_unregister_coalesced_mmio(struct kvm *kvm,
 		i--;
 	}
 
-	mutex_unlock(&kvm->slots_lock);
+	mutex_unlock(&kvm->lock);
 
 	return 0;
 }

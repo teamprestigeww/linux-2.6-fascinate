@@ -26,7 +26,6 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
 #include <mach/orion5x.h>
-#include <mach/bridge-regs.h>
 #include "common.h"
 #include "mpp.h"
 
@@ -181,9 +180,9 @@ static void mss2_power_off(void)
 	/*
 	 * Enable and issue soft reset
 	 */
-	reg = readl(RSTOUTn_MASK);
+	reg = readl(CPU_RESET_MASK);
 	reg |= 1 << 2;
-	writel(reg, RSTOUTn_MASK);
+	writel(reg, CPU_RESET_MASK);
 
 	reg = readl(CPU_SOFT_RESET);
 	reg |= 1;

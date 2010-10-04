@@ -20,7 +20,6 @@
  * 02110-1301 USA
  */
 #include <linux/miscdevice.h>
-#include <linux/gfp.h>
 #include <linux/file.h>
 #include <linux/smp_lock.h>
 #include <net/tcp.h>

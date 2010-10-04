@@ -1,4 +1,7 @@
 /*
+ *  arch/mips/pci/pci-emma2rh.c
+ *      This file defines the PCI configration.
+ *
  *  Copyright (C) NEC Electronics Corporation 2004-2006
  *
  *  This file is based on the arch/mips/ddb5xxx/ddb5477/pci.c

@@ -32,7 +32,6 @@
 #include <linux/random.h>
 #include <linux/crypto.h>
 #include <linux/scatterlist.h>
-#include <linux/slab.h>
 #include "ecryptfs_kernel.h"
 
 /**
@@ -417,9 +416,7 @@ ecryptfs_find_global_auth_tok_for_sig(
 			    &mount_crypt_stat->global_auth_tok_list,
 			    mount_crypt_stat_list) {
 		if (memcmp(walker->sig, sig, ECRYPTFS_SIG_SIZE_HEX) == 0) {
-			rc = key_validate(walker->global_auth_tok_key);
-			if (!rc)
-				(*global_auth_tok) = walker;
+			(*global_auth_tok) = walker;
 			goto out;
 		}
 	}
@@ -515,7 +512,6 @@ ecryptfs_write_tag_70_packet(char *dest, size_t *remaining_bytes,
 	if (!s) {
 		printk(KERN_ERR "%s: Out of memory whilst trying to kmalloc "
 		       "[%zd] bytes of kernel memory\n", __func__, sizeof(*s));
-		rc = -ENOMEM;
 		goto out;
 	}
 	s->desc.flags = CRYPTO_TFM_REQ_MAY_SLEEP;
@@ -616,12 +612,7 @@ ecryptfs_write_tag_70_packet(char *dest, size_t *remaining_bytes,
 	}
 	/* TODO: Support other key modules than passphrase for
 	 * filename encryption */
-	if (s->auth_tok->token_type != ECRYPTFS_PASSWORD) {
-		rc = -EOPNOTSUPP;
-		printk(KERN_INFO "%s: Filename encryption only supports "
-		       "password tokens\n", __func__);
-		goto out_free_unlock;
-	}
+	BUG_ON(s->auth_tok->token_type != ECRYPTFS_PASSWORD);
 	sg_init_one(
 		&s->hash_sg,
 		(u8 *)s->auth_tok->token.password.session_key_encryption_key,
@@ -749,7 +740,8 @@ ecryptfs_write_tag_70_packet(char *dest, size_t *remaining_bytes,
 out_release_free_unlock:
 	crypto_free_hash(s->hash_desc.tfm);
 out_free_unlock:
-	kzfree(s->block_aligned_filename);
+	memset(s->block_aligned_filename, 0, s->block_aligned_filename_size);
+	kfree(s->block_aligned_filename);
 out_unlock:
 	mutex_unlock(s->tfm_mutex);
 out:
@@ -807,7 +799,6 @@ ecryptfs_parse_tag_70_packet(char **filename, size_t *filename_size,
 	if (!s) {
 		printk(KERN_ERR "%s: Out of memory whilst trying to kmalloc "
 		       "[%zd] bytes of kernel memory\n", __func__, sizeof(*s));
-		rc = -ENOMEM;
 		goto out;
 	}
 	s->desc.flags = CRYPTO_TFM_REQ_MAY_SLEEP;
@@ -920,12 +911,7 @@ ecryptfs_parse_tag_70_packet(char **filename, size_t *filename_size,
 	}
 	/* TODO: Support other key modules than passphrase for
 	 * filename encryption */
-	if (s->auth_tok->token_type != ECRYPTFS_PASSWORD) {
-		rc = -EOPNOTSUPP;
-		printk(KERN_INFO "%s: Filename encryption only supports "
-		       "password tokens\n", __func__);
-		goto out_free_unlock;
-	}
+	BUG_ON(s->auth_tok->token_type != ECRYPTFS_PASSWORD);
 	rc = crypto_blkcipher_setkey(
 		s->desc.tfm,
 		s->auth_tok->token.password.session_key_encryption_key,
@@ -1318,23 +1304,14 @@ parse_tag_3_packet(struct ecryptfs_crypt_stat *crypt_stat,
 	}
 	(*new_auth_tok)->session_key.encrypted_key_size =
 		(body_size - (ECRYPTFS_SALT_SIZE + 5));
-	if ((*new_auth_tok)->session_key.encrypted_key_size
-	    > ECRYPTFS_MAX_ENCRYPTED_KEY_BYTES) {
-		printk(KERN_WARNING "Tag 3 packet contains key larger "
-		       "than ECRYPTFS_MAX_ENCRYPTED_KEY_BYTES\n");
-		rc = -EINVAL;
-		goto out_free;
-	}
 	if (unlikely(data[(*packet_size)++] != 0x04)) {
 		printk(KERN_WARNING "Unknown version number [%d]\n",
 		       data[(*packet_size) - 1]);
 		rc = -EINVAL;
 		goto out_free;
 	}
-	rc = ecryptfs_cipher_code_to_string(crypt_stat->cipher,
-					    (u16)data[(*packet_size)]);
-	if (rc)
-		goto out_free;
+	ecryptfs_cipher_code_to_string(crypt_stat->cipher,
+				       (u16)data[(*packet_size)]);
 	/* A little extra work to differentiate among the AES key
 	 * sizes; see RFC2440 */
 	switch(data[(*packet_size)++]) {
@@ -1345,9 +1322,7 @@ parse_tag_3_packet(struct ecryptfs_crypt_stat *crypt_stat,
 		crypt_stat->key_size =
 			(*new_auth_tok)->session_key.encrypted_key_size;
 	}
-	rc = ecryptfs_init_crypt_ctx(crypt_stat);
-	if (rc)
-		goto out_free;
+	ecryptfs_init_crypt_ctx(crypt_stat);
 	if (unlikely(data[(*packet_size)++] != 0x03)) {
 		printk(KERN_WARNING "Only S2K ID 3 is currently supported\n");
 		rc = -ENOSYS;
@@ -1472,12 +1447,6 @@ parse_tag_11_packet(unsigned char *data, unsigned char *contents,
 	(*tag_11_contents_size) = (body_size - 14);
 	if (unlikely((*packet_size) + body_size + 1 > max_packet_size)) {
 		printk(KERN_ERR "Packet size exceeds max\n");
-		rc = -EINVAL;
-		goto out;
-	}
-	if (unlikely((*tag_11_contents_size) > max_contents_bytes)) {
-		printk(KERN_ERR "Literal data section in tag 11 packet exceeds "
-		       "expected size\n");
 		rc = -EINVAL;
 		goto out;
 	}
@@ -2385,18 +2354,21 @@ struct kmem_cache *ecryptfs_key_sig_cache;
 int ecryptfs_add_keysig(struct ecryptfs_crypt_stat *crypt_stat, char *sig)
 {
 	struct ecryptfs_key_sig *new_key_sig;
+	int rc = 0;
 
 	new_key_sig = kmem_cache_alloc(ecryptfs_key_sig_cache, GFP_KERNEL);
 	if (!new_key_sig) {
+		rc = -ENOMEM;
 		printk(KERN_ERR
 		       "Error allocating from ecryptfs_key_sig_cache\n");
-		return -ENOMEM;
+		goto out;
 	}
 	memcpy(new_key_sig->keysig, sig, ECRYPTFS_SIG_SIZE_HEX);
-	/* Caller must hold keysig_list_mutex */
+	mutex_lock(&crypt_stat->keysig_list_mutex);
 	list_add(&new_key_sig->crypt_stat_list, &crypt_stat->keysig_list);
-
-	return 0;
+	mutex_unlock(&crypt_stat->keysig_list_mutex);
+out:
+	return rc;
 }
 
 struct kmem_cache *ecryptfs_global_auth_tok_cache;

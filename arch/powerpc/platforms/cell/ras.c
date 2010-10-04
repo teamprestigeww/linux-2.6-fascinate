@@ -11,7 +11,6 @@
 
 #include <linux/types.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/reboot.h>
 #include <linux/kexec.h>
@@ -123,23 +122,12 @@ static int __init cbe_ptcal_enable_on_node(int nid, int order)
 
 	area->nid = nid;
 	area->order = order;
-	area->pages = alloc_pages_exact_node(area->nid, GFP_KERNEL|GFP_THISNODE,
-						area->order);
+	area->pages = alloc_pages_node(area->nid, GFP_KERNEL, area->order);
 
-	if (!area->pages) {
-		printk(KERN_WARNING "%s: no page on node %d\n",
-			__func__, area->nid);
+	if (!area->pages)
 		goto out_free_area;
-	}
 
-	/*
-	 * We move the ptcal area to the middle of the allocated
-	 * page, in order to avoid prefetches in memcpy and similar
-	 * functions stepping on it.
-	 */
-	addr = __pa(page_address(area->pages)) + (PAGE_SIZE >> 1);
-	printk(KERN_DEBUG "%s: enabling PTCAL on node %d address=0x%016lx\n",
-			__func__, area->nid, addr);
+	addr = __pa(page_address(area->pages));
 
 	ret = -EIO;
 	if (rtas_call(ptcal_start_tok, 3, 1, NULL, area->nid,
@@ -256,7 +244,7 @@ static int __init cbe_sysreset_init(void)
 {
 	struct cbe_pmd_regs __iomem *regs;
 
-	sysreset_hack = of_machine_is_compatible("IBM,CBPLUS-1.0");
+	sysreset_hack = machine_is_compatible("IBM,CBPLUS-1.0");
 	if (!sysreset_hack)
 		return 0;
 

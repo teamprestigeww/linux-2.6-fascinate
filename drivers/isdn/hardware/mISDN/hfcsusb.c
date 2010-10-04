@@ -33,10 +33,9 @@
 #include <linux/delay.h>
 #include <linux/usb.h>
 #include <linux/mISDNhw.h>
-#include <linux/slab.h>
 #include "hfcsusb.h"
 
-static const char *hfcsusb_rev = "Revision: 0.3.3 (socket), 2008-11-05";
+const char *hfcsusb_rev = "Revision: 0.3.3 (socket), 2008-11-05";
 
 static unsigned int debug;
 static int poll = DEFAULT_TRANSP_BURST_SZ;
@@ -97,10 +96,8 @@ static int write_reg(struct hfcsusb *hw, __u8 reg, __u8 val)
 			hw->name, __func__, reg, val);
 
 	spin_lock(&hw->ctrl_lock);
-	if (hw->ctrl_cnt >= HFC_CTRL_BUFSIZE) {
-		spin_unlock(&hw->ctrl_lock);
+	if (hw->ctrl_cnt >= HFC_CTRL_BUFSIZE)
 		return 1;
-	}
 	buf = &hw->ctrl_buff[hw->ctrl_in_idx];
 	buf->hfcs_reg = reg;
 	buf->reg_val = val;
@@ -724,7 +721,7 @@ hfcsusb_setup_bch(struct bchannel *bch, int protocol)
 	switch (protocol) {
 	case (-1):	/* used for init */
 		bch->state = -1;
-		/* fall through */
+		/* fall trough */
 	case (ISDN_P_NONE):
 		if (bch->state == ISDN_P_NONE)
 			return 0; /* already in idle state */
@@ -950,7 +947,7 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 				if (fifo->dch)
 					recv_Dchannel(fifo->dch);
 				if (fifo->bch)
-					recv_Bchannel(fifo->bch, MISDN_ID_ANY);
+					recv_Bchannel(fifo->bch);
 				if (fifo->ech)
 					recv_Echannel(fifo->ech,
 						     &hw->dch);
@@ -972,12 +969,12 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 	} else {
 		/* deliver transparent data to layer2 */
 		if (rx_skb->len >= poll)
-			recv_Bchannel(fifo->bch, MISDN_ID_ANY);
+			recv_Bchannel(fifo->bch);
 	}
 	spin_unlock(&hw->lock);
 }
 
-static void
+void
 fill_isoc_urb(struct urb *urb, struct usb_device *dev, unsigned int pipe,
 	      void *buf, int num_packets, int packet_size, int interval,
 	      usb_complete_t complete, void *context)
@@ -1723,7 +1720,7 @@ hfcsusb_stop_endpoint(struct hfcsusb *hw, int channel)
 
 
 /* Hardware Initialization */
-static int
+int
 setup_hfcsusb(struct hfcsusb *hw)
 {
 	int err;
@@ -1812,7 +1809,21 @@ deactivate_bchannel(struct bchannel *bch)
 		    hw->name, __func__, bch->nr);
 
 	spin_lock_irqsave(&hw->lock, flags);
-	mISDN_clear_bchannel(bch);
+	if (test_and_clear_bit(FLG_TX_NEXT, &bch->Flags)) {
+		dev_kfree_skb(bch->next_skb);
+		bch->next_skb = NULL;
+	}
+	if (bch->tx_skb) {
+		dev_kfree_skb(bch->tx_skb);
+		bch->tx_skb = NULL;
+	}
+	bch->tx_idx = 0;
+	if (bch->rx_skb) {
+		dev_kfree_skb(bch->rx_skb);
+		bch->rx_skb = NULL;
+	}
+	clear_bit(FLG_ACTIVE, &bch->Flags);
+	clear_bit(FLG_TX_BUSY, &bch->Flags);
 	spin_unlock_irqrestore(&hw->lock, flags);
 	hfcsusb_setup_bch(bch, ISDN_P_NONE);
 	hfcsusb_stop_endpoint(hw, bch->nr);

@@ -26,9 +26,9 @@
 #include <linux/interrupt.h>
 #include <linux/clk.h>
 #include <linux/io.h>
-#include <linux/platform_device.h>
 
-#include "omapfb.h"
+#include <mach/omapfb.h>
+
 #include "dispc.h"
 
 /* To work around an RFBI transfer rate limitation */
@@ -57,7 +57,6 @@
 
 #define DISPC_BASE		0x48050400
 #define DISPC_CONTROL		0x0040
-#define DISPC_IRQ_FRAMEMASK     0x0001
 
 static struct {
 	void __iomem	*base;
@@ -84,14 +83,12 @@ static inline u32 rfbi_read_reg(int idx)
 
 static int rfbi_get_clocks(void)
 {
-	rfbi.dss_ick = clk_get(&rfbi.fbdev->dssdev->dev, "ick");
-	if (IS_ERR(rfbi.dss_ick)) {
-		dev_err(rfbi.fbdev->dev, "can't get ick\n");
+	if (IS_ERR((rfbi.dss_ick = clk_get(rfbi.fbdev->dev, "dss_ick")))) {
+		dev_err(rfbi.fbdev->dev, "can't get dss_ick\n");
 		return PTR_ERR(rfbi.dss_ick);
 	}
 
-	rfbi.dss1_fck = clk_get(&rfbi.fbdev->dssdev->dev, "dss1_fck");
-	if (IS_ERR(rfbi.dss1_fck)) {
+	if (IS_ERR((rfbi.dss1_fck = clk_get(rfbi.fbdev->dev, "dss1_fck")))) {
 		dev_err(rfbi.fbdev->dev, "can't get dss1_fck\n");
 		clk_put(rfbi.dss_ick);
 		return PTR_ERR(rfbi.dss1_fck);
@@ -554,9 +551,7 @@ static int rfbi_init(struct omapfb_device *fbdev)
 	l = (0x01 << 2);
 	rfbi_write_reg(RFBI_CONTROL, l);
 
-	r = omap_dispc_request_irq(DISPC_IRQ_FRAMEMASK, rfbi_dma_callback,
-				   NULL);
-	if (r < 0) {
+	if ((r = omap_dispc_request_irq(rfbi_dma_callback, NULL)) < 0) {
 		dev_err(fbdev->dev, "can't get DISPC irq\n");
 		rfbi_enable_clocks(0);
 		return r;
@@ -573,7 +568,7 @@ static int rfbi_init(struct omapfb_device *fbdev)
 
 static void rfbi_cleanup(void)
 {
-	omap_dispc_free_irq(DISPC_IRQ_FRAMEMASK, rfbi_dma_callback, NULL);
+	omap_dispc_free_irq();
 	rfbi_put_clocks();
 	iounmap(rfbi.base);
 }

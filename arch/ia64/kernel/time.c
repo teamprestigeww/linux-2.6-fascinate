@@ -20,7 +20,6 @@
 #include <linux/efi.h>
 #include <linux/timex.h>
 #include <linux/clocksource.h>
-#include <linux/platform_device.h>
 
 #include <asm/machvec.h>
 #include <asm/delay.h>
@@ -33,7 +32,7 @@
 
 #include "fsyscall_gtod_data.h"
 
-static cycle_t itc_get_cycles(struct clocksource *cs);
+static cycle_t itc_get_cycles(void);
 
 struct fsyscall_gtod_data_t fsyscall_gtod_data = {
 	.lock = SEQLOCK_UNLOCKED,
@@ -51,17 +50,8 @@ EXPORT_SYMBOL(last_cli_ip);
 #endif
 
 #ifdef CONFIG_PARAVIRT
-/* We need to define a real function for sched_clock, to override the
-   weak default version */
-unsigned long long sched_clock(void)
-{
-        return paravirt_sched_clock();
-}
-#endif
-
-#ifdef CONFIG_PARAVIRT
 static void
-paravirt_clocksource_resume(struct clocksource *cs)
+paravirt_clocksource_resume(void)
 {
 	if (pv_time_ops.clocksource_resume)
 		pv_time_ops.clocksource_resume();
@@ -383,9 +373,9 @@ ia64_init_itm (void)
 	}
 }
 
-static cycle_t itc_get_cycles(struct clocksource *cs)
+static cycle_t itc_get_cycles(void)
 {
-	unsigned long lcycle, now, ret;
+	u64 lcycle, now, ret;
 
 	if (!itc_jitter_data.itc_jitter)
 		return get_cycles();
@@ -415,31 +405,18 @@ static struct irqaction timer_irqaction = {
 	.name =		"timer"
 };
 
-static struct platform_device rtc_efi_dev = {
-	.name = "rtc-efi",
-	.id = -1,
-};
-
-static int __init rtc_init(void)
-{
-	if (platform_device_register(&rtc_efi_dev) < 0)
-		printk(KERN_ERR "unable to register rtc device...\n");
-
-	/* not necessarily an error */
-	return 0;
-}
-module_init(rtc_init);
-
-void read_persistent_clock(struct timespec *ts)
-{
-	efi_gettimeofday(ts);
-}
-
 void __init
 time_init (void)
 {
 	register_percpu_irq(IA64_TIMER_VECTOR, &timer_irqaction);
+	efi_gettimeofday(&xtime);
 	ia64_init_itm();
+
+	/*
+	 * Initialize wall_to_monotonic such that adding it to xtime will yield zero, the
+	 * tv_nsec field must be normalized (i.e., 0 <= nsec < NSEC_PER_SEC).
+	 */
+	set_normalized_timespec(&wall_to_monotonic, -xtime.tv_sec, -xtime.tv_nsec);
 }
 
 /*
@@ -471,8 +448,7 @@ void update_vsyscall_tz(void)
 {
 }
 
-void update_vsyscall(struct timespec *wall, struct timespec *wtm,
-			struct clocksource *c, u32 mult)
+void update_vsyscall(struct timespec *wall, struct clocksource *c)
 {
         unsigned long flags;
 
@@ -480,7 +456,7 @@ void update_vsyscall(struct timespec *wall, struct timespec *wtm,
 
         /* copy fsyscall clock data */
         fsyscall_gtod_data.clk_mask = c->mask;
-        fsyscall_gtod_data.clk_mult = mult;
+        fsyscall_gtod_data.clk_mult = c->mult;
         fsyscall_gtod_data.clk_shift = c->shift;
         fsyscall_gtod_data.clk_fsys_mmio = c->fsys_mmio;
         fsyscall_gtod_data.clk_cycle_last = c->cycle_last;
@@ -488,9 +464,9 @@ void update_vsyscall(struct timespec *wall, struct timespec *wtm,
 	/* copy kernel time structures */
         fsyscall_gtod_data.wall_time.tv_sec = wall->tv_sec;
         fsyscall_gtod_data.wall_time.tv_nsec = wall->tv_nsec;
-	fsyscall_gtod_data.monotonic_time.tv_sec = wtm->tv_sec
+        fsyscall_gtod_data.monotonic_time.tv_sec = wall_to_monotonic.tv_sec
 							+ wall->tv_sec;
-	fsyscall_gtod_data.monotonic_time.tv_nsec = wtm->tv_nsec
+        fsyscall_gtod_data.monotonic_time.tv_nsec = wall_to_monotonic.tv_nsec
 							+ wall->tv_nsec;
 
 	/* normalize */

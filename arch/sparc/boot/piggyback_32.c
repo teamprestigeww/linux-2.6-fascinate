@@ -35,17 +35,17 @@
  * as PROM looks for a.out image only.
  */
 
-static unsigned short ld2(char *p)
+unsigned short ld2(char *p)
 {
 	return (p[0] << 8) | p[1];
 }
 
-static unsigned int ld4(char *p)
+unsigned int ld4(char *p)
 {
 	return (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
 }
 
-static void st4(char *p, unsigned int x)
+void st4(char *p, unsigned int x)
 {
 	p[0] = x >> 24;
 	p[1] = x >> 16;
@@ -53,7 +53,7 @@ static void st4(char *p, unsigned int x)
 	p[3] = x;
 }
 
-static void usage(void)
+void usage(void)
 {
 	/* fs_img.gz is an image of initial ramdisk. */
 	fprintf(stderr, "Usage: piggyback vmlinux.aout System.map fs_img.gz\n");
@@ -61,7 +61,7 @@ static void usage(void)
 	exit(1);
 }
 
-static void die(char *str)
+void die(char *str)
 {
 	perror (str);
 	exit(1);
@@ -70,7 +70,7 @@ static void die(char *str)
 int main(int argc,char **argv)
 {
 	static char aout_magic[] = { 0x01, 0x03, 0x01, 0x07 };
-	char buffer[1024], *q, *r;
+	unsigned char buffer[1024], *q, *r;
 	unsigned int i, j, k, start, end, offset;
 	FILE *map;
 	struct stat s;
@@ -84,7 +84,7 @@ int main(int argc,char **argv)
 	while (fgets (buffer, 1024, map)) {
 		if (!strcmp (buffer + 8, " T start\n") || !strcmp (buffer + 16, " T start\n"))
 			start = strtoul (buffer, NULL, 16);
-		else if (!strcmp (buffer + 8, " A _end\n") || !strcmp (buffer + 16, " A _end\n"))
+		else if (!strcmp (buffer + 8, " A end\n") || !strcmp (buffer + 16, " A end\n"))
 			end = strtoul (buffer, NULL, 16);
 	}
 	fclose (map);

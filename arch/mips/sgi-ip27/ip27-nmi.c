@@ -17,10 +17,11 @@
 #endif
 
 #define CNODEID_NONE (cnodeid_t)-1
+#define enter_panic_mode()	spin_lock(&nmi_lock)
 
 typedef unsigned long machreg_t;
 
-static arch_spinlock_t nmi_lock = __ARCH_SPIN_LOCK_UNLOCKED;
+DEFINE_SPINLOCK(nmi_lock);
 
 /*
  * Lets see what else we need to do here. Set up sp, gp?
@@ -142,8 +143,8 @@ void nmi_dump_hub_irq(nasid_t nasid, int slice)
 	pend0 = REMOTE_HUB_L(nasid, PI_INT_PEND0);
 	pend1 = REMOTE_HUB_L(nasid, PI_INT_PEND1);
 
-	printk("PI_INT_MASK0: %16Lx PI_INT_MASK1: %16Lx\n", mask0, mask1);
-	printk("PI_INT_PEND0: %16Lx PI_INT_PEND1: %16Lx\n", pend0, pend1);
+	printk("PI_INT_MASK0: %16lx PI_INT_MASK1: %16lx\n", mask0, mask1);
+	printk("PI_INT_PEND0: %16lx PI_INT_PEND1: %16lx\n", pend0, pend1);
 	printk("\n\n");
 }
 
@@ -192,9 +193,9 @@ cont_nmi_dump(void)
 	atomic_inc(&nmied_cpus);
 #endif
 	/*
-	 * Only allow 1 cpu to proceed
+	 * Use enter_panic_mode to allow only 1 cpu to proceed
 	 */
-	arch_spin_lock(&nmi_lock);
+	enter_panic_mode();
 
 #ifdef REAL_NMI_SIGNAL
 	/*
@@ -218,7 +219,7 @@ cont_nmi_dump(void)
 		if (i == 1000) {
 			for_each_online_node(node)
 				if (NODEPDA(node)->dump_count == 0) {
-					cpu = cpumask_first(cpumask_of_node(node));
+					cpu = node_to_first_cpu(node);
 					for (n=0; n < CNODE_NUM_CPUS(node); cpu++, n++) {
 						CPUMASK_SETB(nmied_cpus, cpu);
 						/*

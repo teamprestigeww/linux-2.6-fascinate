@@ -268,7 +268,7 @@ static irqreturn_t wanxl_intr(int irq, void* dev_id)
 
 
 
-static netdev_tx_t wanxl_xmit(struct sk_buff *skb, struct net_device *dev)
+static int wanxl_xmit(struct sk_buff *skb, struct net_device *dev)
 {
         port_t *port = dev_to_port(dev);
 	desc_t *desc;
@@ -283,7 +283,7 @@ static netdev_tx_t wanxl_xmit(struct sk_buff *skb, struct net_device *dev)
 #endif
 		netif_stop_queue(dev);
 		spin_unlock_irq(&port->lock);
-		return NETDEV_TX_BUSY;       /* request packet to be queued */
+		return 1;       /* request packet to be queued */
 	}
 
 #ifdef DEBUG_PKT
@@ -298,6 +298,7 @@ static netdev_tx_t wanxl_xmit(struct sk_buff *skb, struct net_device *dev)
 	desc->stat = PACKET_FULL;
 	writel(1 << (DOORBELL_TO_CARD_TX_0 + port->node),
 	       port->card->plx + PLX_DOORBELL_TO_CARD);
+	dev->trans_start = jiffies;
 
 	port->tx_out = (port->tx_out + 1) % TX_BUFFERS;
 
@@ -309,7 +310,7 @@ static netdev_tx_t wanxl_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	spin_unlock(&port->lock);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 
@@ -546,15 +547,6 @@ static void wanxl_pci_remove_one(struct pci_dev *pdev)
 
 #include "wanxlfw.inc"
 
-static const struct net_device_ops wanxl_ops = {
-	.ndo_open       = wanxl_open,
-	.ndo_stop       = wanxl_close,
-	.ndo_change_mtu = hdlc_change_mtu,
-	.ndo_start_xmit = hdlc_start_xmit,
-	.ndo_do_ioctl   = wanxl_ioctl,
-	.ndo_get_stats  = wanxl_get_stats,
-};
-
 static int __devinit wanxl_pci_init_one(struct pci_dev *pdev,
 					const struct pci_device_id *ent)
 {
@@ -585,8 +577,8 @@ static int __devinit wanxl_pci_init_one(struct pci_dev *pdev,
 	   We set both dma_mask and consistent_dma_mask to 28 bits
 	   and pray pci_alloc_consistent() will use this info. It should
 	   work on most platforms */
-	if (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(28)) ||
-	    pci_set_dma_mask(pdev, DMA_BIT_MASK(28))) {
+	if (pci_set_consistent_dma_mask(pdev, DMA_28BIT_MASK) ||
+	    pci_set_dma_mask(pdev, DMA_28BIT_MASK)) {
 		printk(KERN_ERR "wanXL: No usable DMA configuration\n");
 		return -EIO;
 	}
@@ -632,8 +624,8 @@ static int __devinit wanxl_pci_init_one(struct pci_dev *pdev,
 	/* FIXME when PCI/DMA subsystems are fixed.
 	   We set both dma_mask and consistent_dma_mask back to 32 bits
 	   to indicate the card can do 32-bit DMA addressing */
-	if (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32)) ||
-	    pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
+	if (pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK) ||
+	    pci_set_dma_mask(pdev, DMA_32BIT_MASK)) {
 		printk(KERN_ERR "wanXL: No usable DMA configuration\n");
 		wanxl_pci_remove_one(pdev);
 		return -EIO;
@@ -785,9 +777,12 @@ static int __devinit wanxl_pci_init_one(struct pci_dev *pdev,
 		hdlc = dev_to_hdlc(dev);
 		spin_lock_init(&port->lock);
 		dev->tx_queue_len = 50;
-		dev->netdev_ops = &wanxl_ops;
+		dev->do_ioctl = wanxl_ioctl;
+		dev->open = wanxl_open;
+		dev->stop = wanxl_close;
 		hdlc->attach = wanxl_attach;
 		hdlc->xmit = wanxl_xmit;
+		dev->get_stats = wanxl_get_stats;
 		port->card = card;
 		port->node = i;
 		get_status(port)->clocking = CLOCK_EXT;
@@ -813,7 +808,7 @@ static int __devinit wanxl_pci_init_one(struct pci_dev *pdev,
 	return 0;
 }
 
-static DEFINE_PCI_DEVICE_TABLE(wanxl_pci_tbl) = {
+static struct pci_device_id wanxl_pci_tbl[] __devinitdata = {
 	{ PCI_VENDOR_ID_SBE, PCI_DEVICE_ID_SBE_WANXL100, PCI_ANY_ID,
 	  PCI_ANY_ID, 0, 0, 0 },
 	{ PCI_VENDOR_ID_SBE, PCI_DEVICE_ID_SBE_WANXL200, PCI_ANY_ID,

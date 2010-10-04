@@ -58,7 +58,6 @@
 #include <linux/ioport.h>
 #include <linux/in.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/tty.h>
 #include <linux/errno.h>
 #include <linux/string.h>	/* used in new tty drivers */
@@ -602,7 +601,7 @@ static void receive_char(struct r3964_info *pInfo, const unsigned char c)
 		}
 		break;
 	case R3964_WAIT_FOR_RX_REPEAT:
-		/* FALLTHROUGH */
+		/* FALLTROUGH */
 	case R3964_IDLE:
 		if (c == STX) {
 			/* Prevent rx_queue from overflow: */
@@ -1063,11 +1062,11 @@ static ssize_t r3964_read(struct tty_struct *tty, struct file *file,
 	struct r3964_client_info *pClient;
 	struct r3964_message *pMsg;
 	struct r3964_client_message theMsg;
-	int ret;
+	int count;
 
 	TRACE_L("read()");
 
-	tty_lock();
+	lock_kernel();
 
 	pClient = findClient(pInfo, task_pid(current));
 	if (pClient) {
@@ -1075,42 +1074,40 @@ static ssize_t r3964_read(struct tty_struct *tty, struct file *file,
 		if (pMsg == NULL) {
 			/* no messages available. */
 			if (file->f_flags & O_NONBLOCK) {
-				ret = -EAGAIN;
-				goto unlock;
+				unlock_kernel();
+				return -EAGAIN;
 			}
 			/* block until there is a message: */
-			wait_event_interruptible_tty(pInfo->read_wait,
+			wait_event_interruptible(pInfo->read_wait,
 					(pMsg = remove_msg(pInfo, pClient)));
 		}
 
 		/* If we still haven't got a message, we must have been signalled */
 
 		if (!pMsg) {
-			ret = -EINTR;
-			goto unlock;
+			unlock_kernel();
+			return -EINTR;
 		}
 
 		/* deliver msg to client process: */
 		theMsg.msg_id = pMsg->msg_id;
 		theMsg.arg = pMsg->arg;
 		theMsg.error_code = pMsg->error_code;
-		ret = sizeof(struct r3964_client_message);
+		count = sizeof(struct r3964_client_message);
 
 		kfree(pMsg);
 		TRACE_M("r3964_read - msg kfree %p", pMsg);
 
-		if (copy_to_user(buf, &theMsg, ret)) {
-			ret = -EFAULT;
-			goto unlock;
+		if (copy_to_user(buf, &theMsg, count)) {
+			unlock_kernel();
+			return -EFAULT;
 		}
 
-		TRACE_PS("read - return %d", ret);
-		goto unlock;
+		TRACE_PS("read - return %d", count);
+		return count;
 	}
-	ret = -EPERM;
-unlock:
-	tty_unlock();
-	return ret;
+	unlock_kernel();
+	return -EPERM;
 }
 
 static ssize_t r3964_write(struct tty_struct *tty, struct file *file,
@@ -1158,7 +1155,7 @@ static ssize_t r3964_write(struct tty_struct *tty, struct file *file,
 	pHeader->locks = 0;
 	pHeader->owner = NULL;
 
-	tty_lock();
+	lock_kernel();
 
 	pClient = findClient(pInfo, task_pid(current));
 	if (pClient) {
@@ -1177,7 +1174,7 @@ static ssize_t r3964_write(struct tty_struct *tty, struct file *file,
 	add_tx_queue(pInfo, pHeader);
 	trigger_transmit(pInfo);
 
-	tty_unlock();
+	unlock_kernel();
 
 	return 0;
 }

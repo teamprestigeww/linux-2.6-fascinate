@@ -33,6 +33,7 @@
 #include <linux/module.h>
 
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/seq_file.h>
 
 #include <asm/uaccess.h>
@@ -60,8 +61,7 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 
 	ppriv = netdev_priv(pdev);
 
-	if (!rtnl_trylock())
-		return restart_syscall();
+	rtnl_lock();
 	mutex_lock(&ppriv->vlan_mutex);
 
 	/*
@@ -70,14 +70,12 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 	 */
 	if (ppriv->pkey == pkey) {
 		result = -ENOTUNIQ;
-		priv = NULL;
 		goto err;
 	}
 
 	list_for_each_entry(priv, &ppriv->child_intfs, list) {
 		if (priv->pkey == pkey) {
 			result = -ENOTUNIQ;
-			priv = NULL;
 			goto err;
 		}
 	}
@@ -98,7 +96,7 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 
 	result = ipoib_set_dev_features(priv, ppriv->ca);
 	if (result)
-		goto err;
+		goto device_init_failed;
 
 	priv->pkey = pkey;
 
@@ -111,7 +109,7 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 		ipoib_warn(ppriv, "failed to initialize subinterface: "
 			   "device %s, port %d",
 			   ppriv->ca->name, ppriv->port);
-		goto err;
+		goto device_init_failed;
 	}
 
 	result = register_netdevice(priv->dev);
@@ -148,44 +146,40 @@ sysfs_failed:
 register_failed:
 	ipoib_dev_cleanup(priv->dev);
 
+device_init_failed:
+	free_netdev(priv->dev);
+
 err:
 	mutex_unlock(&ppriv->vlan_mutex);
 	rtnl_unlock();
-	if (priv)
-		free_netdev(priv->dev);
-
 	return result;
 }
 
 int ipoib_vlan_delete(struct net_device *pdev, unsigned short pkey)
 {
 	struct ipoib_dev_priv *ppriv, *priv, *tpriv;
-	struct net_device *dev = NULL;
+	int ret = -ENOENT;
 
 	if (!capable(CAP_NET_ADMIN))
 		return -EPERM;
 
 	ppriv = netdev_priv(pdev);
 
-	if (!rtnl_trylock())
-		return restart_syscall();
+	rtnl_lock();
 	mutex_lock(&ppriv->vlan_mutex);
 	list_for_each_entry_safe(priv, tpriv, &ppriv->child_intfs, list) {
 		if (priv->pkey == pkey) {
 			unregister_netdevice(priv->dev);
 			ipoib_dev_cleanup(priv->dev);
 			list_del(&priv->list);
-			dev = priv->dev;
+			free_netdev(priv->dev);
+
+			ret = 0;
 			break;
 		}
 	}
 	mutex_unlock(&ppriv->vlan_mutex);
 	rtnl_unlock();
 
-	if (dev) {
-		free_netdev(dev);
-		return 0;
-	}
-
-	return -ENODEV;
+	return ret;
 }

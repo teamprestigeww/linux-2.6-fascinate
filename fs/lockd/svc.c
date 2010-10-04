@@ -21,6 +21,7 @@
 #include <linux/errno.h>
 #include <linux/in.h>
 #include <linux/uio.h>
+#include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
 #include <linux/mutex.h>
@@ -50,6 +51,17 @@ static unsigned int		nlmsvc_users;
 static struct task_struct	*nlmsvc_task;
 static struct svc_rqst		*nlmsvc_rqst;
 unsigned long			nlmsvc_timeout;
+
+/*
+ * If the kernel has IPv6 support available, always listen for
+ * both AF_INET and AF_INET6 requests.
+ */
+#if (defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)) && \
+	defined(CONFIG_SUNRPC_REGISTER_V4)
+static const sa_family_t	nlmsvc_family = AF_INET6;
+#else	/* (CONFIG_IPV6 || CONFIG_IPV6_MODULE) && CONFIG_SUNRPC_REGISTER_V4 */
+static const sa_family_t	nlmsvc_family = AF_INET;
+#endif	/* (CONFIG_IPV6 || CONFIG_IPV6_MODULE) && CONFIG_SUNRPC_REGISTER_V4 */
 
 /*
  * These can be set at insmod time (useful for NFS as root filesystem),
@@ -103,16 +115,6 @@ static void set_grace_period(void)
 	schedule_delayed_work(&grace_period_end, grace_period);
 }
 
-static void restart_grace(void)
-{
-	if (nlmsvc_ops) {
-		cancel_delayed_work_sync(&grace_period_end);
-		locks_end_grace(&lockd_manager);
-		nlmsvc_invalidate_all();
-		set_grace_period();
-	}
-}
-
 /*
  * This is the lockd kernel thread
  */
@@ -158,7 +160,10 @@ lockd(void *vrqstp)
 
 		if (signalled()) {
 			flush_signals(current);
-			restart_grace();
+			if (nlmsvc_ops) {
+				nlmsvc_invalidate_all();
+				set_grace_period();
+			}
 			continue;
 		}
 
@@ -199,28 +204,17 @@ lockd(void *vrqstp)
 	return 0;
 }
 
-static int create_lockd_listener(struct svc_serv *serv, const char *name,
-				 const int family, const unsigned short port)
+static int create_lockd_listener(struct svc_serv *serv, char *name,
+				 unsigned short port)
 {
 	struct svc_xprt *xprt;
 
-	xprt = svc_find_xprt(serv, name, family, 0);
+	xprt = svc_find_xprt(serv, name, 0, 0);
 	if (xprt == NULL)
-		return svc_create_xprt(serv, name, family, port,
-						SVC_SOCK_DEFAULTS);
+		return svc_create_xprt(serv, name, port, SVC_SOCK_DEFAULTS);
+
 	svc_xprt_put(xprt);
 	return 0;
-}
-
-static int create_lockd_family(struct svc_serv *serv, const int family)
-{
-	int err;
-
-	err = create_lockd_listener(serv, "udp", family, nlm_udpport);
-	if (err < 0)
-		return err;
-
-	return create_lockd_listener(serv, "tcp", family, nlm_tcpport);
 }
 
 /*
@@ -238,12 +232,12 @@ static int make_socks(struct svc_serv *serv)
 	static int warned;
 	int err;
 
-	err = create_lockd_family(serv, PF_INET);
+	err = create_lockd_listener(serv, "udp", nlm_udpport);
 	if (err < 0)
 		goto out_err;
 
-	err = create_lockd_family(serv, PF_INET6);
-	if (err < 0 && err != -EAFNOSUPPORT)
+	err = create_lockd_listener(serv, "tcp", nlm_tcpport);
+	if (err < 0)
 		goto out_err;
 
 	warned = 0;
@@ -280,7 +274,7 @@ int lockd_up(void)
 			"lockd_up: no pid, %d users??\n", nlmsvc_users);
 
 	error = -ENOMEM;
-	serv = svc_create(&nlmsvc_program, LOCKD_BUFSIZE, NULL);
+	serv = svc_create(&nlmsvc_program, LOCKD_BUFSIZE, nlmsvc_family, NULL);
 	if (!serv) {
 		printk(KERN_WARNING "lockd_up: create service failed\n");
 		goto out;
@@ -368,74 +362,82 @@ EXPORT_SYMBOL_GPL(lockd_down);
 
 static ctl_table nlm_sysctls[] = {
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "nlm_grace_period",
 		.data		= &nlm_grace_period,
 		.maxlen		= sizeof(unsigned long),
 		.mode		= 0644,
-		.proc_handler	= proc_doulongvec_minmax,
+		.proc_handler	= &proc_doulongvec_minmax,
 		.extra1		= (unsigned long *) &nlm_grace_period_min,
 		.extra2		= (unsigned long *) &nlm_grace_period_max,
 	},
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "nlm_timeout",
 		.data		= &nlm_timeout,
 		.maxlen		= sizeof(unsigned long),
 		.mode		= 0644,
-		.proc_handler	= proc_doulongvec_minmax,
+		.proc_handler	= &proc_doulongvec_minmax,
 		.extra1		= (unsigned long *) &nlm_timeout_min,
 		.extra2		= (unsigned long *) &nlm_timeout_max,
 	},
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "nlm_udpport",
 		.data		= &nlm_udpport,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
+		.proc_handler	= &proc_dointvec_minmax,
 		.extra1		= (int *) &nlm_port_min,
 		.extra2		= (int *) &nlm_port_max,
 	},
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "nlm_tcpport",
 		.data		= &nlm_tcpport,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec_minmax,
+		.proc_handler	= &proc_dointvec_minmax,
 		.extra1		= (int *) &nlm_port_min,
 		.extra2		= (int *) &nlm_port_max,
 	},
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "nsm_use_hostnames",
 		.data		= &nsm_use_hostnames,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec,
+		.proc_handler	= &proc_dointvec,
 	},
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "nsm_local_state",
 		.data		= &nsm_local_state,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec,
+		.proc_handler	= &proc_dointvec,
 	},
-	{ }
+	{ .ctl_name = 0 }
 };
 
 static ctl_table nlm_sysctl_dir[] = {
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "nfs",
 		.mode		= 0555,
 		.child		= nlm_sysctls,
 	},
-	{ }
+	{ .ctl_name = 0 }
 };
 
 static ctl_table nlm_sysctl_root[] = {
 	{
+		.ctl_name	= CTL_FS,
 		.procname	= "fs",
 		.mode		= 0555,
 		.child		= nlm_sysctl_dir,
 	},
-	{ }
+	{ .ctl_name = 0 }
 };
 
 #endif	/* CONFIG_SYSCTL */

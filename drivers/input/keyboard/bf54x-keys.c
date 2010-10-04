@@ -34,7 +34,6 @@
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/pm.h>
 #include <linux/sysctl.h>
@@ -163,7 +162,7 @@ static irqreturn_t bfin_kpad_isr(int irq, void *dev_id)
 	input_sync(input);
 
 	if (bfin_kpad_get_keypressed(bf54x_kpad)) {
-		disable_irq_nosync(bf54x_kpad->irq);
+		disable_irq(bf54x_kpad->irq);
 		bf54x_kpad->lastkey = key;
 		mod_timer(&bf54x_kpad->timer,
 			  jiffies + bf54x_kpad->keyup_test_jiffies);
@@ -185,13 +184,14 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 	int i, error;
 
 	if (!pdata->rows || !pdata->cols || !pdata->keymap) {
-		dev_err(&pdev->dev, "no rows, cols or keymap from pdata\n");
+		printk(KERN_ERR DRV_NAME
+			": No rows, cols or keymap from pdata\n");
 		return -EINVAL;
 	}
 
 	if (!pdata->keymapsize ||
 	    pdata->keymapsize > (pdata->rows * pdata->cols)) {
-		dev_err(&pdev->dev, "invalid keymapsize\n");
+		printk(KERN_ERR DRV_NAME ": Invalid keymapsize\n");
 		return -EINVAL;
 	}
 
@@ -211,8 +211,8 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 
 	if (!pdata->debounce_time || pdata->debounce_time > MAX_MULT ||
 	    !pdata->coldrive_time || pdata->coldrive_time > MAX_MULT) {
-		dev_warn(&pdev->dev,
-			"invalid platform debounce/columndrive time\n");
+		printk(KERN_ERR DRV_NAME
+			": Invalid Debounce/Columdrive Time from pdata\n");
 		bfin_write_KPAD_MSEL(0xFF0);	/* Default MSEL	*/
 	} else {
 		bfin_write_KPAD_MSEL(
@@ -231,14 +231,16 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 
 	if (peripheral_request_list((u16 *)&per_rows[MAX_RC - pdata->rows],
 				    DRV_NAME)) {
-		dev_err(&pdev->dev, "requesting peripherals failed\n");
+		printk(KERN_ERR DRV_NAME
+			": Requesting Peripherals failed\n");
 		error = -EFAULT;
 		goto out0;
 	}
 
 	if (peripheral_request_list((u16 *)&per_cols[MAX_RC - pdata->cols],
 				    DRV_NAME)) {
-		dev_err(&pdev->dev, "requesting peripherals failed\n");
+		printk(KERN_ERR DRV_NAME
+			": Requesting Peripherals failed\n");
 		error = -EFAULT;
 		goto out1;
 	}
@@ -250,10 +252,11 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 	}
 
 	error = request_irq(bf54x_kpad->irq, bfin_kpad_isr,
-				0, DRV_NAME, pdev);
+				 IRQF_SAMPLE_RANDOM, DRV_NAME, pdev);
 	if (error) {
-		dev_err(&pdev->dev, "unable to claim irq %d\n",
-			bf54x_kpad->irq);
+		printk(KERN_ERR DRV_NAME
+			": unable to claim irq %d; error %d\n",
+			bf54x_kpad->irq, error);
 		goto out2;
 	}
 
@@ -294,7 +297,8 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 
 	error = input_register_device(input);
 	if (error) {
-		dev_err(&pdev->dev, "unable to register input device\n");
+		printk(KERN_ERR DRV_NAME
+			": Unable to register input device (%d)\n", error);
 		goto out4;
 	}
 
@@ -311,6 +315,9 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 	bfin_write_KPAD_CTL(bfin_read_KPAD_CTL() | KPAD_EN);
 
 	device_init_wakeup(&pdev->dev, 1);
+
+	printk(KERN_ERR DRV_NAME
+		": Blackfin BF54x Keypad registered IRQ %d\n", bf54x_kpad->irq);
 
 	return 0;
 

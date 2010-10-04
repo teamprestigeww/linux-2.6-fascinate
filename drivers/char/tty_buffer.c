@@ -231,31 +231,29 @@ int tty_buffer_request_room(struct tty_struct *tty, size_t size)
 EXPORT_SYMBOL_GPL(tty_buffer_request_room);
 
 /**
- *	tty_insert_flip_string_fixed_flag - Add characters to the tty buffer
+ *	tty_insert_flip_string	-	Add characters to the tty buffer
  *	@tty: tty structure
  *	@chars: characters
- *	@flag: flag value for each character
  *	@size: size
  *
  *	Queue a series of bytes to the tty buffering. All the characters
- *	passed are marked with the supplied flag. Returns the number added.
+ *	passed are marked as without error. Returns the number added.
  *
  *	Locking: Called functions may take tty->buf.lock
  */
 
-int tty_insert_flip_string_fixed_flag(struct tty_struct *tty,
-		const unsigned char *chars, char flag, size_t size)
+int tty_insert_flip_string(struct tty_struct *tty, const unsigned char *chars,
+				size_t size)
 {
 	int copied = 0;
 	do {
-		int goal = min_t(size_t, size - copied, TTY_BUFFER_PAGE);
-		int space = tty_buffer_request_room(tty, goal);
+		int space = tty_buffer_request_room(tty, size - copied);
 		struct tty_buffer *tb = tty->buf.tail;
 		/* If there is no space then tb may be NULL */
 		if (unlikely(space == 0))
 			break;
 		memcpy(tb->char_buf_ptr + tb->used, chars, space);
-		memset(tb->flag_buf_ptr + tb->used, flag, space);
+		memset(tb->flag_buf_ptr + tb->used, TTY_NORMAL, space);
 		tb->used += space;
 		copied += space;
 		chars += space;
@@ -264,7 +262,7 @@ int tty_insert_flip_string_fixed_flag(struct tty_struct *tty,
 	} while (unlikely(size > copied));
 	return copied;
 }
-EXPORT_SYMBOL(tty_insert_flip_string_fixed_flag);
+EXPORT_SYMBOL(tty_insert_flip_string);
 
 /**
  *	tty_insert_flip_string_flags	-	Add characters to the tty buffer
@@ -285,8 +283,7 @@ int tty_insert_flip_string_flags(struct tty_struct *tty,
 {
 	int copied = 0;
 	do {
-		int goal = min_t(size_t, size - copied, TTY_BUFFER_PAGE);
-		int space = tty_buffer_request_room(tty, goal);
+		int space = tty_buffer_request_room(tty, size - copied);
 		struct tty_buffer *tb = tty->buf.tail;
 		/* If there is no space then tb may be NULL */
 		if (unlikely(space == 0))
@@ -405,26 +402,28 @@ static void flush_to_ldisc(struct work_struct *work)
 		container_of(work, struct tty_struct, buf.work.work);
 	unsigned long 	flags;
 	struct tty_ldisc *disc;
+	struct tty_buffer *tbuf, *head;
+	char *char_buf;
+	unsigned char *flag_buf;
 
 	disc = tty_ldisc_ref(tty);
 	if (disc == NULL)	/*  !TTY_LDISC */
 		return;
 
 	spin_lock_irqsave(&tty->buf.lock, flags);
-
-	if (!test_and_set_bit(TTY_FLUSHING, &tty->flags)) {
-		struct tty_buffer *head;
-		while ((head = tty->buf.head) != NULL) {
-			int count;
-			char *char_buf;
-			unsigned char *flag_buf;
-
-			count = head->commit - head->read;
+	/* So we know a flush is running */
+	set_bit(TTY_FLUSHING, &tty->flags);
+	head = tty->buf.head;
+	if (head != NULL) {
+		tty->buf.head = NULL;
+		for (;;) {
+			int count = head->commit - head->read;
 			if (!count) {
 				if (head->next == NULL)
 					break;
-				tty->buf.head = head->next;
-				tty_buffer_free(tty, head);
+				tbuf = head;
+				head = head->next;
+				tty_buffer_free(tty, tbuf);
 				continue;
 			}
 			/* Ldisc or user is trying to flush the buffers
@@ -446,9 +445,9 @@ static void flush_to_ldisc(struct work_struct *work)
 							flag_buf, count);
 			spin_lock_irqsave(&tty->buf.lock, flags);
 		}
-		clear_bit(TTY_FLUSHING, &tty->flags);
+		/* Restore the queue head */
+		tty->buf.head = head;
 	}
-
 	/* We may have a deferred request to flush the input buffer,
 	   if so pull the chain under the lock and empty the queue */
 	if (test_bit(TTY_FLUSHPENDING, &tty->flags)) {
@@ -456,22 +455,10 @@ static void flush_to_ldisc(struct work_struct *work)
 		clear_bit(TTY_FLUSHPENDING, &tty->flags);
 		wake_up(&tty->read_wait);
 	}
+	clear_bit(TTY_FLUSHING, &tty->flags);
 	spin_unlock_irqrestore(&tty->buf.lock, flags);
 
 	tty_ldisc_deref(disc);
-}
-
-/**
- *	tty_flush_to_ldisc
- *	@tty: tty to push
- *
- *	Push the terminal flip buffers to the line discipline.
- *
- *	Must not be called from IRQ context.
- */
-void tty_flush_to_ldisc(struct tty_struct *tty)
-{
-	flush_delayed_work(&tty->buf.work);
 }
 
 /**

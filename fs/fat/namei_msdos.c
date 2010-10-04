@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/time.h>
 #include <linux/buffer_head.h>
+#include <linux/smp_lock.h>
 #include "fat.h"
 
 /* Characters that are undesirable in an MS-DOS file name */
@@ -187,7 +188,7 @@ old_compare:
 	goto out;
 }
 
-static const struct dentry_operations msdos_dentry_operations = {
+static struct dentry_operations msdos_dentry_operations = {
 	.d_hash		= msdos_hash,
 	.d_compare	= msdos_cmp,
 };
@@ -543,7 +544,7 @@ static int do_msdos_rename(struct inode *old_dir, unsigned char *old_name,
 		int start = MSDOS_I(new_dir)->i_logstart;
 		dotdot_de->start = cpu_to_le16(start);
 		dotdot_de->starthi = cpu_to_le16(start >> 16);
-		mark_buffer_dirty_inode(dotdot_bh, old_inode);
+		mark_buffer_dirty(dotdot_bh);
 		if (IS_DIRSYNC(new_dir)) {
 			err = sync_dirty_buffer(dotdot_bh);
 			if (err)
@@ -585,7 +586,7 @@ error_dotdot:
 		int start = MSDOS_I(old_dir)->i_logstart;
 		dotdot_de->start = cpu_to_le16(start);
 		dotdot_de->starthi = cpu_to_le16(start >> 16);
-		mark_buffer_dirty_inode(dotdot_bh, old_inode);
+		mark_buffer_dirty(dotdot_bh);
 		corrupt |= sync_dirty_buffer(dotdot_bh);
 	}
 error_inode:

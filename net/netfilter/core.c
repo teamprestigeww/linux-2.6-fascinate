@@ -19,7 +19,6 @@
 #include <linux/inetdevice.h>
 #include <linux/proc_fs.h>
 #include <linux/mutex.h>
-#include <linux/slab.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 
@@ -175,6 +174,7 @@ next_hook:
 			     outdev, &elem, okfn, hook_thresh);
 	if (verdict == NF_ACCEPT || verdict == NF_STOP) {
 		ret = 1;
+		goto unlock;
 	} else if (verdict == NF_DROP) {
 		kfree_skb(skb);
 		ret = -EPERM;
@@ -183,6 +183,7 @@ next_hook:
 			      verdict >> NF_VERDICT_BITS))
 			goto next_hook;
 	}
+unlock:
 	rcu_read_unlock();
 	return ret;
 }
@@ -274,8 +275,8 @@ void __init netfilter_init(void)
 
 #ifdef CONFIG_SYSCTL
 struct ctl_path nf_net_netfilter_sysctl_path[] = {
-	{ .procname = "net", },
-	{ .procname = "netfilter", },
+	{ .procname = "net", .ctl_name = CTL_NET, },
+	{ .procname = "netfilter", .ctl_name = NET_NETFILTER, },
 	{ }
 };
 EXPORT_SYMBOL_GPL(nf_net_netfilter_sysctl_path);

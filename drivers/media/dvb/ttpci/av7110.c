@@ -36,6 +36,7 @@
 #include <linux/fs.h>
 #include <linux/timer.h>
 #include <linux/poll.h>
+#include <linux/smp_lock.h>
 
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -49,7 +50,6 @@
 #include <linux/crc32.h>
 #include <linux/i2c.h>
 #include <linux/kthread.h>
-#include <linux/slab.h>
 #include <asm/unaligned.h>
 #include <asm/byteorder.h>
 
@@ -708,7 +708,7 @@ static void gpioirq(unsigned long cookie)
 
 
 #ifdef CONFIG_DVB_AV7110_OSD
-static int dvb_osd_ioctl(struct file *file,
+static int dvb_osd_ioctl(struct inode *inode, struct file *file,
 			 unsigned int cmd, void *parg)
 {
 	struct dvb_device *dvbdev = file->private_data;
@@ -725,9 +725,9 @@ static int dvb_osd_ioctl(struct file *file,
 }
 
 
-static const struct file_operations dvb_osd_fops = {
+static struct file_operations dvb_osd_fops = {
 	.owner		= THIS_MODULE,
-	.unlocked_ioctl	= dvb_generic_ioctl,
+	.ioctl		= dvb_generic_ioctl,
 	.open		= dvb_generic_open,
 	.release	= dvb_generic_release,
 };
@@ -1518,6 +1518,20 @@ static int check_firmware(struct av7110* av7110)
 	return 0;
 }
 
+#ifdef CONFIG_DVB_AV7110_FIRMWARE_FILE
+#include "av7110_firm.h"
+static void put_firmware(struct av7110* av7110)
+{
+	av7110->bin_fw = NULL;
+}
+
+static inline int get_firmware(struct av7110* av7110)
+{
+	av7110->bin_fw = dvb_ttpci_fw;
+	av7110->size_fw = sizeof(dvb_ttpci_fw);
+	return check_firmware(av7110);
+}
+#else
 static void put_firmware(struct av7110* av7110)
 {
 	vfree(av7110->bin_fw);
@@ -1566,6 +1580,8 @@ static int get_firmware(struct av7110* av7110)
 	release_firmware(fw);
 	return ret;
 }
+#endif
+
 
 static int alps_bsrv2_tuner_set_params(struct dvb_frontend* fe, struct dvb_frontend_parameters *params)
 {
@@ -2426,7 +2442,7 @@ static int __devinit av7110_attach(struct saa7146_dev* dev,
 		 * use 0x15 to track VPE  interrupts - increase by 1 every vpeirq() is called
 		 */
 		saa7146_write(dev, EC1SSR, (0x03<<2) | 3 );
-		/* set event counter 1 threshold to maximum allowed value        (rEC p55) */
+		/* set event counter 1 treshold to maximum allowed value        (rEC p55) */
 		saa7146_write(dev, ECT1R,  0x3fff );
 #endif
 		/* Set RPS1 Address register to point to RPS code               (r108 p42) */
@@ -2560,7 +2576,7 @@ static int __devinit av7110_attach(struct saa7146_dev* dev,
 		 * use 0x15 to track VPE  interrupts - increase by 1 every vpeirq() is called
 		 */
 		saa7146_write(dev, EC1SSR, (0x03<<2) | 3 );
-		/* set event counter 1 threshold to maximum allowed value        (rEC p55) */
+		/* set event counter 1 treshold to maximum allowed value        (rEC p55) */
 		saa7146_write(dev, ECT1R,  0x3fff );
 #endif
 		/* Setup BUDGETPATCH MAIN RPS1 "program" (p35) */

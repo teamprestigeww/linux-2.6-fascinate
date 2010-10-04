@@ -29,7 +29,6 @@
 #include <linux/list.h>
 #include <linux/pci.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 
 #include <asm/iommu.h>
 #include <asm/vio.h>
@@ -175,16 +174,15 @@ static struct iommu_table *iommu_table_find(struct iommu_table * tbl)
 }
 
 
-static void pci_dma_dev_setup_iseries(struct pci_dev *pdev)
+void iommu_devnode_init_iSeries(struct pci_dev *pdev, struct device_node *dn)
 {
 	struct iommu_table *tbl;
-	struct device_node *dn = pci_device_to_OF_node(pdev);
 	struct pci_dn *pdn = PCI_DN(dn);
 	const u32 *lsn = of_get_property(dn, "linux,logical-slot-number", NULL);
 
 	BUG_ON(lsn == NULL);
 
-	tbl = kzalloc(sizeof(struct iommu_table), GFP_KERNEL);
+	tbl = kmalloc(sizeof(struct iommu_table), GFP_KERNEL);
 
 	iommu_table_getparms_iSeries(pdn->busno, *lsn, 0, tbl);
 
@@ -194,10 +192,8 @@ static void pci_dma_dev_setup_iseries(struct pci_dev *pdev)
 		pdn->iommu_table = iommu_init_table(tbl, -1);
 	else
 		kfree(tbl);
-	set_iommu_table_base(&pdev->dev, pdn->iommu_table);
+	pdev->dev.archdata.dma_data = pdn->iommu_table;
 }
-#else
-#define pci_dma_dev_setup_iseries	NULL
 #endif
 
 static struct iommu_table veth_iommu_table;
@@ -206,7 +202,7 @@ static struct iommu_table vio_iommu_table;
 void *iseries_hv_alloc(size_t size, dma_addr_t *dma_handle, gfp_t flag)
 {
 	return iommu_alloc_coherent(NULL, &vio_iommu_table, size, dma_handle,
-				DMA_BIT_MASK(32), flag, -1);
+				DMA_32BIT_MASK, flag, -1);
 }
 EXPORT_SYMBOL_GPL(iseries_hv_alloc);
 
@@ -221,7 +217,7 @@ dma_addr_t iseries_hv_map(void *vaddr, size_t size,
 {
 	return iommu_map_page(NULL, &vio_iommu_table, virt_to_page(vaddr),
 			      (unsigned long)vaddr % PAGE_SIZE, size,
-			      DMA_BIT_MASK(32), direction, NULL);
+			      DMA_32BIT_MASK, direction, NULL);
 }
 
 void iseries_hv_unmap(dma_addr_t dma_handle, size_t size,
@@ -255,6 +251,5 @@ void iommu_init_early_iSeries(void)
 	ppc_md.tce_build = tce_build_iSeries;
 	ppc_md.tce_free  = tce_free_iSeries;
 
-	ppc_md.pci_dma_dev_setup = pci_dma_dev_setup_iseries;
 	set_pci_dma_ops(&dma_iommu_ops);
 }

@@ -25,7 +25,6 @@
 #include <linux/string.h>
 #include <linux/sockios.h>
 #include <linux/net.h>
-#include <linux/slab.h>
 #include <net/ax25.h>
 #include <linux/inet.h>
 #include <linux/netdevice.h>
@@ -331,7 +330,8 @@ void ax25_destroy_socket(ax25_cb *ax25)
 	}
 
 	if (ax25->sk != NULL) {
-		if (sk_has_allocations(ax25->sk)) {
+		if (atomic_read(&ax25->sk->sk_wmem_alloc) ||
+		    atomic_read(&ax25->sk->sk_rmem_alloc)) {
 			/* Defer: outstanding buffers */
 			setup_timer(&ax25->dtimer, ax25_destroy_timer,
 					(unsigned long)ax25);
@@ -359,7 +359,6 @@ static int ax25_ctl_ioctl(const unsigned int cmd, void __user *arg)
 	ax25_dev *ax25_dev;
 	ax25_cb *ax25;
 	unsigned int k;
-	int ret = 0;
 
 	if (copy_from_user(&ax25_ctl, arg, sizeof(ax25_ctl)))
 		return -EFAULT;
@@ -368,9 +367,6 @@ static int ax25_ctl_ioctl(const unsigned int cmd, void __user *arg)
 		return -ENODEV;
 
 	if (ax25_ctl.digi_count > AX25_MAX_DIGIS)
-		return -EINVAL;
-
-	if (ax25_ctl.arg > ULONG_MAX / HZ && ax25_ctl.cmd != AX25_KILL)
 		return -EINVAL;
 
 	digi.ndigi = ax25_ctl.digi_count;
@@ -393,59 +389,57 @@ static int ax25_ctl_ioctl(const unsigned int cmd, void __user *arg)
 	case AX25_WINDOW:
 		if (ax25->modulus == AX25_MODULUS) {
 			if (ax25_ctl.arg < 1 || ax25_ctl.arg > 7)
-				goto einval_put;
+				return -EINVAL;
 		} else {
 			if (ax25_ctl.arg < 1 || ax25_ctl.arg > 63)
-				goto einval_put;
+				return -EINVAL;
 		}
 		ax25->window = ax25_ctl.arg;
 		break;
 
 	case AX25_T1:
 		if (ax25_ctl.arg < 1)
-			goto einval_put;
+			return -EINVAL;
 		ax25->rtt = (ax25_ctl.arg * HZ) / 2;
 		ax25->t1  = ax25_ctl.arg * HZ;
 		break;
 
 	case AX25_T2:
 		if (ax25_ctl.arg < 1)
-			goto einval_put;
+			return -EINVAL;
 		ax25->t2 = ax25_ctl.arg * HZ;
 		break;
 
 	case AX25_N2:
 		if (ax25_ctl.arg < 1 || ax25_ctl.arg > 31)
-			goto einval_put;
+			return -EINVAL;
 		ax25->n2count = 0;
 		ax25->n2 = ax25_ctl.arg;
 		break;
 
 	case AX25_T3:
+		if (ax25_ctl.arg < 0)
+			return -EINVAL;
 		ax25->t3 = ax25_ctl.arg * HZ;
 		break;
 
 	case AX25_IDLE:
+		if (ax25_ctl.arg < 0)
+			return -EINVAL;
 		ax25->idle = ax25_ctl.arg * 60 * HZ;
 		break;
 
 	case AX25_PACLEN:
 		if (ax25_ctl.arg < 16 || ax25_ctl.arg > 65535)
-			goto einval_put;
+			return -EINVAL;
 		ax25->paclen = ax25_ctl.arg;
 		break;
 
 	default:
-		goto einval_put;
+		return -EINVAL;
 	  }
 
-out_put:
-	ax25_cb_put(ax25);
-	return ret;
-
-einval_put:
-	ret = -EINVAL;
-	goto out_put;
+	return 0;
 }
 
 static void ax25_fillin_cb_from_dev(ax25_cb *ax25, ax25_dev *ax25_dev)
@@ -534,7 +528,7 @@ ax25_cb *ax25_create_cb(void)
  */
 
 static int ax25_setsockopt(struct socket *sock, int level, int optname,
-	char __user *optval, unsigned int optlen)
+	char __user *optval, int optlen)
 {
 	struct sock *sk = sock->sk;
 	ax25_cb *ax25;
@@ -641,10 +635,15 @@ static int ax25_setsockopt(struct socket *sock, int level, int optname,
 
 	case SO_BINDTODEVICE:
 		if (optlen > IFNAMSIZ)
-			optlen = IFNAMSIZ;
-
+			optlen=IFNAMSIZ;
 		if (copy_from_user(devname, optval, optlen)) {
-			res = -EFAULT;
+		res = -EFAULT;
+			break;
+		}
+
+		dev = dev_get_by_name(&init_net, devname);
+		if (dev == NULL) {
+			res = -ENODEV;
 			break;
 		}
 
@@ -652,18 +651,12 @@ static int ax25_setsockopt(struct socket *sock, int level, int optname,
 		   (sock->state != SS_UNCONNECTED ||
 		    sk->sk_state == TCP_LISTEN)) {
 			res = -EADDRNOTAVAIL;
-			break;
-		}
-
-		dev = dev_get_by_name(&init_net, devname);
-		if (!dev) {
-			res = -ENODEV;
+			dev_put(dev);
 			break;
 		}
 
 		ax25->ax25_dev = ax25_dev_ax25dev(dev);
 		ax25_fillin_cb(ax25, ax25->ax25_dev);
-		dev_put(dev);
 		break;
 
 	default:
@@ -800,13 +793,12 @@ static struct proto ax25_proto = {
 	.obj_size = sizeof(struct sock),
 };
 
-static int ax25_create(struct net *net, struct socket *sock, int protocol,
-		       int kern)
+static int ax25_create(struct net *net, struct socket *sock, int protocol)
 {
 	struct sock *sk;
 	ax25_cb *ax25;
 
-	if (!net_eq(net, &init_net))
+	if (net != &init_net)
 		return -EAFNOSUPPORT;
 
 	switch (sock->type) {
@@ -902,6 +894,7 @@ struct sock *ax25_make_new(struct sock *osk, struct ax25_dev *ax25_dev)
 
 	sock_init_data(NULL, sk);
 
+	sk->sk_destruct = ax25_free_sock;
 	sk->sk_type     = osk->sk_type;
 	sk->sk_priority = osk->sk_priority;
 	sk->sk_protocol = osk->sk_protocol;
@@ -939,7 +932,6 @@ struct sock *ax25_make_new(struct sock *osk, struct ax25_dev *ax25_dev)
 	}
 
 	sk->sk_protinfo = ax25;
-	sk->sk_destruct = ax25_free_sock;
 	ax25->sk    = sk;
 
 	return sk;
@@ -1281,7 +1273,7 @@ static int __must_check ax25_connect(struct socket *sock,
 		DEFINE_WAIT(wait);
 
 		for (;;) {
-			prepare_to_wait(sk_sleep(sk), &wait,
+			prepare_to_wait(sk->sk_sleep, &wait,
 					TASK_INTERRUPTIBLE);
 			if (sk->sk_state != TCP_SYN_SENT)
 				break;
@@ -1294,7 +1286,7 @@ static int __must_check ax25_connect(struct socket *sock,
 			err = -ERESTARTSYS;
 			break;
 		}
-		finish_wait(sk_sleep(sk), &wait);
+		finish_wait(sk->sk_sleep, &wait);
 
 		if (err)
 			goto out_release;
@@ -1346,7 +1338,7 @@ static int ax25_accept(struct socket *sock, struct socket *newsock, int flags)
 	 *	hooked into the SABM we saved
 	 */
 	for (;;) {
-		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 		skb = skb_dequeue(&sk->sk_receive_queue);
 		if (skb)
 			break;
@@ -1364,7 +1356,7 @@ static int ax25_accept(struct socket *sock, struct socket *newsock, int flags)
 		err = -ERESTARTSYS;
 		break;
 	}
-	finish_wait(sk_sleep(sk), &wait);
+	finish_wait(sk->sk_sleep, &wait);
 
 	if (err)
 		goto out;
@@ -1537,8 +1529,10 @@ static int ax25_sendmsg(struct kiocb *iocb, struct socket *sock,
 		dp = ax25->digipeat;
 	}
 
+	SOCK_DEBUG(sk, "AX.25: sendto: Addresses built.\n");
+
 	/* Build a packet */
-	SOCK_DEBUG(sk, "AX.25: sendto: Addresses built. Building packet.\n");
+	SOCK_DEBUG(sk, "AX.25: sendto: building packet.\n");
 
 	/* Assume the worst case */
 	size = len + ax25->ax25_dev->dev->hard_header_len;
@@ -1699,8 +1693,7 @@ static int ax25_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 	switch (cmd) {
 	case TIOCOUTQ: {
 		long amount;
-
-		amount = sk->sk_sndbuf - sk_wmem_alloc_get(sk);
+		amount = sk->sk_sndbuf - atomic_read(&sk->sk_wmem_alloc);
 		if (amount < 0)
 			amount = 0;
 		res = put_user(amount, (int __user *)argp);
@@ -1790,8 +1783,8 @@ static int ax25_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		ax25_info.idletimer = ax25_display_timer(&ax25->idletimer) / (60 * HZ);
 		ax25_info.n2count   = ax25->n2count;
 		ax25_info.state     = ax25->state;
-		ax25_info.rcv_q     = sk_rmem_alloc_get(sk);
-		ax25_info.snd_q     = sk_wmem_alloc_get(sk);
+		ax25_info.rcv_q     = atomic_read(&sk->sk_rmem_alloc);
+		ax25_info.snd_q     = atomic_read(&sk->sk_wmem_alloc);
 		ax25_info.vs        = ax25->vs;
 		ax25_info.vr        = ax25->vr;
 		ax25_info.va        = ax25->va;
@@ -1864,13 +1857,25 @@ static int ax25_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 static void *ax25_info_start(struct seq_file *seq, loff_t *pos)
 	__acquires(ax25_list_lock)
 {
+	struct ax25_cb *ax25;
+	struct hlist_node *node;
+	int i = 0;
+
 	spin_lock_bh(&ax25_list_lock);
-	return seq_hlist_start(&ax25_list, *pos);
+	ax25_for_each(ax25, node, &ax25_list) {
+		if (i == *pos)
+			return ax25;
+		++i;
+	}
+	return NULL;
 }
 
 static void *ax25_info_next(struct seq_file *seq, void *v, loff_t *pos)
 {
-	return seq_hlist_next(v, &ax25_list, pos);
+	++*pos;
+
+	return hlist_entry( ((struct ax25_cb *)v)->ax25_node.next,
+			    struct ax25_cb, ax25_node);
 }
 
 static void ax25_info_stop(struct seq_file *seq, void *v)
@@ -1881,7 +1886,7 @@ static void ax25_info_stop(struct seq_file *seq, void *v)
 
 static int ax25_info_show(struct seq_file *seq, void *v)
 {
-	ax25_cb *ax25 = hlist_entry(v, struct ax25_cb, ax25_node);
+	ax25_cb *ax25 = v;
 	char buf[11];
 	int k;
 
@@ -1919,8 +1924,8 @@ static int ax25_info_show(struct seq_file *seq, void *v)
 
 	if (ax25->sk != NULL) {
 		seq_printf(seq, " %d %d %lu\n",
-			   sk_wmem_alloc_get(ax25->sk),
-			   sk_rmem_alloc_get(ax25->sk),
+			   atomic_read(&ax25->sk->sk_wmem_alloc),
+			   atomic_read(&ax25->sk->sk_rmem_alloc),
 			   sock_i_ino(ax25->sk));
 	} else {
 		seq_puts(seq, " * * *\n");
@@ -1950,7 +1955,7 @@ static const struct file_operations ax25_info_fops = {
 
 #endif
 
-static const struct net_proto_family ax25_family_ops = {
+static struct net_proto_family ax25_family_ops = {
 	.family =	PF_AX25,
 	.create =	ax25_create,
 	.owner	=	THIS_MODULE,
@@ -1980,8 +1985,9 @@ static const struct proto_ops ax25_proto_ops = {
 /*
  *	Called by socket.c on kernel start up
  */
-static struct packet_type ax25_packet_type __read_mostly = {
-	.type	=	cpu_to_be16(ETH_P_AX25),
+static struct packet_type ax25_packet_type = {
+	.type	=	__constant_htons(ETH_P_AX25),
+	.dev	=	NULL,				/* All devices */
 	.func	=	ax25_kiss_rcv,
 };
 

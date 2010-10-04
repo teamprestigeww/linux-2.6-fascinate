@@ -38,6 +38,7 @@
 
 /* USB */
 #define GPIO_NR_PALMTX_USB_DETECT_N		13
+#define GPIO_NR_PALMTX_USB_POWER		95
 #define GPIO_NR_PALMTX_USB_PULLUP		93
 
 /* LCD/BACKLIGHT */
@@ -77,15 +78,8 @@
 #define PALMTX_PHYS_RAM_START	0xa0000000
 #define PALMTX_PHYS_IO_START	0x40000000
 
-#define PALMTX_STR_BASE		0xa0200000
-
 #define PALMTX_PHYS_FLASH_START	PXA_CS0_PHYS	/* ChipSelect 0 */
 #define PALMTX_PHYS_NAND_START	PXA_CS1_PHYS	/* ChipSelect 1 */
-
-#define PALMTX_NAND_ALE_PHYS	(PALMTX_PHYS_NAND_START | (1 << 24))
-#define PALMTX_NAND_CLE_PHYS	(PALMTX_PHYS_NAND_START | (1 << 25))
-#define PALMTX_NAND_ALE_VIRT	0xff100000
-#define PALMTX_NAND_CLE_VIRT	0xff200000
 
 /* TOUCHSCREEN */
 #define AC97_LINK_FRAME			21
@@ -94,7 +88,7 @@
 /* BATTERY */
 #define PALMTX_BAT_MAX_VOLTAGE		4000	/* 4.00v current voltage */
 #define PALMTX_BAT_MIN_VOLTAGE		3550	/* 3.55v critical voltage */
-#define PALMTX_BAT_MAX_CURRENT		0	/* unknown */
+#define PALMTX_BAT_MAX_CURRENT		0	/* unknokn */
 #define PALMTX_BAT_MIN_CURRENT		0	/* unknown */
 #define PALMTX_BAT_MAX_CHARGE		1	/* unknown */
 #define PALMTX_BAT_MIN_CHARGE		1	/* unknown */

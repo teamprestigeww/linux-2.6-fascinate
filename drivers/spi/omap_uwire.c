@@ -41,7 +41,6 @@
 #include <linux/interrupt.h>
 #include <linux/err.h>
 #include <linux/clk.h>
-#include <linux/slab.h>
 
 #include <linux/spi/spi.h>
 #include <linux/spi/spi_bitbang.h>
@@ -52,8 +51,8 @@
 #include <asm/io.h>
 #include <asm/mach-types.h>
 
-#include <plat/mux.h>
-#include <plat/omap7xx.h>	/* OMAP7XX_IO_CONF registers */
+#include <mach/mux.h>
+#include <mach/omap730.h>	/* OMAP730_IO_CONF registers */
 
 
 /* FIXME address is now a platform device resource,
@@ -214,7 +213,7 @@ static int uwire_txrx(struct spi_device *spi, struct spi_transfer *t)
 	unsigned	bits = ust->bits_per_word;
 	unsigned	bytes;
 	u16		val, w;
-	int		status = 0;
+	int		status = 0;;
 
 	if (!t->tx_buf && !t->rx_buf)
 		return 0;
@@ -246,7 +245,7 @@ static int uwire_txrx(struct spi_device *spi, struct spi_transfer *t)
 
 #ifdef	VERBOSE
 			pr_debug("%s: write-%d =%04x\n",
-					dev_name(&spi->dev), bits, val);
+					spi->dev.bus_id, bits, val);
 #endif
 			if (wait_uwire_csr_flag(CSRB, 0, 0))
 				goto eio;
@@ -306,7 +305,7 @@ static int uwire_txrx(struct spi_device *spi, struct spi_transfer *t)
 			status += bytes;
 #ifdef	VERBOSE
 			pr_debug("%s: read-%d =%04x\n",
-					dev_name(&spi->dev), bits, val);
+					spi->dev.bus_id, bits, val);
 #endif
 
 		}
@@ -332,7 +331,7 @@ static int uwire_setup_transfer(struct spi_device *spi, struct spi_transfer *t)
 	uwire = spi_master_get_devdata(spi->master);
 
 	if (spi->chip_select > 3) {
-		pr_debug("%s: cs%d?\n", dev_name(&spi->dev), spi->chip_select);
+		pr_debug("%s: cs%d?\n", spi->dev.bus_id, spi->chip_select);
 		status = -ENODEV;
 		goto done;
 	}
@@ -340,9 +339,11 @@ static int uwire_setup_transfer(struct spi_device *spi, struct spi_transfer *t)
 	bits = spi->bits_per_word;
 	if (t != NULL && t->bits_per_word)
 		bits = t->bits_per_word;
+	if (!bits)
+		bits = 8;
 
 	if (bits > 16) {
-		pr_debug("%s: wordsize %d?\n", dev_name(&spi->dev), bits);
+		pr_debug("%s: wordsize %d?\n", spi->dev.bus_id, bits);
 		status = -ENODEV;
 		goto done;
 	}
@@ -377,7 +378,7 @@ static int uwire_setup_transfer(struct spi_device *spi, struct spi_transfer *t)
 		hz = t->speed_hz;
 
 	if (!hz) {
-		pr_debug("%s: zero speed?\n", dev_name(&spi->dev));
+		pr_debug("%s: zero speed?\n", spi->dev.bus_id);
 		status = -EINVAL;
 		goto done;
 	}
@@ -405,7 +406,7 @@ static int uwire_setup_transfer(struct spi_device *spi, struct spi_transfer *t)
 	}
 	if (div1_idx == 4) {
 		pr_debug("%s: lowest clock %ld, need %d\n",
-			dev_name(&spi->dev), rate / 10 / 8, hz);
+			spi->dev.bus_id, rate / 10 / 8, hz);
 		status = -EDOM;
 		goto done;
 	}
@@ -448,9 +449,18 @@ done:
 	return status;
 }
 
+/* the spi->mode bits understood by this driver: */
+#define MODEBITS (SPI_CPOL | SPI_CPHA | SPI_CS_HIGH)
+
 static int uwire_setup(struct spi_device *spi)
 {
 	struct uwire_state *ust = spi->controller_state;
+
+	if (spi->mode & ~MODEBITS) {
+		dev_dbg(&spi->dev, "setup: unsupported mode bits %x\n",
+			spi->mode & ~MODEBITS);
+		return -EINVAL;
+	}
 
 	if (ust == NULL) {
 		ust = kzalloc(sizeof(*ust), GFP_KERNEL);
@@ -496,26 +506,20 @@ static int __init uwire_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(&pdev->dev, uwire);
 
-	uwire->ck = clk_get(&pdev->dev, "fck");
-	if (IS_ERR(uwire->ck)) {
-		status = PTR_ERR(uwire->ck);
-		dev_dbg(&pdev->dev, "no functional clock?\n");
+	uwire->ck = clk_get(&pdev->dev, "armxor_ck");
+	if (!uwire->ck || IS_ERR(uwire->ck)) {
+		dev_dbg(&pdev->dev, "no mpu_xor_clk ?\n");
 		spi_master_put(master);
-		return status;
+		return -ENODEV;
 	}
 	clk_enable(uwire->ck);
 
-	if (cpu_is_omap7xx())
+	if (cpu_is_omap730())
 		uwire_idx_shift = 1;
 	else
 		uwire_idx_shift = 2;
 
 	uwire_write_reg(UWIRE_SR3, 1);
-
-	/* the spi->mode bits understood by this driver: */
-	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
-
-	master->flags = SPI_MASTER_HALF_DUPLEX;
 
 	master->bus_num = 2;	/* "official" */
 	master->num_chipselect = 4;
@@ -574,8 +578,8 @@ static int __init omap_uwire_init(void)
 	}
 	if (machine_is_omap_perseus2()) {
 		/* configure pins: MPU_UW_nSCS1, MPU_UW_SDO, MPU_UW_SCLK */
-		int val = omap_readl(OMAP7XX_IO_CONF_9) & ~0x00EEE000;
-		omap_writel(val | 0x00AAA000, OMAP7XX_IO_CONF_9);
+		int val = omap_readl(OMAP730_IO_CONF_9) & ~0x00EEE000;
+		omap_writel(val | 0x00AAA000, OMAP730_IO_CONF_9);
 	}
 
 	return platform_driver_probe(&uwire_driver, uwire_probe);

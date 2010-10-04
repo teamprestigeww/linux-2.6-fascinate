@@ -185,11 +185,11 @@ switch_mm(struct mm_struct *prev, struct mm_struct *next,
 		/* Make sure there is a MMU context. */
 		spin_lock(&mmu_context_lock);
 		get_mmu_context(next);
-		cpumask_set_cpu(cpu, mm_cpumask(next));
+		cpu_set(cpu, next->cpu_vm_mask);
 		spin_unlock(&mmu_context_lock);
 
 		/*
-		 * Remember the pgd for the fault handlers. Keep a separate
+		 * Remember the pgd for the fault handlers. Keep a seperate
 		 * copy of it because current and active_mm might be invalid
 		 * at points where * there's still a need to derefer the pgd.
 		 */

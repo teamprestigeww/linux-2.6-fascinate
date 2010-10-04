@@ -50,7 +50,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/if_arp.h>
 #include <linux/vmalloc.h>
-#include <linux/slab.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -709,27 +708,26 @@ static int c2_pseudo_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 
 static int c2_pseudo_change_mtu(struct net_device *netdev, int new_mtu)
 {
+	int ret = 0;
+
 	if (new_mtu < ETH_ZLEN || new_mtu > ETH_JUMBO_MTU)
 		return -EINVAL;
 
 	netdev->mtu = new_mtu;
 
 	/* TODO: Tell rnic about new rmda interface mtu */
-	return 0;
+	return ret;
 }
-
-static const struct net_device_ops c2_pseudo_netdev_ops = {
-	.ndo_open 		= c2_pseudo_up,
-	.ndo_stop 		= c2_pseudo_down,
-	.ndo_start_xmit 	= c2_pseudo_xmit_frame,
-	.ndo_change_mtu 	= c2_pseudo_change_mtu,
-	.ndo_validate_addr	= eth_validate_addr,
-};
 
 static void setup(struct net_device *netdev)
 {
-	netdev->netdev_ops = &c2_pseudo_netdev_ops;
-
+	netdev->open = c2_pseudo_up;
+	netdev->stop = c2_pseudo_down;
+	netdev->hard_start_xmit = c2_pseudo_xmit_frame;
+	netdev->get_stats = NULL;
+	netdev->tx_timeout = NULL;
+	netdev->set_mac_address = NULL;
+	netdev->change_mtu = c2_pseudo_change_mtu;
 	netdev->watchdog_timeo = 0;
 	netdev->type = ARPHRD_ETHER;
 	netdev->mtu = 1500;
@@ -737,6 +735,7 @@ static void setup(struct net_device *netdev)
 	netdev->addr_len = ETH_ALEN;
 	netdev->tx_queue_len = 0;
 	netdev->flags |= IFF_NOARP;
+	return;
 }
 
 static struct net_device *c2_pseudo_netdev_init(struct c2_dev *c2dev)
@@ -781,11 +780,11 @@ int c2_register_device(struct c2_dev *dev)
 	/* Register pseudo network device */
 	dev->pseudo_netdev = c2_pseudo_netdev_init(dev);
 	if (!dev->pseudo_netdev)
-		goto out;
+		goto out3;
 
 	ret = register_netdev(dev->pseudo_netdev);
 	if (ret)
-		goto out_free_netdev;
+		goto out2;
 
 	pr_debug("%s:%u\n", __func__, __LINE__);
 	strlcpy(dev->ibdev.name, "amso%d", IB_DEVICE_NAME_MAX);
@@ -852,10 +851,6 @@ int c2_register_device(struct c2_dev *dev)
 	dev->ibdev.post_recv = c2_post_receive;
 
 	dev->ibdev.iwcm = kmalloc(sizeof(*dev->ibdev.iwcm), GFP_KERNEL);
-	if (dev->ibdev.iwcm == NULL) {
-		ret = -ENOMEM;
-		goto out_unregister_netdev;
-	}
 	dev->ibdev.iwcm->add_ref = c2_add_ref;
 	dev->ibdev.iwcm->rem_ref = c2_rem_ref;
 	dev->ibdev.iwcm->get_qp = c2_get_qp;
@@ -865,27 +860,25 @@ int c2_register_device(struct c2_dev *dev)
 	dev->ibdev.iwcm->create_listen = c2_service_create;
 	dev->ibdev.iwcm->destroy_listen = c2_service_destroy;
 
-	ret = ib_register_device(&dev->ibdev, NULL);
+	ret = ib_register_device(&dev->ibdev);
 	if (ret)
-		goto out_free_iwcm;
+		goto out1;
 
 	for (i = 0; i < ARRAY_SIZE(c2_dev_attributes); ++i) {
 		ret = device_create_file(&dev->ibdev.dev,
 					       c2_dev_attributes[i]);
 		if (ret)
-			goto out_unregister_ibdev;
+			goto out0;
 	}
-	goto out;
+	goto out3;
 
-out_unregister_ibdev:
+out0:
 	ib_unregister_device(&dev->ibdev);
-out_free_iwcm:
-	kfree(dev->ibdev.iwcm);
-out_unregister_netdev:
+out1:
 	unregister_netdev(dev->pseudo_netdev);
-out_free_netdev:
+out2:
 	free_netdev(dev->pseudo_netdev);
-out:
+out3:
 	pr_debug("%s:%u ret=%d\n", __func__, __LINE__, ret);
 	return ret;
 }

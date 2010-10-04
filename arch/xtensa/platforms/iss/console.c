@@ -14,10 +14,10 @@
 #include <linux/sched.h>
 #include <linux/console.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/major.h>
 #include <linux/param.h>
-#include <linux/seq_file.h>
 #include <linux/serial.h>
 #include <linux/serialP.h>
 
@@ -176,26 +176,24 @@ static void rs_wait_until_sent(struct tty_struct *tty, int timeout)
 	/* Stub, once again.. */
 }
 
-static int rs_proc_show(struct seq_file *m, void *v)
+static int rs_read_proc(char *page, char **start, off_t off, int count,
+			int *eof, void *data)
 {
-	seq_printf(m, "serinfo:1.0 driver:%s\n", serial_version);
-	return 0;
+	int len = 0;
+	off_t begin = 0;
+
+	len += sprintf(page, "serinfo:1.0 driver:%s\n", serial_version);
+	*eof = 1;
+
+	if (off >= len + begin)
+		return 0;
+
+	*start = page + (off - begin);
+	return ((count < begin + len - off) ? count : begin + len - off);
 }
 
-static int rs_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, rs_proc_show, NULL);
-}
 
-static const struct file_operations rs_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= rs_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static const struct tty_operations serial_ops = {
+static struct tty_operations serial_ops = {
 	.open = rs_open,
 	.close = rs_close,
 	.write = rs_write,
@@ -205,7 +203,7 @@ static const struct tty_operations serial_ops = {
 	.chars_in_buffer = rs_chars_in_buffer,
 	.hangup = rs_hangup,
 	.wait_until_sent = rs_wait_until_sent,
-	.proc_fops = &rs_proc_fops,
+	.read_proc = rs_read_proc
 };
 
 int __init rs_init(void)

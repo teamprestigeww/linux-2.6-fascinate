@@ -24,17 +24,21 @@
 #include "xfs_trans.h"
 #include "xfs_sb.h"
 #include "xfs_ag.h"
+#include "xfs_dir2.h"
+#include "xfs_dmapi.h"
 #include "xfs_mount.h"
 #include "xfs_bmap_btree.h"
 #include "xfs_alloc_btree.h"
 #include "xfs_ialloc_btree.h"
+#include "xfs_dir2_sf.h"
+#include "xfs_attr_sf.h"
 #include "xfs_dinode.h"
 #include "xfs_inode.h"
 #include "xfs_inode_item.h"
 #include "xfs_btree.h"
 #include "xfs_btree_trace.h"
+#include "xfs_ialloc.h"
 #include "xfs_error.h"
-#include "xfs_trace.h"
 
 /*
  * Cursor allocation zone.
@@ -77,7 +81,7 @@ xfs_btree_check_lblock(
 			XFS_ERRTAG_BTREE_CHECK_LBLOCK,
 			XFS_RANDOM_BTREE_CHECK_LBLOCK))) {
 		if (bp)
-			trace_xfs_btree_corrupt(bp, _RET_IP_);
+			xfs_buftrace("LBTREE ERROR", bp);
 		XFS_ERROR_REPORT("xfs_btree_check_lblock", XFS_ERRLEVEL_LOW,
 				 mp);
 		return XFS_ERROR(EFSCORRUPTED);
@@ -115,9 +119,9 @@ xfs_btree_check_sblock(
 			XFS_ERRTAG_BTREE_CHECK_SBLOCK,
 			XFS_RANDOM_BTREE_CHECK_SBLOCK))) {
 		if (bp)
-			trace_xfs_btree_corrupt(bp, _RET_IP_);
-		XFS_CORRUPTION_ERROR("xfs_btree_check_sblock",
-			XFS_ERRLEVEL_LOW, cur->bc_mp, block);
+			xfs_buftrace("SBTREE ERROR", bp);
+		XFS_ERROR_REPORT("xfs_btree_check_sblock", XFS_ERRLEVEL_LOW,
+				 cur->bc_mp);
 		return XFS_ERROR(EFSCORRUPTED);
 	}
 	return 0;
@@ -642,6 +646,46 @@ xfs_btree_read_bufl(
 }
 
 /*
+ * Get a buffer for the block, return it read in.
+ * Short-form addressing.
+ */
+int					/* error */
+xfs_btree_read_bufs(
+	xfs_mount_t	*mp,		/* file system mount point */
+	xfs_trans_t	*tp,		/* transaction pointer */
+	xfs_agnumber_t	agno,		/* allocation group number */
+	xfs_agblock_t	agbno,		/* allocation group block number */
+	uint		lock,		/* lock flags for read_buf */
+	xfs_buf_t	**bpp,		/* buffer for agno/agbno */
+	int		refval)		/* ref count value for buffer */
+{
+	xfs_buf_t	*bp;		/* return value */
+	xfs_daddr_t	d;		/* real disk block address */
+	int		error;
+
+	ASSERT(agno != NULLAGNUMBER);
+	ASSERT(agbno != NULLAGBLOCK);
+	d = XFS_AGB_TO_DADDR(mp, agno, agbno);
+	if ((error = xfs_trans_read_buf(mp, tp, mp->m_ddev_targp, d,
+					mp->m_bsize, lock, &bp))) {
+		return error;
+	}
+	ASSERT(!bp || !XFS_BUF_GETERROR(bp));
+	if (bp != NULL) {
+		switch (refval) {
+		case XFS_ALLOC_BTREE_REF:
+			XFS_BUF_SET_VTYPE_REF(bp, B_FS_MAP, refval);
+			break;
+		case XFS_INO_BTREE_REF:
+			XFS_BUF_SET_VTYPE_REF(bp, B_FS_INOMAP, refval);
+			break;
+		}
+	}
+	*bpp = bp;
+	return 0;
+}
+
+/*
  * Read-ahead the block, don't wait for it, don't return a buffer.
  * Long-form addressing.
  */
@@ -972,7 +1016,7 @@ xfs_btree_get_buf_block(
 	xfs_daddr_t		d;
 
 	/* need to sort out how callers deal with failures first */
-	ASSERT(!(flags & XBF_TRYLOCK));
+	ASSERT(!(flags & XFS_BUF_TRYLOCK));
 
 	d = xfs_btree_ptr_to_daddr(cur, ptr);
 	*bpp = xfs_trans_get_buf(cur->bc_tp, mp->m_ddev_targp, d,
@@ -1003,7 +1047,7 @@ xfs_btree_read_buf_block(
 	int			error;
 
 	/* need to sort out how callers deal with failures first */
-	ASSERT(!(flags & XBF_TRYLOCK));
+	ASSERT(!(flags & XFS_BUF_TRYLOCK));
 
 	d = xfs_btree_ptr_to_daddr(cur, ptr);
 	error = xfs_trans_read_buf(mp, cur->bc_tp, mp->m_ddev_targp, d,
@@ -1839,7 +1883,7 @@ xfs_btree_lshift(
 
 	/*
 	 * We add one entry to the left side and remove one for the right side.
-	 * Account for it here, the changes will be updated on disk and logged
+	 * Accout for it here, the changes will be updated on disk and logged
 	 * later.
 	 */
 	lrecs++;
@@ -2907,7 +2951,7 @@ error0:
  * inode we have to copy the single block it was pointing to into the
  * inode.
  */
-STATIC int
+int
 xfs_btree_kill_iroot(
 	struct xfs_btree_cur	*cur)
 {
@@ -3491,7 +3535,7 @@ xfs_btree_delrec(
 	XFS_BTREE_STATS_INC(cur, join);
 
 	/*
-	 * Fix up the number of records and right block pointer in the
+	 * Fix up the the number of records and right block pointer in the
 	 * surviving block, and log it.
 	 */
 	xfs_btree_set_numrecs(left, lrecs + rrecs);

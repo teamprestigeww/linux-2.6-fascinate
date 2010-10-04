@@ -135,12 +135,6 @@
 #define FPU_CSR_COND7   0x80000000      /* $fcc7 */
 
 /*
- * Bits 18 - 20 of the FPU Status Register will be read as 0,
- * and should be written as zero.
- */
-#define FPU_CSR_RSVD	0x001c0000
-
-/*
  * X the exception cause indicator
  * E the exception enable
  * S the sticky/flag bit
@@ -167,8 +161,7 @@
 #define FPU_CSR_UDF_S   0x00000008
 #define FPU_CSR_INE_S   0x00000004
 
-/* Bits 0 and 1 of FPU Status Register specify the rounding mode */
-#define FPU_CSR_RM	0x00000003
+/* rounding mode */
 #define FPU_CSR_RN      0x0     /* nearest */
 #define FPU_CSR_RZ      0x1     /* towards zero */
 #define FPU_CSR_RU      0x2     /* towards +Infinity */
@@ -191,19 +184,12 @@
 #else
 
 #define PM_4K		0x00000000
-#define PM_8K		0x00002000
 #define PM_16K		0x00006000
-#define PM_32K		0x0000e000
 #define PM_64K		0x0001e000
-#define PM_128K		0x0003e000
 #define PM_256K		0x0007e000
-#define PM_512K		0x000fe000
 #define PM_1M		0x001fe000
-#define PM_2M		0x003fe000
 #define PM_4M		0x007fe000
-#define PM_8M		0x00ffe000
 #define PM_16M		0x01ffe000
-#define PM_32M		0x03ffe000
 #define PM_64M		0x07ffe000
 #define PM_256M		0x1fffe000
 #define PM_1G		0x7fffe000
@@ -215,34 +201,14 @@
  */
 #ifdef CONFIG_PAGE_SIZE_4KB
 #define PM_DEFAULT_MASK	PM_4K
-#elif defined(CONFIG_PAGE_SIZE_8KB)
-#define PM_DEFAULT_MASK	PM_8K
 #elif defined(CONFIG_PAGE_SIZE_16KB)
 #define PM_DEFAULT_MASK	PM_16K
-#elif defined(CONFIG_PAGE_SIZE_32KB)
-#define PM_DEFAULT_MASK	PM_32K
 #elif defined(CONFIG_PAGE_SIZE_64KB)
 #define PM_DEFAULT_MASK	PM_64K
 #else
 #error Bad page size configuration!
 #endif
 
-/*
- * Default huge tlb size for a given kernel configuration
- */
-#ifdef CONFIG_PAGE_SIZE_4KB
-#define PM_HUGE_MASK	PM_1M
-#elif defined(CONFIG_PAGE_SIZE_8KB)
-#define PM_HUGE_MASK	PM_4M
-#elif defined(CONFIG_PAGE_SIZE_16KB)
-#define PM_HUGE_MASK	PM_16M
-#elif defined(CONFIG_PAGE_SIZE_32KB)
-#define PM_HUGE_MASK	PM_64M
-#elif defined(CONFIG_PAGE_SIZE_64KB)
-#define PM_HUGE_MASK	PM_256M
-#elif defined(CONFIG_HUGETLB_PAGE)
-#error Bad page size configuration for hugetlbfs!
-#endif
 
 /*
  * Values used for computation of new tlb entries
@@ -256,14 +222,6 @@
 #define PL_16M		24
 #define PL_64M		26
 #define PL_256M		28
-
-/*
- * PageGrain bits
- */
-#define PG_RIE		(_ULCAST_(1) <<  31)
-#define PG_XIE		(_ULCAST_(1) <<  30)
-#define PG_ELPA		(_ULCAST_(1) <<  29)
-#define PG_ESP		(_ULCAST_(1) <<  28)
 
 /*
  * R4x00 interrupt enable / cause bits
@@ -408,7 +366,6 @@
 #define  STATUSB_IP15		7
 #define  STATUSF_IP15		(_ULCAST_(1) <<  7)
 #define ST0_CH			0x00040000
-#define ST0_NMI			0x00080000
 #define ST0_SR			0x00100000
 #define ST0_TS			0x00200000
 #define ST0_BEV			0x00400000
@@ -420,16 +377,6 @@
 #define ST0_CU2			0x40000000
 #define ST0_CU3			0x80000000
 #define ST0_XX			0x80000000	/* MIPS IV naming */
-
-/*
- * Bitfields and bit numbers in the coprocessor 0 IntCtl register. (MIPSR2)
- *
- * Refer to your MIPS R4xx0 manual, chapter 5 for explanation.
- */
-#define INTCTLB_IPPCI		26
-#define INTCTLF_IPPCI		(_ULCAST_(7) << INTCTLB_IPPCI)
-#define INTCTLB_IPTI		29
-#define INTCTLF_IPTI		(_ULCAST_(7) << INTCTLB_IPTI)
 
 /*
  * Bitfields and bit numbers in the coprocessor 0 cause register.
@@ -460,8 +407,6 @@
 #define  CAUSEF_IV		(_ULCAST_(1)   << 23)
 #define  CAUSEB_CE		28
 #define  CAUSEF_CE		(_ULCAST_(3)   << 28)
-#define  CAUSEB_TI		30
-#define  CAUSEF_TI		(_ULCAST_(1)   << 30)
 #define  CAUSEB_BD		31
 #define  CAUSEF_BD		(_ULCAST_(1)   << 31)
 
@@ -591,10 +536,6 @@
 #define MIPS_CONF3_LPA		(_ULCAST_(1) <<  7)
 #define MIPS_CONF3_DSP		(_ULCAST_(1) << 10)
 #define MIPS_CONF3_ULRI		(_ULCAST_(1) << 13)
-
-#define MIPS_CONF4_MMUSIZEEXT	(_ULCAST_(255) << 0)
-#define MIPS_CONF4_MMUEXTDEF	(_ULCAST_(3) << 14)
-#define MIPS_CONF4_MMUEXTDEF_MMUSIZEEXT (_ULCAST_(1) << 14)
 
 #define MIPS_CONF7_WII		(_ULCAST_(1) << 31)
 
@@ -776,8 +717,8 @@ do {									\
 			".set\tmips64\n\t"				\
 			"dmfc0\t%M0, " #source "\n\t"			\
 			"dsll\t%L0, %M0, 32\n\t"			\
-			"dsra\t%M0, %M0, 32\n\t"			\
-			"dsra\t%L0, %L0, 32\n\t"			\
+			"dsrl\t%M0, %M0, 32\n\t"			\
+			"dsrl\t%L0, %L0, 32\n\t"			\
 			".set\tmips0"					\
 			: "=r" (__val));				\
 	else								\
@@ -785,8 +726,8 @@ do {									\
 			".set\tmips64\n\t"				\
 			"dmfc0\t%M0, " #source ", " #sel "\n\t"		\
 			"dsll\t%L0, %M0, 32\n\t"			\
-			"dsra\t%M0, %M0, 32\n\t"			\
-			"dsra\t%L0, %L0, 32\n\t"			\
+			"dsrl\t%M0, %M0, 32\n\t"			\
+			"dsrl\t%L0, %L0, 32\n\t"			\
 			".set\tmips0"					\
 			: "=r" (__val));				\
 	local_irq_restore(__flags);					\
@@ -845,9 +786,6 @@ do {									\
 
 #define read_c0_pagemask()	__read_32bit_c0_register($5, 0)
 #define write_c0_pagemask(val)	__write_32bit_c0_register($5, 0, val)
-
-#define read_c0_pagegrain()	__read_32bit_c0_register($5, 1)
-#define write_c0_pagegrain(val)	__write_32bit_c0_register($5, 1, val)
 
 #define read_c0_wired()		__read_32bit_c0_register($6, 0)
 #define write_c0_wired(val)	__write_32bit_c0_register($6, 0, val)
@@ -1453,11 +1391,11 @@ static inline void tlb_write_random(void)
 static inline unsigned int					\
 set_c0_##name(unsigned int set)					\
 {								\
-	unsigned int res, new;					\
+	unsigned int res;					\
 								\
 	res = read_c0_##name();					\
-	new = res | set;					\
-	write_c0_##name(new);					\
+	res |= set;						\
+	write_c0_##name(res);					\
 								\
 	return res;						\
 }								\
@@ -1465,24 +1403,24 @@ set_c0_##name(unsigned int set)					\
 static inline unsigned int					\
 clear_c0_##name(unsigned int clear)				\
 {								\
-	unsigned int res, new;					\
+	unsigned int res;					\
 								\
 	res = read_c0_##name();					\
-	new = res & ~clear;					\
-	write_c0_##name(new);					\
+	res &= ~clear;						\
+	write_c0_##name(res);					\
 								\
 	return res;						\
 }								\
 								\
 static inline unsigned int					\
-change_c0_##name(unsigned int change, unsigned int val)		\
+change_c0_##name(unsigned int change, unsigned int new)		\
 {								\
-	unsigned int res, new;					\
+	unsigned int res;					\
 								\
 	res = read_c0_##name();					\
-	new = res & ~change;					\
-	new |= (val & change);					\
-	write_c0_##name(new);					\
+	res &= ~change;						\
+	res |= (new & change);					\
+	write_c0_##name(res);					\
 								\
 	return res;						\
 }
@@ -1546,15 +1484,14 @@ static inline unsigned int					\
 set_c0_##name(unsigned int set)					\
 {								\
 	unsigned int res;					\
-	unsigned int new;					\
 	unsigned int omt;					\
 	unsigned long flags;					\
 								\
 	local_irq_save(flags);					\
 	omt = __dmt();						\
 	res = read_c0_##name();					\
-	new = res | set;					\
-	write_c0_##name(new);					\
+	res |= set;						\
+	write_c0_##name(res);					\
 	__emt(omt);						\
 	local_irq_restore(flags);				\
 								\
@@ -1565,15 +1502,14 @@ static inline unsigned int					\
 clear_c0_##name(unsigned int clear)				\
 {								\
 	unsigned int res;					\
-	unsigned int new;					\
 	unsigned int omt;					\
 	unsigned long flags;					\
 								\
 	local_irq_save(flags);					\
 	omt = __dmt();						\
 	res = read_c0_##name();					\
-	new = res & ~clear;					\
-	write_c0_##name(new);					\
+	res &= ~clear;						\
+	write_c0_##name(res);					\
 	__emt(omt);						\
 	local_irq_restore(flags);				\
 								\
@@ -1581,10 +1517,9 @@ clear_c0_##name(unsigned int clear)				\
 }								\
 								\
 static inline unsigned int					\
-change_c0_##name(unsigned int change, unsigned int newbits)	\
+change_c0_##name(unsigned int change, unsigned int new)		\
 {								\
 	unsigned int res;					\
-	unsigned int new;					\
 	unsigned int omt;					\
 	unsigned long flags;					\
 								\
@@ -1592,9 +1527,9 @@ change_c0_##name(unsigned int change, unsigned int newbits)	\
 								\
 	omt = __dmt();						\
 	res = read_c0_##name();					\
-	new = res & ~change;					\
-	new |= (newbits & change);				\
-	write_c0_##name(new);					\
+	res &= ~change;						\
+	res |= (new & change);					\
+	write_c0_##name(res);					\
 	__emt(omt);						\
 	local_irq_restore(flags);				\
 								\

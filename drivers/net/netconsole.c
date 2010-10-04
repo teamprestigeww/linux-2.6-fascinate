@@ -37,7 +37,6 @@
 #include <linux/mm.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/console.h>
 #include <linux/moduleparam.h>
 #include <linux/string.h>
@@ -295,12 +294,14 @@ static ssize_t show_remote_port(struct netconsole_target *nt, char *buf)
 
 static ssize_t show_local_ip(struct netconsole_target *nt, char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "%pI4\n", &nt->np.local_ip);
+	return snprintf(buf, PAGE_SIZE, "%d.%d.%d.%d\n",
+			HIPQUAD(nt->np.local_ip));
 }
 
 static ssize_t show_remote_ip(struct netconsole_target *nt, char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "%pI4\n", &nt->np.remote_ip);
+	return snprintf(buf, PAGE_SIZE, "%d.%d.%d.%d\n",
+			HIPQUAD(nt->np.remote_ip));
 }
 
 static ssize_t show_local_mac(struct netconsole_target *nt, char *buf)
@@ -437,7 +438,7 @@ static ssize_t store_local_ip(struct netconsole_target *nt,
 		return -EINVAL;
 	}
 
-	nt->np.local_ip = in_aton(buf);
+	nt->np.local_ip = ntohl(in_aton(buf));
 
 	return strnlen(buf, count);
 }
@@ -453,7 +454,7 @@ static ssize_t store_remote_ip(struct netconsole_target *nt,
 		return -EINVAL;
 	}
 
-	nt->np.remote_ip = in_aton(buf);
+	nt->np.remote_ip = ntohl(in_aton(buf));
 
 	return strnlen(buf, count);
 }
@@ -665,8 +666,7 @@ static int netconsole_netdev_event(struct notifier_block *this,
 	struct netconsole_target *nt;
 	struct net_device *dev = ptr;
 
-	if (!(event == NETDEV_CHANGENAME || event == NETDEV_UNREGISTER ||
-	      event == NETDEV_BONDING_DESLAVE || event == NETDEV_GOING_DOWN))
+	if (!(event == NETDEV_CHANGENAME))
 		goto done;
 
 	spin_lock_irqsave(&target_list_lock, flags);
@@ -677,22 +677,11 @@ static int netconsole_netdev_event(struct notifier_block *this,
 			case NETDEV_CHANGENAME:
 				strlcpy(nt->np.dev_name, dev->name, IFNAMSIZ);
 				break;
-			case NETDEV_UNREGISTER:
-				netpoll_cleanup(&nt->np);
-				/* Fall through */
-			case NETDEV_GOING_DOWN:
-			case NETDEV_BONDING_DESLAVE:
-				nt->enabled = 0;
-				break;
 			}
 		}
 		netconsole_target_put(nt);
 	}
 	spin_unlock_irqrestore(&target_list_lock, flags);
-	if (event == NETDEV_UNREGISTER || event == NETDEV_BONDING_DESLAVE)
-		printk(KERN_INFO "netconsole: network logging stopped, "
-			"interface %s %s\n",  dev->name,
-			event == NETDEV_UNREGISTER ? "unregistered" : "released slaves");
 
 done:
 	return NOTIFY_DONE;

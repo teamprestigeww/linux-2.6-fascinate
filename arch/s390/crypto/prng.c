@@ -6,11 +6,11 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/smp_lock.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/random.h>
-#include <linux/slab.h>
 #include <asm/debug.h>
 #include <asm/uaccess.h>
 
@@ -49,6 +49,7 @@ static unsigned char parm_block[32] = {
 
 static int prng_open(struct inode *inode, struct file *file)
 {
+	cycle_kernel_lock();
 	return nonseekable_open(inode, file);
 }
 
@@ -200,7 +201,8 @@ out_free:
 static void __exit prng_exit(void)
 {
 	/* wipe me */
-	kzfree(p->buf);
+	memset(p->buf, 0, prng_chunk_size);
+	kfree(p->buf);
 	kfree(p);
 
 	misc_deregister(&prng_dev);

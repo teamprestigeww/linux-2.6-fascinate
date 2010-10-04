@@ -27,7 +27,6 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/namei.h>
-#include <linux/slab.h>
 
 #include <linux/configfs.h>
 #include "configfs_internal.h"
@@ -122,10 +121,8 @@ static int get_target(const char *symname, struct path *path,
 				ret = -ENOENT;
 				path_put(path);
 			}
-		} else {
+		} else
 			ret = -EPERM;
-			path_put(path);
-		}
 	}
 
 	return ret;
@@ -138,7 +135,7 @@ int configfs_symlink(struct inode *dir, struct dentry *dentry, const char *symna
 	struct path path;
 	struct configfs_dirent *sd;
 	struct config_item *parent_item;
-	struct config_item *target_item = NULL;
+	struct config_item *target_item;
 	struct config_item_type *type;
 
 	ret = -EPERM;  /* What lack-of-symlink returns */

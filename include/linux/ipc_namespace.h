@@ -25,7 +25,7 @@ struct ipc_ids {
 };
 
 struct ipc_namespace {
-	atomic_t	count;
+	struct kref	kref;
 	struct ipc_ids	ids[3];
 
 	int		sem_ctls[4];
@@ -44,61 +44,42 @@ struct ipc_namespace {
 	int		shm_tot;
 
 	struct notifier_block ipcns_nb;
-
-	/* The kern_mount of the mqueuefs sb.  We take a ref on it */
-	struct vfsmount	*mq_mnt;
-
-	/* # queues in this ns, protected by mq_lock */
-	unsigned int    mq_queues_count;
-
-	/* next fields are set through sysctl */
-	unsigned int    mq_queues_max;   /* initialized to DFLT_QUEUESMAX */
-	unsigned int    mq_msg_max;      /* initialized to DFLT_MSGMAX */
-	unsigned int    mq_msgsize_max;  /* initialized to DFLT_MSGSIZEMAX */
-
 };
 
 extern struct ipc_namespace init_ipc_ns;
 extern atomic_t nr_ipc_ns;
 
-extern spinlock_t mq_lock;
-
 #ifdef CONFIG_SYSVIPC
+#define INIT_IPC_NS(ns)		.ns		= &init_ipc_ns,
+
 extern int register_ipcns_notifier(struct ipc_namespace *);
 extern int cond_register_ipcns_notifier(struct ipc_namespace *);
 extern void unregister_ipcns_notifier(struct ipc_namespace *);
 extern int ipcns_notify(unsigned long);
+
 #else /* CONFIG_SYSVIPC */
-static inline int register_ipcns_notifier(struct ipc_namespace *ns)
-{ return 0; }
-static inline int cond_register_ipcns_notifier(struct ipc_namespace *ns)
-{ return 0; }
-static inline void unregister_ipcns_notifier(struct ipc_namespace *ns) { }
-static inline int ipcns_notify(unsigned long l) { return 0; }
+#define INIT_IPC_NS(ns)
 #endif /* CONFIG_SYSVIPC */
 
-#ifdef CONFIG_POSIX_MQUEUE
-extern int mq_init_ns(struct ipc_namespace *ns);
-/* default values */
-#define DFLT_QUEUESMAX 256     /* max number of message queues */
-#define DFLT_MSGMAX    10      /* max number of messages in each queue */
-#define HARD_MSGMAX    (32768*sizeof(void *)/4)
-#define DFLT_MSGSIZEMAX 8192   /* max message size */
-#else
-static inline int mq_init_ns(struct ipc_namespace *ns) { return 0; }
-#endif
-
-#if defined(CONFIG_IPC_NS)
+#if defined(CONFIG_SYSVIPC) && defined(CONFIG_IPC_NS)
+extern void free_ipc_ns(struct kref *kref);
 extern struct ipc_namespace *copy_ipcs(unsigned long flags,
 				       struct ipc_namespace *ns);
+extern void free_ipcs(struct ipc_namespace *ns, struct ipc_ids *ids,
+		      void (*free)(struct ipc_namespace *,
+				   struct kern_ipc_perm *));
+
 static inline struct ipc_namespace *get_ipc_ns(struct ipc_namespace *ns)
 {
 	if (ns)
-		atomic_inc(&ns->count);
+		kref_get(&ns->kref);
 	return ns;
 }
 
-extern void put_ipc_ns(struct ipc_namespace *ns);
+static inline void put_ipc_ns(struct ipc_namespace *ns)
+{
+	kref_put(&ns->kref, free_ipc_ns);
+}
 #else
 static inline struct ipc_namespace *copy_ipcs(unsigned long flags,
 		struct ipc_namespace *ns)
@@ -118,18 +99,4 @@ static inline void put_ipc_ns(struct ipc_namespace *ns)
 {
 }
 #endif
-
-#ifdef CONFIG_POSIX_MQUEUE_SYSCTL
-
-struct ctl_table_header;
-extern struct ctl_table_header *mq_register_sysctl_table(void);
-
-#else /* CONFIG_POSIX_MQUEUE_SYSCTL */
-
-static inline struct ctl_table_header *mq_register_sysctl_table(void)
-{
-	return NULL;
-}
-
-#endif /* CONFIG_POSIX_MQUEUE_SYSCTL */
 #endif

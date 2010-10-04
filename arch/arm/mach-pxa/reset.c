@@ -10,7 +10,7 @@
 #include <linux/io.h>
 #include <asm/proc-fns.h>
 
-#include <mach/regs-ost.h>
+#include <mach/pxa-regs.h>
 #include <mach/reset.h>
 
 unsigned int reset_status;
@@ -20,7 +20,7 @@ static void do_hw_reset(void);
 
 static int reset_gpio = -1;
 
-int init_gpio_reset(int gpio, int output, int level)
+int init_gpio_reset(int gpio, int output)
 {
 	int rc;
 
@@ -31,7 +31,7 @@ int init_gpio_reset(int gpio, int output, int level)
 	}
 
 	if (output)
-		rc = gpio_direction_output(gpio, level);
+		rc = gpio_direction_output(gpio, 0);
 	else
 		rc = gpio_direction_input(gpio);
 	if (rc) {
@@ -81,7 +81,7 @@ static void do_hw_reset(void)
 	OSMR3 = OSCR + 368640;	/* ... in 100 ms */
 }
 
-void arch_reset(char mode, const char *cmd)
+void arch_reset(char mode)
 {
 	clear_reset_status(RESET_STATUS_ALL);
 

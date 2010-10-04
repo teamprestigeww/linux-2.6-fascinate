@@ -4,8 +4,6 @@
  * Filesystem request handling methods
  */
 
-#include <linux/ata.h>
-#include <linux/slab.h>
 #include <linux/hdreg.h>
 #include <linux/blkdev.h>
 #include <linux/skbuff.h>
@@ -35,6 +33,13 @@ new_skb(ulong len)
 		skb_reset_mac_header(skb);
 		skb_reset_network_header(skb);
 		skb->protocol = __constant_htons(ETH_P_AOE);
+		skb->priority = 0;
+		skb->next = skb->prev = NULL;
+
+		/* tell the network layer not to perform IP checksums
+		 * or to get the NIC to do it
+		 */
+		skb->ip_summed = CHECKSUM_NONE;
 	}
 	return skb;
 }
@@ -262,7 +267,7 @@ aoecmd_ata_rw(struct aoedev *d)
 		writebit = 0;
 	}
 
-	ah->cmdstat = ATA_CMD_PIO_READ | writebit | extbit;
+	ah->cmdstat = WIN_READ | writebit | extbit;
 
 	/* mark all tracking fields and load out */
 	buf->nframesout += 1;
@@ -357,10 +362,10 @@ resend(struct aoedev *d, struct aoetgt *t, struct frame *f)
 	switch (ah->cmdstat) {
 	default:
 		break;
-	case ATA_CMD_PIO_READ:
-	case ATA_CMD_PIO_READ_EXT:
-	case ATA_CMD_PIO_WRITE:
-	case ATA_CMD_PIO_WRITE_EXT:
+	case WIN_READ:
+	case WIN_READ_EXT:
+	case WIN_WRITE:
+	case WIN_WRITE_EXT:
 		put_lba(ah, f->lba);
 
 		n = f->bcnt;
@@ -807,8 +812,8 @@ aoecmd_ata_rsp(struct sk_buff *skb)
 			d->htgt = NULL;
 		n = ahout->scnt << 9;
 		switch (ahout->cmdstat) {
-		case ATA_CMD_PIO_READ:
-		case ATA_CMD_PIO_READ_EXT:
+		case WIN_READ:
+		case WIN_READ_EXT:
 			if (skb->len - sizeof *hin - sizeof *ahin < n) {
 				printk(KERN_ERR
 					"aoe: %s.  skb->len=%d need=%ld\n",
@@ -818,8 +823,8 @@ aoecmd_ata_rsp(struct sk_buff *skb)
 				return;
 			}
 			memcpy(f->bufaddr, ahin+1, n);
-		case ATA_CMD_PIO_WRITE:
-		case ATA_CMD_PIO_WRITE_EXT:
+		case WIN_WRITE:
+		case WIN_WRITE_EXT:
 			ifp = getif(t, skb->dev);
 			if (ifp) {
 				ifp->lost = 0;
@@ -833,7 +838,7 @@ aoecmd_ata_rsp(struct sk_buff *skb)
 				goto xmit;
 			}
 			break;
-		case ATA_CMD_ID_ATA:
+		case WIN_IDENTIFY:
 			if (skb->len - sizeof *hin - sizeof *ahin < 512) {
 				printk(KERN_INFO
 					"aoe: runt data size in ataid.  skb->len=%d\n",
@@ -854,12 +859,8 @@ aoecmd_ata_rsp(struct sk_buff *skb)
 
 	if (buf && --buf->nframesout == 0 && buf->resid == 0) {
 		diskstats(d->gd, buf->bio, jiffies - buf->stime, buf->sector);
-		if (buf->flags & BUFFL_FAIL)
-			bio_endio(buf->bio, -EIO);
-		else {
-			bio_flush_dcache_pages(buf->bio);
-			bio_endio(buf->bio, 0);
-		}
+		n = (buf->flags & BUFFL_FAIL) ? -EIO : 0;
+		bio_endio(buf->bio, n);
 		mempool_free(buf, d->bufpool);
 	}
 
@@ -913,7 +914,7 @@ aoecmd_ata_id(struct aoedev *d)
 
 	/* set up ata header */
 	ah->scnt = 1;
-	ah->cmdstat = ATA_CMD_ID_ATA;
+	ah->cmdstat = WIN_IDENTIFY;
 	ah->lba3 = 0xa0;
 
 	skb->dev = t->ifp->nd;

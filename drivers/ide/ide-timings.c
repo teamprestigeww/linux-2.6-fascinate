@@ -43,8 +43,6 @@ static struct ide_timing ide_timing[] = {
 	{ XFER_UDMA_1,     0,   0,   0,   0,   0,   0,   0,  80 },
 	{ XFER_UDMA_0,     0,   0,   0,   0,   0,   0,   0, 120 },
 
-	{ XFER_MW_DMA_4,  25,   0,   0,   0,  55,  20,  80,   0 },
-	{ XFER_MW_DMA_3,  25,   0,   0,   0,  65,  25, 100,   0 },
 	{ XFER_MW_DMA_2,  25,   0,   0,   0,  70,  25, 120,   0 },
 	{ XFER_MW_DMA_1,  45,   0,   0,   0,  80,  50, 150,   0 },
 	{ XFER_MW_DMA_0,  60,   0,   0,   0, 215, 215, 480,   0 },
@@ -53,8 +51,7 @@ static struct ide_timing ide_timing[] = {
 	{ XFER_SW_DMA_1,  90,   0,   0,   0, 240, 240, 480,   0 },
 	{ XFER_SW_DMA_0, 120,   0,   0,   0, 480, 480, 960,   0 },
 
-	{ XFER_PIO_6,     10,  55,  20,  80,  55,  20,  80,   0 },
-	{ XFER_PIO_5,     15,  65,  25, 100,  65,  25, 100,   0 },
+	{ XFER_PIO_5,     20,  50,  30, 100,  50,  30, 100,   0 },
 	{ XFER_PIO_4,     25,  70,  25, 120,  70,  25, 120,   0 },
 	{ XFER_PIO_3,     30,  80,  70, 180,  80,  70, 180,   0 },
 
@@ -93,10 +90,6 @@ u16 ide_pio_cycle_time(ide_drive_t *drive, u8 pio)
 		/* conservative "downgrade" for all pre-ATA2 drives */
 		if (pio < 3 && cycle < t->cycle)
 			cycle = 0; /* use standard timing */
-
-		/* Use the standard timing for the CF specific modes too */
-		if (pio > 4 && ata_id_is_cfa(id))
-			cycle = 0;
 	}
 
 	return cycle ? cycle : t->cycle;
@@ -166,13 +159,11 @@ int ide_timing_compute(ide_drive_t *drive, u8 speed,
 	if (id[ATA_ID_FIELD_VALID] & 2) {	/* EIDE drive */
 		memset(&p, 0, sizeof(p));
 
-		if (speed >= XFER_PIO_0 && speed < XFER_SW_DMA_0) {
-			if (speed <= XFER_PIO_2)
-				p.cycle = p.cyc8b = id[ATA_ID_EIDE_PIO];
-			else if ((speed <= XFER_PIO_4) ||
-				 (speed == XFER_PIO_5 && !ata_id_is_cfa(id)))
-				p.cycle = p.cyc8b = id[ATA_ID_EIDE_PIO_IORDY];
-		} else if (speed >= XFER_MW_DMA_0 && speed <= XFER_MW_DMA_2)
+		if (speed <= XFER_PIO_2)
+			p.cycle = p.cyc8b = id[ATA_ID_EIDE_PIO];
+		else if (speed <= XFER_PIO_5)
+			p.cycle = p.cyc8b = id[ATA_ID_EIDE_PIO_IORDY];
+		else if (speed >= XFER_MW_DMA_0 && speed <= XFER_MW_DMA_2)
 			p.cycle = id[ATA_ID_EIDE_DMA_MIN];
 
 		ide_timing_merge(&p, t, t, IDE_TIMING_CYCLE | IDE_TIMING_CYC8B);
@@ -186,10 +177,11 @@ int ide_timing_compute(ide_drive_t *drive, u8 speed,
 	/*
 	 * Even in DMA/UDMA modes we still use PIO access for IDENTIFY,
 	 * S.M.A.R.T and some other commands. We have to ensure that the
-	 * DMA cycle timing is slower/equal than the current PIO timing.
+	 * DMA cycle timing is slower/equal than the fastest PIO timing.
 	 */
 	if (speed >= XFER_SW_DMA_0) {
-		ide_timing_compute(drive, drive->pio_mode, &p, T, UT);
+		u8 pio = ide_get_best_pio_mode(drive, 255, 5);
+		ide_timing_compute(drive, XFER_PIO_0 + pio, &p, T, UT);
 		ide_timing_merge(&p, t, t, IDE_TIMING_ALL);
 	}
 

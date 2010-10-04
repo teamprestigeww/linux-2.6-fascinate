@@ -19,7 +19,6 @@
  */
 #define IP_VS_SVC_F_PERSISTENT	0x0001		/* persistent port */
 #define IP_VS_SVC_F_HASHED	0x0002		/* hashed entry */
-#define IP_VS_SVC_F_ONEPACKET	0x0004		/* one-packet scheduling */
 
 /*
  *      Destination Server Flags
@@ -86,7 +85,6 @@
 #define IP_VS_CONN_F_SEQ_MASK	0x0600		/* in/out sequence mask */
 #define IP_VS_CONN_F_NO_CPORT	0x0800		/* no client port set yet */
 #define IP_VS_CONN_F_TEMPLATE	0x1000		/* template, not connection */
-#define IP_VS_CONN_F_ONE_PACKET	0x2000		/* forward only one packet */
 
 #define IP_VS_SCHEDNAME_MAXLEN	16
 #define IP_VS_IFNAME_MAXLEN	16
@@ -98,10 +96,10 @@
  */
 struct ip_vs_service_user {
 	/* virtual service addresses */
-	__u16		protocol;
+	u_int16_t		protocol;
 	__be32			addr;		/* virtual ip address */
 	__be16			port;
-	__u32		fwmark;		/* firwall mark of service */
+	u_int32_t		fwmark;		/* firwall mark of service */
 
 	/* virtual service options */
 	char			sched_name[IP_VS_SCHEDNAME_MAXLEN];
@@ -121,15 +119,16 @@ struct ip_vs_dest_user {
 	int			weight;		/* destination weight */
 
 	/* thresholds for active connections */
-	__u32		u_threshold;	/* upper threshold */
-	__u32		l_threshold;	/* lower threshold */
+	u_int32_t		u_threshold;	/* upper threshold */
+	u_int32_t		l_threshold;	/* lower threshold */
 };
 
 
 /*
  *	IPVS statistics object (for user space)
  */
-struct ip_vs_stats_user {
+struct ip_vs_stats_user
+{
 	__u32                   conns;          /* connections scheduled */
 	__u32                   inpkts;         /* incoming packets */
 	__u32                   outpkts;        /* outgoing packets */
@@ -160,10 +159,10 @@ struct ip_vs_getinfo {
 /* The argument to IP_VS_SO_GET_SERVICE */
 struct ip_vs_service_entry {
 	/* which service: user fills in these */
-	__u16		protocol;
+	u_int16_t		protocol;
 	__be32			addr;		/* virtual address */
 	__be16			port;
-	__u32		fwmark;		/* firwall mark of service */
+	u_int32_t		fwmark;		/* firwall mark of service */
 
 	/* service options */
 	char			sched_name[IP_VS_SCHEDNAME_MAXLEN];
@@ -185,12 +184,12 @@ struct ip_vs_dest_entry {
 	unsigned		conn_flags;	/* connection flags */
 	int			weight;		/* destination weight */
 
-	__u32		u_threshold;	/* upper threshold */
-	__u32		l_threshold;	/* lower threshold */
+	u_int32_t		u_threshold;	/* upper threshold */
+	u_int32_t		l_threshold;	/* lower threshold */
 
-	__u32		activeconns;	/* active connections */
-	__u32		inactconns;	/* inactive connections */
-	__u32		persistconns;	/* persistent connections */
+	u_int32_t		activeconns;	/* active connections */
+	u_int32_t		inactconns;	/* inactive connections */
+	u_int32_t		persistconns;	/* persistent connections */
 
 	/* statistics */
 	struct ip_vs_stats_user stats;
@@ -200,10 +199,10 @@ struct ip_vs_dest_entry {
 /* The argument to IP_VS_SO_GET_DESTS */
 struct ip_vs_get_dests {
 	/* which service: user fills in these */
-	__u16		protocol;
+	u_int16_t		protocol;
 	__be32			addr;		/* virtual address */
 	__be16			port;
-	__u32		fwmark;		/* firwall mark of service */
+	u_int32_t		fwmark;		/* firwall mark of service */
 
 	/* number of real servers */
 	unsigned int		num_dests;

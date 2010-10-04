@@ -1,5 +1,5 @@
 #ifdef CONFIG_SUPERH32
 # include "checksum_32.h"
 #else
-# include <asm-generic/checksum.h>
+# include "checksum_64.h"
 #endif

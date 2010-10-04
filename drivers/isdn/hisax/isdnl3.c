@@ -16,7 +16,6 @@
  */
 
 #include <linux/init.h>
-#include <linux/slab.h>
 #include "hisax.h"
 #include "isdnl3.h"
 
@@ -544,6 +543,8 @@ static struct FsmNode L3FnList[] __initdata =
 };
 /* *INDENT-ON* */
 
+#define L3_FN_COUNT (sizeof(L3FnList)/sizeof(struct FsmNode))
+
 void
 l3_msg(struct PStack *st, int pr, void *arg)
 {
@@ -586,7 +587,7 @@ Isdnl3New(void)
 	l3fsm.event_count = L3_EVENT_COUNT;
 	l3fsm.strEvent = strL3Event;
 	l3fsm.strState = strL3State;
-	return FsmNew(&l3fsm, L3FnList, ARRAY_SIZE(L3FnList));
+	return FsmNew(&l3fsm, L3FnList, L3_FN_COUNT);
 }
 
 void

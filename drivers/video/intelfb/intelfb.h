@@ -53,7 +53,6 @@
 #define PCI_DEVICE_ID_INTEL_830M	0x3577
 #define PCI_DEVICE_ID_INTEL_845G	0x2562
 #define PCI_DEVICE_ID_INTEL_85XGM	0x3582
-#define PCI_DEVICE_ID_INTEL_854		0x358E
 #define PCI_DEVICE_ID_INTEL_865G	0x2572
 #define PCI_DEVICE_ID_INTEL_915G	0x2582
 #define PCI_DEVICE_ID_INTEL_915GM	0x2592
@@ -155,7 +154,6 @@ enum intel_chips {
 	INTEL_85XGM,
 	INTEL_852GM,
 	INTEL_852GME,
-	INTEL_854,
 	INTEL_855GM,
 	INTEL_855GME,
 	INTEL_865G,
@@ -370,6 +368,10 @@ struct intelfb_info {
 			((dinfo)->chipset == INTEL_945GME) ||	\
 			((dinfo)->chipset == INTEL_965G) ||	\
 			((dinfo)->chipset == INTEL_965GM))
+
+#ifndef FBIO_WAITFORVSYNC
+#define FBIO_WAITFORVSYNC	_IOW('F', 0x20, __u32)
+#endif
 
 /*** function prototypes ***/
 

@@ -66,7 +66,7 @@ struct cmi_spec {
 
 	struct hda_pcm pcm_rec[2];	/* PCM information */
 
-	/* pin default configuration */
+	/* pin deafault configuration */
 	hda_nid_t pin_nid[NUM_PINS];
 	unsigned int def_conf[NUM_PINS];
 	unsigned int pin_def_confs;
@@ -197,8 +197,8 @@ static struct snd_kcontrol_new cmi9880_basic_mixer[] = {
 	HDA_CODEC_VOLUME_IDX("Capture Volume", 1, 0x09, 0, HDA_INPUT),
 	HDA_CODEC_MUTE("Capture Switch", 0x08, 0, HDA_INPUT),
 	HDA_CODEC_MUTE_IDX("Capture Switch", 1, 0x09, 0, HDA_INPUT),
-	HDA_CODEC_VOLUME("Beep Playback Volume", 0x23, 0, HDA_OUTPUT),
-	HDA_CODEC_MUTE("Beep Playback Switch", 0x23, 0, HDA_OUTPUT),
+	HDA_CODEC_VOLUME("PC Speaker Playback Volume", 0x23, 0, HDA_OUTPUT),
+	HDA_CODEC_MUTE("PC Speaker Playback Switch", 0x23, 0, HDA_OUTPUT),
 	{ } /* end */
 };
 
@@ -315,8 +315,7 @@ static struct hda_verb cmi9880_allout_init[] = {
 static int cmi9880_build_controls(struct hda_codec *codec)
 {
 	struct cmi_spec *spec = codec->spec;
-	struct snd_kcontrol *kctl;
-	int i, err;
+	int err;
 
 	err = snd_hda_add_new_ctls(codec, cmi9880_basic_mixer);
 	if (err < 0)
@@ -338,14 +337,6 @@ static int cmi9880_build_controls(struct hda_codec *codec)
 	}
 	if (spec->dig_in_nid) {
 		err = snd_hda_create_spdif_in_ctls(codec, spec->dig_in_nid);
-		if (err < 0)
-			return err;
-	}
-
-	/* assign Capture Source enums to NID */
-	kctl = snd_hda_find_mixer_ctl(codec, "Capture Source");
-	for (i = 0; kctl && i < kctl->count; i++) {
-		err = snd_hda_add_nid(codec, kctl, i, spec->adc_nids[i]);
 		if (err < 0)
 			return err;
 	}
@@ -644,8 +635,7 @@ static int patch_cmi9880(struct hda_codec *codec)
 							cmi9880_models,
 							cmi9880_cfg_tbl);
 	if (spec->board_config < 0) {
-		snd_printdd(KERN_INFO "hda_codec: %s: BIOS auto-probing.\n",
-			    codec->chip_name);
+		snd_printdd(KERN_INFO "hda_codec: Unknown model for CMI9880\n");
 		spec->board_config = CMI_AUTO; /* try everything */
 	}
 
@@ -690,13 +680,13 @@ static int patch_cmi9880(struct hda_codec *codec)
 		struct auto_pin_cfg cfg;
 
 		/* collect pin default configuration */
-		port_e = snd_hda_codec_get_pincfg(codec, 0x0f);
-		port_f = snd_hda_codec_get_pincfg(codec, 0x10);
+		port_e = snd_hda_codec_read(codec, 0x0f, 0, AC_VERB_GET_CONFIG_DEFAULT, 0);
+		port_f = snd_hda_codec_read(codec, 0x10, 0, AC_VERB_GET_CONFIG_DEFAULT, 0);
 		spec->front_panel = 1;
 		if (get_defcfg_connect(port_e) == AC_JACK_PORT_NONE ||
 		    get_defcfg_connect(port_f) == AC_JACK_PORT_NONE) {
-			port_g = snd_hda_codec_get_pincfg(codec, 0x1f);
-			port_h = snd_hda_codec_get_pincfg(codec, 0x20);
+			port_g = snd_hda_codec_read(codec, 0x1f, 0, AC_VERB_GET_CONFIG_DEFAULT, 0);
+			port_h = snd_hda_codec_read(codec, 0x20, 0, AC_VERB_GET_CONFIG_DEFAULT, 0);
 			spec->channel_modes = cmi9880_channel_modes;
 			/* no front panel */
 			if (get_defcfg_connect(port_g) == AC_JACK_PORT_NONE ||
@@ -713,8 +703,8 @@ static int patch_cmi9880(struct hda_codec *codec)
 			spec->multiout.max_channels = cmi9880_channel_modes[0].channels;
 		} else {
 			spec->input_mux = &cmi9880_basic_mux;
-			port_spdifi = snd_hda_codec_get_pincfg(codec, 0x13);
-			port_spdifo = snd_hda_codec_get_pincfg(codec, 0x12);
+			port_spdifi = snd_hda_codec_read(codec, 0x13, 0, AC_VERB_GET_CONFIG_DEFAULT, 0);
+			port_spdifo = snd_hda_codec_read(codec, 0x12, 0, AC_VERB_GET_CONFIG_DEFAULT, 0);
 			if (get_defcfg_connect(port_spdifo) != AC_JACK_PORT_NONE)
 				spec->multiout.dig_out_nid = CMI_DIG_OUT_NID;
 			if (get_defcfg_connect(port_spdifi) != AC_JACK_PORT_NONE)

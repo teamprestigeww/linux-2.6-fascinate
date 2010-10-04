@@ -1,7 +1,7 @@
 /*
  * vrc4171_card.c, NEC VRC4171 Card Controller driver for Socket Services.
  *
- * Copyright (C) 2003-2005  Yoichi Yuasa <yuasa@linux-mips.org>
+ * Copyright (C) 2003-2005  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -32,7 +32,7 @@
 #include "i82365.h"
 
 MODULE_DESCRIPTION("NEC VRC4171 Card Controllers driver for Socket Services");
-MODULE_AUTHOR("Yoichi Yuasa <yuasa@linux-mips.org>");
+MODULE_AUTHOR("Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>");
 MODULE_LICENSE("GPL");
 
 #define CARD_MAX_SLOTS		2
@@ -105,7 +105,6 @@ typedef struct vrc4171_socket {
 	char name[24];
 	int csc_irq;
 	int io_irq;
-	spinlock_t lock;
 } vrc4171_socket_t;
 
 static vrc4171_socket_t vrc4171_sockets[CARD_MAX_SLOTS];
@@ -328,7 +327,7 @@ static int pccard_set_socket(struct pcmcia_socket *sock, socket_state_t *state)
 	slot = sock->sock;
 	socket = &vrc4171_sockets[slot];
 
-	spin_lock_irq(&socket->lock);
+	spin_lock_irq(&sock->lock);
 
 	voltage = set_Vcc_value(state->Vcc);
 	exca_write_byte(slot, CARD_VOLTAGE_SELECT, voltage);
@@ -371,7 +370,7 @@ static int pccard_set_socket(struct pcmcia_socket *sock, socket_state_t *state)
 		cscint |= I365_CSC_DETECT;
         exca_write_byte(slot, I365_CSCINT, cscint);
 
-	spin_unlock_irq(&socket->lock);
+	spin_unlock_irq(&sock->lock);
 
 	return 0;
 }
@@ -705,24 +704,24 @@ static int __devinit vrc4171_card_setup(char *options)
 
 __setup("vrc4171_card=", vrc4171_card_setup);
 
-static struct platform_driver vrc4171_card_driver = {
-	.driver = {
-		.name		= vrc4171_card_name,
-		.owner		= THIS_MODULE,
-	},
+static struct device_driver vrc4171_card_driver = {
+	.name		= vrc4171_card_name,
+	.bus		= &platform_bus_type,
+	.suspend	= pcmcia_socket_dev_suspend,
+	.resume		= pcmcia_socket_dev_resume,
 };
 
 static int __devinit vrc4171_card_init(void)
 {
 	int retval;
 
-	retval = platform_driver_register(&vrc4171_card_driver);
+	retval = driver_register(&vrc4171_card_driver);
 	if (retval < 0)
 		return retval;
 
 	retval = platform_device_register(&vrc4171_card_device);
 	if (retval < 0) {
-		platform_driver_unregister(&vrc4171_card_driver);
+		driver_unregister(&vrc4171_card_driver);
 		return retval;
 	}
 
@@ -736,12 +735,11 @@ static int __devinit vrc4171_card_init(void)
 	if (retval < 0) {
 		vrc4171_remove_sockets();
 		platform_device_unregister(&vrc4171_card_device);
-		platform_driver_unregister(&vrc4171_card_driver);
+		driver_unregister(&vrc4171_card_driver);
 		return retval;
 	}
 
-	printk(KERN_INFO "%s, connected to IRQ %d\n",
-		vrc4171_card_driver.driver.name, vrc4171_irq);
+	printk(KERN_INFO "%s, connected to IRQ %d\n", vrc4171_card_driver.name, vrc4171_irq);
 
 	return 0;
 }
@@ -751,7 +749,7 @@ static void __devexit vrc4171_card_exit(void)
 	free_irq(vrc4171_irq, vrc4171_sockets);
 	vrc4171_remove_sockets();
 	platform_device_unregister(&vrc4171_card_device);
-	platform_driver_unregister(&vrc4171_card_driver);
+	driver_unregister(&vrc4171_card_driver);
 }
 
 module_init(vrc4171_card_init);

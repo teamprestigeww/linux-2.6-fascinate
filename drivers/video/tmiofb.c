@@ -751,7 +751,7 @@ static int __devinit tmiofb_probe(struct platform_device *dev)
 	}
 
 	retval = request_irq(irq, &tmiofb_irq, IRQF_DISABLED,
-					dev_name(&dev->dev), info);
+					dev->dev.bus_id, info);
 
 	if (retval)
 		goto err_request_irq;
@@ -974,7 +974,7 @@ static int tmiofb_resume(struct platform_device *dev)
 {
 	struct fb_info *info = platform_get_drvdata(dev);
 	struct mfd_cell *cell = dev->dev.platform_data;
-	int retval = 0;
+	int retval;
 
 	acquire_console_sem();
 

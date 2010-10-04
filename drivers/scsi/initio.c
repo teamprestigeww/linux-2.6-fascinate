@@ -531,7 +531,7 @@ static void initio_read_eeprom(unsigned long base)
  *	initio_stop_bm		-	stop bus master
  *	@host: InitIO we are stopping
  *
- *	Stop any pending DMA operation, aborting the DMA if necessary
+ *	Stop any pending DMA operation, aborting the DMA if neccessary
  */
 
 static void initio_stop_bm(struct initio_host * host)
@@ -2817,6 +2817,7 @@ static void i91uSCBPost(u8 * host_mem, u8 * cblk_mem)
 	}
 
 	cmnd->result = cblk->tastat | (cblk->hastat << 16);
+	WARN_ON(cmnd == NULL);
 	i91u_unmap_scb(host->pci_dev, cmnd);
 	cmnd->scsi_done(cmnd);	/* Notify system DONE           */
 	initio_release_scb(host, cblk);	/* Release SCB for current channel */
@@ -2855,7 +2856,7 @@ static int initio_probe_one(struct pci_dev *pdev,
 		reg = 0;
 	bios_seg = (bios_seg << 8) + ((u16) ((reg & 0xFF00) >> 8));
 
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
+	if (pci_set_dma_mask(pdev, DMA_32BIT_MASK)) {
 		printk(KERN_WARNING  "i91u: Could not set 32 bit DMA mask\n");
 		error = -ENODEV;
 		goto out_disable_device;

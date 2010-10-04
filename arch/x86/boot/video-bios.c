@@ -2,7 +2,6 @@
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
- *   Copyright 2009 Intel Corporation; author H. Peter Anvin
  *
  *   This file is part of the Linux kernel, and is made available under
  *   the terms of the GNU General Public License version 2.
@@ -30,20 +29,21 @@ static int bios_set_mode(struct mode_info *mi)
 
 static int set_bios_mode(u8 mode)
 {
-	struct biosregs ireg, oreg;
+	u16 ax;
 	u8 new_mode;
 
-	initregs(&ireg);
-	ireg.al = mode;		/* AH=0x00 Set Video Mode */
-	intcall(0x10, &ireg, NULL);
+	ax = mode;		/* AH=0x00 Set Video Mode */
+	asm volatile(INT10
+		     : "+a" (ax)
+		     : : "ebx", "ecx", "edx", "esi", "edi");
 
-	ireg.ah = 0x0f;		/* Get Current Video Mode */
-	intcall(0x10, &ireg, &oreg);
+	ax = 0x0f00;		/* Get Current Video Mode */
+	asm volatile(INT10
+		     : "+a" (ax)
+		     : : "ebx", "ecx", "edx", "esi", "edi");
 
 	do_restore = 1;		/* Assume video contents were lost */
-
-	/* Not all BIOSes are clean with the top bit */
-	new_mode = oreg.al & 0x7f;
+	new_mode = ax & 0x7f;	/* Not all BIOSes are clean with the top bit */
 
 	if (new_mode == mode)
 		return 0;	/* Mode change OK */
@@ -53,8 +53,10 @@ static int set_bios_mode(u8 mode)
 		/* Mode setting failed, but we didn't end up where we
 		   started.  That's bad.  Try to revert to the original
 		   video mode. */
-		ireg.ax = boot_params.screen_info.orig_video_mode;
-		intcall(0x10, &ireg, NULL);
+		ax = boot_params.screen_info.orig_video_mode;
+		asm volatile(INT10
+			     : "+a" (ax)
+			     : : "ebx", "ecx", "edx", "esi", "edi");
 	}
 #endif
 	return -1;

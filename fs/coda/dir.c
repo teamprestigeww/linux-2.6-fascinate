@@ -12,7 +12,6 @@
 #include <linux/kernel.h>
 #include <linux/time.h>
 #include <linux/fs.h>
-#include <linux/slab.h>
 #include <linux/file.h>
 #include <linux/stat.h>
 #include <linux/errno.h>
@@ -60,7 +59,7 @@ static int coda_return_EIO(void)
 }
 #define CODA_EIO_ERROR ((void *) (coda_return_EIO))
 
-static const struct dentry_operations coda_dentry_operations =
+static struct dentry_operations coda_dentry_operations =
 {
 	.d_revalidate	= coda_dentry_revalidate,
 	.d_delete	= coda_dentry_delete,

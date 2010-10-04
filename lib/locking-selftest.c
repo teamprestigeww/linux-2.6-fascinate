@@ -157,11 +157,11 @@ static void init_shared_classes(void)
 #define SOFTIRQ_ENTER()				\
 		local_bh_disable();		\
 		local_irq_disable();		\
-		lockdep_softirq_enter();	\
+		trace_softirq_enter();		\
 		WARN_ON(!in_softirq());
 
 #define SOFTIRQ_EXIT()				\
-		lockdep_softirq_exit();		\
+		trace_softirq_exit();		\
 		local_irq_enable();		\
 		local_bh_enable();
 

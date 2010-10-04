@@ -29,7 +29,6 @@
 #include <linux/watchdog.h>
 #include <linux/timer.h>
 #include <linux/uaccess.h>
-#include <linux/io.h>
 #include <mach/hardware.h>
 
 #define WDT_VERSION	"0.3"
@@ -131,7 +130,7 @@ ep93xx_wdt_write(struct file *file, const char __user *data, size_t len,
 	return len;
 }
 
-static const struct watchdog_info ident = {
+static struct watchdog_info ident = {
 	.options = WDIOF_CARDRESET | WDIOF_MAGICCLOSE,
 	.identity = "EP93xx Watchdog",
 };
@@ -244,7 +243,7 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started");
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout,
 	"Watchdog timeout in seconds. (1<=timeout<=3600, default="
-				__MODULE_STRING(WDT_TIMEOUT) ")");
+				__MODULE_STRING(WATCHDOG_TIMEOUT) ")");
 
 MODULE_AUTHOR("Ray Lehtiniemi <rayl@mail.com>,"
 		"Alessandro Zummo <a.zummo@towertech.it>");

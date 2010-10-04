@@ -338,8 +338,6 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 		}
 	}
 
-	current->mm->context.vdso = (void *)addr;
-
 	if (compat_uses_vma || !compat) {
 		/*
 		 * MAYWRITE to allow gdb to COW and set breakpoints
@@ -360,13 +358,11 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 			goto up_fail;
 	}
 
+	current->mm->context.vdso = (void *)addr;
 	current_thread_info()->sysenter_return =
 		VDSO32_SYMBOL(addr, SYSENTER_RETURN);
 
   up_fail:
-	if (ret)
-		current->mm->context.vdso = NULL;
-
 	up_write(&mm->mmap_sem);
 
 	return ret;
@@ -374,7 +370,7 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 
 #ifdef CONFIG_X86_64
 
-subsys_initcall(sysenter_setup);
+__initcall(sysenter_setup);
 
 #ifdef CONFIG_SYSCTL
 /* Register vsyscall32 into the ABI table */
@@ -393,6 +389,7 @@ static ctl_table abi_table2[] = {
 
 static ctl_table abi_root_table2[] = {
 	{
+		.ctl_name = CTL_ABI,
 		.procname = "abi",
 		.mode = 0555,
 		.child = abi_table2

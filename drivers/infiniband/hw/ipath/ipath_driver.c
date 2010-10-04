@@ -31,7 +31,6 @@
  * SOFTWARE.
  */
 
-#include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/idr.h>
 #include <linux/pci.h>
@@ -39,8 +38,6 @@
 #include <linux/delay.h>
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
-#include <linux/bitmap.h>
-#include <linux/slab.h>
 
 #include "ipath_kernel.h"
 #include "ipath_verbs.h"
@@ -132,13 +129,18 @@ static int __devinit ipath_init_one(struct pci_dev *,
 
 /* Only needed for registration, nothing else needs this info */
 #define PCI_VENDOR_ID_PATHSCALE 0x1fc1
+#define PCI_VENDOR_ID_QLOGIC 0x1077
 #define PCI_DEVICE_ID_INFINIPATH_HT 0xd
+#define PCI_DEVICE_ID_INFINIPATH_PE800 0x10
+#define PCI_DEVICE_ID_INFINIPATH_7220 0x7220
 
 /* Number of seconds before our card status check...  */
 #define STATUS_TIMEOUT 60
 
 static const struct pci_device_id ipath_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_PATHSCALE, PCI_DEVICE_ID_INFINIPATH_HT) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_PATHSCALE, PCI_DEVICE_ID_INFINIPATH_PE800) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_QLOGIC, PCI_DEVICE_ID_INFINIPATH_7220) },
 	{ 0, }
 };
 
@@ -390,8 +392,6 @@ done:
 	ipath_enable_armlaunch(dd);
 }
 
-static void cleanup_device(struct ipath_devdata *dd);
-
 static int __devinit ipath_init_one(struct pci_dev *pdev,
 				    const struct pci_device_id *ent)
 {
@@ -470,14 +470,14 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 		goto bail_disable;
 	}
 
-	ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
+	ret = pci_set_dma_mask(pdev, DMA_64BIT_MASK);
 	if (ret) {
 		/*
 		 * if the 64 bit setup fails, try 32 bit.  Some systems
 		 * do not setup 64 bit maps on systems with 2GB or less
 		 * memory installed.
 		 */
-		ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+		ret = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 		if (ret) {
 			dev_info(&pdev->dev,
 				"Unable to set DMA mask for unit %u: %d\n",
@@ -486,7 +486,7 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 		}
 		else {
 			ipath_dbg("No 64bit DMA mask, used 32 bit mask\n");
-			ret = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+			ret = pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK);
 			if (ret)
 				dev_info(&pdev->dev,
 					"Unable to set DMA consistent mask "
@@ -496,7 +496,7 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 		}
 	}
 	else {
-		ret = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+		ret = pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK);
 		if (ret)
 			dev_info(&pdev->dev,
 				"Unable to set DMA consistent mask "
@@ -518,9 +518,30 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	/* setup the chip-specific functions, as early as possible. */
 	switch (ent->device) {
 	case PCI_DEVICE_ID_INFINIPATH_HT:
+#ifdef CONFIG_HT_IRQ
 		ipath_init_iba6110_funcs(dd);
 		break;
-
+#else
+		ipath_dev_err(dd, "QLogic HT device 0x%x cannot work if "
+			      "CONFIG_HT_IRQ is not enabled\n", ent->device);
+		return -ENODEV;
+#endif
+	case PCI_DEVICE_ID_INFINIPATH_PE800:
+#ifdef CONFIG_PCI_MSI
+		ipath_init_iba6120_funcs(dd);
+		break;
+#else
+		ipath_dev_err(dd, "QLogic PCIE device 0x%x cannot work if "
+			      "CONFIG_PCI_MSI is not enabled\n", ent->device);
+		return -ENODEV;
+#endif
+	case PCI_DEVICE_ID_INFINIPATH_7220:
+#ifndef CONFIG_PCI_MSI
+		ipath_dbg("CONFIG_PCI_MSI is not enabled, "
+			  "using INTx for unit %u\n", dd->ipath_unit);
+#endif
+		ipath_init_iba7220_funcs(dd);
+		break;
 	default:
 		ipath_dev_err(dd, "Found unknown QLogic deviceid 0x%x, "
 			      "failing\n", ent->device);
@@ -618,13 +639,8 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	goto bail;
 
 bail_irqsetup:
-	cleanup_device(dd);
-
-	if (dd->ipath_irq)
-		dd->ipath_f_free_irq(dd);
-
-	if (dd->ipath_f_cleanup)
-		dd->ipath_f_cleanup(dd);
+	if (pdev->irq)
+		free_irq(pdev->irq, dd);
 
 bail_iounmap:
 	iounmap((volatile void __iomem *) dd->ipath_kregbase);
@@ -642,7 +658,7 @@ bail:
 	return ret;
 }
 
-static void cleanup_device(struct ipath_devdata *dd)
+static void __devexit cleanup_device(struct ipath_devdata *dd)
 {
 	int port;
 	struct ipath_portdata **tmp;
@@ -1680,7 +1696,7 @@ void ipath_chg_pioavailkernel(struct ipath_devdata *dd, unsigned start,
 			      unsigned len, int avail)
 {
 	unsigned long flags;
-	unsigned end, cnt = 0;
+	unsigned end, cnt = 0, next;
 
 	/* There are two bits per send buffer (busy and generation) */
 	start *= 2;
@@ -1731,7 +1747,12 @@ void ipath_chg_pioavailkernel(struct ipath_devdata *dd, unsigned start,
 
 	if (dd->ipath_pioupd_thresh) {
 		end = 2 * (dd->ipath_piobcnt2k + dd->ipath_piobcnt4k);
-		cnt = bitmap_weight(dd->ipath_pioavailkernel, end);
+		next = find_first_bit(dd->ipath_pioavailkernel, end);
+		while (next < end) {
+			cnt++;
+			next = find_next_bit(dd->ipath_pioavailkernel, end,
+					next + 1);
+		}
 	}
 	spin_unlock_irqrestore(&ipath_pioavail_lock, flags);
 
@@ -2694,7 +2715,7 @@ static void ipath_hol_signal_up(struct ipath_devdata *dd)
  * to prevent HoL blocking, then start the HoL timer that
  * periodically continues, then stop procs, so they can detect
  * link down if they want, and do something about it.
- * Timer may already be running, so use mod_timer, not add_timer.
+ * Timer may already be running, so use __mod_timer, not add_timer.
  */
 void ipath_hol_down(struct ipath_devdata *dd)
 {
@@ -2703,7 +2724,7 @@ void ipath_hol_down(struct ipath_devdata *dd)
 	dd->ipath_hol_next = IPATH_HOL_DOWNCONT;
 	dd->ipath_hol_timer.expires = jiffies +
 		msecs_to_jiffies(ipath_hol_timeout_ms);
-	mod_timer(&dd->ipath_hol_timer, dd->ipath_hol_timer.expires);
+	__mod_timer(&dd->ipath_hol_timer, dd->ipath_hol_timer.expires);
 }
 
 /*
@@ -2742,7 +2763,7 @@ void ipath_hol_event(unsigned long opaque)
 	else {
 		dd->ipath_hol_timer.expires = jiffies +
 			msecs_to_jiffies(ipath_hol_timeout_ms);
-		mod_timer(&dd->ipath_hol_timer,
+		__mod_timer(&dd->ipath_hol_timer,
 			dd->ipath_hol_timer.expires);
 	}
 }

@@ -1,7 +1,7 @@
 /*
  * PIKA Warp(tm) board specific routines
  *
- * Copyright (c) 2008-2009 PIKA Technologies
+ * Copyright (c) 2008 PIKA Technologies
  *   Sean MacLennan <smaclennan@pikatech.com>
  *
  * This program is free software; you can redistribute  it and/or modify it
@@ -15,9 +15,6 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <linux/of_gpio.h>
-#include <linux/of_i2c.h>
-#include <linux/slab.h>
 
 #include <asm/machdep.h>
 #include <asm/prom.h>
@@ -25,7 +22,6 @@
 #include <asm/time.h>
 #include <asm/uic.h>
 #include <asm/ppc4xx.h>
-
 
 static __initdata struct of_device_id warp_of_bus[] = {
 	{ .compatible = "ibm,plb4", },
@@ -45,13 +41,7 @@ static int __init warp_probe(void)
 {
 	unsigned long root = of_get_flat_dt_root();
 
-	if (!of_flat_dt_is_compatible(root, "pika,warp"))
-		return 0;
-
-	/* For __dma_alloc_coherent */
-	ISA_DMA_THRESHOLD = ~0L;
-
-	return 1;
+	return of_flat_dt_is_compatible(root, "pika,warp");
 }
 
 define_machine(warp) {
@@ -65,6 +55,7 @@ define_machine(warp) {
 };
 
 
+/* I am not sure this is the best place for this... */
 static int __init warp_post_info(void)
 {
 	struct device_node *np;
@@ -93,13 +84,14 @@ static int __init warp_post_info(void)
 
 	return 0;
 }
+machine_late_initcall(warp, warp_post_info);
 
 
 #ifdef CONFIG_SENSORS_AD7414
 
 static LIST_HEAD(dtm_shutdown_list);
 static void __iomem *dtm_fpga;
-static unsigned green_led, red_led;
+static void __iomem *gpio_base;
 
 
 struct dtm_shutdown {
@@ -142,17 +134,14 @@ int pika_dtm_unregister_shutdown(void (*func)(void *arg), void *arg)
 static irqreturn_t temp_isr(int irq, void *context)
 {
 	struct dtm_shutdown *shutdown;
-	int value = 1;
 
 	local_irq_disable();
-
-	gpio_set_value(green_led, 0);
 
 	/* Run through the shutdown list. */
 	list_for_each_entry(shutdown, &dtm_shutdown_list, list)
 		shutdown->func(shutdown->arg);
 
-	printk(KERN_EMERG "\n\nCritical Temperature Shutdown\n\n");
+	printk(KERN_EMERG "\n\nCritical Temperature Shutdown\n");
 
 	while (1) {
 		if (dtm_fpga) {
@@ -160,39 +149,59 @@ static irqreturn_t temp_isr(int irq, void *context)
 			out_be32(dtm_fpga + 0x14, reset);
 		}
 
-		gpio_set_value(red_led, value);
-		value ^= 1;
+		if (gpio_base) {
+			unsigned leds = in_be32(gpio_base);
+
+			/* green off, red toggle */
+			leds &= ~0x80000000;
+			leds ^=  0x40000000;
+
+			out_be32(gpio_base, leds);
+		}
+
 		mdelay(500);
 	}
-
-	/* Not reached */
-	return IRQ_HANDLED;
 }
 
 static int pika_setup_leds(void)
 {
-	struct device_node *np, *child;
+	struct device_node *np;
+	const u32 *gpios;
+	int len;
 
-	np = of_find_compatible_node(NULL, NULL, "gpio-leds");
+	np = of_find_compatible_node(NULL, NULL, "linux,gpio-led");
 	if (!np) {
-		printk(KERN_ERR __FILE__ ": Unable to find leds\n");
+		printk(KERN_ERR __FILE__ ": Unable to find gpio-led\n");
 		return -ENOENT;
 	}
 
-	for_each_child_of_node(np, child)
-		if (strcmp(child->name, "green") == 0)
-			green_led = of_get_gpio(child, 0);
-		else if (strcmp(child->name, "red") == 0)
-			red_led = of_get_gpio(child, 0);
-
+	gpios = of_get_property(np, "gpios", &len);
 	of_node_put(np);
+	if (!gpios || len < 4) {
+		printk(KERN_ERR __FILE__
+		       ": Unable to get gpios property (%d)\n", len);
+		return -ENOENT;
+	}
+
+	np = of_find_node_by_phandle(gpios[0]);
+	if (!np) {
+		printk(KERN_ERR __FILE__ ": Unable to find gpio\n");
+		return -ENOENT;
+	}
+
+	gpio_base = of_iomap(np, 0);
+	of_node_put(np);
+	if (!gpio_base) {
+		printk(KERN_ERR __FILE__ ": Unable to map gpio");
+		return -ENOMEM;
+	}
 
 	return 0;
 }
 
-static void pika_setup_critical_temp(struct device_node *np,
-				     struct i2c_client *client)
+static void pika_setup_critical_temp(struct i2c_client *client)
 {
+	struct device_node *np;
 	int irq, rc;
 
 	/* Do this before enabling critical temp interrupt since we
@@ -204,7 +213,14 @@ static void pika_setup_critical_temp(struct device_node *np,
 	i2c_smbus_write_byte_data(client, 2, 65); /* Thigh */
 	i2c_smbus_write_byte_data(client, 3,  0); /* Tlow */
 
+	np = of_find_compatible_node(NULL, NULL, "adi,ad7414");
+	if (np == NULL) {
+		printk(KERN_ERR __FILE__ ": Unable to find ad7414\n");
+		return;
+	}
+
 	irq = irq_of_parse_and_map(np, 0);
+	of_node_put(np);
 	if (irq  == NO_IRQ) {
 		printk(KERN_ERR __FILE__ ": Unable to get ad7414 irq\n");
 		return;
@@ -233,24 +249,32 @@ static inline void pika_dtm_check_fan(void __iomem *fpga)
 
 static int pika_dtm_thread(void __iomem *fpga)
 {
-	struct device_node *np;
+	struct i2c_adapter *adap;
 	struct i2c_client *client;
 
-	np = of_find_compatible_node(NULL, NULL, "adi,ad7414");
-	if (np == NULL)
-		return -ENOENT;
-
-	client = of_find_i2c_device_by_node(np);
-	if (client == NULL) {
-		of_node_put(np);
-		return -ENOENT;
+	/* We loop in case either driver was compiled as a module and
+	 * has not been insmoded yet.
+	 */
+	while (!(adap = i2c_get_adapter(0))) {
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule_timeout(HZ);
 	}
 
-	pika_setup_critical_temp(np, client);
+	while (1) {
+		list_for_each_entry(client, &adap->clients, list)
+			if (client->addr == 0x4a)
+				goto found_it;
 
-	of_node_put(np);
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule_timeout(HZ);
+	}
 
-	printk(KERN_INFO "Warp DTM thread running.\n");
+found_it:
+	i2c_put_adapter(adap);
+
+	pika_setup_critical_temp(client);
+
+	printk(KERN_INFO "PIKA DTM thread running.\n");
 
 	while (!kthread_should_stop()) {
 		int val;
@@ -272,6 +296,7 @@ static int pika_dtm_thread(void __iomem *fpga)
 	return 0;
 }
 
+
 static int __init pika_dtm_start(void)
 {
 	struct task_struct *dtm_thread;
@@ -285,9 +310,6 @@ static int __init pika_dtm_start(void)
 	of_node_put(np);
 	if (dtm_fpga == NULL)
 		return -ENOENT;
-
-	/* Must get post info before thread starts. */
-	warp_post_info();
 
 	dtm_thread = kthread_run(pika_dtm_thread, dtm_fpga, "pika-dtm");
 	if (IS_ERR(dtm_thread)) {
@@ -310,8 +332,6 @@ int pika_dtm_unregister_shutdown(void (*func)(void *arg), void *arg)
 {
 	return 0;
 }
-
-machine_late_initcall(warp, warp_post_info);
 
 #endif
 

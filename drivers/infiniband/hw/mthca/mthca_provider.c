@@ -39,7 +39,6 @@
 #include <rdma/ib_user_verbs.h>
 
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/mm.h>
 
 #include "mthca_dev.h"
@@ -334,9 +333,6 @@ static struct ib_ucontext *mthca_alloc_ucontext(struct ib_device *ibdev,
 	struct mthca_alloc_ucontext_resp uresp;
 	struct mthca_ucontext           *context;
 	int                              err;
-
-	if (!(to_mdev(ibdev)->active))
-		return ERR_PTR(-EAGAIN);
 
 	memset(&uresp, 0, sizeof uresp);
 
@@ -1403,7 +1399,7 @@ int mthca_register_device(struct mthca_dev *dev)
 
 	mutex_init(&dev->cap_mask_mutex);
 
-	ret = ib_register_device(&dev->ib_dev, NULL);
+	ret = ib_register_device(&dev->ib_dev);
 	if (ret)
 		return ret;
 

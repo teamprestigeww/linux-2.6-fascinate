@@ -33,7 +33,6 @@
 #include <linux/string.h>
 #include <linux/skbuff.h>
 #include <linux/audit.h>
-#include <linux/slab.h>
 #include <net/sock.h>
 #include <net/netlink.h>
 #include <net/genetlink.h>
@@ -786,6 +785,18 @@ static struct genl_ops netlbl_cipsov4_ops[] = {
  */
 int __init netlbl_cipsov4_genl_init(void)
 {
-	return genl_register_family_with_ops(&netlbl_cipsov4_gnl_family,
-		netlbl_cipsov4_ops, ARRAY_SIZE(netlbl_cipsov4_ops));
+	int ret_val, i;
+
+	ret_val = genl_register_family(&netlbl_cipsov4_gnl_family);
+	if (ret_val != 0)
+		return ret_val;
+
+	for (i = 0; i < ARRAY_SIZE(netlbl_cipsov4_ops); i++) {
+		ret_val = genl_register_ops(&netlbl_cipsov4_gnl_family,
+				&netlbl_cipsov4_ops[i]);
+		if (ret_val != 0)
+			return ret_val;
+	}
+
+	return 0;
 }

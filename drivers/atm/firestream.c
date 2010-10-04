@@ -46,7 +46,6 @@
 #include <linux/init.h>
 #include <linux/capability.h>
 #include <linux/bitops.h>
-#include <linux/slab.h>
 #include <asm/byteorder.h>
 #include <asm/system.h>
 #include <asm/string.h>
@@ -1245,7 +1244,7 @@ static int fs_getsockopt(struct atm_vcc *vcc,int level,int optname,
 
 
 static int fs_setsockopt(struct atm_vcc *vcc,int level,int optname,
-			 void __user *optval,unsigned int optlen)
+			 void __user *optval,int optlen)
 {
 	func_enter ();
 	func_exit ();
@@ -1691,17 +1690,17 @@ static int __devinit fs_init (struct fs_dev *dev)
 		  | (0 * SARMODE0_SHADEN) /* We don't use shadow registers. */
 		  | (1 * SARMODE0_INTMODE_READCLEAR)
 		  | (1 * SARMODE0_CWRE)
-		  | (IS_FS50(dev) ? SARMODE0_PRPWT_FS50_5:
-			  SARMODE0_PRPWT_FS155_3)
+		  | IS_FS50(dev)?SARMODE0_PRPWT_FS50_5: 
+		                 SARMODE0_PRPWT_FS155_3
 		  | (1 * SARMODE0_CALSUP_1)
-		  | (IS_FS50(dev) ? (0
+		  | IS_FS50 (dev)?(0
 				   | SARMODE0_RXVCS_32
 				   | SARMODE0_ABRVCS_32 
 				   | SARMODE0_TXVCS_32):
 		                  (0
 				   | SARMODE0_RXVCS_1k
 				   | SARMODE0_ABRVCS_1k 
-				   | SARMODE0_TXVCS_1k)));
+				   | SARMODE0_TXVCS_1k));
 
 	/* 10ms * 100 is 1 second. That should be enough, as AN3:9 says it takes
 	   1ms. */
@@ -2027,8 +2026,10 @@ static void __devexit firestream_remove_one (struct pci_dev *pdev)
 }
 
 static struct pci_device_id firestream_pci_tbl[] = {
-	{ PCI_VDEVICE(FUJITSU_ME, PCI_DEVICE_ID_FUJITSU_FS50), FS_IS50},
-	{ PCI_VDEVICE(FUJITSU_ME, PCI_DEVICE_ID_FUJITSU_FS155), FS_IS155},
+	{ PCI_VENDOR_ID_FUJITSU_ME, PCI_DEVICE_ID_FUJITSU_FS50, 
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, FS_IS50},
+	{ PCI_VENDOR_ID_FUJITSU_ME, PCI_DEVICE_ID_FUJITSU_FS155, 
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, FS_IS155},
 	{ 0, }
 };
 

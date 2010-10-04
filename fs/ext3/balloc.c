@@ -14,7 +14,6 @@
 #include <linux/time.h>
 #include <linux/capability.h>
 #include <linux/fs.h>
-#include <linux/slab.h>
 #include <linux/jbd.h>
 #include <linux/ext3_fs.h>
 #include <linux/ext3_jbd.h>
@@ -650,7 +649,7 @@ do_more:
 		count = overflow;
 		goto do_more;
 	}
-
+	sb->s_dirt = 1;
 error_return:
 	brelse(bitmap_bh);
 	ext3_std_error(sb, err);
@@ -677,7 +676,7 @@ void ext3_free_blocks(handle_t *handle, struct inode *inode,
 	}
 	ext3_free_blocks_sb(handle, sb, block, count, &dquot_freed_blocks);
 	if (dquot_freed_blocks)
-		dquot_free_block(inode, dquot_freed_blocks);
+		DQUOT_FREE_BLOCK(inode, dquot_freed_blocks);
 	return;
 }
 
@@ -1503,9 +1502,8 @@ ext3_fsblk_t ext3_new_blocks(handle_t *handle, struct inode *inode,
 	/*
 	 * Check quota for allocation of this block.
 	 */
-	err = dquot_alloc_block(inode, num);
-	if (err) {
-		*errp = err;
+	if (DQUOT_ALLOC_BLOCK(inode, num)) {
+		*errp = -EDQUOT;
 		return 0;
 	}
 
@@ -1583,12 +1581,6 @@ retry_alloc:
 		if (!gdp)
 			goto io_error;
 		free_blocks = le16_to_cpu(gdp->bg_free_blocks_count);
-		/*
-		 * skip this group (and avoid loading bitmap) if there
-		 * are no free blocks
-		 */
-		if (!free_blocks)
-			continue;
 		/*
 		 * skip this group if the number of
 		 * free blocks is less than half of the reservation
@@ -1716,12 +1708,13 @@ allocated:
 	if (!fatal)
 		fatal = err;
 
+	sb->s_dirt = 1;
 	if (fatal)
 		goto out;
 
 	*errp = 0;
 	brelse(bitmap_bh);
-	dquot_free_block(inode, *count-num);
+	DQUOT_FREE_BLOCK(inode, *count-num);
 	*count = num;
 	return ret_block;
 
@@ -1736,7 +1729,7 @@ out:
 	 * Undo the block allocation
 	 */
 	if (!performed_allocation)
-		dquot_free_block(inode, *count);
+		DQUOT_FREE_BLOCK(inode, *count);
 	brelse(bitmap_bh);
 	return 0;
 }

@@ -18,6 +18,7 @@
 #define _FSL_DEVICE_H_
 
 #include <linux/types.h>
+#include <linux/phy.h>
 
 /*
  * Some conventions on how we handle peripherals on Freescale chips
@@ -42,6 +43,31 @@
  * - platform data board flags: FSL_<driver>_BRD_<FLAG>
  *
  */
+
+struct gianfar_platform_data {
+	/* device specific information */
+	u32	device_flags;
+	char	bus_id[BUS_ID_SIZE];
+	phy_interface_t interface;
+};
+
+struct gianfar_mdio_data {
+	/* board specific information */
+	int	irq[32];
+};
+
+/* Flags in gianfar_platform_data */
+#define FSL_GIANFAR_BRD_HAS_PHY_INTR	0x00000001 /* set or use a timer */
+#define FSL_GIANFAR_BRD_IS_REDUCED	0x00000002 /* Set if RGMII, RMII */
+
+struct fsl_i2c_platform_data {
+	/* device specific information */
+	u32	device_flags;
+};
+
+/* Flags related to I2C device features */
+#define FSL_I2C_DEV_SEPARATE_DFSRR	0x00000001
+#define FSL_I2C_DEV_CLOCK_5200		0x00000002
 
 enum fsl_usb2_operating_modes {
 	FSL_USB2_MPH_HOST,
@@ -69,20 +95,14 @@ struct fsl_usb2_platform_data {
 #define FSL_USB2_PORT0_ENABLED	0x00000001
 #define FSL_USB2_PORT1_ENABLED	0x00000002
 
-struct spi_device;
-
 struct fsl_spi_platform_data {
 	u32 	initial_spmode;	/* initial SPMODE value */
-	s16	bus_num;
-	unsigned int flags;
-#define SPI_QE_CPU_MODE		(1 << 0) /* QE CPU ("PIO") mode */
-#define SPI_CPM_MODE		(1 << 1) /* CPM/QE ("DMA") mode */
-#define SPI_CPM1		(1 << 2) /* SPI unit is in CPM1 block */
-#define SPI_CPM2		(1 << 3) /* SPI unit is in CPM2 block */
-#define SPI_QE			(1 << 4) /* SPI unit is in QE block */
+	u16	bus_num;
+	bool	qe_mode;
 	/* board specific information */
 	u16	max_chipselect;
-	void	(*cs_control)(struct spi_device *spi, bool on);
+	void	(*activate_cs)(u8 cs, u8 polarity);
+	void	(*deactivate_cs)(u8 cs, u8 polarity);
 	u32	sysclk;
 };
 
@@ -95,10 +115,6 @@ struct mpc8xx_pcmcia_ops {
  * lead to a deep sleep (i.e. power removed from the core,
  * instead of just the clock).
  */
-#if defined(CONFIG_PPC_83xx) && defined(CONFIG_SUSPEND)
 int fsl_deep_sleep(void);
-#else
-static inline int fsl_deep_sleep(void) { return 0; }
-#endif
 
 #endif /* _FSL_DEVICE_H_ */

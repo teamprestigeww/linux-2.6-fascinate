@@ -24,6 +24,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/types.h>
 #include <linux/delay.h>
@@ -99,7 +100,7 @@ void msnd_fifo_free(msnd_fifo *f)
 int msnd_fifo_alloc(msnd_fifo *f, size_t n)
 {
 	msnd_fifo_free(f);
-	f->data = vmalloc(n);
+	f->data = (char *)vmalloc(n);
 	f->n = n;
 	f->tail = 0;
 	f->head = 0;

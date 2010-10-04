@@ -138,9 +138,8 @@ struct rtl818x_csr {
 	__le32	RF_PARA;
 	__le32	RF_TIMING;
 	u8	GP_ENABLE;
-	u8	GPIO0;
-	u8	GPIO1;
-	u8	reserved_12;
+	u8	GPIO;
+	u8	reserved_12[2];
 	__le32	HSSI_PARA;
 	u8	reserved_13[4];
 	u8	TX_AGC_CTL;
@@ -185,7 +184,7 @@ struct rtl818x_csr {
 	u8	reserved_22[4];
 	__le16	TALLY_CNT;
 	u8	TALLY_SEL;
-} __packed;
+} __attribute__((packed));
 
 struct rtl818x_rf_ops {
 	char *name;
@@ -193,21 +192,10 @@ struct rtl818x_rf_ops {
 	void (*stop)(struct ieee80211_hw *);
 	void (*set_chan)(struct ieee80211_hw *, struct ieee80211_conf *);
 	void (*conf_erp)(struct ieee80211_hw *, struct ieee80211_bss_conf *);
-	u8 (*calc_rssi)(u8 agc, u8 sq);
 };
 
-/**
- * enum rtl818x_tx_desc_flags - Tx/Rx flags are common between RTL818X chips
- *
- * @RTL818X_TX_DESC_FLAG_NO_ENC: Disable hardware based encryption.
- * @RTL818X_TX_DESC_FLAG_TX_OK: TX frame was ACKed.
- * @RTL818X_TX_DESC_FLAG_SPLCP: Use short preamble.
- * @RTL818X_TX_DESC_FLAG_MOREFRAG: More fragments follow.
- * @RTL818X_TX_DESC_FLAG_CTS: Use CTS-to-self protection.
- * @RTL818X_TX_DESC_FLAG_RTS: Use RTS/CTS protection.
- * @RTL818X_TX_DESC_FLAG_LS: Last segment of the frame.
- * @RTL818X_TX_DESC_FLAG_FS: First segment of the frame.
- */
+/* Tx/Rx flags are common between RTL818X chips */
+
 enum rtl818x_tx_desc_flags {
 	RTL818X_TX_DESC_FLAG_NO_ENC	= (1 << 15),
 	RTL818X_TX_DESC_FLAG_TX_OK	= (1 << 15),

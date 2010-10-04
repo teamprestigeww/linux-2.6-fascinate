@@ -26,12 +26,13 @@
 #include <linux/time.h>
 #include <linux/init.h>
 #include <linux/string.h>
+#include <linux/smp_lock.h>
 #include <linux/backing-dev.h>
 #include <linux/mpage.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
 #include <linux/bit_spinlock.h>
-#include <linux/slab.h>
+#include <linux/pagevec.h>
 #include "compat.h"
 #include "ctree.h"
 #include "disk-io.h"
@@ -122,7 +123,7 @@ static int check_compressed_csum(struct inode *inode,
 	u32 csum;
 	u32 *cb_sum = &cb->sums;
 
-	if (BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM)
+	if (btrfs_test_flag(inode, NODATASUM))
 		return 0;
 
 	for (i = 0; i < cb->nr_pages; i++) {
@@ -445,6 +446,7 @@ static noinline int add_ra_bio_pages(struct inode *inode,
 	unsigned long nr_pages = 0;
 	struct extent_map *em;
 	struct address_space *mapping = inode->i_mapping;
+	struct pagevec pvec;
 	struct extent_map_tree *em_tree;
 	struct extent_io_tree *tree;
 	u64 end;
@@ -460,6 +462,7 @@ static noinline int add_ra_bio_pages(struct inode *inode,
 
 	end_index = (i_size_read(inode) - 1) >> PAGE_CACHE_SHIFT;
 
+	pagevec_init(&pvec, 0);
 	while (last_offset < compressed_end) {
 		page_index = last_offset >> PAGE_CACHE_SHIFT;
 
@@ -476,16 +479,25 @@ static noinline int add_ra_bio_pages(struct inode *inode,
 			goto next;
 		}
 
-		page = __page_cache_alloc(mapping_gfp_mask(mapping) &
-								~__GFP_FS);
+		page = alloc_page(mapping_gfp_mask(mapping) | GFP_NOFS);
 		if (!page)
 			break;
 
-		if (add_to_page_cache_lru(page, mapping, page_index,
-								GFP_NOFS)) {
+		page->index = page_index;
+		/*
+		 * what we want to do here is call add_to_page_cache_lru,
+		 * but that isn't exported, so we reproduce it here
+		 */
+		if (add_to_page_cache(page, mapping,
+				      page->index, GFP_NOFS)) {
 			page_cache_release(page);
 			goto next;
 		}
+
+		/* open coding of lru_cache_add, also not exported */
+		page_cache_get(page);
+		if (!pagevec_add(&pvec, page))
+			__pagevec_lru_add_file(&pvec);
 
 		end = last_offset + PAGE_CACHE_SIZE - 1;
 		/*
@@ -495,10 +507,10 @@ static noinline int add_ra_bio_pages(struct inode *inode,
 		 */
 		set_page_extent_mapped(page);
 		lock_extent(tree, last_offset, end, GFP_NOFS);
-		read_lock(&em_tree->lock);
+		spin_lock(&em_tree->lock);
 		em = lookup_extent_mapping(em_tree, last_offset,
 					   PAGE_CACHE_SIZE);
-		read_unlock(&em_tree->lock);
+		spin_unlock(&em_tree->lock);
 
 		if (!em || last_offset < em->start ||
 		    (last_offset + PAGE_CACHE_SIZE > extent_map_end(em)) ||
@@ -540,6 +552,8 @@ static noinline int add_ra_bio_pages(struct inode *inode,
 next:
 		last_offset += PAGE_CACHE_SIZE;
 	}
+	if (pagevec_count(&pvec))
+		__pagevec_lru_add_file(&pvec);
 	return 0;
 }
 
@@ -580,11 +594,11 @@ int btrfs_submit_compressed_read(struct inode *inode, struct bio *bio,
 	em_tree = &BTRFS_I(inode)->extent_tree;
 
 	/* we need the actual starting offset of this extent in the file */
-	read_lock(&em_tree->lock);
+	spin_lock(&em_tree->lock);
 	em = lookup_extent_mapping(em_tree,
 				   page_offset(bio->bi_io_vec->bv_page),
 				   PAGE_CACHE_SIZE);
-	read_unlock(&em_tree->lock);
+	spin_unlock(&em_tree->lock);
 
 	compressed_len = em->block_len;
 	cb = kmalloc(compressed_bio_size(root, compressed_len), GFP_NOFS);
@@ -656,7 +670,7 @@ int btrfs_submit_compressed_read(struct inode *inode, struct bio *bio,
 			 */
 			atomic_inc(&cb->pending_bios);
 
-			if (!(BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM)) {
+			if (!btrfs_test_flag(inode, NODATASUM)) {
 				btrfs_lookup_bio_sums(root, inode, comp_bio,
 						      sums);
 			}
@@ -683,7 +697,7 @@ int btrfs_submit_compressed_read(struct inode *inode, struct bio *bio,
 	ret = btrfs_bio_wq_end_io(root->fs_info, comp_bio, 0);
 	BUG_ON(ret);
 
-	if (!(BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM))
+	if (!btrfs_test_flag(inode, NODATASUM))
 		btrfs_lookup_bio_sums(root, inode, comp_bio, sums);
 
 	ret = btrfs_map_bio(root, READ, comp_bio, mirror_num, 0);

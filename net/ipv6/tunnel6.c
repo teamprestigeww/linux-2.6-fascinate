@@ -25,7 +25,6 @@
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
-#include <linux/slab.h>
 #include <net/ipv6.h>
 #include <net/protocol.h>
 #include <net/xfrm.h>
@@ -99,7 +98,7 @@ static int tunnel6_rcv(struct sk_buff *skb)
 		if (!handler->handler(skb))
 			return 0;
 
-	icmpv6_send(skb, ICMPV6_DEST_UNREACH, ICMPV6_PORT_UNREACH, 0);
+	icmpv6_send(skb, ICMPV6_DEST_UNREACH, ICMPV6_PORT_UNREACH, 0, skb->dev);
 
 drop:
 	kfree_skb(skb);
@@ -117,7 +116,7 @@ static int tunnel46_rcv(struct sk_buff *skb)
 		if (!handler->handler(skb))
 			return 0;
 
-	icmpv6_send(skb, ICMPV6_DEST_UNREACH, ICMPV6_PORT_UNREACH, 0);
+	icmpv6_send(skb, ICMPV6_DEST_UNREACH, ICMPV6_PORT_UNREACH, 0, skb->dev);
 
 drop:
 	kfree_skb(skb);
@@ -125,7 +124,7 @@ drop:
 }
 
 static void tunnel6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
-			u8 type, u8 code, int offset, __be32 info)
+			int type, int code, int offset, __be32 info)
 {
 	struct xfrm6_tunnel *handler;
 
@@ -134,13 +133,13 @@ static void tunnel6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 			break;
 }
 
-static const struct inet6_protocol tunnel6_protocol = {
+static struct inet6_protocol tunnel6_protocol = {
 	.handler	= tunnel6_rcv,
 	.err_handler	= tunnel6_err,
 	.flags          = INET6_PROTO_NOPOLICY|INET6_PROTO_FINAL,
 };
 
-static const struct inet6_protocol tunnel46_protocol = {
+static struct inet6_protocol tunnel46_protocol = {
 	.handler	= tunnel46_rcv,
 	.err_handler	= tunnel6_err,
 	.flags          = INET6_PROTO_NOPOLICY|INET6_PROTO_FINAL,

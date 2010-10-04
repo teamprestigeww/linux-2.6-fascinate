@@ -5,7 +5,7 @@
  *     Convert a unicode character to upper or lower case using
  *     compressed tables.
  *
- *   Copyright (c) International Business Machines  Corp., 2000,2009
+ *   Copyright (c) International Business Machines  Corp., 2000,2007
  *
  *   This program is free software;  you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -30,27 +30,12 @@
  *     This is a compressed table of upper and lower case conversion.
  *
  */
-#ifndef _CIFS_UNICODE_H
-#define _CIFS_UNICODE_H
 
 #include <asm/byteorder.h>
 #include <linux/types.h>
 #include <linux/nls.h>
 
 #define  UNIUPR_NOLOWER		/* Example to not expand lower case tables */
-
-/*
- * Windows maps these to the user defined 16 bit Unicode range since they are
- * reserved symbols (along with \ and /), otherwise illegal to store
- * in filenames in NTFS
- */
-#define UNI_ASTERIK     (__u16) ('*' + 0xF000)
-#define UNI_QUESTION    (__u16) ('?' + 0xF000)
-#define UNI_COLON       (__u16) (':' + 0xF000)
-#define UNI_GRTRTHAN    (__u16) ('>' + 0xF000)
-#define UNI_LESSTHAN    (__u16) ('<' + 0xF000)
-#define UNI_PIPE        (__u16) ('|' + 0xF000)
-#define UNI_SLASH       (__u16) ('\\' + 0xF000)
 
 /* Just define what we want from uniupr.h.  We don't want to define the tables
  * in each source file.
@@ -69,19 +54,13 @@ extern const struct UniCaseRange CifsUniUpperRange[];
 #endif				/* UNIUPR_NOUPPER */
 
 #ifndef UNIUPR_NOLOWER
-extern signed char CifsUniLowerTable[512];
-extern const struct UniCaseRange CifsUniLowerRange[];
+extern signed char UniLowerTable[512];
+extern struct UniCaseRange UniLowerRange[];
 #endif				/* UNIUPR_NOLOWER */
 
 #ifdef __KERNEL__
-int cifs_from_ucs2(char *to, const __le16 *from, int tolen, int fromlen,
-		   const struct nls_table *codepage, bool mapchar);
-int cifs_ucs2_bytes(const __le16 *from, int maxbytes,
-		    const struct nls_table *codepage);
+int cifs_strfromUCS_le(char *, const __le16 *, int, const struct nls_table *);
 int cifs_strtoUCS(__le16 *, const char *, int, const struct nls_table *);
-char *cifs_strndup_from_ucs(const char *src, const int maxlen,
-			    const bool is_unicode,
-			    const struct nls_table *codepage);
 #endif
 
 /*
@@ -339,15 +318,15 @@ UniStrupr(register wchar_t *upin)
  * UniTolower:  Convert a unicode character to lower case
  */
 static inline wchar_t
-UniTolower(register wchar_t uc)
+UniTolower(wchar_t uc)
 {
-	register const struct UniCaseRange *rp;
+	register struct UniCaseRange *rp;
 
-	if (uc < sizeof(CifsUniLowerTable)) {
+	if (uc < sizeof(UniLowerTable)) {
 		/* Latin characters */
-		return uc + CifsUniLowerTable[uc];	/* Use base tables */
+		return uc + UniLowerTable[uc];	/* Use base tables */
 	} else {
-		rp = CifsUniLowerRange;	/* Use range tables */
+		rp = UniLowerRange;	/* Use range tables */
 		while (rp->start) {
 			if (uc < rp->start)	/* Before start of range */
 				return uc;	/* Uppercase = input */
@@ -376,5 +355,3 @@ UniStrlwr(register wchar_t *upin)
 }
 
 #endif
-
-#endif /* _CIFS_UNICODE_H */

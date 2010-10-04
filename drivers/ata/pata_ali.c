@@ -124,7 +124,7 @@ static unsigned long ali_20_filter(struct ata_device *adev, unsigned long mask)
 	ata_id_c_string(adev->id, model_num, ATA_ID_PROD, sizeof(model_num));
 	if (strstr(model_num, "WDC"))
 		return mask &= ~ATA_MASK_UDMA;
-	return mask;
+	return ata_bmdma_mode_filter(adev, mask);
 }
 
 /**
@@ -159,7 +159,8 @@ static void ali_fifo_control(struct ata_port *ap, struct ata_device *adev, int o
  *	ali_program_modes	-	load mode registers
  *	@ap: ALi channel to load
  *	@adev: Device the timing is for
- *	@t: timing data
+ *	@cmd: Command timing
+ *	@data: Data timing
  *	@ultra: UDMA timing or zero for off
  *
  *	Loads the timing registers for cmd/data and disable UDMA if
@@ -201,7 +202,8 @@ static void ali_program_modes(struct ata_port *ap, struct ata_device *adev, stru
  *	@ap: ATA interface
  *	@adev: ATA device
  *
- *	Program the ALi registers for PIO mode.
+ *	Program the ALi registers for PIO mode. FIXME: add timings for
+ *	PIO5.
  */
 
 static void ali_set_piomode(struct ata_port *ap, struct ata_device *adev)
@@ -235,7 +237,7 @@ static void ali_set_piomode(struct ata_port *ap, struct ata_device *adev)
  *	@ap: ATA interface
  *	@adev: ATA device
  *
- *	Program the ALi registers for DMA mode.
+ *	FIXME: MWDMA timings
  */
 
 static void ali_set_dmamode(struct ata_port *ap, struct ata_device *adev)
@@ -288,7 +290,7 @@ static void ali_warn_atapi_dma(struct ata_device *adev)
 
 	if (print_info && adev->class == ATA_DEV_ATAPI && !ali_atapi_dma) {
 		ata_dev_printk(adev, KERN_WARNING,
-			       "WARNING: ATAPI DMA disabled for reliability issues.  It can be enabled\n");
+			       "WARNING: ATAPI DMA disabled for reliablity issues.  It can be enabled\n");
 		ata_dev_printk(adev, KERN_WARNING,
 			       "WARNING: via pata_ali.atapi_dma modparam or corresponding sysfs node.\n");
 	}
@@ -451,9 +453,7 @@ static void ali_init_chipset(struct pci_dev *pdev)
 			/* Clear CD-ROM DMA write bit */
 			tmp &= 0x7F;
 		/* Cable and UDMA */
-		if (pdev->revision >= 0xc2)
-			tmp |= 0x01;
-		pci_write_config_byte(pdev, 0x4B, tmp | 0x08);
+		pci_write_config_byte(pdev, 0x4B, tmp | 0x09);
 		/*
 		 * CD_ROM DMA on (0x53 bit 0). Enable this even if we want
 		 * to use PIO. 0x53 bit 1 (rev 20 only) - enable FIFO control
@@ -492,58 +492,53 @@ static int ali_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	static const struct ata_port_info info_early = {
 		.flags = ATA_FLAG_SLAVE_POSS,
-		.pio_mask = ATA_PIO4,
+		.pio_mask = 0x1f,
 		.port_ops = &ali_early_port_ops
 	};
 	/* Revision 0x20 added DMA */
 	static const struct ata_port_info info_20 = {
-		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48 |
-							ATA_FLAG_IGN_SIMPLEX,
-		.pio_mask = ATA_PIO4,
-		.mwdma_mask = ATA_MWDMA2,
+		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48,
+		.pio_mask = 0x1f,
+		.mwdma_mask = 0x07,
 		.port_ops = &ali_20_port_ops
 	};
 	/* Revision 0x20 with support logic added UDMA */
 	static const struct ata_port_info info_20_udma = {
-		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48 |
-							ATA_FLAG_IGN_SIMPLEX,
-		.pio_mask = ATA_PIO4,
-		.mwdma_mask = ATA_MWDMA2,
-		.udma_mask = ATA_UDMA2,
+		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48,
+		.pio_mask = 0x1f,
+		.mwdma_mask = 0x07,
+		.udma_mask = 0x07,	/* UDMA33 */
 		.port_ops = &ali_20_port_ops
 	};
 	/* Revision 0xC2 adds UDMA66 */
 	static const struct ata_port_info info_c2 = {
-		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48 |
-							ATA_FLAG_IGN_SIMPLEX,
-		.pio_mask = ATA_PIO4,
-		.mwdma_mask = ATA_MWDMA2,
+		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48,
+		.pio_mask = 0x1f,
+		.mwdma_mask = 0x07,
 		.udma_mask = ATA_UDMA4,
 		.port_ops = &ali_c2_port_ops
 	};
 	/* Revision 0xC3 is UDMA66 for now */
 	static const struct ata_port_info info_c3 = {
-		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48 |
-							ATA_FLAG_IGN_SIMPLEX,
-		.pio_mask = ATA_PIO4,
-		.mwdma_mask = ATA_MWDMA2,
+		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48,
+		.pio_mask = 0x1f,
+		.mwdma_mask = 0x07,
 		.udma_mask = ATA_UDMA4,
 		.port_ops = &ali_c2_port_ops
 	};
 	/* Revision 0xC4 is UDMA100 */
 	static const struct ata_port_info info_c4 = {
-		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48 |
-							ATA_FLAG_IGN_SIMPLEX,
-		.pio_mask = ATA_PIO4,
-		.mwdma_mask = ATA_MWDMA2,
+		.flags = ATA_FLAG_SLAVE_POSS | ATA_FLAG_PIO_LBA48,
+		.pio_mask = 0x1f,
+		.mwdma_mask = 0x07,
 		.udma_mask = ATA_UDMA5,
 		.port_ops = &ali_c4_port_ops
 	};
 	/* Revision 0xC5 is UDMA133 with LBA48 DMA */
 	static const struct ata_port_info info_c5 = {
-		.flags = ATA_FLAG_SLAVE_POSS | 	ATA_FLAG_IGN_SIMPLEX,
-		.pio_mask = ATA_PIO4,
-		.mwdma_mask = ATA_MWDMA2,
+		.flags = ATA_FLAG_SLAVE_POSS,
+		.pio_mask = 0x1f,
+		.mwdma_mask = 0x07,
 		.udma_mask = ATA_UDMA6,
 		.port_ops = &ali_c5_port_ops
 	};
@@ -583,10 +578,7 @@ static int ali_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	        	ppi[0] = &info_20_udma;
 	}
 
-	if (!ppi[0]->mwdma_mask && !ppi[0]->udma_mask)
-		return ata_pci_sff_init_one(pdev, ppi, &ali_sht, NULL, 0);
-	else
-		return ata_pci_bmdma_init_one(pdev, ppi, &ali_sht, NULL, 0);
+	return ata_pci_sff_init_one(pdev, ppi, &ali_sht, NULL);
 }
 
 #ifdef CONFIG_PM

@@ -19,7 +19,6 @@
  * Boston, MA 021110-1307, USA.
  */
 
-#include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/configfs.h>
@@ -36,10 +35,6 @@
  * cluster references throughout where nodes are looked up */
 struct o2nm_cluster *o2nm_single_cluster = NULL;
 
-char *o2nm_fence_method_desc[O2NM_FENCE_METHODS] = {
-		"reset",	/* O2NM_FENCE_RESET */
-		"panic",	/* O2NM_FENCE_PANIC */
-};
 
 struct o2nm_node *o2nm_get_node_by_num(u8 node_num)
 {
@@ -584,43 +579,6 @@ static ssize_t o2nm_cluster_attr_reconnect_delay_ms_write(
 	return o2nm_cluster_attr_write(page, count,
 	                               &cluster->cl_reconnect_delay_ms);
 }
-
-static ssize_t o2nm_cluster_attr_fence_method_read(
-	struct o2nm_cluster *cluster, char *page)
-{
-	ssize_t ret = 0;
-
-	if (cluster)
-		ret = sprintf(page, "%s\n",
-			      o2nm_fence_method_desc[cluster->cl_fence_method]);
-	return ret;
-}
-
-static ssize_t o2nm_cluster_attr_fence_method_write(
-	struct o2nm_cluster *cluster, const char *page, size_t count)
-{
-	unsigned int i;
-
-	if (page[count - 1] != '\n')
-		goto bail;
-
-	for (i = 0; i < O2NM_FENCE_METHODS; ++i) {
-		if (count != strlen(o2nm_fence_method_desc[i]) + 1)
-			continue;
-		if (strncasecmp(page, o2nm_fence_method_desc[i], count - 1))
-			continue;
-		if (cluster->cl_fence_method != i) {
-			printk(KERN_INFO "ocfs2: Changing fence method to %s\n",
-			       o2nm_fence_method_desc[i]);
-			cluster->cl_fence_method = i;
-		}
-		return count;
-	}
-
-bail:
-	return -EINVAL;
-}
-
 static struct o2nm_cluster_attribute o2nm_cluster_attr_idle_timeout_ms = {
 	.attr	= { .ca_owner = THIS_MODULE,
 		    .ca_name = "idle_timeout_ms",
@@ -645,19 +603,10 @@ static struct o2nm_cluster_attribute o2nm_cluster_attr_reconnect_delay_ms = {
 	.store	= o2nm_cluster_attr_reconnect_delay_ms_write,
 };
 
-static struct o2nm_cluster_attribute o2nm_cluster_attr_fence_method = {
-	.attr	= { .ca_owner = THIS_MODULE,
-		    .ca_name = "fence_method",
-		    .ca_mode = S_IRUGO | S_IWUSR },
-	.show	= o2nm_cluster_attr_fence_method_read,
-	.store	= o2nm_cluster_attr_fence_method_write,
-};
-
 static struct configfs_attribute *o2nm_cluster_attrs[] = {
 	&o2nm_cluster_attr_idle_timeout_ms.attr,
 	&o2nm_cluster_attr_keepalive_delay_ms.attr,
 	&o2nm_cluster_attr_reconnect_delay_ms.attr,
-	&o2nm_cluster_attr_fence_method.attr,
 	NULL,
 };
 static ssize_t o2nm_cluster_show(struct config_item *item,
@@ -829,7 +778,6 @@ static struct config_group *o2nm_cluster_group_make_group(struct config_group *g
 	cluster->cl_reconnect_delay_ms = O2NET_RECONNECT_DELAY_MS_DEFAULT;
 	cluster->cl_idle_timeout_ms    = O2NET_IDLE_TIMEOUT_MS_DEFAULT;
 	cluster->cl_keepalive_delay_ms = O2NET_KEEPALIVE_DELAY_MS_DEFAULT;
-	cluster->cl_fence_method       = O2NM_FENCE_RESET;
 
 	ret = &cluster->cl_group;
 	o2nm_single_cluster = cluster;
@@ -933,7 +881,6 @@ static void __exit exit_o2nm(void)
 	o2cb_sys_shutdown();
 
 	o2net_exit();
-	o2hb_exit();
 }
 
 static int __init init_o2nm(void)
@@ -942,13 +889,11 @@ static int __init init_o2nm(void)
 
 	cluster_print_version();
 
-	ret = o2hb_init();
-	if (ret)
-		goto out;
+	o2hb_init();
 
 	ret = o2net_init();
 	if (ret)
-		goto out_o2hb;
+		goto out;
 
 	ret = o2net_register_hb_callbacks();
 	if (ret)
@@ -971,8 +916,6 @@ out_callbacks:
 	o2net_unregister_hb_callbacks();
 out_o2net:
 	o2net_exit();
-out_o2hb:
-	o2hb_exit();
 out:
 	return ret;
 }

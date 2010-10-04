@@ -22,6 +22,8 @@
 #include <asm/mach/map.h>
 
 #include <mach/pxa2xx-regs.h>
+#include <mach/mfp-pxa27x.h>
+#include <mach/pxa-regs.h>
 #include <mach/audio.h>
 #include <mach/pxafb.h>
 
@@ -94,7 +96,7 @@ static struct resource cmx270_dm9000_resource[] = {
 };
 
 static struct dm9000_plat_data cmx270_dm9000_platdata = {
-	.flags		= DM9000_PLATF_32BITONLY | DM9000_PLATF_NO_EEPROM,
+	.flags		= DM9000_PLATF_32BITONLY,
 };
 
 static struct platform_device cmx2xx_dm9000_device = {
@@ -121,7 +123,7 @@ static inline void cmx2xx_init_dm9000(void) {}
 /* UCB1400 touchscreen controller */
 #if defined(CONFIG_TOUCHSCREEN_UCB1400) || defined(CONFIG_TOUCHSCREEN_UCB1400_MODULE)
 static struct platform_device cmx2xx_ts_device = {
-	.name		= "ucb1400_core",
+	.name		= "ucb1400_ts",
 	.id		= -1,
 };
 
@@ -453,10 +455,6 @@ static inline void cmx2xx_init_ac97(void) {}
 
 static void __init cmx2xx_init(void)
 {
-	pxa_set_ffuart_info(NULL);
-	pxa_set_btuart_info(NULL);
-	pxa_set_stuart_info(NULL);
-
 	cmx2xx_pm_init();
 
 	if (cpu_is_pxa25x())

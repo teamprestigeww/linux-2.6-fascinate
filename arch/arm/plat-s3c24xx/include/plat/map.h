@@ -31,8 +31,6 @@
 #define S3C24XX_SZ_UART	   SZ_1M
 #define S3C_UART_OFFSET	   (0x4000)
 
-#define S3C_VA_UARTx(uart) (S3C_VA_UART + ((uart * S3C_UART_OFFSET)))
-
 /* Timers */
 #define S3C24XX_VA_TIMER   S3C_VA_TIMER
 #define S3C2410_PA_TIMER   (0x51000000)
@@ -58,13 +56,14 @@
 #define S3C24XX_SZ_SPI		SZ_1M
 #define S3C24XX_SZ_SDI		SZ_1M
 #define S3C24XX_SZ_NAND		SZ_1M
+#define S3C24XX_SZ_USBHOST	SZ_1M
 
 /* GPIO ports */
 
 /* the calculation for the VA of this must ensure that
  * it is the same distance apart from the UART in the
  * phsyical address space, as the initial mapping for the IO
- * is done as a 1:1 mapping. This puts it (currently) at
+ * is done as a 1:1 maping. This puts it (currently) at
  * 0xFA800000, which is not in the way of any current mapping
  * by the base system.
 */

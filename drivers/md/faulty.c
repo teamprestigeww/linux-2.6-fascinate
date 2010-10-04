@@ -62,11 +62,7 @@
 #define	ModeShift	5
 
 #define MaxFault	50
-#include <linux/blkdev.h>
-#include <linux/raid/md_u.h>
-#include <linux/slab.h>
-#include "md.h"
-#include <linux/seq_file.h>
+#include <linux/raid/md.h>
 
 
 static void faulty_fail(struct bio *bio, int error)
@@ -169,9 +165,10 @@ static void add_sector(conf_t *conf, sector_t start, int mode)
 		conf->nfaults = n+1;
 }
 
-static int make_request(mddev_t *mddev, struct bio *bio)
+static int make_request(struct request_queue *q, struct bio *bio)
 {
-	conf_t *conf = mddev->private;
+	mddev_t *mddev = q->queuedata;
+	conf_t *conf = (conf_t*)mddev->private;
 	int failit = 0;
 
 	if (bio_data_dir(bio) == WRITE) {
@@ -224,7 +221,7 @@ static int make_request(mddev_t *mddev, struct bio *bio)
 
 static void status(struct seq_file *seq, mddev_t *mddev)
 {
-	conf_t *conf = mddev->private;
+	conf_t *conf = (conf_t*)mddev->private;
 	int n;
 
 	if ((n=atomic_read(&conf->counters[WriteTransient])) != 0)
@@ -255,14 +252,14 @@ static void status(struct seq_file *seq, mddev_t *mddev)
 }
 
 
-static int reshape(mddev_t *mddev)
+static int reconfig(mddev_t *mddev, int layout, int chunk_size)
 {
-	int mode = mddev->new_layout & ModeMask;
-	int count = mddev->new_layout >> ModeShift;
+	int mode = layout & ModeMask;
+	int count = layout >> ModeShift;
 	conf_t *conf = mddev->private;
 
-	if (mddev->new_layout < 0)
-		return 0;
+	if (chunk_size != -1)
+		return -EINVAL;
 
 	/* new layout */
 	if (mode == ClearFaults)
@@ -279,32 +276,16 @@ static int reshape(mddev_t *mddev)
 		atomic_set(&conf->counters[mode], count);
 	} else
 		return -EINVAL;
-	mddev->new_layout = -1;
 	mddev->layout = -1; /* makes sure further changes come through */
 	return 0;
-}
-
-static sector_t faulty_size(mddev_t *mddev, sector_t sectors, int raid_disks)
-{
-	WARN_ONCE(raid_disks,
-		  "%s does not support generic reshape\n", __func__);
-
-	if (sectors == 0)
-		return mddev->dev_sectors;
-
-	return sectors;
 }
 
 static int run(mddev_t *mddev)
 {
 	mdk_rdev_t *rdev;
 	int i;
-	conf_t *conf;
 
-	if (md_check_no_bitmap(mddev))
-		return -EINVAL;
-
-	conf = kmalloc(sizeof(*conf), GFP_KERNEL);
+	conf_t *conf = kmalloc(sizeof(*conf), GFP_KERNEL);
 	if (!conf)
 		return -ENOMEM;
 
@@ -317,17 +298,17 @@ static int run(mddev_t *mddev)
 	list_for_each_entry(rdev, &mddev->disks, same_set)
 		conf->rdev = rdev;
 
-	md_set_array_sectors(mddev, faulty_size(mddev, 0, 0));
+	mddev->array_sectors = mddev->size * 2;
 	mddev->private = conf;
 
-	reshape(mddev);
+	reconfig(mddev, mddev->layout, -1);
 
 	return 0;
 }
 
 static int stop(mddev_t *mddev)
 {
-	conf_t *conf = mddev->private;
+	conf_t *conf = (conf_t *)mddev->private;
 
 	kfree(conf);
 	mddev->private = NULL;
@@ -343,8 +324,7 @@ static struct mdk_personality faulty_personality =
 	.run		= run,
 	.stop		= stop,
 	.status		= status,
-	.check_reshape	= reshape,
-	.size		= faulty_size,
+	.reconfig	= reconfig,
 };
 
 static int __init raid_init(void)
@@ -360,7 +340,6 @@ static void raid_exit(void)
 module_init(raid_init);
 module_exit(raid_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Fault injection personality for MD");
 MODULE_ALIAS("md-personality-10"); /* faulty */
 MODULE_ALIAS("md-faulty");
 MODULE_ALIAS("md-level--5");

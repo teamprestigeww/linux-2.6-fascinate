@@ -124,7 +124,7 @@ struct sigcontext {
 	 * fpstate is really (struct _fpstate *) or (struct _xstate *)
 	 * depending on the FP_XSTATE_MAGIC1 encoded in the SW reserved
 	 * bytes of (struct _fpstate) and FP_XSTATE_MAGIC2 present at the end
-	 * of extended memory layout. See comments at the definition of
+	 * of extended memory layout. See comments at the defintion of
 	 * (struct _fpx_sw_bytes)
 	 */
 	void __user *fpstate;		/* zero when no FPU/extended context */
@@ -219,7 +219,7 @@ struct sigcontext {
 	 * fpstate is really (struct _fpstate *) or (struct _xstate *)
 	 * depending on the FP_XSTATE_MAGIC1 encoded in the SW reserved
 	 * bytes of (struct _fpstate) and FP_XSTATE_MAGIC2 present at the end
-	 * of extended memory layout. See comments at the definition of
+	 * of extended memory layout. See comments at the defintion of
 	 * (struct _fpx_sw_bytes)
 	 */
 	void __user *fpstate;		/* zero when no FPU/extended context */
@@ -269,11 +269,6 @@ struct _xsave_hdr {
 	__u64 reserved2[5];
 };
 
-struct _ymmh_state {
-	/* 16 * 16 bytes for each YMMH-reg */
-	__u32 ymmh_space[64];
-};
-
 /*
  * Extended state pointed by the fpstate pointer in the sigcontext.
  * In addition to the fpstate, information encoded in the xstate_hdr
@@ -283,7 +278,6 @@ struct _ymmh_state {
 struct _xstate {
 	struct _fpstate fpstate;
 	struct _xsave_hdr xstate_hdr;
-	struct _ymmh_state ymmh;
 	/* new processor state extensions go here */
 };
 

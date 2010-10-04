@@ -22,7 +22,6 @@
 #include <linux/timer.h>
 #include <linux/ctype.h>
 #include <linux/leds.h>
-#include <linux/slab.h>
 #include "leds.h"
 
 struct timer_trig_data {
@@ -84,7 +83,7 @@ static ssize_t led_delay_on_store(struct device *dev,
 	unsigned long state = simple_strtoul(buf, &after, 10);
 	size_t count = after - buf;
 
-	if (isspace(*after))
+	if (*after && isspace(*after))
 		count++;
 
 	if (count == size) {
@@ -128,7 +127,7 @@ static ssize_t led_delay_off_store(struct device *dev,
 	unsigned long state = simple_strtoul(buf, &after, 10);
 	size_t count = after - buf;
 
-	if (isspace(*after))
+	if (*after && isspace(*after))
 		count++;
 
 	if (count == size) {
@@ -167,7 +166,7 @@ static void timer_trig_activate(struct led_classdev *led_cdev)
 
 	timer_data->brightness_on = led_get_brightness(led_cdev);
 	if (timer_data->brightness_on == LED_OFF)
-		timer_data->brightness_on = led_cdev->max_brightness;
+		timer_data->brightness_on = LED_FULL;
 	led_cdev->trigger_data = timer_data;
 
 	init_timer(&timer_data->timer);

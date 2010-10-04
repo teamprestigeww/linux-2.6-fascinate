@@ -702,7 +702,7 @@ static unsigned int iosapic_startup_irq(unsigned int irq)
 }
 
 #ifdef CONFIG_SMP
-static int iosapic_set_affinity_irq(unsigned int irq,
+static void iosapic_set_affinity_irq(unsigned int irq,
 				     const struct cpumask *dest)
 {
 	struct vector_info *vi = iosapic_get_vector(irq);
@@ -712,9 +712,9 @@ static int iosapic_set_affinity_irq(unsigned int irq,
 
 	dest_cpu = cpu_check_affinity(irq, dest);
 	if (dest_cpu < 0)
-		return -1;
+		return;
 
-	cpumask_copy(irq_desc[irq].affinity, cpumask_of(dest_cpu));
+	irq_desc[irq].affinity = cpumask_of_cpu(dest_cpu);
 	vi->txn_addr = txn_affinity_addr(irq, dest_cpu);
 
 	spin_lock_irqsave(&iosapic_lock, flags);
@@ -724,13 +724,11 @@ static int iosapic_set_affinity_irq(unsigned int irq,
 	iosapic_set_irt_data(vi, &dummy_d0, &d1);
 	iosapic_wr_irt_entry(vi, d0, d1);
 	spin_unlock_irqrestore(&iosapic_lock, flags);
-
-	return 0;
 }
 #endif
 
-static struct irq_chip iosapic_interrupt_type = {
-	.name	 =	"IO-SAPIC-level",
+static struct hw_interrupt_type iosapic_interrupt_type = {
+	.typename =	"IO-SAPIC-level",
 	.startup =	iosapic_startup_irq,
 	.shutdown =	iosapic_disable_irq,
 	.enable =	iosapic_enable_irq,

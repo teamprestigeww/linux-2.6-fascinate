@@ -17,7 +17,8 @@
     </authorgroup>
 
     <copyright>
-      <year>2007-2009</year>
+      <year>2007</year>
+      <year>2008</year>
       <holder>Johannes Berg</holder>
     </copyright>
 
@@ -144,7 +145,8 @@ usage should require reading the full document.
         this though and the recommendation to allow only a single
         interface in STA mode at first!
       </para>
-!Finclude/net/mac80211.h ieee80211_vif
+!Finclude/net/mac80211.h ieee80211_if_init_conf
+!Finclude/net/mac80211.h ieee80211_if_conf
     </chapter>
 
     <chapter id="rx-tx">
@@ -163,8 +165,8 @@ usage should require reading the full document.
 !Pinclude/net/mac80211.h Frame format
       </sect1>
       <sect1>
-        <title>Packet alignment</title>
-!Pnet/mac80211/rx.c Packet alignment
+        <title>Alignment issues</title>
+        <para>TBD</para>
       </sect1>
       <sect1>
         <title>Calling into mac80211 from interrupts</title>
@@ -184,6 +186,8 @@ usage should require reading the full document.
 !Finclude/net/mac80211.h ieee80211_ctstoself_get
 !Finclude/net/mac80211.h ieee80211_ctstoself_duration
 !Finclude/net/mac80211.h ieee80211_generic_frame_duration
+!Finclude/net/mac80211.h ieee80211_get_hdrlen_from_skb
+!Finclude/net/mac80211.h ieee80211_hdrlen
 !Finclude/net/mac80211.h ieee80211_wake_queue
 !Finclude/net/mac80211.h ieee80211_stop_queue
 !Finclude/net/mac80211.h ieee80211_wake_queues
@@ -219,21 +223,11 @@ usage should require reading the full document.
 !Finclude/net/mac80211.h ieee80211_key_flags
     </chapter>
 
-    <chapter id="powersave">
-      <title>Powersave support</title>
-!Pinclude/net/mac80211.h Powersave support
-    </chapter>
-
-    <chapter id="beacon-filter">
-      <title>Beacon filter support</title>
-!Pinclude/net/mac80211.h Beacon filter support
-!Finclude/net/mac80211.h ieee80211_beacon_loss
-    </chapter>
-
     <chapter id="qos">
       <title>Multiple queues and QoS support</title>
       <para>TBD</para>
 !Finclude/net/mac80211.h ieee80211_tx_queue_params
+!Finclude/net/mac80211.h ieee80211_tx_queue_stats
     </chapter>
 
     <chapter id="AP">

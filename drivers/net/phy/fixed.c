@@ -19,8 +19,6 @@
 #include <linux/mii.h>
 #include <linux/phy.h>
 #include <linux/phy_fixed.h>
-#include <linux/err.h>
-#include <linux/slab.h>
 
 #define MII_REGS_NUM 29
 
@@ -209,8 +207,8 @@ static int __init fixed_mdio_bus_init(void)
 	int ret;
 
 	pdev = platform_device_register_simple("Fixed MDIO bus", 0, NULL, 0);
-	if (IS_ERR(pdev)) {
-		ret = PTR_ERR(pdev);
+	if (!pdev) {
+		ret = -ENOMEM;
 		goto err_pdev;
 	}
 

@@ -31,8 +31,7 @@
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
-#include <linux/slab.h>
-#include <linux/io.h>
+#include <asm/io.h>
 
 #include <linux/scx200.h>
 
@@ -218,10 +217,8 @@ static void scx200_acb_machine(struct scx200_acb_iface *iface, u8 status)
 	return;
 
  error:
-	dev_err(&iface->adapter.dev,
-		"%s in state %s (addr=0x%02x, len=%d, status=0x%02x)\n", errmsg,
-		scx200_acb_state_name[iface->state], iface->address_byte,
-		iface->len, status);
+	dev_err(&iface->adapter.dev, "%s in state %s\n", errmsg,
+		scx200_acb_state_name[iface->state]);
 
 	iface->state = state_idle;
 	iface->result = -EIO;
@@ -552,7 +549,7 @@ static int __init scx200_create_isa(const char *text, unsigned long base,
  * the name and the BAR where the I/O address resource is located.  ISA
  * devices are flagged with a bar value of -1 */
 
-static const struct pci_device_id scx200_pci[] __initconst = {
+static struct pci_device_id scx200_pci[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_NS, PCI_DEVICE_ID_NS_SCx200_BRIDGE),
 	  .driver_data = 0 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_NS, PCI_DEVICE_ID_NS_SC1100_BRIDGE),

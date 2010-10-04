@@ -51,7 +51,6 @@ int dma_skb_copy_datagram_iovec(struct dma_chan *chan,
 {
 	int start = skb_headlen(skb);
 	int i, copy = start - offset;
-	struct sk_buff *frag_iter;
 	dma_cookie_t cookie = 0;
 
 	/* Copy header. */
@@ -95,28 +94,31 @@ int dma_skb_copy_datagram_iovec(struct dma_chan *chan,
 		start = end;
 	}
 
-	skb_walk_frags(skb, frag_iter) {
-		int end;
+	if (skb_shinfo(skb)->frag_list) {
+		struct sk_buff *list = skb_shinfo(skb)->frag_list;
 
-		WARN_ON(start > offset + len);
+		for (; list; list = list->next) {
+			int end;
 
-		end = start + frag_iter->len;
-		copy = end - offset;
-		if (copy > 0) {
-			if (copy > len)
-				copy = len;
-			cookie = dma_skb_copy_datagram_iovec(chan, frag_iter,
-							     offset - start,
-							     to, copy,
-							     pinned_list);
-			if (cookie < 0)
-				goto fault;
-			len -= copy;
-			if (len == 0)
-				goto end;
-			offset += copy;
+			WARN_ON(start > offset + len);
+
+			end = start + list->len;
+			copy = end - offset;
+			if (copy > 0) {
+				if (copy > len)
+					copy = len;
+				cookie = dma_skb_copy_datagram_iovec(chan, list,
+						offset - start, to, copy,
+						pinned_list);
+				if (cookie < 0)
+					goto fault;
+				len -= copy;
+				if (len == 0)
+					goto end;
+				offset += copy;
+			}
+			start = end;
 		}
-		start = end;
 	}
 
 end:

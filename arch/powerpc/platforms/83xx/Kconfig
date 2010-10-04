@@ -1,6 +1,6 @@
 menuconfig PPC_83xx
 	bool "83xx-based boards"
-	depends on 6xx
+	depends on 6xx && PPC_MULTIPLATFORM
 	select PPC_UDBG_16550
 	select PPC_PCI_CHOICE
 	select FSL_PCI if PCI
@@ -8,14 +8,6 @@ menuconfig PPC_83xx
 	select IPIC
 
 if PPC_83xx
-
-config MPC830x_RDB
-	bool "Freescale MPC830x RDB"
-	select DEFAULT_UIMAGE
-	select PPC_MPC831x
-	select FSL_GTM
-	help
-	  This option enables support for the MPC8308 RDB board.
 
 config MPC831x_RDB
 	bool "Freescale MPC831x RDB"
@@ -83,11 +75,11 @@ config MPC837x_MDS
 	  This option enables support for the MPC837x MDS Processor Board.
 
 config MPC837x_RDB
-	bool "Freescale MPC837x RDB/WLAN"
+	bool "Freescale MPC837x RDB"
 	select DEFAULT_UIMAGE
 	select PPC_MPC837x
 	help
-	  This option enables support for the MPC837x RDB and WLAN Boards.
+	  This option enables support for the MPC837x RDB Board.
 
 config SBC834x
 	bool "Wind River SBC834x"
@@ -103,13 +95,6 @@ config ASP834x
 	help
 	  This enables support for the Analogue & Micro ASP 83xx
 	  board.
-
-config KMETER1
-	bool "Keymile KMETER1"
-	select DEFAULT_UIMAGE
-	select QUICC_ENGINE
-	help
-	  This enables support for the Keymile KMETER1 board.
 
 
 endif

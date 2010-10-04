@@ -3,7 +3,6 @@
 #include <linux/init.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/jiffies.h>
 #include <linux/timer.h>
@@ -127,6 +126,7 @@ static int __init led_init(void)
 	led = proc_create("led", 0, NULL, &led_proc_fops);
 	if (!led)
 		return -ENOMEM;
+	led->owner = THIS_MODULE;
 
 	printk(KERN_INFO
 	       "led: version %s, Lars Kotthoff <metalhead@metalhead.ws>\n",

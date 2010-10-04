@@ -33,9 +33,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
-#include <linux/slab.h>
 #include <linux/sched.h>
-#include <linux/seq_file.h>
 #include <linux/termios.h>
 #include <linux/tty.h>
 #include <linux/interrupt.h>
@@ -74,7 +72,8 @@ static int ircomm_tty_control_indication(void *instance, void *sap,
 static void ircomm_tty_flow_indication(void *instance, void *sap,
 				       LOCAL_FLOW cmd);
 #ifdef CONFIG_PROC_FS
-static const struct file_operations ircomm_tty_proc_fops;
+static int ircomm_tty_read_proc(char *buf, char **start, off_t offset, int len,
+				int *eof, void *unused);
 #endif /* CONFIG_PROC_FS */
 static struct tty_driver *driver;
 
@@ -99,7 +98,7 @@ static const struct tty_operations ops = {
 	.hangup          = ircomm_tty_hangup,
 	.wait_until_sent = ircomm_tty_wait_until_sent,
 #ifdef CONFIG_PROC_FS
-	.proc_fops       = &ircomm_tty_proc_fops,
+	.read_proc       = ircomm_tty_read_proc,
 #endif /* CONFIG_PROC_FS */
 };
 
@@ -496,6 +495,9 @@ static void ircomm_tty_close(struct tty_struct *tty, struct file *filp)
 	unsigned long flags;
 
 	IRDA_DEBUG(0, "%s()\n", __func__ );
+
+	if (!tty)
+		return;
 
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == IRCOMM_TTY_MAGIC, return;);
@@ -1005,6 +1007,9 @@ static void ircomm_tty_hangup(struct tty_struct *tty)
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == IRCOMM_TTY_MAGIC, return;);
 
+	if (!tty)
+		return;
+
 	/* ircomm_tty_flush_buffer(tty); */
 	ircomm_tty_shutdown(self);
 
@@ -1240,170 +1245,150 @@ static void ircomm_tty_flow_indication(void *instance, void *sap,
 }
 
 #ifdef CONFIG_PROC_FS
-static void ircomm_tty_line_info(struct ircomm_tty_cb *self, struct seq_file *m)
+static int ircomm_tty_line_info(struct ircomm_tty_cb *self, char *buf)
 {
-	char sep;
+	int  ret=0;
 
-	seq_printf(m, "State: %s\n", ircomm_tty_state[self->state]);
+	ret += sprintf(buf+ret, "State: %s\n", ircomm_tty_state[self->state]);
 
-	seq_puts(m, "Service type: ");
+	ret += sprintf(buf+ret, "Service type: ");
 	if (self->service_type & IRCOMM_9_WIRE)
-		seq_puts(m, "9_WIRE");
+		ret += sprintf(buf+ret, "9_WIRE");
 	else if (self->service_type & IRCOMM_3_WIRE)
-		seq_puts(m, "3_WIRE");
+		ret += sprintf(buf+ret, "3_WIRE");
 	else if (self->service_type & IRCOMM_3_WIRE_RAW)
-		seq_puts(m, "3_WIRE_RAW");
+		ret += sprintf(buf+ret, "3_WIRE_RAW");
 	else
-		seq_puts(m, "No common service type!\n");
-	seq_putc(m, '\n');
+		ret += sprintf(buf+ret, "No common service type!\n");
+	ret += sprintf(buf+ret, "\n");
 
-	seq_printf(m, "Port name: %s\n", self->settings.port_name);
+	ret += sprintf(buf+ret, "Port name: %s\n", self->settings.port_name);
 
-	seq_printf(m, "DTE status:");
-	sep = ' ';
-	if (self->settings.dte & IRCOMM_RTS) {
-		seq_printf(m, "%cRTS", sep);
-		sep = '|';
-	}
-	if (self->settings.dte & IRCOMM_DTR) {
-		seq_printf(m, "%cDTR", sep);
-		sep = '|';
-	}
-	seq_putc(m, '\n');
+	ret += sprintf(buf+ret, "DTE status: ");
+	if (self->settings.dte & IRCOMM_RTS)
+		ret += sprintf(buf+ret, "RTS|");
+	if (self->settings.dte & IRCOMM_DTR)
+		ret += sprintf(buf+ret, "DTR|");
+	if (self->settings.dte)
+		ret--; /* remove the last | */
+	ret += sprintf(buf+ret, "\n");
 
-	seq_puts(m, "DCE status:");
-	sep = ' ';
-	if (self->settings.dce & IRCOMM_CTS) {
-		seq_printf(m, "%cCTS", sep);
-		sep = '|';
-	}
-	if (self->settings.dce & IRCOMM_DSR) {
-		seq_printf(m, "%cDSR", sep);
-		sep = '|';
-	}
-	if (self->settings.dce & IRCOMM_CD) {
-		seq_printf(m, "%cCD", sep);
-		sep = '|';
-	}
-	if (self->settings.dce & IRCOMM_RI) {
-		seq_printf(m, "%cRI", sep);
-		sep = '|';
-	}
-	seq_putc(m, '\n');
+	ret += sprintf(buf+ret, "DCE status: ");
+	if (self->settings.dce & IRCOMM_CTS)
+		ret += sprintf(buf+ret, "CTS|");
+	if (self->settings.dce & IRCOMM_DSR)
+		ret += sprintf(buf+ret, "DSR|");
+	if (self->settings.dce & IRCOMM_CD)
+		ret += sprintf(buf+ret, "CD|");
+	if (self->settings.dce & IRCOMM_RI)
+		ret += sprintf(buf+ret, "RI|");
+	if (self->settings.dce)
+		ret--; /* remove the last | */
+	ret += sprintf(buf+ret, "\n");
 
-	seq_puts(m, "Configuration: ");
+	ret += sprintf(buf+ret, "Configuration: ");
 	if (!self->settings.null_modem)
-		seq_puts(m, "DTE <-> DCE\n");
+		ret += sprintf(buf+ret, "DTE <-> DCE\n");
 	else
-		seq_puts(m, "DTE <-> DTE (null modem emulation)\n");
+		ret += sprintf(buf+ret,
+			       "DTE <-> DTE (null modem emulation)\n");
 
-	seq_printf(m, "Data rate: %d\n", self->settings.data_rate);
+	ret += sprintf(buf+ret, "Data rate: %d\n", self->settings.data_rate);
 
-	seq_puts(m, "Flow control:");
-	sep = ' ';
-	if (self->settings.flow_control & IRCOMM_XON_XOFF_IN) {
-		seq_printf(m, "%cXON_XOFF_IN", sep);
-		sep = '|';
-	}
-	if (self->settings.flow_control & IRCOMM_XON_XOFF_OUT) {
-		seq_printf(m, "%cXON_XOFF_OUT", sep);
-		sep = '|';
-	}
-	if (self->settings.flow_control & IRCOMM_RTS_CTS_IN) {
-		seq_printf(m, "%cRTS_CTS_IN", sep);
-		sep = '|';
-	}
-	if (self->settings.flow_control & IRCOMM_RTS_CTS_OUT) {
-		seq_printf(m, "%cRTS_CTS_OUT", sep);
-		sep = '|';
-	}
-	if (self->settings.flow_control & IRCOMM_DSR_DTR_IN) {
-		seq_printf(m, "%cDSR_DTR_IN", sep);
-		sep = '|';
-	}
-	if (self->settings.flow_control & IRCOMM_DSR_DTR_OUT) {
-		seq_printf(m, "%cDSR_DTR_OUT", sep);
-		sep = '|';
-	}
-	if (self->settings.flow_control & IRCOMM_ENQ_ACK_IN) {
-		seq_printf(m, "%cENQ_ACK_IN", sep);
-		sep = '|';
-	}
-	if (self->settings.flow_control & IRCOMM_ENQ_ACK_OUT) {
-		seq_printf(m, "%cENQ_ACK_OUT", sep);
-		sep = '|';
-	}
-	seq_putc(m, '\n');
+	ret += sprintf(buf+ret, "Flow control: ");
+	if (self->settings.flow_control & IRCOMM_XON_XOFF_IN)
+		ret += sprintf(buf+ret, "XON_XOFF_IN|");
+	if (self->settings.flow_control & IRCOMM_XON_XOFF_OUT)
+		ret += sprintf(buf+ret, "XON_XOFF_OUT|");
+	if (self->settings.flow_control & IRCOMM_RTS_CTS_IN)
+		ret += sprintf(buf+ret, "RTS_CTS_IN|");
+	if (self->settings.flow_control & IRCOMM_RTS_CTS_OUT)
+		ret += sprintf(buf+ret, "RTS_CTS_OUT|");
+	if (self->settings.flow_control & IRCOMM_DSR_DTR_IN)
+		ret += sprintf(buf+ret, "DSR_DTR_IN|");
+	if (self->settings.flow_control & IRCOMM_DSR_DTR_OUT)
+		ret += sprintf(buf+ret, "DSR_DTR_OUT|");
+	if (self->settings.flow_control & IRCOMM_ENQ_ACK_IN)
+		ret += sprintf(buf+ret, "ENQ_ACK_IN|");
+	if (self->settings.flow_control & IRCOMM_ENQ_ACK_OUT)
+		ret += sprintf(buf+ret, "ENQ_ACK_OUT|");
+	if (self->settings.flow_control)
+		ret--; /* remove the last | */
+	ret += sprintf(buf+ret, "\n");
 
-	seq_puts(m, "Flags:");
-	sep = ' ';
-	if (self->flags & ASYNC_CTS_FLOW) {
-		seq_printf(m, "%cASYNC_CTS_FLOW", sep);
-		sep = '|';
-	}
-	if (self->flags & ASYNC_CHECK_CD) {
-		seq_printf(m, "%cASYNC_CHECK_CD", sep);
-		sep = '|';
-	}
-	if (self->flags & ASYNC_INITIALIZED) {
-		seq_printf(m, "%cASYNC_INITIALIZED", sep);
-		sep = '|';
-	}
-	if (self->flags & ASYNC_LOW_LATENCY) {
-		seq_printf(m, "%cASYNC_LOW_LATENCY", sep);
-		sep = '|';
-	}
-	if (self->flags & ASYNC_CLOSING) {
-		seq_printf(m, "%cASYNC_CLOSING", sep);
-		sep = '|';
-	}
-	if (self->flags & ASYNC_NORMAL_ACTIVE) {
-		seq_printf(m, "%cASYNC_NORMAL_ACTIVE", sep);
-		sep = '|';
-	}
-	seq_putc(m, '\n');
+	ret += sprintf(buf+ret, "Flags: ");
+	if (self->flags & ASYNC_CTS_FLOW)
+		ret += sprintf(buf+ret, "ASYNC_CTS_FLOW|");
+	if (self->flags & ASYNC_CHECK_CD)
+		ret += sprintf(buf+ret, "ASYNC_CHECK_CD|");
+	if (self->flags & ASYNC_INITIALIZED)
+		ret += sprintf(buf+ret, "ASYNC_INITIALIZED|");
+	if (self->flags & ASYNC_LOW_LATENCY)
+		ret += sprintf(buf+ret, "ASYNC_LOW_LATENCY|");
+	if (self->flags & ASYNC_CLOSING)
+		ret += sprintf(buf+ret, "ASYNC_CLOSING|");
+	if (self->flags & ASYNC_NORMAL_ACTIVE)
+		ret += sprintf(buf+ret, "ASYNC_NORMAL_ACTIVE|");
+	if (self->flags)
+		ret--; /* remove the last | */
+	ret += sprintf(buf+ret, "\n");
 
-	seq_printf(m, "Role: %s\n", self->client ? "client" : "server");
-	seq_printf(m, "Open count: %d\n", self->open_count);
-	seq_printf(m, "Max data size: %d\n", self->max_data_size);
-	seq_printf(m, "Max header size: %d\n", self->max_header_size);
+	ret += sprintf(buf+ret, "Role: %s\n", self->client ?
+		       "client" : "server");
+	ret += sprintf(buf+ret, "Open count: %d\n", self->open_count);
+	ret += sprintf(buf+ret, "Max data size: %d\n", self->max_data_size);
+	ret += sprintf(buf+ret, "Max header size: %d\n", self->max_header_size);
 
 	if (self->tty)
-		seq_printf(m, "Hardware: %s\n",
+		ret += sprintf(buf+ret, "Hardware: %s\n",
 			       self->tty->hw_stopped ? "Stopped" : "Running");
+
+	ret += sprintf(buf+ret, "\n");
+	return ret;
 }
 
-static int ircomm_tty_proc_show(struct seq_file *m, void *v)
+
+/*
+ * Function ircomm_tty_read_proc (buf, start, offset, len, eof, unused)
+ *
+ *
+ *
+ */
+static int ircomm_tty_read_proc(char *buf, char **start, off_t offset, int len,
+				int *eof, void *unused)
 {
 	struct ircomm_tty_cb *self;
+	int count = 0, l;
+	off_t begin = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&ircomm_tty->hb_spinlock, flags);
 
 	self = (struct ircomm_tty_cb *) hashbin_get_first(ircomm_tty);
-	while (self != NULL) {
+	while ((self != NULL) && (count < 4000)) {
 		if (self->magic != IRCOMM_TTY_MAGIC)
 			break;
 
-		ircomm_tty_line_info(self, m);
+		l = ircomm_tty_line_info(self, buf + count);
+		count += l;
+		if (count+begin > offset+len)
+			goto done;
+		if (count+begin < offset) {
+			begin += count;
+			count = 0;
+		}
+
 		self = (struct ircomm_tty_cb *) hashbin_get_next(ircomm_tty);
 	}
+	*eof = 1;
+done:
 	spin_unlock_irqrestore(&ircomm_tty->hb_spinlock, flags);
-	return 0;
-}
 
-static int ircomm_tty_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, ircomm_tty_proc_show, NULL);
+	if (offset >= count+begin)
+		return 0;
+	*start = buf + (offset-begin);
+	return ((len < begin+count-offset) ? len : begin+count-offset);
 }
-
-static const struct file_operations ircomm_tty_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= ircomm_tty_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 #endif /* CONFIG_PROC_FS */
 
 MODULE_AUTHOR("Dag Brattli <dagb@cs.uit.no>");

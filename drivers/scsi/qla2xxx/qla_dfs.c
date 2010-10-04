@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2010 QLogic Corporation
+ * Copyright (c)  2003-2008 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -71,7 +71,7 @@ qla2x00_dfs_fce_open(struct inode *inode, struct file *file)
 
 	mutex_unlock(&ha->fce_mutex);
 out:
-	return single_open(file, qla2x00_dfs_fce_show, vha);
+	return single_open(file, qla2x00_dfs_fce_show, ha);
 }
 
 static int
@@ -145,7 +145,7 @@ create_dir:
 	atomic_inc(&qla2x00_dfs_root_count);
 
 create_nodes:
-	ha->dfs_fce = debugfs_create_file("fce", S_IRUSR, ha->dfs_dir, vha,
+	ha->dfs_fce = debugfs_create_file("fce", S_IRUSR, ha->dfs_dir, ha,
 	    &dfs_fce_ops);
 	if (!ha->dfs_fce) {
 		qla_printk(KERN_NOTICE, ha,

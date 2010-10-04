@@ -16,7 +16,6 @@
 #include <linux/in.h>
 #include <linux/udp.h>
 #include <linux/netfilter.h>
-#include <linux/gfp.h>
 
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_expect.h>
@@ -108,7 +107,7 @@ static int amanda_help(struct sk_buff *skb,
 	dataoff = protoff + sizeof(struct udphdr);
 	if (dataoff >= skb->len) {
 		if (net_ratelimit())
-			printk(KERN_ERR "amanda_help: skblen = %u\n", skb->len);
+			printk("amanda_help: skblen = %u\n", skb->len);
 		return NF_ACCEPT;
 	}
 
@@ -178,7 +177,7 @@ static struct nf_conntrack_helper amanda_helper[2] __read_mostly = {
 		.me			= THIS_MODULE,
 		.help			= amanda_help,
 		.tuple.src.l3num	= AF_INET,
-		.tuple.src.u.udp.port	= cpu_to_be16(10080),
+		.tuple.src.u.udp.port	= __constant_htons(10080),
 		.tuple.dst.protonum	= IPPROTO_UDP,
 		.expect_policy		= &amanda_exp_policy,
 	},
@@ -187,7 +186,7 @@ static struct nf_conntrack_helper amanda_helper[2] __read_mostly = {
 		.me			= THIS_MODULE,
 		.help			= amanda_help,
 		.tuple.src.l3num	= AF_INET6,
-		.tuple.src.u.udp.port	= cpu_to_be16(10080),
+		.tuple.src.u.udp.port	= __constant_htons(10080),
 		.tuple.dst.protonum	= IPPROTO_UDP,
 		.expect_policy		= &amanda_exp_policy,
 	},

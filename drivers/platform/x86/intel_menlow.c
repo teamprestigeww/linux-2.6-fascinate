@@ -30,7 +30,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/pm.h>
@@ -53,15 +52,13 @@ MODULE_LICENSE("GPL");
 #define MEMORY_ARG_CUR_BANDWIDTH 1
 #define MEMORY_ARG_MAX_BANDWIDTH 0
 
-static void intel_menlow_unregister_sensor(void);
-
 /*
  * GTHS returning 'n' would mean that [0,n-1] states are supported
  * In that case max_cstate would be n-1
  * GTHS returning '0' would mean that no bandwidth control states are supported
  */
-static int memory_get_max_bandwidth(struct thermal_cooling_device *cdev,
-				    unsigned long *max_state)
+static int memory_get_int_max_bandwidth(struct thermal_cooling_device *cdev,
+					unsigned long *max_state)
 {
 	struct acpi_device *device = cdev->devdata;
 	acpi_handle handle = device->handle;
@@ -86,12 +83,22 @@ static int memory_get_max_bandwidth(struct thermal_cooling_device *cdev,
 	return 0;
 }
 
+static int memory_get_max_bandwidth(struct thermal_cooling_device *cdev,
+				    char *buf)
+{
+	unsigned long value;
+	if (memory_get_int_max_bandwidth(cdev, &value))
+		return -EINVAL;
+
+	return sprintf(buf, "%ld\n", value);
+}
+
 static int memory_get_cur_bandwidth(struct thermal_cooling_device *cdev,
-				    unsigned long *value)
+				    char *buf)
 {
 	struct acpi_device *device = cdev->devdata;
 	acpi_handle handle = device->handle;
-	unsigned long long result;
+	unsigned long long value;
 	struct acpi_object_list arg_list;
 	union acpi_object arg;
 	acpi_status status = AE_OK;
@@ -101,16 +108,15 @@ static int memory_get_cur_bandwidth(struct thermal_cooling_device *cdev,
 	arg.type = ACPI_TYPE_INTEGER;
 	arg.integer.value = MEMORY_ARG_CUR_BANDWIDTH;
 	status = acpi_evaluate_integer(handle, MEMORY_GET_BANDWIDTH,
-				       &arg_list, &result);
+				       &arg_list, &value);
 	if (ACPI_FAILURE(status))
 		return -EFAULT;
 
-	*value = result;
-	return 0;
+	return sprintf(buf, "%llu\n", value);
 }
 
 static int memory_set_cur_bandwidth(struct thermal_cooling_device *cdev,
-				    unsigned long state)
+				    unsigned int state)
 {
 	struct acpi_device *device = cdev->devdata;
 	acpi_handle handle = device->handle;
@@ -120,7 +126,7 @@ static int memory_set_cur_bandwidth(struct thermal_cooling_device *cdev,
 	unsigned long long temp;
 	unsigned long max_state;
 
-	if (memory_get_max_bandwidth(cdev, &max_state))
+	if (memory_get_int_max_bandwidth(cdev, &max_state))
 		return -EFAULT;
 
 	if (state > max_state)
@@ -136,7 +142,7 @@ static int memory_set_cur_bandwidth(struct thermal_cooling_device *cdev,
 				  &temp);
 
 	printk(KERN_INFO
-	       "Bandwidth value was %ld: status is %d\n", state, status);
+	       "Bandwidth value was %d: status is %d\n", state, status);
 	if (ACPI_FAILURE(status))
 		return -EFAULT;
 
@@ -399,7 +405,6 @@ static int intel_menlow_add_one_attribute(char *name, int mode, void *show,
 	if (!attr)
 		return -ENOMEM;
 
-	sysfs_attr_init(&attr->attr.attr); /* That is consistent naming :D */
 	attr->attr.attr.name = name;
 	attr->attr.attr.mode = mode;
 	attr->attr.show = show;
@@ -408,10 +413,8 @@ static int intel_menlow_add_one_attribute(char *name, int mode, void *show,
 	attr->handle = handle;
 
 	result = device_create_file(dev, &attr->attr);
-	if (result) {
-		kfree(attr);
+	if (result)
 		return result;
-	}
 
 	mutex_lock(&intel_menlow_attr_lock);
 	list_add_tail(&attr->node, &intel_menlow_attr_list);
@@ -435,11 +438,11 @@ static acpi_status intel_menlow_register_sensor(acpi_handle handle, u32 lvl,
 	/* _TZ must have the AUX0/1 methods */
 	status = acpi_get_handle(handle, GET_AUX0, &dummy);
 	if (ACPI_FAILURE(status))
-		return (status == AE_NOT_FOUND) ? AE_OK : status;
+		goto not_found;
 
 	status = acpi_get_handle(handle, SET_AUX0, &dummy);
 	if (ACPI_FAILURE(status))
-		return (status == AE_NOT_FOUND) ? AE_OK : status;
+		goto not_found;
 
 	result = intel_menlow_add_one_attribute("aux0", 0644,
 						aux0_show, aux0_store,
@@ -449,19 +452,17 @@ static acpi_status intel_menlow_register_sensor(acpi_handle handle, u32 lvl,
 
 	status = acpi_get_handle(handle, GET_AUX1, &dummy);
 	if (ACPI_FAILURE(status))
-		goto aux1_not_found;
+		goto not_found;
 
 	status = acpi_get_handle(handle, SET_AUX1, &dummy);
 	if (ACPI_FAILURE(status))
-		goto aux1_not_found;
+		goto not_found;
 
 	result = intel_menlow_add_one_attribute("aux1", 0644,
 						aux1_show, aux1_store,
 						&thermal->device, handle);
-	if (result) {
-		intel_menlow_unregister_sensor();
+	if (result)
 		return AE_ERROR;
-	}
 
 	/*
 	 * create the "dabney_enabled" attribute which means the user app
@@ -471,17 +472,14 @@ static acpi_status intel_menlow_register_sensor(acpi_handle handle, u32 lvl,
 	result = intel_menlow_add_one_attribute("bios_enabled", 0444,
 						bios_enabled_show, NULL,
 						&thermal->device, handle);
-	if (result) {
-		intel_menlow_unregister_sensor();
+	if (result)
 		return AE_ERROR;
-	}
 
- aux1_not_found:
+ not_found:
 	if (status == AE_NOT_FOUND)
 		return AE_OK;
-
-	intel_menlow_unregister_sensor();
-	return status;
+	else
+		return status;
 }
 
 static void intel_menlow_unregister_sensor(void)
@@ -521,11 +519,9 @@ static int __init intel_menlow_module_init(void)
 	/* Looking for sensors in each ACPI thermal zone */
 	status = acpi_walk_namespace(ACPI_TYPE_THERMAL, ACPI_ROOT_OBJECT,
 				     ACPI_UINT32_MAX,
-				     intel_menlow_register_sensor, NULL, NULL, NULL);
-	if (ACPI_FAILURE(status)) {
-		acpi_bus_unregister_driver(&intel_menlow_memory_driver);
+				     intel_menlow_register_sensor, NULL, NULL);
+	if (ACPI_FAILURE(status))
 		return -ENODEV;
-	}
 
 	return 0;
 }

@@ -31,14 +31,10 @@
     nForce3 250Gb MCP		00E4
     nForce4 MCP			0052
     nForce4 MCP-04		0034
-    nForce MCP51		0264
-    nForce MCP55		0368
+    nForce4 MCP51		0264
+    nForce4 MCP55		0368
     nForce MCP61		03EB
     nForce MCP65		0446
-    nForce MCP67		0542
-    nForce MCP73		07D8
-    nForce MCP78S		0752
-    nForce MCP79		0AA2
 
     This driver supports the 2 SMBuses that are included in the MCP of the
     nForce2/3/4/5xx chipsets.
@@ -56,8 +52,7 @@
 #include <linux/delay.h>
 #include <linux/dmi.h>
 #include <linux/acpi.h>
-#include <linux/slab.h>
-#include <linux/io.h>
+#include <asm/io.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR ("Hans-Frieder Vogt <hfvogt@gmx.net>");
@@ -174,7 +169,7 @@ static int nforce2_check_status(struct i2c_adapter *adap)
 		temp = inb_p(NVIDIA_SMB_STS);
 	} while ((!temp) && (timeout++ < MAX_TIMEOUT));
 
-	if (timeout > MAX_TIMEOUT) {
+	if (timeout >= MAX_TIMEOUT) {
 		dev_dbg(&adap->dev, "SMBus Timeout!\n");
 		if (smbus->can_abort)
 			nforce2_abort(adap);
@@ -309,7 +304,7 @@ static struct i2c_algorithm smbus_algorithm = {
 };
 
 
-static const struct pci_device_id nforce2_ids[] = {
+static struct pci_device_id nforce2_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE2_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE2S_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE3_SMBUS) },
@@ -320,10 +315,6 @@ static const struct pci_device_id nforce2_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP55_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP61_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP65_SMBUS) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP67_SMBUS) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP73_SMBUS) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP78S_SMBUS) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP79_SMBUS) },
 	{ 0 }
 };
 
@@ -404,9 +395,10 @@ static int __devinit nforce2_probe(struct pci_dev *dev, const struct pci_device_
 
 	/* SMBus adapter 1 */
 	res1 = nforce2_probe_smb(dev, 4, NFORCE_PCI_SMB1, &smbuses[0], "SMB1");
-	if (res1 < 0)
+	if (res1 < 0) {
+		dev_err(&dev->dev, "Error probing SMB1.\n");
 		smbuses[0].base = 0;	/* to have a check value */
-
+	}
 	/* SMBus adapter 2 */
 	if (dmi_check_system(nforce2_dmi_blacklist2)) {
 		dev_err(&dev->dev, "Disabling SMB2 for safety reasons.\n");
@@ -415,10 +407,11 @@ static int __devinit nforce2_probe(struct pci_dev *dev, const struct pci_device_
 	} else {
 		res2 = nforce2_probe_smb(dev, 5, NFORCE_PCI_SMB2, &smbuses[1],
 					 "SMB2");
-		if (res2 < 0)
+		if (res2 < 0) {
+			dev_err(&dev->dev, "Error probing SMB2.\n");
 			smbuses[1].base = 0;	/* to have a check value */
+		}
 	}
-
 	if ((res1 < 0) && (res2 < 0)) {
 		/* we did not find even one of the SMBuses, so we give up */
 		kfree(smbuses);

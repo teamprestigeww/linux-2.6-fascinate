@@ -39,6 +39,7 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
+#include <linux/ipmi_smi.h>
 
 /* This files describes the interface for IPMI system management interface
    drivers to bind into the IPMI message handler. */
@@ -229,6 +230,6 @@ static inline void ipmi_free_smi_msg(struct ipmi_smi_msg *msg)
    automatically be dstroyed when the interface is destroyed. */
 int ipmi_smi_add_proc_entry(ipmi_smi_t smi, char *name,
 			    read_proc_t *read_proc,
-			    void *data);
+			    void *data, struct module *owner);
 
 #endif /* __LINUX_IPMI_SMI_H */

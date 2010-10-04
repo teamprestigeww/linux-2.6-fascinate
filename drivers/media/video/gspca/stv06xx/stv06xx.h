@@ -30,12 +30,15 @@
 #ifndef STV06XX_H_
 #define STV06XX_H_
 
-#include <linux/slab.h>
 #include "gspca.h"
 
 #define MODULE_NAME "STV06xx"
 
 #define STV_ISOC_ENDPOINT_ADDR		0x81
+
+#ifndef V4L2_PIX_FMT_SGRBG8
+#define V4L2_PIX_FMT_SGRBG8 v4l2_fourcc('G', 'R', 'B', 'G')
+#endif
 
 #define STV_REG23 			0x0423
 

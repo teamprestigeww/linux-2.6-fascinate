@@ -31,7 +31,8 @@ static ssize_t show_status(struct device *dev, struct device_attribute *attr,
 	char *s = out;
 	int i = 0;
 
-	BUG_ON(!the_controller || !out);
+	if (!the_controller || !out)
+		BUG();
 
 	spin_lock(&the_controller->lock);
 
@@ -80,7 +81,7 @@ static int vhci_port_disconnect(__u32 rhport)
 {
 	struct vhci_device *vdev;
 
-	usbip_dbg_vhci_sysfs("enter\n");
+	dbg_vhci_sysfs("enter\n");
 
 	/* lock */
 	spin_lock(&the_controller->lock);
@@ -89,7 +90,7 @@ static int vhci_port_disconnect(__u32 rhport)
 
 	spin_lock(&vdev->ud.lock);
 	if (vdev->ud.status == VDEV_ST_NULL) {
-		usbip_uerr("not connected %d\n", vdev->ud.status);
+		uerr("not connected %d\n", vdev->ud.status);
 
 		/* unlock */
 		spin_unlock(&vdev->ud.lock);
@@ -117,7 +118,7 @@ static ssize_t store_detach(struct device *dev, struct device_attribute *attr,
 
 	/* check rhport */
 	if (rhport >= VHCI_NPORTS) {
-		usbip_uerr("invalid port %u\n", rhport);
+		uerr("invalid port %u\n", rhport);
 		return -EINVAL;
 	}
 
@@ -125,7 +126,7 @@ static ssize_t store_detach(struct device *dev, struct device_attribute *attr,
 	if (err < 0)
 		return -EINVAL;
 
-	usbip_dbg_vhci_sysfs("Leave\n");
+	dbg_vhci_sysfs("Leave\n");
 	return count;
 }
 static DEVICE_ATTR(detach, S_IWUSR, NULL, store_detach);
@@ -135,7 +136,7 @@ static int valid_args(__u32 rhport, enum usb_device_speed speed)
 {
 	/* check rhport */
 	if ((rhport < 0) || (rhport >= VHCI_NPORTS)) {
-		usbip_uerr("port %u\n", rhport);
+		uerr("port %u\n", rhport);
 		return -EINVAL;
 	}
 
@@ -144,10 +145,10 @@ static int valid_args(__u32 rhport, enum usb_device_speed speed)
 	case USB_SPEED_LOW:
 	case USB_SPEED_FULL:
 	case USB_SPEED_HIGH:
-	case USB_SPEED_WIRELESS:
+	case USB_SPEED_VARIABLE:
 		break;
 	default:
-		usbip_uerr("speed %d\n", speed);
+		uerr("speed %d\n", speed);
 		return -EINVAL;
 	}
 
@@ -181,8 +182,8 @@ static ssize_t store_attach(struct device *dev, struct device_attribute *attr,
 	 */
 	sscanf(buf, "%u %u %u %u", &rhport, &sockfd, &devid, &speed);
 
-	usbip_dbg_vhci_sysfs("rhport(%u) sockfd(%u) devid(%u) speed(%u)\n",
-				rhport, sockfd, devid, speed);
+	dbg_vhci_sysfs("rhport(%u) sockfd(%u) devid(%u) speed(%u)\n",
+			rhport, sockfd, devid, speed);
 
 
 	/* check received parameters */
@@ -208,12 +209,12 @@ static ssize_t store_attach(struct device *dev, struct device_attribute *attr,
 		spin_unlock(&vdev->ud.lock);
 		spin_unlock(&the_controller->lock);
 
-		usbip_uerr("port %d already used\n", rhport);
+		uerr("port %d already used\n", rhport);
 		return -EINVAL;
 	}
 
-	usbip_uinfo("rhport(%u) sockfd(%d) devid(%u) speed(%u)\n",
-				rhport, sockfd, devid, speed);
+	uinfo("rhport(%u) sockfd(%d) devid(%u) speed(%u)\n",
+			rhport, sockfd, devid, speed);
 
 	vdev->devid         = devid;
 	vdev->speed         = speed;

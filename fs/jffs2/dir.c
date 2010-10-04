@@ -2,7 +2,6 @@
  * JFFS2 -- Journalling Flash File System, Version 2.
  *
  * Copyright © 2001-2007 Red Hat, Inc.
- * Copyright © 2004-2010 David Woodhouse <dwmw2@infradead.org>
  *
  * Created by David Woodhouse <dwmw2@infradead.org>
  *
@@ -56,7 +55,7 @@ const struct inode_operations jffs2_dir_inode_operations =
 	.rmdir =	jffs2_rmdir,
 	.mknod =	jffs2_mknod,
 	.rename =	jffs2_rename,
-	.check_acl =	jffs2_check_acl,
+	.permission =	jffs2_permission,
 	.setattr =	jffs2_setattr,
 	.setxattr =	jffs2_setxattr,
 	.getxattr =	jffs2_getxattr,
@@ -223,17 +222,16 @@ static int jffs2_create(struct inode *dir_i, struct dentry *dentry, int mode,
 	dir_i->i_mtime = dir_i->i_ctime = ITIME(je32_to_cpu(ri->ctime));
 
 	jffs2_free_raw_inode(ri);
+	d_instantiate(dentry, inode);
 
 	D1(printk(KERN_DEBUG "jffs2_create: Created ino #%lu with mode %o, nlink %d(%d). nrpages %ld\n",
 		  inode->i_ino, inode->i_mode, inode->i_nlink,
 		  f->inocache->pino_nlink, inode->i_mapping->nrpages));
-
-	d_instantiate(dentry, inode);
-	unlock_new_inode(inode);
 	return 0;
 
  fail:
-	iget_failed(inode);
+	make_bad_inode(inode);
+	iput(inode);
 	jffs2_free_raw_inode(ri);
 	return ret;
 }
@@ -362,8 +360,8 @@ static int jffs2_symlink (struct inode *dir_i, struct dentry *dentry, const char
 		/* Eeek. Wave bye bye */
 		mutex_unlock(&f->sem);
 		jffs2_complete_reservation(c);
-		ret = PTR_ERR(fn);
-		goto fail;
+		jffs2_clear_inode(inode);
+		return PTR_ERR(fn);
 	}
 
 	/* We use f->target field to store the target path. */
@@ -372,8 +370,8 @@ static int jffs2_symlink (struct inode *dir_i, struct dentry *dentry, const char
 		printk(KERN_WARNING "Can't allocate %d bytes of memory\n", targetlen + 1);
 		mutex_unlock(&f->sem);
 		jffs2_complete_reservation(c);
-		ret = -ENOMEM;
-		goto fail;
+		jffs2_clear_inode(inode);
+		return -ENOMEM;
 	}
 
 	memcpy(f->target, target, targetlen + 1);
@@ -388,24 +386,30 @@ static int jffs2_symlink (struct inode *dir_i, struct dentry *dentry, const char
 	jffs2_complete_reservation(c);
 
 	ret = jffs2_init_security(inode, dir_i);
-	if (ret)
-		goto fail;
-
+	if (ret) {
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 	ret = jffs2_init_acl_post(inode);
-	if (ret)
-		goto fail;
+	if (ret) {
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 
 	ret = jffs2_reserve_space(c, sizeof(*rd)+namelen, &alloclen,
 				  ALLOC_NORMAL, JFFS2_SUMMARY_DIRENT_SIZE(namelen));
-	if (ret)
-		goto fail;
+	if (ret) {
+		/* Eep. */
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 
 	rd = jffs2_alloc_raw_dirent();
 	if (!rd) {
 		/* Argh. Now we treat it like a normal delete */
 		jffs2_complete_reservation(c);
-		ret = -ENOMEM;
-		goto fail;
+		jffs2_clear_inode(inode);
+		return -ENOMEM;
 	}
 
 	dir_f = JFFS2_INODE_INFO(dir_i);
@@ -433,8 +437,8 @@ static int jffs2_symlink (struct inode *dir_i, struct dentry *dentry, const char
 		jffs2_complete_reservation(c);
 		jffs2_free_raw_dirent(rd);
 		mutex_unlock(&dir_f->sem);
-		ret = PTR_ERR(fd);
-		goto fail;
+		jffs2_clear_inode(inode);
+		return PTR_ERR(fd);
 	}
 
 	dir_i->i_mtime = dir_i->i_ctime = ITIME(je32_to_cpu(rd->mctime));
@@ -449,12 +453,7 @@ static int jffs2_symlink (struct inode *dir_i, struct dentry *dentry, const char
 	jffs2_complete_reservation(c);
 
 	d_instantiate(dentry, inode);
-	unlock_new_inode(inode);
 	return 0;
-
- fail:
-	iget_failed(inode);
-	return ret;
 }
 
 
@@ -520,8 +519,8 @@ static int jffs2_mkdir (struct inode *dir_i, struct dentry *dentry, int mode)
 		/* Eeek. Wave bye bye */
 		mutex_unlock(&f->sem);
 		jffs2_complete_reservation(c);
-		ret = PTR_ERR(fn);
-		goto fail;
+		jffs2_clear_inode(inode);
+		return PTR_ERR(fn);
 	}
 	/* No data here. Only a metadata node, which will be
 	   obsoleted by the first data write
@@ -532,24 +531,30 @@ static int jffs2_mkdir (struct inode *dir_i, struct dentry *dentry, int mode)
 	jffs2_complete_reservation(c);
 
 	ret = jffs2_init_security(inode, dir_i);
-	if (ret)
-		goto fail;
-
+	if (ret) {
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 	ret = jffs2_init_acl_post(inode);
-	if (ret)
-		goto fail;
+	if (ret) {
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 
 	ret = jffs2_reserve_space(c, sizeof(*rd)+namelen, &alloclen,
 				  ALLOC_NORMAL, JFFS2_SUMMARY_DIRENT_SIZE(namelen));
-	if (ret)
-		goto fail;
+	if (ret) {
+		/* Eep. */
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 
 	rd = jffs2_alloc_raw_dirent();
 	if (!rd) {
 		/* Argh. Now we treat it like a normal delete */
 		jffs2_complete_reservation(c);
-		ret = -ENOMEM;
-		goto fail;
+		jffs2_clear_inode(inode);
+		return -ENOMEM;
 	}
 
 	dir_f = JFFS2_INODE_INFO(dir_i);
@@ -577,8 +582,8 @@ static int jffs2_mkdir (struct inode *dir_i, struct dentry *dentry, int mode)
 		jffs2_complete_reservation(c);
 		jffs2_free_raw_dirent(rd);
 		mutex_unlock(&dir_f->sem);
-		ret = PTR_ERR(fd);
-		goto fail;
+		jffs2_clear_inode(inode);
+		return PTR_ERR(fd);
 	}
 
 	dir_i->i_mtime = dir_i->i_ctime = ITIME(je32_to_cpu(rd->mctime));
@@ -594,12 +599,7 @@ static int jffs2_mkdir (struct inode *dir_i, struct dentry *dentry, int mode)
 	jffs2_complete_reservation(c);
 
 	d_instantiate(dentry, inode);
-	unlock_new_inode(inode);
 	return 0;
-
- fail:
-	iget_failed(inode);
-	return ret;
 }
 
 static int jffs2_rmdir (struct inode *dir_i, struct dentry *dentry)
@@ -693,8 +693,8 @@ static int jffs2_mknod (struct inode *dir_i, struct dentry *dentry, int mode, de
 		/* Eeek. Wave bye bye */
 		mutex_unlock(&f->sem);
 		jffs2_complete_reservation(c);
-		ret = PTR_ERR(fn);
-		goto fail;
+		jffs2_clear_inode(inode);
+		return PTR_ERR(fn);
 	}
 	/* No data here. Only a metadata node, which will be
 	   obsoleted by the first data write
@@ -705,24 +705,30 @@ static int jffs2_mknod (struct inode *dir_i, struct dentry *dentry, int mode, de
 	jffs2_complete_reservation(c);
 
 	ret = jffs2_init_security(inode, dir_i);
-	if (ret)
-		goto fail;
-
+	if (ret) {
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 	ret = jffs2_init_acl_post(inode);
-	if (ret)
-		goto fail;
+	if (ret) {
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 
 	ret = jffs2_reserve_space(c, sizeof(*rd)+namelen, &alloclen,
 				  ALLOC_NORMAL, JFFS2_SUMMARY_DIRENT_SIZE(namelen));
-	if (ret)
-		goto fail;
+	if (ret) {
+		/* Eep. */
+		jffs2_clear_inode(inode);
+		return ret;
+	}
 
 	rd = jffs2_alloc_raw_dirent();
 	if (!rd) {
 		/* Argh. Now we treat it like a normal delete */
 		jffs2_complete_reservation(c);
-		ret = -ENOMEM;
-		goto fail;
+		jffs2_clear_inode(inode);
+		return -ENOMEM;
 	}
 
 	dir_f = JFFS2_INODE_INFO(dir_i);
@@ -753,8 +759,8 @@ static int jffs2_mknod (struct inode *dir_i, struct dentry *dentry, int mode, de
 		jffs2_complete_reservation(c);
 		jffs2_free_raw_dirent(rd);
 		mutex_unlock(&dir_f->sem);
-		ret = PTR_ERR(fd);
-		goto fail;
+		jffs2_clear_inode(inode);
+		return PTR_ERR(fd);
 	}
 
 	dir_i->i_mtime = dir_i->i_ctime = ITIME(je32_to_cpu(rd->mctime));
@@ -769,12 +775,8 @@ static int jffs2_mknod (struct inode *dir_i, struct dentry *dentry, int mode, de
 	jffs2_complete_reservation(c);
 
 	d_instantiate(dentry, inode);
-	unlock_new_inode(inode);
-	return 0;
 
- fail:
-	iget_failed(inode);
-	return ret;
+	return 0;
 }
 
 static int jffs2_rename (struct inode *old_dir_i, struct dentry *old_dentry,

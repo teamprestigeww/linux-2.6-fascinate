@@ -46,8 +46,8 @@ int file_write_dep(const char *name)
 		else
 			fprintf(out, "\t%s\n", file->name);
 	}
-	fprintf(out, "\n%s: \\\n"
-		     "\t$(deps_config)\n\n", conf_get_autoconfig_name());
+	fprintf(out, "\ninclude/config/auto.conf: \\\n"
+		     "\t$(deps_config)\n\n");
 
 	expr_list_for_each_sym(sym_env_list, e, sym) {
 		struct property *prop;
@@ -61,7 +61,7 @@ int file_write_dep(const char *name)
 		if (!value)
 			value = "";
 		fprintf(out, "ifneq \"$(%s)\" \"%s\"\n", env_sym->name, value);
-		fprintf(out, "%s: FORCE\n", conf_get_autoconfig_name());
+		fprintf(out, "include/config/auto.conf: FORCE\n");
 		fprintf(out, "endif\n");
 	}
 
@@ -72,13 +72,12 @@ int file_write_dep(const char *name)
 }
 
 
-/* Allocate initial growable string */
+/* Allocate initial growable sting */
 struct gstr str_new(void)
 {
 	struct gstr gs;
 	gs.s = malloc(sizeof(char) * 64);
 	gs.len = 64;
-	gs.max_width = 0;
 	strcpy(gs.s, "\0");
 	return gs;
 }
@@ -89,7 +88,6 @@ struct gstr str_assign(const char *s)
 	struct gstr gs;
 	gs.s = strdup(s);
 	gs.len = strlen(s) + 1;
-	gs.max_width = 0;
 	return gs;
 }
 

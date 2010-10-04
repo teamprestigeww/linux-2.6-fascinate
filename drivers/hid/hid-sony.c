@@ -19,7 +19,6 @@
 #include <linux/device.h>
 #include <linux/hid.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/usb.h>
 
 #include "hid-ids.h"
@@ -49,7 +48,7 @@ static void sony_report_fixup(struct hid_device *hdev, __u8 *rdesc,
  * to "operational".  Without this, the ps3 controller will not report any
  * events.
  */
-static int sony_set_operational_usb(struct hid_device *hdev)
+static int sony_set_operational(struct hid_device *hdev)
 {
 	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
 	struct usb_device *dev = interface_to_usbdev(intf);
@@ -74,12 +73,6 @@ static int sony_set_operational_usb(struct hid_device *hdev)
 	return ret;
 }
 
-static int sony_set_operational_bt(struct hid_device *hdev)
-{
-	unsigned char buf[] = { 0xf4,  0x42, 0x03, 0x00, 0x00 };
-	return hdev->hid_output_raw_report(hdev, buf, sizeof(buf), HID_FEATURE_REPORT);
-}
-
 static int sony_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret;
@@ -88,7 +81,7 @@ static int sony_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 	sc = kzalloc(sizeof(*sc), GFP_KERNEL);
 	if (sc == NULL) {
-		dev_err(&hdev->dev, "can't alloc sony descriptor\n");
+		dev_err(&hdev->dev, "can't alloc apple descriptor\n");
 		return -ENOMEM;
 	}
 
@@ -108,17 +101,7 @@ static int sony_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		goto err_free;
 	}
 
-	switch (hdev->bus) {
-	case BUS_USB:
-		ret = sony_set_operational_usb(hdev);
-		break;
-	case BUS_BLUETOOTH:
-		ret = sony_set_operational_bt(hdev);
-		break;
-	default:
-		ret = 0;
-	}
-
+	ret = sony_set_operational(hdev);
 	if (ret < 0)
 		goto err_stop;
 
@@ -138,7 +121,6 @@ static void sony_remove(struct hid_device *hdev)
 
 static const struct hid_device_id sony_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS3_CONTROLLER) },
-	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS3_CONTROLLER) },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_VAIO_VGX_MOUSE),
 		.driver_data = VAIO_RDESC_CONSTANT },
 	{ }
@@ -153,12 +135,12 @@ static struct hid_driver sony_driver = {
 	.report_fixup = sony_report_fixup,
 };
 
-static int __init sony_init(void)
+static int sony_init(void)
 {
 	return hid_register_driver(&sony_driver);
 }
 
-static void __exit sony_exit(void)
+static void sony_exit(void)
 {
 	hid_unregister_driver(&sony_driver);
 }
@@ -166,3 +148,5 @@ static void __exit sony_exit(void)
 module_init(sony_init);
 module_exit(sony_exit);
 MODULE_LICENSE("GPL");
+
+HID_COMPAT_LOAD_DRIVER(sony);

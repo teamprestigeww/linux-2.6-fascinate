@@ -92,8 +92,8 @@ static inline void measure_rtt(struct sock *sk, u32 srtt)
 	if (icsk->icsk_ca_state == TCP_CA_Open) {
 		if (ca->maxRTT < ca->minRTT)
 			ca->maxRTT = ca->minRTT;
-		if (ca->maxRTT < srtt &&
-		    srtt <= ca->maxRTT + msecs_to_jiffies(20))
+		if (ca->maxRTT < srtt
+		    && srtt <= ca->maxRTT + msecs_to_jiffies(20))
 			ca->maxRTT = srtt;
 	}
 }
@@ -115,7 +115,8 @@ static void measure_achieved_throughput(struct sock *sk, u32 pkts_acked, s32 rtt
 		return;
 
 	/* achieved throughput calculations */
-	if (!((1 << icsk->icsk_ca_state) & (TCPF_CA_Open | TCPF_CA_Disorder))) {
+	if (icsk->icsk_ca_state != TCP_CA_Open &&
+	    icsk->icsk_ca_state != TCP_CA_Disorder) {
 		ca->packetcount = 0;
 		ca->lasttime = now;
 		return;
@@ -123,9 +124,9 @@ static void measure_achieved_throughput(struct sock *sk, u32 pkts_acked, s32 rtt
 
 	ca->packetcount += pkts_acked;
 
-	if (ca->packetcount >= tp->snd_cwnd - (ca->alpha >> 7 ? : 1) &&
-	    now - ca->lasttime >= ca->minRTT &&
-	    ca->minRTT > 0) {
+	if (ca->packetcount >= tp->snd_cwnd - (ca->alpha >> 7 ? : 1)
+	    && now - ca->lasttime >= ca->minRTT
+	    && ca->minRTT > 0) {
 		__u32 cur_Bi = ca->packetcount * HZ / (now - ca->lasttime);
 
 		if (htcp_ccount(ca) <= 3) {

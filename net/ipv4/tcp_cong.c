@@ -10,7 +10,6 @@
 #include <linux/mm.h>
 #include <linux/types.h>
 #include <linux/list.h>
-#include <linux/gfp.h>
 #include <net/tcp.h>
 
 int sysctl_tcp_max_ssthresh = 0;
@@ -117,7 +116,7 @@ int tcp_set_default_congestion_control(const char *name)
 	spin_lock(&tcp_cong_list_lock);
 	ca = tcp_ca_find(name);
 #ifdef CONFIG_MODULES
-	if (!ca && capable(CAP_NET_ADMIN)) {
+	if (!ca && capable(CAP_SYS_MODULE)) {
 		spin_unlock(&tcp_cong_list_lock);
 
 		request_module("tcp_%s", name);
@@ -196,10 +195,10 @@ void tcp_get_allowed_congestion_control(char *buf, size_t maxlen)
 int tcp_set_allowed_congestion_control(char *val)
 {
 	struct tcp_congestion_ops *ca;
-	char *saved_clone, *clone, *name;
+	char *clone, *name;
 	int ret = 0;
 
-	saved_clone = clone = kstrdup(val, GFP_USER);
+	clone = kstrdup(val, GFP_USER);
 	if (!clone)
 		return -ENOMEM;
 
@@ -226,7 +225,6 @@ int tcp_set_allowed_congestion_control(char *val)
 	}
 out:
 	spin_unlock(&tcp_cong_list_lock);
-	kfree(saved_clone);
 
 	return ret;
 }
@@ -248,7 +246,7 @@ int tcp_set_congestion_control(struct sock *sk, const char *name)
 
 #ifdef CONFIG_MODULES
 	/* not found attempt to autoload module */
-	if (!ca && capable(CAP_NET_ADMIN)) {
+	if (!ca && capable(CAP_SYS_MODULE)) {
 		rcu_read_unlock();
 		request_module("tcp_%s", name);
 		rcu_read_lock();
@@ -338,19 +336,6 @@ void tcp_slow_start(struct tcp_sock *tp)
 }
 EXPORT_SYMBOL_GPL(tcp_slow_start);
 
-/* In theory this is tp->snd_cwnd += 1 / tp->snd_cwnd (or alternative w) */
-void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w)
-{
-	if (tp->snd_cwnd_cnt >= w) {
-		if (tp->snd_cwnd < tp->snd_cwnd_clamp)
-			tp->snd_cwnd++;
-		tp->snd_cwnd_cnt = 0;
-	} else {
-		tp->snd_cwnd_cnt++;
-	}
-}
-EXPORT_SYMBOL_GPL(tcp_cong_avoid_ai);
-
 /*
  * TCP Reno congestion control
  * This is special case used for fallback as well.
@@ -380,7 +365,13 @@ void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 				tp->snd_cwnd++;
 		}
 	} else {
-		tcp_cong_avoid_ai(tp, tp->snd_cwnd);
+		/* In theory this is tp->snd_cwnd += 1 / tp->snd_cwnd */
+		if (tp->snd_cwnd_cnt >= tp->snd_cwnd) {
+			if (tp->snd_cwnd < tp->snd_cwnd_clamp)
+				tp->snd_cwnd++;
+			tp->snd_cwnd_cnt = 0;
+		} else
+			tp->snd_cwnd_cnt++;
 	}
 }
 EXPORT_SYMBOL_GPL(tcp_reno_cong_avoid);

@@ -39,7 +39,6 @@
 #include <linux/pci_ids.h>
 #include <linux/pm.h>
 #include <linux/skbuff.h>
-#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/tcp.h>
@@ -64,7 +63,7 @@ MODULE_VERSION(ATL2_DRV_VERSION);
 /*
  * atl2_pci_tbl - PCI Device ID Table
  */
-static DEFINE_PCI_DEVICE_TABLE(atl2_pci_tbl) = {
+static struct pci_device_id atl2_pci_tbl[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_ATTANSIC, PCI_DEVICE_ID_ATTANSIC_L2)},
 	/* required last entry */
 	{0,}
@@ -136,7 +135,7 @@ static void atl2_set_multi(struct net_device *netdev)
 {
 	struct atl2_adapter *adapter = netdev_priv(netdev);
 	struct atl2_hw *hw = &adapter->hw;
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *mc_ptr;
 	u32 rctl;
 	u32 hash_value;
 
@@ -158,8 +157,8 @@ static void atl2_set_multi(struct net_device *netdev)
 	ATL2_WRITE_REG_ARRAY(hw, REG_RX_HASH_TABLE, 1, 0);
 
 	/* comoute mc addresses' hash value ,and put it into hash table */
-	netdev_for_each_mc_addr(ha, netdev) {
-		hash_value = atl2_hash_mc_addr(hw, ha->addr);
+	for (mc_ptr = netdev->mc_list; mc_ptr; mc_ptr = mc_ptr->next) {
+		hash_value = atl2_hash_mc_addr(hw, mc_ptr->dmi_addr);
 		atl2_hash_set(hw, hash_value);
 	}
 }
@@ -410,7 +409,7 @@ static void atl2_intr_rx(struct atl2_adapter *adapter)
 		if (rxd->status.ok && rxd->status.pkt_size >= 60) {
 			int rx_size = (int)(rxd->status.pkt_size - 4);
 			/* alloc new buffer */
-			skb = netdev_alloc_skb_ip_align(netdev, rx_size);
+			skb = netdev_alloc_skb(netdev, rx_size + NET_IP_ALIGN);
 			if (NULL == skb) {
 				printk(KERN_WARNING
 					"%s: Mem squeeze, deferring packet.\n",
@@ -422,6 +421,8 @@ static void atl2_intr_rx(struct atl2_adapter *adapter)
 				netdev->stats.rx_dropped++;
 				break;
 			}
+			skb_reserve(skb, NET_IP_ALIGN);
+			skb->dev = netdev;
 			memcpy(skb->data, rxd->packet, rx_size);
 			skb_put(skb, rx_size);
 			skb->protocol = eth_type_trans(skb, netdev);
@@ -651,7 +652,7 @@ static int atl2_request_irq(struct atl2_adapter *adapter)
 	if (adapter->have_msi)
 		flags &= ~IRQF_SHARED;
 
-	return request_irq(adapter->pdev->irq, atl2_intr, flags, netdev->name,
+	return request_irq(adapter->pdev->irq, &atl2_intr, flags, netdev->name,
 		netdev);
 }
 
@@ -820,8 +821,7 @@ static inline int TxdFreeBytes(struct atl2_adapter *adapter)
 		(int) (txd_read_ptr - adapter->txd_write_ptr - 1);
 }
 
-static netdev_tx_t atl2_xmit_frame(struct sk_buff *skb,
-					 struct net_device *netdev)
+static int atl2_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct atl2_adapter *adapter = netdev_priv(netdev);
 	struct tx_pkt_header *txph;
@@ -892,6 +892,7 @@ static netdev_tx_t atl2_xmit_frame(struct sk_buff *skb,
 		(adapter->txd_write_ptr >> 2));
 
 	mmiowb();
+	netdev->trans_start = jiffies;
 	dev_kfree_skb_any(skb);
 	return NETDEV_TX_OK;
 }
@@ -964,6 +965,8 @@ static int atl2_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 		data->phy_id = 0;
 		break;
 	case SIOCGMIIREG:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
 		spin_lock_irqsave(&adapter->stats_lock, flags);
 		if (atl2_read_phy_reg(&adapter->hw,
 			data->reg_num & 0x1F, &data->val_out)) {
@@ -973,6 +976,8 @@ static int atl2_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 		spin_unlock_irqrestore(&adapter->stats_lock, flags);
 		break;
 	case SIOCSMIIREG:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
 		if (data->reg_num & ~(0x1F))
 			return -EFAULT;
 		spin_lock_irqsave(&adapter->stats_lock, flags);
@@ -1353,8 +1358,8 @@ static int __devinit atl2_probe(struct pci_dev *pdev,
 	 * until the kernel has the proper infrastructure to support 64-bit DMA
 	 * on these devices.
 	 */
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32)) &&
-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32))) {
+	if (pci_set_dma_mask(pdev, DMA_32BIT_MASK) &&
+		pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK)) {
 		printk(KERN_ERR "atl2: No usable DMA configuration, aborting\n");
 		goto err_dma;
 	}
@@ -1958,15 +1963,12 @@ static int atl2_get_eeprom(struct net_device *netdev,
 		return -ENOMEM;
 
 	for (i = first_dword; i < last_dword; i++) {
-		if (!atl2_read_eeprom(hw, i*4, &(eeprom_buff[i-first_dword]))) {
-			ret_val = -EIO;
-			goto free;
-		}
+		if (!atl2_read_eeprom(hw, i*4, &(eeprom_buff[i-first_dword])))
+			return -EIO;
 	}
 
 	memcpy(bytes, (u8 *)eeprom_buff + (eeprom->offset & 3),
 		eeprom->len);
-free:
 	kfree(eeprom_buff);
 
 	return ret_val;
@@ -2069,7 +2071,7 @@ static int atl2_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
 	if (wol->wolopts & (WAKE_ARP | WAKE_MAGICSECURE))
 		return -EOPNOTSUPP;
 
-	if (wol->wolopts & (WAKE_UCAST | WAKE_BCAST | WAKE_MCAST))
+	if (wol->wolopts & (WAKE_MCAST|WAKE_BCAST|WAKE_MCAST))
 		return -EOPNOTSUPP;
 
 	/* these settings will always override what we currently have */
@@ -2091,7 +2093,7 @@ static int atl2_nway_reset(struct net_device *netdev)
 	return 0;
 }
 
-static const struct ethtool_ops atl2_ethtool_ops = {
+static struct ethtool_ops atl2_ethtool_ops = {
 	.get_settings		= atl2_get_settings,
 	.set_settings		= atl2_set_settings,
 	.get_drvinfo		= atl2_get_drvinfo,
@@ -2852,7 +2854,7 @@ static void atl2_force_ps(struct atl2_hw *hw)
 #else
 #define ATL2_PARAM(X, desc) \
     static int __devinitdata X[ATL2_MAX_NIC+1] = ATL2_PARAM_INIT; \
-    static unsigned int num_##X; \
+    static int num_##X = 0; \
     module_param_array_named(X, X, int, &num_##X, 0); \
     MODULE_PARM_DESC(X, desc);
 #endif

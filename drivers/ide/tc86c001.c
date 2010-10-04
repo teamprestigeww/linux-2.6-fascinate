@@ -13,11 +13,11 @@
 
 #define DRV_NAME "tc86c001"
 
-static void tc86c001_set_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void tc86c001_set_mode(ide_drive_t *drive, const u8 speed)
 {
+	ide_hwif_t *hwif	= drive->hwif;
 	unsigned long scr_port	= hwif->config_data + (drive->dn ? 0x02 : 0x00);
 	u16 mode, scr		= inw(scr_port);
-	const u8 speed		= drive->dma_mode;
 
 	switch (speed) {
 	case XFER_UDMA_4:	mode = 0x00c0; break;
@@ -41,10 +41,9 @@ static void tc86c001_set_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	outw(scr, scr_port);
 }
 
-static void tc86c001_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void tc86c001_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
-	drive->dma_mode = drive->pio_mode;
-	tc86c001_set_mode(hwif, drive);
+	tc86c001_set_mode(drive, XFER_PIO_0 + pio);
 }
 
 /*
@@ -113,7 +112,7 @@ static void tc86c001_dma_start(ide_drive_t *drive)
 	ide_hwif_t *hwif	= drive->hwif;
 	unsigned long sc_base	= hwif->config_data;
 	unsigned long twcr_port	= sc_base + (drive->dn ? 0x06 : 0x04);
-	unsigned long nsectors	= blk_rq_sectors(hwif->rq);
+	unsigned long nsectors	= hwif->rq->nr_sectors;
 
 	/*
 	 * We have to manually load the sector count and size into
@@ -183,11 +182,12 @@ static const struct ide_port_ops tc86c001_port_ops = {
 static const struct ide_dma_ops tc86c001_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
+	.dma_exec_cmd		= ide_dma_exec_cmd,
 	.dma_start		= tc86c001_dma_start,
 	.dma_end		= ide_dma_end,
 	.dma_test_irq		= ide_dma_test_irq,
 	.dma_lost_irq		= ide_dma_lost_irq,
-	.dma_timer_expiry	= ide_dma_sff_timer_expiry,
+	.dma_timeout		= ide_dma_timeout,
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 

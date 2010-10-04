@@ -25,7 +25,6 @@
 #include <linux/errno.h>
 #include <linux/time.h>
 #include <linux/sysdev.h>
-#include <linux/gpio.h>
 #include <linux/io.h>
 
 #include <mach/hardware.h>
@@ -38,14 +37,21 @@
 #include <plat/cpu.h>
 #include <plat/pm.h>
 
+#ifdef CONFIG_S3C2410_PM_DEBUG
+extern void pm_dbg(const char *fmt, ...);
+#define DBG(fmt...) pm_dbg(fmt)
+#else
+#define DBG(fmt...) printk(KERN_DEBUG fmt)
+#endif
+
 static void s3c2410_pm_prepare(void)
 {
 	/* ensure at least GSTATUS3 has the resume address */
 
-	__raw_writel(virt_to_phys(s3c_cpu_resume), S3C2410_GSTATUS3);
+	__raw_writel(virt_to_phys(s3c2410_cpu_resume), S3C2410_GSTATUS3);
 
-	S3C_PMDBG("GSTATUS3 0x%08x\n", __raw_readl(S3C2410_GSTATUS3));
-	S3C_PMDBG("GSTATUS4 0x%08x\n", __raw_readl(S3C2410_GSTATUS4));
+	DBG("GSTATUS3 0x%08x\n", __raw_readl(S3C2410_GSTATUS3));
+	DBG("GSTATUS4 0x%08x\n", __raw_readl(S3C2410_GSTATUS4));
 
 	if (machine_is_h1940()) {
 		void *base = phys_to_virt(H1940_SUSPEND_CHECK);
@@ -60,10 +66,10 @@ static void s3c2410_pm_prepare(void)
 		__raw_writel(calc, phys_to_virt(H1940_SUSPEND_CHECKSUM));
 	}
 
-	/* RX3715 and RX1950 use similar to H1940 code and the
+	/* the RX3715 uses similar code and the same H1940 and the
 	 * same offsets for resume and checksum pointers */
 
-	if (machine_is_rx3715() || machine_is_rx1950()) {
+	if (machine_is_rx3715()) {
 		void *base = phys_to_virt(H1940_SUSPEND_CHECK);
 		unsigned long ptr;
 		unsigned long calc = 0;
@@ -77,19 +83,8 @@ static void s3c2410_pm_prepare(void)
 	}
 
 	if ( machine_is_aml_m5900() )
-		s3c2410_gpio_setpin(S3C2410_GPF(2), 1);
+		s3c2410_gpio_setpin(S3C2410_GPF2, 1);
 
-	if (machine_is_rx1950()) {
-		/* According to S3C2442 user's manual, page 7-17,
-		 * when the system is operating in NAND boot mode,
-		 * the hardware pin configuration - EINT[23:21] –
-		 * must be set as input for starting up after
-		 * wakeup from sleep mode
-		 */
-		s3c_gpio_cfgpin(S3C2410_GPG(13), S3C2410_GPIO_INPUT);
-		s3c_gpio_cfgpin(S3C2410_GPG(14), S3C2410_GPIO_INPUT);
-		s3c_gpio_cfgpin(S3C2410_GPG(15), S3C2410_GPIO_INPUT);
-	}
 }
 
 static int s3c2410_pm_resume(struct sys_device *dev)
@@ -103,7 +98,7 @@ static int s3c2410_pm_resume(struct sys_device *dev)
 	__raw_writel(tmp, S3C2410_GSTATUS2);
 
 	if ( machine_is_aml_m5900() )
-		s3c2410_gpio_setpin(S3C2410_GPF(2), 0);
+		s3c2410_gpio_setpin(S3C2410_GPF2, 0);
 
 	return 0;
 }
@@ -130,18 +125,6 @@ static int __init s3c2410_pm_drvinit(void)
 }
 
 arch_initcall(s3c2410_pm_drvinit);
-
-static struct sysdev_driver s3c2410a_pm_driver = {
-	.add		= s3c2410_pm_add,
-	.resume		= s3c2410_pm_resume,
-};
-
-static int __init s3c2410a_pm_drvinit(void)
-{
-	return sysdev_driver_register(&s3c2410a_sysclass, &s3c2410a_pm_driver);
-}
-
-arch_initcall(s3c2410a_pm_drvinit);
 #endif
 
 #if defined(CONFIG_CPU_S3C2440)

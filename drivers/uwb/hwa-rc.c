@@ -53,7 +53,6 @@
  */
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/usb.h>
 #include <linux/usb/wusb.h>
 #include <linux/usb/wusb-wa.h>
@@ -502,7 +501,7 @@ int hwarc_filter_event_WUSB_0100(struct uwb_rc *rc, struct uwb_rceb **header,
 	int result = -ENOANO;
 	struct uwb_rceb *rceb = *header;
 	int event = le16_to_cpu(rceb->wEvent);
-	ssize_t event_size;
+	size_t event_size;
 	size_t core_size, offset;
 
 	if (rceb->bEventType != UWB_RC_CET_GENERAL)
@@ -888,11 +887,12 @@ static int hwarc_post_reset(struct usb_interface *iface)
 	struct hwarc *hwarc = usb_get_intfdata(iface);
 	struct uwb_rc *uwb_rc = hwarc->uwb_rc;
 
-	return uwb_rc_post_reset(uwb_rc);
+	uwb_rc_post_reset(uwb_rc);
+	return 0;
 }
 
 /** USB device ID's that we handle */
-static const struct usb_device_id hwarc_id_table[] = {
+static struct usb_device_id hwarc_id_table[] = {
 	/* D-Link DUB-1210 */
 	{ USB_DEVICE_AND_INTERFACE_INFO(0x07d1, 0x3d02, 0xe0, 0x01, 0x02),
 	  .driver_info = WUSB_QUIRK_WHCI_CMD_EVT },

@@ -1,9 +1,6 @@
 /*
- * Common header file for Blackfin family of processors.
+ * Common header file for blackfin family of processors.
  *
- * Copyright 2004-2009 Analog Devices Inc.
- *
- * Licensed under the GPL-2 or later.
  */
 
 #ifndef _BLACKFIN_H_
@@ -89,7 +86,6 @@ static inline void CSYNC(void)
 
 #endif /* __ASSEMBLY__ */
 
-#include <asm/mem_map.h>
 #include <mach/blackfin.h>
 #include <asm/bfin-global.h>
 

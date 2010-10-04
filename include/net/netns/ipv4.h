@@ -37,12 +37,9 @@ struct netns_ipv4 {
 	struct xt_table		*iptable_mangle;
 	struct xt_table		*iptable_raw;
 	struct xt_table		*arptable_filter;
-#ifdef CONFIG_SECURITY
 	struct xt_table		*iptable_security;
-#endif
 	struct xt_table		*nat_table;
 	struct hlist_head	*nat_bysource;
-	unsigned int		nat_htable_size;
 	int			nat_vmalloced;
 #endif
 
@@ -55,15 +52,7 @@ struct netns_ipv4 {
 	int sysctl_rt_cache_rebuild_count;
 	int current_rt_cache_rebuild_count;
 
+	struct timer_list rt_secret_timer;
 	atomic_t rt_genid;
-
-#ifdef CONFIG_IP_MROUTE
-#ifndef CONFIG_IP_MROUTE_MULTIPLE_TABLES
-	struct mr_table		*mrt;
-#else
-	struct list_head	mr_tables;
-	struct fib_rules_ops	*mr_rules_ops;
-#endif
-#endif
 };
 #endif

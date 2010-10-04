@@ -25,7 +25,7 @@
 #include <linux/ioport.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/mutex.h>
+#include <linux/smp_lock.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/timer.h>
@@ -70,7 +70,6 @@
 #define DRIVER_DESC		"Printer Gadget"
 #define DRIVER_VERSION		"2007 OCT 06"
 
-static DEFINE_MUTEX(printer_mutex);
 static const char shortname [] = "printer";
 static const char driver_desc [] = DRIVER_DESC;
 
@@ -83,7 +82,7 @@ static struct class *usb_gadget_class;
 struct printer_dev {
 	spinlock_t		lock;		/* lock this structure */
 	/* lock buffer lists during read/write calls */
-	struct mutex		lock_printer_io;
+	spinlock_t		lock_printer_io;
 	struct usb_gadget	*gadget;
 	struct usb_request	*req;		/* for control responses */
 	u8			config;
@@ -226,12 +225,12 @@ module_param(qlen, uint, S_IRUGO|S_IWUSR);
 static struct usb_device_descriptor device_desc = {
 	.bLength =		sizeof device_desc,
 	.bDescriptorType =	USB_DT_DEVICE,
-	.bcdUSB =		cpu_to_le16(0x0200),
+	.bcdUSB =		__constant_cpu_to_le16(0x0200),
 	.bDeviceClass =		USB_CLASS_PER_INTERFACE,
 	.bDeviceSubClass =	0,
 	.bDeviceProtocol =	0,
-	.idVendor =		cpu_to_le16(PRINTER_VENDOR_NUM),
-	.idProduct =		cpu_to_le16(PRINTER_PRODUCT_NUM),
+	.idVendor =		__constant_cpu_to_le16(PRINTER_VENDOR_NUM),
+	.idProduct =		__constant_cpu_to_le16(PRINTER_PRODUCT_NUM),
 	.iManufacturer =	STRING_MANUFACTURER,
 	.iProduct =		STRING_PRODUCT,
 	.iSerialNumber =	STRING_SERIALNUM,
@@ -300,20 +299,20 @@ static struct usb_endpoint_descriptor hs_ep_in_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 	.bmAttributes =		USB_ENDPOINT_XFER_BULK,
-	.wMaxPacketSize =	cpu_to_le16(512)
+	.wMaxPacketSize =	__constant_cpu_to_le16(512)
 };
 
 static struct usb_endpoint_descriptor hs_ep_out_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 	.bmAttributes =		USB_ENDPOINT_XFER_BULK,
-	.wMaxPacketSize =	cpu_to_le16(512)
+	.wMaxPacketSize =	__constant_cpu_to_le16(512)
 };
 
 static struct usb_qualifier_descriptor dev_qualifier = {
 	.bLength =		sizeof dev_qualifier,
 	.bDescriptorType =	USB_DT_DEVICE_QUALIFIER,
-	.bcdUSB =		cpu_to_le16(0x0200),
+	.bcdUSB =		__constant_cpu_to_le16(0x0200),
 	.bDeviceClass =		USB_CLASS_PRINTER,
 	.bNumConfigurations =	1
 };
@@ -477,7 +476,7 @@ printer_open(struct inode *inode, struct file *fd)
 	unsigned long		flags;
 	int			ret = -EBUSY;
 
-	mutex_lock(&printer_mutex);
+	lock_kernel();
 	dev = container_of(inode->i_cdev, struct printer_dev, printer_cdev);
 
 	spin_lock_irqsave(&dev->lock, flags);
@@ -493,7 +492,7 @@ printer_open(struct inode *inode, struct file *fd)
 	spin_unlock_irqrestore(&dev->lock, flags);
 
 	DBG(dev, "printer_open returned %x\n", ret);
-	mutex_unlock(&printer_mutex);
+	unlock_kernel();
 	return ret;
 }
 
@@ -568,7 +567,7 @@ printer_read(struct file *fd, char __user *buf, size_t len, loff_t *ptr)
 
 	DBG(dev, "printer_read trying to read %d bytes\n", (int)len);
 
-	mutex_lock(&dev->lock_printer_io);
+	spin_lock(&dev->lock_printer_io);
 	spin_lock_irqsave(&dev->lock, flags);
 
 	/* We will use this flag later to check if a printer reset happened
@@ -602,7 +601,7 @@ printer_read(struct file *fd, char __user *buf, size_t len, loff_t *ptr)
 		 * call or not.
 		 */
 		if (fd->f_flags & (O_NONBLOCK|O_NDELAY)) {
-			mutex_unlock(&dev->lock_printer_io);
+			spin_unlock(&dev->lock_printer_io);
 			return -EAGAIN;
 		}
 
@@ -649,7 +648,7 @@ printer_read(struct file *fd, char __user *buf, size_t len, loff_t *ptr)
 		if (dev->reset_printer) {
 			list_add(&current_rx_req->list, &dev->rx_reqs);
 			spin_unlock_irqrestore(&dev->lock, flags);
-			mutex_unlock(&dev->lock_printer_io);
+			spin_unlock(&dev->lock_printer_io);
 			return -EAGAIN;
 		}
 
@@ -674,7 +673,7 @@ printer_read(struct file *fd, char __user *buf, size_t len, loff_t *ptr)
 	dev->current_rx_buf = current_rx_buf;
 
 	spin_unlock_irqrestore(&dev->lock, flags);
-	mutex_unlock(&dev->lock_printer_io);
+	spin_unlock(&dev->lock_printer_io);
 
 	DBG(dev, "printer_read returned %d bytes\n", (int)bytes_copied);
 
@@ -698,7 +697,7 @@ printer_write(struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 	if (len == 0)
 		return -EINVAL;
 
-	mutex_lock(&dev->lock_printer_io);
+	spin_lock(&dev->lock_printer_io);
 	spin_lock_irqsave(&dev->lock, flags);
 
 	/* Check if a printer reset happens while we have interrupts on */
@@ -714,7 +713,7 @@ printer_write(struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 		 * a NON-Blocking call or not.
 		 */
 		if (fd->f_flags & (O_NONBLOCK|O_NDELAY)) {
-			mutex_unlock(&dev->lock_printer_io);
+			spin_unlock(&dev->lock_printer_io);
 			return -EAGAIN;
 		}
 
@@ -753,7 +752,7 @@ printer_write(struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 
 		if (copy_from_user(req->buf, buf, size)) {
 			list_add(&req->list, &dev->tx_reqs);
-			mutex_unlock(&dev->lock_printer_io);
+			spin_unlock(&dev->lock_printer_io);
 			return bytes_copied;
 		}
 
@@ -767,14 +766,14 @@ printer_write(struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 		if (dev->reset_printer) {
 			list_add(&req->list, &dev->tx_reqs);
 			spin_unlock_irqrestore(&dev->lock, flags);
-			mutex_unlock(&dev->lock_printer_io);
+			spin_unlock(&dev->lock_printer_io);
 			return -EAGAIN;
 		}
 
 		if (usb_ep_queue(dev->in_ep, req, GFP_ATOMIC)) {
 			list_add(&req->list, &dev->tx_reqs);
 			spin_unlock_irqrestore(&dev->lock, flags);
-			mutex_unlock(&dev->lock_printer_io);
+			spin_unlock(&dev->lock_printer_io);
 			return -EAGAIN;
 		}
 
@@ -783,7 +782,7 @@ printer_write(struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 	}
 
 	spin_unlock_irqrestore(&dev->lock, flags);
-	mutex_unlock(&dev->lock_printer_io);
+	spin_unlock(&dev->lock_printer_io);
 
 	DBG(dev, "printer_write sent %d bytes\n", (int)bytes_copied);
 
@@ -795,7 +794,7 @@ printer_write(struct file *fd, const char __user *buf, size_t len, loff_t *ptr)
 }
 
 static int
-printer_fsync(struct file *fd, int datasync)
+printer_fsync(struct file *fd, struct dentry *dentry, int datasync)
 {
 	struct printer_dev	*dev = fd->private_data;
 	unsigned long		flags;
@@ -821,11 +820,11 @@ printer_poll(struct file *fd, poll_table *wait)
 	unsigned long		flags;
 	int			status = 0;
 
-	mutex_lock(&dev->lock_printer_io);
+	spin_lock(&dev->lock_printer_io);
 	spin_lock_irqsave(&dev->lock, flags);
 	setup_rx_reqs(dev);
 	spin_unlock_irqrestore(&dev->lock, flags);
-	mutex_unlock(&dev->lock_printer_io);
+	spin_unlock(&dev->lock_printer_io);
 
 	poll_wait(fd, &dev->rx_wait, wait);
 	poll_wait(fd, &dev->tx_wait, wait);
@@ -876,7 +875,7 @@ printer_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 }
 
 /* used after endpoint configuration */
-static const struct file_operations printer_io_operations = {
+static struct file_operations printer_io_operations = {
 	.owner =	THIS_MODULE,
 	.open =		printer_open,
 	.read =		printer_read,
@@ -949,6 +948,12 @@ printer_set_config(struct printer_dev *dev, unsigned number)
 {
 	int			result = 0;
 	struct usb_gadget	*gadget = dev->gadget;
+
+	if (gadget_is_sa1100(gadget) && dev->config) {
+		/* tx fifo is full, but we can't clear it...*/
+		INFO(dev, "can't change configurations\n");
+		return -ESPIPE;
+	}
 
 	switch (number) {
 	case DEV_CONFIG_VALUE:
@@ -1027,6 +1032,12 @@ static int
 set_interface(struct printer_dev *dev, unsigned number)
 {
 	int			result = 0;
+
+	if (gadget_is_sa1100(dev->gadget) && dev->interface < 0) {
+		/* tx fifo is full, but we can't clear it...*/
+		INFO(dev, "can't change interfaces\n");
+		return -ESPIPE;
+	}
 
 	/* Free the current interface */
 	switch (dev->interface) {
@@ -1347,7 +1358,7 @@ printer_unbind(struct usb_gadget *gadget)
 	set_gadget_data(gadget, NULL);
 }
 
-static int __ref
+static int __init
 printer_bind(struct usb_gadget *gadget)
 {
 	struct printer_dev	*dev;
@@ -1381,6 +1392,12 @@ printer_bind(struct usb_gadget *gadget)
 		goto fail;
 	}
 
+	if (gadget_is_sa1100(gadget)) {
+		/* hardware can't write zero length packets. */
+		ERROR(dev, "SA1100 controller is unsupport by this driver\n");
+		goto fail;
+	}
+
 	gcnum = usb_gadget_controller_number(gadget);
 	if (gcnum >= 0) {
 		device_desc.bcdDevice = cpu_to_le16(0x0200 + gcnum);
@@ -1389,16 +1406,16 @@ printer_bind(struct usb_gadget *gadget)
 			gadget->name);
 		/* unrecognized, but safe unless bulk is REALLY quirky */
 		device_desc.bcdDevice =
-			cpu_to_le16(0xFFFF);
+			__constant_cpu_to_le16(0xFFFF);
 	}
 	snprintf(manufacturer, sizeof(manufacturer), "%s %s with %s",
 		init_utsname()->sysname, init_utsname()->release,
 		gadget->name);
 
 	device_desc.idVendor =
-		cpu_to_le16(PRINTER_VENDOR_NUM);
+		__constant_cpu_to_le16(PRINTER_VENDOR_NUM);
 	device_desc.idProduct =
-		cpu_to_le16(PRINTER_PRODUCT_NUM);
+		__constant_cpu_to_le16(PRINTER_PRODUCT_NUM);
 
 	/* support optional vendor/distro customization */
 	if (idVendor) {
@@ -1462,7 +1479,7 @@ autoconf_fail:
 	}
 
 	spin_lock_init(&dev->lock);
-	mutex_init(&dev->lock_printer_io);
+	spin_lock_init(&dev->lock_printer_io);
 	INIT_LIST_HEAD(&dev->tx_reqs);
 	INIT_LIST_HEAD(&dev->tx_reqs_active);
 	INIT_LIST_HEAD(&dev->rx_reqs);
@@ -1595,7 +1612,7 @@ cleanup(void)
 {
 	int status;
 
-	mutex_lock(&usb_printer_gadget.lock_printer_io);
+	spin_lock(&usb_printer_gadget.lock_printer_io);
 	class_destroy(usb_gadget_class);
 	unregister_chrdev_region(g_printer_devno, 2);
 
@@ -1603,6 +1620,6 @@ cleanup(void)
 	if (status)
 		ERROR(dev, "usb_gadget_unregister_driver %x\n", status);
 
-	mutex_unlock(&usb_printer_gadget.lock_printer_io);
+	spin_unlock(&usb_printer_gadget.lock_printer_io);
 }
 module_exit(cleanup);

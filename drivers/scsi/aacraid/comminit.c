@@ -54,7 +54,6 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	const unsigned long printfbufsiz = 256;
 	struct aac_init *init;
 	dma_addr_t phys;
-	unsigned long aac_max_hostphysmempages;
 
 	size = fibsize + sizeof(struct aac_init) + commsize + commalign + printfbufsiz;
 
@@ -91,18 +90,7 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	init->AdapterFibsPhysicalAddress = cpu_to_le32((u32)phys);
 	init->AdapterFibsSize = cpu_to_le32(fibsize);
 	init->AdapterFibAlign = cpu_to_le32(sizeof(struct hw_fib));
-	/*
-	 * number of 4k pages of host physical memory. The aacraid fw needs
-	 * this number to be less than 4gb worth of pages. New firmware doesn't
-	 * have any issues with the mapping system, but older Firmware did, and
-	 * had *troubles* dealing with the math overloading past 32 bits, thus
-	 * we must limit this field.
-	 */
-	aac_max_hostphysmempages = dma_get_required_mask(&dev->pdev->dev) >> 12;
-	if (aac_max_hostphysmempages < AAC_MAX_HOSTPHYSMEMPAGES)
-		init->HostPhysMemPages = cpu_to_le32(aac_max_hostphysmempages);
-	else
-		init->HostPhysMemPages = cpu_to_le32(AAC_MAX_HOSTPHYSMEMPAGES);
+	init->HostPhysMemPages = cpu_to_le32(AAC_MAX_HOSTPHYSMEMPAGES);
 
 	init->InitFlags = 0;
 	if (dev->comm_interface == AAC_COMM_MESSAGE) {
@@ -194,9 +182,7 @@ int aac_send_shutdown(struct aac_dev * dev)
 
 	if (status >= 0)
 		aac_fib_complete(fibctx);
-	/* FIB should be freed only after getting the response from the F/W */
-	if (status != -ERESTARTSYS)
-		aac_fib_free(fibctx);
+	aac_fib_free(fibctx);
 	return status;
 }
 
@@ -228,7 +214,7 @@ static int aac_comm_init(struct aac_dev * dev)
 	spin_lock_init(&dev->fib_lock);
 
 	/*
-	 *	Allocate the physically contiguous space for the commuication
+	 *	Allocate the physically contigous space for the commuication
 	 *	queue headers. 
 	 */
 
@@ -306,8 +292,6 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	/*
 	 *	Check the preferred comm settings, defaults from template.
 	 */
-	dev->management_fib_count = 0;
-	spin_lock_init(&dev->manage_lock);
 	dev->max_fib_size = sizeof(struct hw_fib);
 	dev->sg_tablesize = host->sg_tablesize = (dev->max_fib_size
 		- sizeof(struct aac_fibhdr)

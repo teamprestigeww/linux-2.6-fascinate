@@ -23,7 +23,7 @@
 ENTRY(__strnlen_user)
 	mov	r2, r0
 1:
-	ldrusr	r3, r0, 1
+USER(	ldrbt	r3, [r0], #1)
 	teq	r3, #0
 	beq	2f
 	subs	r1, r1, #1
@@ -33,8 +33,8 @@ ENTRY(__strnlen_user)
 	mov	pc, lr
 ENDPROC(__strnlen_user)
 
-	.pushsection .fixup,"ax"
+	.section .fixup,"ax"
 	.align	0
 9001:	mov	r0, #0
 	mov	pc, lr
-	.popsection
+	.previous

@@ -12,6 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/string.h>
+#include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/fb.h>
@@ -262,7 +263,9 @@ struct cg6_par {
 	u32			flags;
 #define CG6_FLAG_BLANKED	0x00000001
 
+	unsigned long		physbase;
 	unsigned long		which_io;
+	unsigned long		fbsize;
 };
 
 static int cg6_sync(struct fb_info *info)
@@ -593,14 +596,16 @@ static int cg6_mmap(struct fb_info *info, struct vm_area_struct *vma)
 	struct cg6_par *par = (struct cg6_par *)info->par;
 
 	return sbusfb_mmap_helper(cg6_mmap_map,
-				  info->fix.smem_start, info->fix.smem_len,
+				  par->physbase, par->fbsize,
 				  par->which_io, vma);
 }
 
 static int cg6_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 {
+	struct cg6_par *par = (struct cg6_par *)info->par;
+
 	return sbusfb_ioctl_helper(cmd, arg, info,
-				   FBTYPE_SUNFAST_COLOR, 8, info->fix.smem_len);
+				   FBTYPE_SUNFAST_COLOR, 8, par->fbsize);
 }
 
 /*
@@ -626,12 +631,12 @@ static void __devinit cg6_init_fix(struct fb_info *info, int linebytes)
 		break;
 	};
 	if (((conf >> CG6_FHC_REV_SHIFT) & CG6_FHC_REV_MASK) >= 11) {
-		if (info->fix.smem_len <= 0x100000)
+		if (par->fbsize <= 0x100000)
 			cg6_card_name = "TGX";
 		else
 			cg6_card_name = "TGX+";
 	} else {
-		if (info->fix.smem_len <= 0x100000)
+		if (par->fbsize <= 0x100000)
 			cg6_card_name = "GX";
 		else
 			cg6_card_name = "GX+";
@@ -718,7 +723,7 @@ static void __devinit cg6_chip_init(struct fb_info *info)
 	sbus_writel(info->var.yres - 1, &fbc->clipmaxy);
 }
 
-static void cg6_unmap_regs(struct platform_device *op, struct fb_info *info,
+static void cg6_unmap_regs(struct of_device *op, struct fb_info *info,
 			   struct cg6_par *par)
 {
 	if (par->fbc)
@@ -733,14 +738,13 @@ static void cg6_unmap_regs(struct platform_device *op, struct fb_info *info,
 		of_iounmap(&op->resource[0], par->fhc, sizeof(u32));
 
 	if (info->screen_base)
-		of_iounmap(&op->resource[0], info->screen_base,
-			   info->fix.smem_len);
+		of_iounmap(&op->resource[0], info->screen_base, par->fbsize);
 }
 
-static int __devinit cg6_probe(struct platform_device *op,
+static int __devinit cg6_probe(struct of_device *op,
 				const struct of_device_id *match)
 {
-	struct device_node *dp = op->dev.of_node;
+	struct device_node *dp = op->node;
 	struct fb_info *info;
 	struct cg6_par *par;
 	int linebytes, err;
@@ -755,7 +759,7 @@ static int __devinit cg6_probe(struct platform_device *op,
 
 	spin_lock_init(&par->lock);
 
-	info->fix.smem_start = op->resource[0].start;
+	par->physbase = op->resource[0].start;
 	par->which_io = op->resource[0].flags & IORESOURCE_BITS;
 
 	sbusfb_fill_var(&info->var, dp, 8);
@@ -765,11 +769,11 @@ static int __devinit cg6_probe(struct platform_device *op,
 
 	linebytes = of_getintprop_default(dp, "linebytes",
 					  info->var.xres);
-	info->fix.smem_len = PAGE_ALIGN(linebytes * info->var.yres);
+	par->fbsize = PAGE_ALIGN(linebytes * info->var.yres);
 
 	dblbuf = of_getintprop_default(dp, "dblbuf", 0);
 	if (dblbuf)
-		info->fix.smem_len *= 4;
+		par->fbsize *= 4;
 
 	par->fbc = of_ioremap(&op->resource[0], CG6_FBC_OFFSET,
 				4096, "cgsix fbc");
@@ -788,7 +792,7 @@ static int __devinit cg6_probe(struct platform_device *op,
 	info->fbops = &cg6_ops;
 
 	info->screen_base = of_ioremap(&op->resource[0], CG6_RAM_OFFSET,
-					info->fix.smem_len, "cgsix ram");
+					par->fbsize, "cgsix ram");
 	if (!par->fbc || !par->tec || !par->thc ||
 	    !par->bt || !par->fhc || !info->screen_base)
 		goto out_unmap_regs;
@@ -813,7 +817,7 @@ static int __devinit cg6_probe(struct platform_device *op,
 
 	printk(KERN_INFO "%s: CGsix [%s] at %lx:%lx\n",
 	       dp->full_name, info->fix.id,
-	       par->which_io, info->fix.smem_start);
+	       par->which_io, par->physbase);
 
 	return 0;
 
@@ -827,7 +831,7 @@ out_err:
 	return err;
 }
 
-static int __devexit cg6_remove(struct platform_device *op)
+static int __devexit cg6_remove(struct of_device *op)
 {
 	struct fb_info *info = dev_get_drvdata(&op->dev);
 	struct cg6_par *par = info->par;
@@ -856,11 +860,8 @@ static const struct of_device_id cg6_match[] = {
 MODULE_DEVICE_TABLE(of, cg6_match);
 
 static struct of_platform_driver cg6_driver = {
-	.driver = {
-		.name = "cg6",
-		.owner = THIS_MODULE,
-		.of_match_table = cg6_match,
-	},
+	.name		= "cg6",
+	.match_table	= cg6_match,
 	.probe		= cg6_probe,
 	.remove		= __devexit_p(cg6_remove),
 };
@@ -870,12 +871,12 @@ static int __init cg6_init(void)
 	if (fb_get_options("cg6fb", NULL))
 		return -ENODEV;
 
-	return of_register_platform_driver(&cg6_driver);
+	return of_register_driver(&cg6_driver, &of_bus_type);
 }
 
 static void __exit cg6_exit(void)
 {
-	of_unregister_platform_driver(&cg6_driver);
+	of_unregister_driver(&cg6_driver);
 }
 
 module_init(cg6_init);

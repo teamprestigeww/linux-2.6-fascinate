@@ -38,12 +38,9 @@
 #include <linux/idr.h>
 #include <linux/file.h>
 #include <linux/parser.h>
-#include <linux/slab.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 #include <net/9p/transport.h>
-
-#include <linux/syscalls.h> /* killme */
 
 #define P9_PORT 564
 #define MAX_SOCK_BUF (64*1024)
@@ -122,8 +119,8 @@ struct p9_poll_wait {
  * @wpos: write position for current frame
  * @wsize: amount of data to write for current frame
  * @wbuf: current write buffer
- * @poll_pending_link: pending links to be polled per conn
  * @poll_wait: array of wait_q's for various worker threads
+ * @poll_waddr: ????
  * @pt: poll state
  * @rq: current read work
  * @wq: current write work
@@ -216,8 +213,8 @@ static void p9_conn_cancel(struct p9_conn *m, int err)
 	spin_unlock_irqrestore(&m->client->lock, flags);
 
 	list_for_each_entry_safe(req, rtmp, &cancel_list, req_list) {
-		P9_DPRINTK(P9_DEBUG_ERROR, "call back req %p\n", req);
 		list_del(&req->req_list);
+		P9_DPRINTK(P9_DEBUG_ERROR, "call back req %p\n", req);
 		p9_client_cb(m->client, req);
 	}
 }
@@ -339,8 +336,7 @@ static void p9_read_work(struct work_struct *work)
 			"mux %p pkt: size: %d bytes tag: %d\n", m, n, tag);
 
 		m->req = p9_tag_lookup(m->client, tag);
-		if (!m->req || (m->req->status != REQ_STATUS_SENT &&
-					m->req->status != REQ_STATUS_FLSH)) {
+		if (!m->req) {
 			P9_DPRINTK(P9_DEBUG_ERROR, "Unexpected packet tag %d\n",
 								 tag);
 			err = -EIO;
@@ -365,11 +361,10 @@ static void p9_read_work(struct work_struct *work)
 	if ((m->req) && (m->rpos == m->rsize)) { /* packet is read in */
 		P9_DPRINTK(P9_DEBUG_TRANS, "got new packet\n");
 		spin_lock(&m->client->lock);
-		if (m->req->status != REQ_STATUS_ERROR)
-			m->req->status = REQ_STATUS_RCVD;
 		list_del(&m->req->req_list);
 		spin_unlock(&m->client->lock);
 		p9_client_cb(m->client, m->req);
+
 		m->rbuf = NULL;
 		m->rpos = 0;
 		m->rsize = 0;
@@ -422,7 +417,7 @@ static int p9_fd_write(struct p9_client *client, void *v, int len)
 	oldfs = get_fs();
 	set_fs(get_ds());
 	/* The cast to a user pointer is valid due to the set_fs() */
-	ret = vfs_write(ts->wr, (__force void __user *)v, len, &ts->wr->f_pos);
+	ret = vfs_write(ts->wr, (void __user *)v, len, &ts->wr->f_pos);
 	set_fs(oldfs);
 
 	if (ret <= 0 && ret != -ERESTARTSYS && ret != -EAGAIN)
@@ -459,7 +454,6 @@ static void p9_write_work(struct work_struct *work)
 		req = list_entry(m->unsent_req_list.next, struct p9_req_t,
 			       req_list);
 		req->status = REQ_STATUS_SENT;
-		P9_DPRINTK(P9_DEBUG_TRANS, "move req %p\n", req);
 		list_move_tail(&req->req_list, &m->req_list);
 
 		m->wbuf = req->tc->sdata;
@@ -636,8 +630,8 @@ static void p9_poll_mux(struct p9_conn *m)
 	if (n & POLLOUT) {
 		set_bit(Wpending, &m->wsched);
 		P9_DPRINTK(P9_DEBUG_TRANS, "mux %p can write\n", m);
-		if ((m->wsize || !list_empty(&m->unsent_req_list)) &&
-		    !test_and_set_bit(Wworksched, &m->wsched)) {
+		if ((m->wsize || !list_empty(&m->unsent_req_list))
+		    && !test_and_set_bit(Wworksched, &m->wsched)) {
 			P9_DPRINTK(P9_DEBUG_TRANS, "sched write work %p\n", m);
 			queue_work(p9_mux_wq, &m->wq);
 		}
@@ -689,13 +683,12 @@ static int p9_fd_cancel(struct p9_client *client, struct p9_req_t *req)
 	P9_DPRINTK(P9_DEBUG_TRANS, "client %p req %p\n", client, req);
 
 	spin_lock(&client->lock);
+	list_del(&req->req_list);
 
 	if (req->status == REQ_STATUS_UNSENT) {
-		list_del(&req->req_list);
 		req->status = REQ_STATUS_FLSHD;
 		ret = 0;
-	} else if (req->status == REQ_STATUS_SENT)
-		req->status = REQ_STATUS_FLSH;
+	}
 
 	spin_unlock(&client->lock);
 
@@ -703,9 +696,9 @@ static int p9_fd_cancel(struct p9_client *client, struct p9_req_t *req)
 }
 
 /**
- * parse_opts - parse mount options into p9_fd_opts structure
- * @params: options string passed from mount
- * @opts: fd transport-specific structure to parse options into
+ * parse_options - parse mount options into session structure
+ * @options: options string passed from mount
+ * @opts: transport-specific structure to parse options into
  *
  * Returns 0 upon success, -ERRNO upon failure
  */
@@ -715,7 +708,7 @@ static int parse_opts(char *params, struct p9_fd_opts *opts)
 	char *p;
 	substring_t args[MAX_OPT_ARGS];
 	int option;
-	char *options, *tmp_options;
+	char *options;
 	int ret;
 
 	opts->port = P9_PORT;
@@ -725,13 +718,12 @@ static int parse_opts(char *params, struct p9_fd_opts *opts)
 	if (!params)
 		return 0;
 
-	tmp_options = kstrdup(params, GFP_KERNEL);
-	if (!tmp_options) {
+	options = kstrdup(params, GFP_KERNEL);
+	if (!options) {
 		P9_DPRINTK(P9_DEBUG_ERROR,
 				"failed to allocate copy of option string\n");
 		return -ENOMEM;
 	}
-	options = tmp_options;
 
 	while ((p = strsep(&options, ",")) != NULL) {
 		int token;
@@ -739,14 +731,12 @@ static int parse_opts(char *params, struct p9_fd_opts *opts)
 		if (!*p)
 			continue;
 		token = match_token(p, tokens, args);
-		if (token != Opt_err) {
-			r = match_int(&args[0], &option);
-			if (r < 0) {
-				P9_DPRINTK(P9_DEBUG_ERROR,
-				"integer field, but no integer?\n");
-				ret = r;
-				continue;
-			}
+		r = match_int(&args[0], &option);
+		if (r < 0) {
+			P9_DPRINTK(P9_DEBUG_ERROR,
+			 "integer field, but no integer?\n");
+			ret = r;
+			continue;
 		}
 		switch (token) {
 		case Opt_port:
@@ -762,8 +752,7 @@ static int parse_opts(char *params, struct p9_fd_opts *opts)
 			continue;
 		}
 	}
-
-	kfree(tmp_options);
+	kfree(options);
 	return 0;
 }
 
@@ -793,41 +782,24 @@ static int p9_fd_open(struct p9_client *client, int rfd, int wfd)
 
 static int p9_socket_open(struct p9_client *client, struct socket *csocket)
 {
-	struct p9_trans_fd *p;
-	int ret, fd;
-
-	p = kmalloc(sizeof(struct p9_trans_fd), GFP_KERNEL);
-	if (!p)
-		return -ENOMEM;
+	int fd, ret;
 
 	csocket->sk->sk_allocation = GFP_NOIO;
 	fd = sock_map_fd(csocket, 0);
 	if (fd < 0) {
 		P9_EPRINTK(KERN_ERR, "p9_socket_open: failed to map fd\n");
-		sock_release(csocket);
-		kfree(p);
 		return fd;
 	}
 
-	get_file(csocket->file);
-	get_file(csocket->file);
-	p->wr = p->rd = csocket->file;
-	client->trans = p;
-	client->status = Connected;
-
-	sys_close(fd);	/* still racy */
-
-	p->rd->f_flags |= O_NONBLOCK;
-
-	p->conn = p9_conn_create(client);
-	if (IS_ERR(p->conn)) {
-		ret = PTR_ERR(p->conn);
-		p->conn = NULL;
-		kfree(p);
-		sockfd_put(csocket);
+	ret = p9_fd_open(client, fd, fd);
+	if (ret < 0) {
+		P9_EPRINTK(KERN_ERR, "p9_socket_open: failed to open fd\n");
 		sockfd_put(csocket);
 		return ret;
 	}
+
+	((struct p9_trans_fd *)client->trans)->rd->f_flags |= O_NONBLOCK;
+
 	return 0;
 }
 
@@ -905,6 +877,7 @@ p9_fd_create_tcp(struct p9_client *client, const char *addr, char *args)
 	struct socket *csocket;
 	struct sockaddr_in sin_server;
 	struct p9_fd_opts opts;
+	struct p9_trans_fd *p = NULL; /* this gets allocated in p9_fd_open */
 
 	err = parse_opts(args, &opts);
 	if (err < 0)
@@ -918,11 +891,12 @@ p9_fd_create_tcp(struct p9_client *client, const char *addr, char *args)
 	sin_server.sin_family = AF_INET;
 	sin_server.sin_addr.s_addr = in_aton(addr);
 	sin_server.sin_port = htons(opts.port);
-	err = sock_create_kern(PF_INET, SOCK_STREAM, IPPROTO_TCP, &csocket);
+	sock_create_kern(PF_INET, SOCK_STREAM, IPPROTO_TCP, &csocket);
 
-	if (err) {
+	if (!csocket) {
 		P9_EPRINTK(KERN_ERR, "p9_trans_tcp: problem creating socket\n");
-		return err;
+		err = -EIO;
+		goto error;
 	}
 
 	err = csocket->ops->connect(csocket,
@@ -932,11 +906,30 @@ p9_fd_create_tcp(struct p9_client *client, const char *addr, char *args)
 		P9_EPRINTK(KERN_ERR,
 			"p9_trans_tcp: problem connecting socket to %s\n",
 			addr);
-		sock_release(csocket);
-		return err;
+		goto error;
 	}
 
-	return p9_socket_open(client, csocket);
+	err = p9_socket_open(client, csocket);
+	if (err < 0)
+		goto error;
+
+	p = (struct p9_trans_fd *) client->trans;
+	p->conn = p9_conn_create(client);
+	if (IS_ERR(p->conn)) {
+		err = PTR_ERR(p->conn);
+		p->conn = NULL;
+		goto error;
+	}
+
+	return 0;
+
+error:
+	if (csocket)
+		sock_release(csocket);
+
+	kfree(p);
+
+	return err;
 }
 
 static int
@@ -945,33 +938,49 @@ p9_fd_create_unix(struct p9_client *client, const char *addr, char *args)
 	int err;
 	struct socket *csocket;
 	struct sockaddr_un sun_server;
+	struct p9_trans_fd *p = NULL; /* this gets allocated in p9_fd_open */
 
 	csocket = NULL;
 
-	if (strlen(addr) >= UNIX_PATH_MAX) {
+	if (strlen(addr) > UNIX_PATH_MAX) {
 		P9_EPRINTK(KERN_ERR, "p9_trans_unix: address too long: %s\n",
 			addr);
-		return -ENAMETOOLONG;
+		err = -ENAMETOOLONG;
+		goto error;
 	}
 
 	sun_server.sun_family = PF_UNIX;
 	strcpy(sun_server.sun_path, addr);
-	err = sock_create_kern(PF_UNIX, SOCK_STREAM, 0, &csocket);
-	if (err < 0) {
-		P9_EPRINTK(KERN_ERR, "p9_trans_unix: problem creating socket\n");
-		return err;
-	}
+	sock_create_kern(PF_UNIX, SOCK_STREAM, 0, &csocket);
 	err = csocket->ops->connect(csocket, (struct sockaddr *)&sun_server,
 			sizeof(struct sockaddr_un) - 1, 0);
 	if (err < 0) {
 		P9_EPRINTK(KERN_ERR,
 			"p9_trans_unix: problem connecting socket: %s: %d\n",
 			addr, err);
-		sock_release(csocket);
-		return err;
+		goto error;
 	}
 
-	return p9_socket_open(client, csocket);
+	err = p9_socket_open(client, csocket);
+	if (err < 0)
+		goto error;
+
+	p = (struct p9_trans_fd *) client->trans;
+	p->conn = p9_conn_create(client);
+	if (IS_ERR(p->conn)) {
+		err = PTR_ERR(p->conn);
+		p->conn = NULL;
+		goto error;
+	}
+
+	return 0;
+
+error:
+	if (csocket)
+		sock_release(csocket);
+
+	kfree(p);
+	return err;
 }
 
 static int
@@ -979,7 +988,7 @@ p9_fd_create(struct p9_client *client, const char *addr, char *args)
 {
 	int err;
 	struct p9_fd_opts opts;
-	struct p9_trans_fd *p;
+	struct p9_trans_fd *p = NULL; /* this get allocated in p9_fd_open */
 
 	parse_opts(args, &opts);
 
@@ -990,19 +999,21 @@ p9_fd_create(struct p9_client *client, const char *addr, char *args)
 
 	err = p9_fd_open(client, opts.rfd, opts.wfd);
 	if (err < 0)
-		return err;
+		goto error;
 
 	p = (struct p9_trans_fd *) client->trans;
 	p->conn = p9_conn_create(client);
 	if (IS_ERR(p->conn)) {
 		err = PTR_ERR(p->conn);
 		p->conn = NULL;
-		fput(p->rd);
-		fput(p->wr);
-		return err;
+		goto error;
 	}
 
 	return 0;
+
+error:
+	kfree(p);
+	return err;
 }
 
 static struct p9_trans_module p9_tcp_trans = {

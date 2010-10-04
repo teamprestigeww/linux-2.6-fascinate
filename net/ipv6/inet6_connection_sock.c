@@ -17,7 +17,6 @@
 #include <linux/in6.h>
 #include <linux/ipv6.h>
 #include <linux/jhash.h>
-#include <linux/slab.h>
 
 #include <net/addrconf.h>
 #include <net/inet_connection_sock.h>
@@ -133,7 +132,7 @@ void inet6_csk_addr2sockaddr(struct sock *sk, struct sockaddr * uaddr)
 
 	sin6->sin6_family = AF_INET6;
 	ipv6_addr_copy(&sin6->sin6_addr, &np->daddr);
-	sin6->sin6_port	= inet_sk(sk)->inet_dport;
+	sin6->sin6_port	= inet_sk(sk)->dport;
 	/* We do not store received flowlabel for TCP */
 	sin6->sin6_flowinfo = 0;
 	sin6->sin6_scope_id = 0;
@@ -169,7 +168,8 @@ struct dst_entry *__inet6_csk_dst_check(struct sock *sk, u32 cookie)
 	if (dst) {
 		struct rt6_info *rt = (struct rt6_info *)dst;
 		if (rt->rt6i_flow_cache_genid != atomic_read(&flow_cache_genid)) {
-			__sk_dst_reset(sk);
+			sk->sk_dst_cache = NULL;
+			dst_release(dst);
 			dst = NULL;
 		}
 	}
@@ -178,14 +178,14 @@ struct dst_entry *__inet6_csk_dst_check(struct sock *sk, u32 cookie)
 	return dst;
 }
 
-int inet6_csk_xmit(struct sk_buff *skb)
+int inet6_csk_xmit(struct sk_buff *skb, int ipfragok)
 {
 	struct sock *sk = skb->sk;
 	struct inet_sock *inet = inet_sk(sk);
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct flowi fl;
 	struct dst_entry *dst;
-	struct in6_addr *final_p, final;
+	struct in6_addr *final_p = NULL, final;
 
 	memset(&fl, 0, sizeof(fl));
 	fl.proto = sk->sk_protocol;
@@ -194,12 +194,16 @@ int inet6_csk_xmit(struct sk_buff *skb)
 	fl.fl6_flowlabel = np->flow_label;
 	IP6_ECN_flow_xmit(sk, fl.fl6_flowlabel);
 	fl.oif = sk->sk_bound_dev_if;
-	fl.mark = sk->sk_mark;
-	fl.fl_ip_sport = inet->inet_sport;
-	fl.fl_ip_dport = inet->inet_dport;
+	fl.fl_ip_sport = inet->sport;
+	fl.fl_ip_dport = inet->dport;
 	security_sk_classify_flow(sk, &fl);
 
-	final_p = fl6_update_dst(&fl, np->opt, &final);
+	if (np->opt && np->opt->srcrt) {
+		struct rt0_hdr *rt0 = (struct rt0_hdr *)np->opt->srcrt;
+		ipv6_addr_copy(&final, &fl.fl6_dst);
+		ipv6_addr_copy(&fl.fl6_dst, rt0->addr);
+		final_p = &final;
+	}
 
 	dst = __inet6_csk_dst_check(sk, np->dst_cookie);
 
@@ -224,12 +228,12 @@ int inet6_csk_xmit(struct sk_buff *skb)
 		__inet6_csk_dst_store(sk, dst, NULL, NULL);
 	}
 
-	skb_dst_set(skb, dst_clone(dst));
+	skb->dst = dst_clone(dst);
 
 	/* Restore final destination back after routing done */
 	ipv6_addr_copy(&fl.fl6_dst, &np->daddr);
 
-	return ip6_xmit(sk, skb, &fl, np->opt);
+	return ip6_xmit(sk, skb, &fl, np->opt, 0);
 }
 
 EXPORT_SYMBOL_GPL(inet6_csk_xmit);

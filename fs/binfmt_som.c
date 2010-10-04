@@ -43,7 +43,7 @@ static int load_som_library(struct file *);
  * don't even try.
  */
 #if 0
-static int som_core_dump(struct coredump_params *cprm);
+static int som_core_dump(long signr, struct pt_regs *regs, unsigned long limit);
 #else
 #define som_core_dump	NULL
 #endif
@@ -188,6 +188,7 @@ out:
 static int
 load_som_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 {
+	int som_exec_fileno;
 	int retval;
 	unsigned int size;
 	unsigned long som_entry;
@@ -219,6 +220,12 @@ load_som_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 		goto out_free;
 	}
 
+	retval = get_unused_fd();
+	if (retval < 0)
+		goto out_free;
+	get_file(bprm->file);
+	fd_install(som_exec_fileno = retval, bprm->file);
+
 	/* Flush all traces of the currently running executable */
 	retval = flush_old_exec(bprm);
 	if (retval)
@@ -227,7 +234,6 @@ load_som_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 	/* OK, This is the point of no return */
 	current->flags &= ~PF_FORKNOEXEC;
 	current->personality = PER_HPUX;
-	setup_new_exec(bprm);
 
 	/* Set the task size for HP-UX processes such that
 	 * the gateway page is outside the address space.

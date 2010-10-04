@@ -18,14 +18,21 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/bootmem.h>
-#include <linux/gfp.h>
 #include <linux/swap.h>
 #include <linux/mman.h>
 #include <linux/nodemask.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 
+#include <asm/pgtable.h>
 #include <asm/bootparam.h>
+#include <asm/mmu_context.h>
+#include <asm/tlb.h>
 #include <asm/page.h>
+#include <asm/pgalloc.h>
+
+
+DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
 
 /* References to section boundaries */
 
@@ -123,8 +130,7 @@ void __init bootmem_init(void)
 
 	/* Find an area to use for the bootmem bitmap. */
 
-	bootmap_size = bootmem_bootmap_pages(max_low_pfn - min_low_pfn);
-	bootmap_size <<= PAGE_SHIFT;
+	bootmap_size = bootmem_bootmap_pages(max_low_pfn) << PAGE_SHIFT;
 	bootmap_start = ~0;
 
 	for (i=0; i<sysmem.nr_banks; i++)
@@ -139,9 +145,8 @@ void __init bootmem_init(void)
 	/* Reserve the bootmem bitmap area */
 
 	mem_reserve(bootmap_start, bootmap_start + bootmap_size, 1);
-	bootmap_size = init_bootmem_node(NODE_DATA(0),
+	bootmap_size = init_bootmem_node(NODE_DATA(0), min_low_pfn,
 					 bootmap_start >> PAGE_SHIFT,
-					 min_low_pfn,
 					 max_low_pfn);
 
 	/* Add all remaining memory pieces into the bootmem map */
@@ -153,14 +158,14 @@ void __init bootmem_init(void)
 }
 
 
-void __init zones_init(void)
+void __init paging_init(void)
 {
 	unsigned long zones_size[MAX_NR_ZONES];
 	int i;
 
 	/* All pages are DMA-able, so we put them all in the DMA zone. */
 
-	zones_size[ZONE_DMA] = max_low_pfn - ARCH_PFN_OFFSET;
+	zones_size[ZONE_DMA] = max_low_pfn;
 	for (i = 1; i < MAX_NR_ZONES; i++)
 		zones_size[i] = 0;
 
@@ -168,7 +173,40 @@ void __init zones_init(void)
 	zones_size[ZONE_HIGHMEM] = max_pfn - max_low_pfn;
 #endif
 
-	free_area_init_node(0, zones_size, ARCH_PFN_OFFSET, NULL);
+	/* Initialize the kernel's page tables. */
+
+	memset(swapper_pg_dir, 0, PAGE_SIZE);
+
+	free_area_init(zones_size);
+}
+
+/*
+ * Flush the mmu and reset associated register to default values.
+ */
+
+void __init init_mmu (void)
+{
+	/* Writing zeros to the <t>TLBCFG special registers ensure
+	 * that valid values exist in the register.  For existing
+	 * PGSZID<w> fields, zero selects the first element of the
+	 * page-size array.  For nonexistent PGSZID<w> fields, zero is
+	 * the best value to write.  Also, when changing PGSZID<w>
+	 * fields, the corresponding TLB must be flushed.
+	 */
+	set_itlbcfg_register (0);
+	set_dtlbcfg_register (0);
+	flush_tlb_all ();
+
+	/* Set rasid register to a known value. */
+
+	set_rasid_register (ASID_USER_FIRST);
+
+	/* Set PTEVADDR special register to the start of the page
+	 * table, which is in kernel mappable space (ie. not
+	 * statically mapped).  This register's value is undefined on
+	 * reset.
+	 */
+	set_ptevaddr_register (PGTABLE_START);
 }
 
 /*
@@ -180,8 +218,8 @@ void __init mem_init(void)
 	unsigned long codesize, reservedpages, datasize, initsize;
 	unsigned long highmemsize, tmp, ram;
 
-	max_mapnr = num_physpages = max_low_pfn - ARCH_PFN_OFFSET;
-	high_memory = (void *) __va(max_low_pfn << PAGE_SHIFT);
+	max_mapnr = num_physpages = max_low_pfn;
+	high_memory = (void *) __va(max_mapnr << PAGE_SHIFT);
 	highmemsize = 0;
 
 #ifdef CONFIG_HIGHMEM
@@ -191,7 +229,7 @@ void __init mem_init(void)
 	totalram_pages += free_all_bootmem();
 
 	reservedpages = ram = 0;
-	for (tmp = 0; tmp < max_mapnr; tmp++) {
+	for (tmp = 0; tmp < max_low_pfn; tmp++) {
 		ram++;
 		if (PageReserved(mem_map+tmp))
 			reservedpages++;
@@ -203,7 +241,7 @@ void __init mem_init(void)
 
 	printk("Memory: %luk/%luk available (%ldk kernel code, %ldk reserved, "
 	       "%ldk data, %ldk init %ldk highmem)\n",
-	       nr_free_pages() << (PAGE_SHIFT-10),
+	       (unsigned long) nr_free_pages() << (PAGE_SHIFT-10),
 	       ram << (PAGE_SHIFT-10),
 	       codesize >> 10,
 	       reservedpages << (PAGE_SHIFT-10),
@@ -240,4 +278,24 @@ void free_initmem(void)
 	free_reserved_mem(&__init_begin, &__init_end);
 	printk("Freeing unused kernel memory: %dk freed\n",
 	       (&__init_end - &__init_begin) >> 10);
+}
+
+struct kmem_cache *pgtable_cache __read_mostly;
+
+static void pgd_ctor(void* addr)
+{
+	pte_t* ptep = (pte_t*)addr;
+	int i;
+
+	for (i = 0; i < 1024; i++, ptep++)
+		pte_clear(NULL, 0, ptep);
+
+}
+
+void __init pgtable_cache_init(void)
+{
+	pgtable_cache = kmem_cache_create("pgd",
+			PAGE_SIZE, PAGE_SIZE,
+			SLAB_HWCACHE_ALIGN,
+			pgd_ctor);
 }

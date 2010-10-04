@@ -13,9 +13,7 @@
 
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <linux/acpi.h>
 #include <linux/mfd/core.h>
-#include <linux/slab.h>
 
 static int mfd_add_device(struct device *parent, int id,
 			  const struct mfd_cell *cell,
@@ -27,7 +25,7 @@ static int mfd_add_device(struct device *parent, int id,
 	int ret = -ENOMEM;
 	int r;
 
-	pdev = platform_device_alloc(cell->name, id + cell->id);
+	pdev = platform_device_alloc(cell->name, id);
 	if (!pdev)
 		goto fail_alloc;
 
@@ -48,7 +46,7 @@ static int mfd_add_device(struct device *parent, int id,
 		res[r].flags = cell->resources[r].flags;
 
 		/* Find out base to use */
-		if ((cell->resources[r].flags & IORESOURCE_MEM) && mem_base) {
+		if (cell->resources[r].flags & IORESOURCE_MEM) {
 			res[r].parent = mem_base;
 			res[r].start = mem_base->start +
 				cell->resources[r].start;
@@ -64,15 +62,9 @@ static int mfd_add_device(struct device *parent, int id,
 			res[r].start = cell->resources[r].start;
 			res[r].end   = cell->resources[r].end;
 		}
-
-		ret = acpi_check_resource_conflict(res);
-		if (ret)
-			goto fail_res;
 	}
 
-	ret = platform_device_add_resources(pdev, res, cell->num_resources);
-	if (ret)
-		goto fail_res;
+	platform_device_add_resources(pdev, res, cell->num_resources);
 
 	ret = platform_device_add(pdev);
 	if (ret)

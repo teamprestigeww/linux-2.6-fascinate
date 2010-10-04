@@ -5,7 +5,7 @@
 
 #ifdef __CHECKER__
 # define __user		__attribute__((noderef, address_space(1)))
-# define __kernel	__attribute__((address_space(0)))
+# define __kernel	/* default address space */
 # define __safe		__attribute__((safe))
 # define __force	__attribute__((force))
 # define __nocast	__attribute__((nocast))
@@ -15,8 +15,6 @@
 # define __acquire(x)	__context__(x,1)
 # define __release(x)	__context__(x,-1)
 # define __cond_lock(x,c)	((c) ? ({ __acquire(x); 1; }) : 0)
-# define __percpu	__attribute__((noderef, address_space(3)))
-# define __rcu
 extern void __chk_user_ptr(const volatile void __user *);
 extern void __chk_io_ptr(const volatile void __iomem *);
 #else
@@ -34,8 +32,6 @@ extern void __chk_io_ptr(const volatile void __iomem *);
 # define __acquire(x) (void)0
 # define __release(x) (void)0
 # define __cond_lock(x,c) (c)
-# define __percpu
-# define __rcu
 #endif
 
 #ifdef __KERNEL__
@@ -72,7 +68,6 @@ struct ftrace_branch_data {
 			unsigned long miss;
 			unsigned long hit;
 		};
-		unsigned long miss_hit[2];
 	};
 };
 
@@ -80,8 +75,7 @@ struct ftrace_branch_data {
  * Note: DISABLE_BRANCH_PROFILING can be used by special lowlevel code
  * to disable branch tracing on a per file basis.
  */
-#if defined(CONFIG_TRACE_BRANCH_PROFILING) \
-    && !defined(DISABLE_BRANCH_PROFILING) && !defined(__CHECKER__)
+#if defined(CONFIG_TRACE_BRANCH_PROFILING) && !defined(DISABLE_BRANCH_PROFILING)
 void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 
 #define likely_notrace(x)	__builtin_expect(!!(x), 1)
@@ -119,9 +113,7 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
  * "Define 'is'", Bill Clinton
  * "Define 'if'", Steven Rostedt
  */
-#define if(cond, ...) __trace_if( (cond , ## __VA_ARGS__) )
-#define __trace_if(cond) \
-	if (__builtin_constant_p((cond)) ? !!(cond) :			\
+#define if(cond) if (__builtin_constant_p((cond)) ? !!(cond) :		\
 	({								\
 		int ______r;						\
 		static struct ftrace_branch_data			\
@@ -133,7 +125,10 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 				.line = __LINE__,			\
 			};						\
 		______r = !!(cond);					\
-		______f.miss_hit[______r]++;					\
+		if (______r)						\
+			______f.hit++;					\
+		else							\
+			______f.miss++;					\
 		______r;						\
 	}))
 #endif /* CONFIG_PROFILE_ALL_BRANCHES */
@@ -146,11 +141,6 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 /* Optimization barrier */
 #ifndef barrier
 # define barrier() __memory_barrier()
-#endif
-
-/* Unreachable code */
-#ifndef unreachable
-# define unreachable() do { } while (1)
 #endif
 
 #ifndef RELOC_HIDE
@@ -222,10 +212,6 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 # define __maybe_unused		/* unimplemented */
 #endif
 
-#ifndef __always_unused
-# define __always_unused	/* unimplemented */
-#endif
-
 #ifndef noinline
 #define noinline
 #endif
@@ -272,22 +258,6 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 /* Simple shorthand for a section definition */
 #ifndef __section
 # define __section(S) __attribute__ ((__section__(#S)))
-#endif
-
-/* Are two types/vars the same type (ignoring qualifiers)? */
-#ifndef __same_type
-# define __same_type(a, b) __builtin_types_compatible_p(typeof(a), typeof(b))
-#endif
-
-/* Compile time object size, -1 for unknown */
-#ifndef __compiletime_object_size
-# define __compiletime_object_size(obj) -1
-#endif
-#ifndef __compiletime_warning
-# define __compiletime_warning(message)
-#endif
-#ifndef __compiletime_error
-# define __compiletime_error(message)
 #endif
 
 /*

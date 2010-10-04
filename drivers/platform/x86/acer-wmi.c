@@ -1,7 +1,7 @@
 /*
  *  Acer WMI Laptop Extras
  *
- *  Copyright (C) 2007-2009	Carlos Corbacho <carlos@strangeworlds.co.uk>
+ *  Copyright (C) 2007-2008	Carlos Corbacho <carlos@strangeworlds.co.uk>
  *
  *  Based on acer_acpi:
  *    Copyright (C) 2005-2007	E.M. Smith
@@ -36,7 +36,6 @@
 #include <linux/rfkill.h>
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
-#include <linux/slab.h>
 
 #include <acpi/acpi_drivers.h>
 
@@ -48,6 +47,17 @@ MODULE_LICENSE("GPL");
 #define ACER_ERR KERN_ERR ACER_LOGPREFIX
 #define ACER_NOTICE KERN_NOTICE ACER_LOGPREFIX
 #define ACER_INFO KERN_INFO ACER_LOGPREFIX
+
+/*
+ * The following defines quirks to get some specific functions to work
+ * which are known to not be supported over ACPI-WMI (such as the mail LED
+ * on WMID based Acer's)
+ */
+struct acer_quirks {
+	const char *vendor;
+	const char *model;
+	u16 quirks;
+};
 
 /*
  * Magic Number
@@ -85,6 +95,9 @@ MODULE_LICENSE("GPL");
 
 MODULE_ALIAS("wmi:67C3371D-95A3-4C37-BB61-DD47B491DAAB");
 MODULE_ALIAS("wmi:6AF4F258-B401-42fd-BE91-3D4AC2D7C0D3");
+
+/* Temporary workaround until the WMI sysfs interface goes in */
+MODULE_ALIAS("dmi:*:*Acer*:*:");
 
 /*
  * Interface capability flags
@@ -189,7 +202,7 @@ static void set_quirks(void)
 static int dmi_matched(const struct dmi_system_id *dmi)
 {
 	quirks = dmi->driver_data;
-	return 1;
+	return 0;
 }
 
 static struct quirk_entry quirk_unknown = {
@@ -210,25 +223,6 @@ static struct quirk_entry quirk_medion_md_98300 = {
 
 static struct quirk_entry quirk_fujitsu_amilo_li_1718 = {
 	.wireless = 2,
-};
-
-/* The Aspire One has a dummy ACPI-WMI interface - disable it */
-static struct dmi_system_id __devinitdata acer_blacklist[] = {
-	{
-		.ident = "Acer Aspire One (SSD)",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "AOA110"),
-		},
-	},
-	{
-		.ident = "Acer Aspire One (HDD)",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "AOA150"),
-		},
-	},
-	{}
 };
 
 static struct dmi_system_id acer_quirks[] = {
@@ -544,7 +538,6 @@ static acpi_status AMW0_find_mailled(void)
 	obj->buffer.length == sizeof(struct wmab_ret)) {
 		ret = *((struct wmab_ret *) obj->buffer.pointer);
 	} else {
-		kfree(out.pointer);
 		return AE_ERROR;
 	}
 
@@ -560,7 +553,7 @@ static acpi_status AMW0_set_capabilities(void)
 {
 	struct wmab_args args;
 	struct wmab_ret ret;
-	acpi_status status;
+	acpi_status status = AE_OK;
 	struct acpi_buffer out = { ACPI_ALLOCATE_BUFFER, NULL };
 	union acpi_object *obj;
 
@@ -583,13 +576,12 @@ static acpi_status AMW0_set_capabilities(void)
 	if (ACPI_FAILURE(status))
 		return status;
 
-	obj = out.pointer;
+	obj = (union acpi_object *) out.pointer;
 	if (obj && obj->type == ACPI_TYPE_BUFFER &&
 	obj->buffer.length == sizeof(struct wmab_ret)) {
 		ret = *((struct wmab_ret *) obj->buffer.pointer);
 	} else {
-		status = AE_ERROR;
-		goto out;
+		return AE_ERROR;
 	}
 
 	if (ret.eax & 0x1)
@@ -598,25 +590,22 @@ static acpi_status AMW0_set_capabilities(void)
 	args.ebx = 2 << 8;
 	args.ebx |= ACER_AMW0_BLUETOOTH_MASK;
 
-	/*
-	 * It's ok to use existing buffer for next wmab_execute call.
-	 * But we need to kfree(out.pointer) if next wmab_execute fail.
-	 */
 	status = wmab_execute(&args, &out);
 	if (ACPI_FAILURE(status))
-		goto out;
+		return status;
 
 	obj = (union acpi_object *) out.pointer;
 	if (obj && obj->type == ACPI_TYPE_BUFFER
 	&& obj->buffer.length == sizeof(struct wmab_ret)) {
 		ret = *((struct wmab_ret *) obj->buffer.pointer);
 	} else {
-		status = AE_ERROR;
-		goto out;
+		return AE_ERROR;
 	}
 
 	if (ret.eax & 0x1)
 		interface->capability |= ACER_CAP_BLUETOOTH;
+
+	kfree(out.pointer);
 
 	/*
 	 * This appears to be safe to enable, since all Wistron based laptops
@@ -626,10 +615,7 @@ static acpi_status AMW0_set_capabilities(void)
 	if (quirks->brightness >= 0)
 		interface->capability |= ACER_CAP_BRIGHTNESS;
 
-	status = AE_OK;
-out:
-	kfree(out.pointer);
-	return status;
+	return AE_OK;
 }
 
 static struct wmi_interface AMW0_interface = {
@@ -741,9 +727,7 @@ static acpi_status WMID_set_u32(u32 value, u32 cap, struct wmi_interface *iface)
 			return AE_BAD_PARAMETER;
 		if (quirks->mailled == 1) {
 			param = value ? 0x92 : 0x93;
-			i8042_lock_chip();
 			i8042_command(&param, 0x1059);
-			i8042_unlock_chip();
 			return 0;
 		}
 		break;
@@ -769,7 +753,6 @@ static acpi_status WMID_set_capabilities(void)
 		obj->buffer.length == sizeof(u32)) {
 		devices = *((u32 *) obj->buffer.pointer);
 	} else {
-		kfree(out.pointer);
 		return AE_ERROR;
 	}
 
@@ -786,7 +769,6 @@ static acpi_status WMID_set_capabilities(void)
 	if (!(devices & 0x20))
 		max_brightness = 0x9;
 
-	kfree(out.pointer);
 	return status;
 }
 
@@ -922,13 +904,9 @@ static struct backlight_ops acer_bl_ops = {
 
 static int __devinit acer_backlight_init(struct device *dev)
 {
-	struct backlight_properties props;
 	struct backlight_device *bd;
 
-	memset(&props, 0, sizeof(struct backlight_properties));
-	props.max_brightness = max_brightness;
-	bd = backlight_device_register("acer-wmi", dev, NULL, &acer_bl_ops,
-				       &props);
+	bd = backlight_device_register("acer-wmi", dev, NULL, &acer_bl_ops);
 	if (IS_ERR(bd)) {
 		printk(ACER_ERR "Could not register Acer backlight device\n");
 		acer_backlight_device = NULL;
@@ -938,7 +916,8 @@ static int __devinit acer_backlight_init(struct device *dev)
 	acer_backlight_device = bd;
 
 	bd->props.power = FB_BLANK_UNBLANK;
-	bd->props.brightness = read_brightness(bd);
+	bd->props.brightness = max_brightness;
+	bd->props.max_brightness = max_brightness;
 	backlight_update_status(bd);
 	return 0;
 }
@@ -960,47 +939,59 @@ static void acer_rfkill_update(struct work_struct *ignored)
 
 	status = get_u32(&state, ACER_CAP_WIRELESS);
 	if (ACPI_SUCCESS(status))
-		rfkill_set_sw_state(wireless_rfkill, !state);
+		rfkill_force_state(wireless_rfkill, state ?
+			RFKILL_STATE_UNBLOCKED : RFKILL_STATE_SOFT_BLOCKED);
 
 	if (has_cap(ACER_CAP_BLUETOOTH)) {
 		status = get_u32(&state, ACER_CAP_BLUETOOTH);
 		if (ACPI_SUCCESS(status))
-			rfkill_set_sw_state(bluetooth_rfkill, !state);
+			rfkill_force_state(bluetooth_rfkill, state ?
+				RFKILL_STATE_UNBLOCKED :
+				RFKILL_STATE_SOFT_BLOCKED);
 	}
 
 	schedule_delayed_work(&acer_rfkill_work, round_jiffies_relative(HZ));
 }
 
-static int acer_rfkill_set(void *data, bool blocked)
+static int acer_rfkill_set(void *data, enum rfkill_state state)
 {
 	acpi_status status;
-	u32 cap = (unsigned long)data;
-	status = set_u32(!blocked, cap);
+	u32 *cap = data;
+	status = set_u32((u32) (state == RFKILL_STATE_UNBLOCKED), *cap);
 	if (ACPI_FAILURE(status))
 		return -ENODEV;
 	return 0;
 }
 
-static const struct rfkill_ops acer_rfkill_ops = {
-	.set_block = acer_rfkill_set,
-};
-
-static struct rfkill *acer_rfkill_register(struct device *dev,
-					   enum rfkill_type type,
-					   char *name, u32 cap)
+static struct rfkill * acer_rfkill_register(struct device *dev,
+enum rfkill_type type, char *name, u32 cap)
 {
 	int err;
+	u32 state;
+	u32 *data;
 	struct rfkill *rfkill_dev;
 
-	rfkill_dev = rfkill_alloc(name, dev, type,
-				  &acer_rfkill_ops,
-				  (void *)(unsigned long)cap);
+	rfkill_dev = rfkill_allocate(dev, type);
 	if (!rfkill_dev)
 		return ERR_PTR(-ENOMEM);
+	rfkill_dev->name = name;
+	get_u32(&state, cap);
+	rfkill_dev->state = state ? RFKILL_STATE_UNBLOCKED :
+		RFKILL_STATE_SOFT_BLOCKED;
+	data = kzalloc(sizeof(u32), GFP_KERNEL);
+	if (!data) {
+		rfkill_free(rfkill_dev);
+		return ERR_PTR(-ENOMEM);
+	}
+	*data = cap;
+	rfkill_dev->data = data;
+	rfkill_dev->toggle_radio = acer_rfkill_set;
+	rfkill_dev->user_claim_unsupported = 1;
 
 	err = rfkill_register(rfkill_dev);
 	if (err) {
-		rfkill_destroy(rfkill_dev);
+		kfree(rfkill_dev->data);
+		rfkill_free(rfkill_dev);
 		return ERR_PTR(err);
 	}
 	return rfkill_dev;
@@ -1018,8 +1009,8 @@ static int acer_rfkill_init(struct device *dev)
 			RFKILL_TYPE_BLUETOOTH, "acer-bluetooth",
 			ACER_CAP_BLUETOOTH);
 		if (IS_ERR(bluetooth_rfkill)) {
+			kfree(wireless_rfkill->data);
 			rfkill_unregister(wireless_rfkill);
-			rfkill_destroy(wireless_rfkill);
 			return PTR_ERR(bluetooth_rfkill);
 		}
 	}
@@ -1032,13 +1023,11 @@ static int acer_rfkill_init(struct device *dev)
 static void acer_rfkill_exit(void)
 {
 	cancel_delayed_work_sync(&acer_rfkill_work);
-
+	kfree(wireless_rfkill->data);
 	rfkill_unregister(wireless_rfkill);
-	rfkill_destroy(wireless_rfkill);
-
 	if (has_cap(ACER_CAP_BLUETOOTH)) {
+		kfree(bluetooth_rfkill->data);
 		rfkill_unregister(bluetooth_rfkill);
-		rfkill_destroy(bluetooth_rfkill);
 	}
 	return;
 }
@@ -1083,7 +1072,8 @@ static ssize_t show_interface(struct device *dev, struct device_attribute *attr,
 	}
 }
 
-static DEVICE_ATTR(interface, S_IRUGO, show_interface, NULL);
+static DEVICE_ATTR(interface, S_IWUGO | S_IRUGO | S_IWUSR,
+	show_interface, NULL);
 
 /*
  * debugfs functions
@@ -1093,7 +1083,6 @@ static u32 get_wmid_devices(void)
 	struct acpi_buffer out = {ACPI_ALLOCATE_BUFFER, NULL};
 	union acpi_object *obj;
 	acpi_status status;
-	u32 devices = 0;
 
 	status = wmi_query_block(WMID_GUID2, 1, &out);
 	if (ACPI_FAILURE(status))
@@ -1102,11 +1091,10 @@ static u32 get_wmid_devices(void)
 	obj = (union acpi_object *) out.pointer;
 	if (obj && obj->type == ACPI_TYPE_BUFFER &&
 		obj->buffer.length == sizeof(u32)) {
-		devices = *((u32 *) obj->buffer.pointer);
+		return *((u32 *) obj->buffer.pointer);
+	} else {
+		return 0;
 	}
-
-	kfree(out.pointer);
-	return devices;
 }
 
 /*
@@ -1129,17 +1117,11 @@ static int __devinit acer_platform_probe(struct platform_device *device)
 	}
 
 	err = acer_rfkill_init(&device->dev);
-	if (err)
-		goto error_rfkill;
 
 	return err;
 
-error_rfkill:
-	if (has_cap(ACER_CAP_BRIGHTNESS))
-		acer_backlight_exit();
 error_brightness:
-	if (has_cap(ACER_CAP_MAILLED))
-		acer_led_exit();
+	acer_led_exit();
 error_mailled:
 	return err;
 }
@@ -1272,12 +1254,6 @@ static int __init acer_wmi_init(void)
 
 	printk(ACER_INFO "Acer Laptop ACPI-WMI Extras\n");
 
-	if (dmi_check_system(acer_blacklist)) {
-		printk(ACER_INFO "Blacklisted hardware detected - "
-				"not loading\n");
-		return -ENODEV;
-	}
-
 	find_quirks();
 
 	/*
@@ -1327,31 +1303,22 @@ static int __init acer_wmi_init(void)
 		       "generic video driver\n");
 	}
 
-	err = platform_driver_register(&acer_platform_driver);
-	if (err) {
+	if (platform_driver_register(&acer_platform_driver)) {
 		printk(ACER_ERR "Unable to register platform driver.\n");
 		goto error_platform_register;
 	}
-
 	acer_platform_device = platform_device_alloc("acer-wmi", -1);
-	if (!acer_platform_device) {
-		err = -ENOMEM;
-		goto error_device_alloc;
-	}
-
-	err = platform_device_add(acer_platform_device);
-	if (err)
-		goto error_device_add;
+	platform_device_add(acer_platform_device);
 
 	err = create_sysfs();
 	if (err)
-		goto error_create_sys;
+		return err;
 
 	if (wmi_has_guid(WMID_GUID2)) {
 		interface->debug.wmid_devices = get_wmid_devices();
 		err = create_debugfs();
 		if (err)
-			goto error_create_debugfs;
+			return err;
 	}
 
 	/* Override any initial settings with values from the commandline */
@@ -1359,23 +1326,15 @@ static int __init acer_wmi_init(void)
 
 	return 0;
 
-error_create_debugfs:
-	remove_sysfs(acer_platform_device);
-error_create_sys:
-	platform_device_del(acer_platform_device);
-error_device_add:
-	platform_device_put(acer_platform_device);
-error_device_alloc:
-	platform_driver_unregister(&acer_platform_driver);
 error_platform_register:
-	return err;
+	return -ENODEV;
 }
 
 static void __exit acer_wmi_exit(void)
 {
 	remove_sysfs(acer_platform_device);
 	remove_debugfs();
-	platform_device_unregister(acer_platform_device);
+	platform_device_del(acer_platform_device);
 	platform_driver_unregister(&acer_platform_driver);
 
 	printk(ACER_INFO "Acer Laptop WMI Extras unloaded\n");

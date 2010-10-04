@@ -32,6 +32,7 @@
  */
 #define	FREQ	((MCF_CLK / 2) / 64)
 #define	TA(a)	(MCF_IPSBAR + MCFPIT_BASE1 + (a))
+#define	INTC0	(MCF_IPSBAR + MCFICM_INTC0)
 #define PIT_CYCLES_PER_JIFFY (FREQ / HZ)
 
 static u32 pit_cnt;
@@ -124,7 +125,7 @@ static struct irqaction pit_irq = {
 
 /***************************************************************************/
 
-static cycle_t pit_read_clk(struct clocksource *cs)
+static cycle_t pit_read_clk(void)
 {
 	unsigned long flags;
 	u32 cycles;
@@ -146,12 +147,15 @@ static struct clocksource pit_clk = {
 	.read	= pit_read_clk,
 	.shift	= 20,
 	.mask	= CLOCKSOURCE_MASK(32),
+	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
 /***************************************************************************/
 
 void hw_timer_init(void)
 {
+	u32 imr;
+
 	cf_pit_clockevent.cpumask = cpumask_of(smp_processor_id());
 	cf_pit_clockevent.mult = div_sc(FREQ, NSEC_PER_SEC, 32);
 	cf_pit_clockevent.max_delta_ns =
@@ -161,6 +165,11 @@ void hw_timer_init(void)
 	clockevents_register_device(&cf_pit_clockevent);
 
 	setup_irq(MCFINT_VECBASE + MCFINT_PIT1, &pit_irq);
+
+	__raw_writeb(ICR_INTRCONF, INTC0 + MCFINTC_ICR0 + MCFINT_PIT1);
+	imr = __raw_readl(INTC0 + MCFPIT_IMR);
+	imr &= ~MCFPIT_IMR_IBIT;
+	__raw_writel(imr, INTC0 + MCFPIT_IMR);
 
 	pit_clk.mult = clocksource_hz2mult(FREQ, pit_clk.shift);
 	clocksource_register(&pit_clk);

@@ -30,7 +30,6 @@
 #include <linux/bit_spinlock.h>
 #include <linux/mutex.h>
 #include <linux/timer.h>
-#include <linux/slab.h>
 #endif
 
 #define journal_oom_retry 1
@@ -70,8 +69,15 @@ extern u8 jbd2_journal_enable_debug;
 #define jbd_debug(f, a...)	/**/
 #endif
 
-extern void *jbd2_alloc(size_t size, gfp_t flags);
-extern void jbd2_free(void *ptr, size_t size);
+static inline void *jbd2_alloc(size_t size, gfp_t flags)
+{
+	return (void *)__get_free_pages(flags, get_order(size));
+}
+
+static inline void jbd2_free(void *ptr, size_t size)
+{
+	free_pages((unsigned long)ptr, get_order(size));
+};
 
 #define JBD2_MIN_JOURNAL_BLOCKS 1024
 
@@ -278,8 +284,19 @@ typedef struct journal_superblock_s
 
 #define J_ASSERT(assert)	BUG_ON(!(assert))
 
+#if defined(CONFIG_BUFFER_DEBUG)
+void buffer_assertion_failure(struct buffer_head *bh);
+#define J_ASSERT_BH(bh, expr)						\
+	do {								\
+		if (!(expr))						\
+			buffer_assertion_failure(bh);			\
+		J_ASSERT(expr);						\
+	} while (0)
+#define J_ASSERT_JH(jh, expr)	J_ASSERT_BH(jh2bh(jh), expr)
+#else
 #define J_ASSERT_BH(bh, expr)	J_ASSERT(expr)
 #define J_ASSERT_JH(jh, expr)	J_ASSERT(expr)
+#endif
 
 #if defined(JBD2_PARANOID_IOFAIL)
 #define J_EXPECT(expr, why...)		J_ASSERT(expr)
@@ -447,9 +464,9 @@ struct handle_s
  */
 struct transaction_chp_stats_s {
 	unsigned long		cs_chp_time;
-	__u32			cs_forced_to_close;
-	__u32			cs_written;
-	__u32			cs_dropped;
+	unsigned long		cs_forced_to_close;
+	unsigned long		cs_written;
+	unsigned long		cs_dropped;
 };
 
 /* The transaction_t type is the guts of the journaling mechanism.  It
@@ -601,13 +618,13 @@ struct transaction_s
 	 * Number of outstanding updates running on this transaction
 	 * [t_handle_lock]
 	 */
-	atomic_t		t_updates;
+	int			t_updates;
 
 	/*
 	 * Number of buffers reserved for use by all handles in this transaction
 	 * handle but not yet modified. [t_handle_lock]
 	 */
-	atomic_t		t_outstanding_credits;
+	int			t_outstanding_credits;
 
 	/*
 	 * Forward and backward links for the circular list of all transactions
@@ -629,14 +646,7 @@ struct transaction_s
 	/*
 	 * How many handles used this transaction? [t_handle_lock]
 	 */
-	atomic_t		t_handle_count;
-
-	/*
-	 * This transaction is being forced and some process is
-	 * waiting for it to finish.
-	 */
-	unsigned int t_synchronous_commit:1;
-	unsigned int t_flushed_data_blocks:1;
+	int t_handle_count;
 
 	/*
 	 * For use by the filesystem to store fs-specific data
@@ -652,15 +662,22 @@ struct transaction_run_stats_s {
 	unsigned long		rs_flushing;
 	unsigned long		rs_logging;
 
-	__u32			rs_handle_count;
-	__u32			rs_blocks;
-	__u32			rs_blocks_logged;
+	unsigned long		rs_handle_count;
+	unsigned long		rs_blocks;
+	unsigned long		rs_blocks_logged;
 };
 
 struct transaction_stats_s {
+	int 			ts_type;
 	unsigned long		ts_tid;
-	struct transaction_run_stats_s run;
+	union {
+		struct transaction_run_stats_s run;
+		struct transaction_chp_stats_s chp;
+	} u;
 };
+
+#define JBD2_STATS_RUN		1
+#define JBD2_STATS_CHECKPOINT	2
 
 static inline unsigned long
 jbd2_time_diff(unsigned long start, unsigned long end)
@@ -764,7 +781,7 @@ struct journal_s
 	/*
 	 * Protect the various scalars in the journal
 	 */
-	rwlock_t		j_state_lock;
+	spinlock_t		j_state_lock;
 
 	/*
 	 * Number of processes waiting to create a barrier lock [j_state_lock]
@@ -965,6 +982,12 @@ struct journal_s
 	/*
 	 * Journal statistics
 	 */
+	struct transaction_stats_s *j_history;
+	int			j_history_max;
+	int			j_history_cur;
+	/*
+	 * Protect the transactions statistics history
+	 */
 	spinlock_t		j_history_lock;
 	struct proc_dir_entry	*j_proc_entry;
 	struct transaction_stats_s j_stats;
@@ -1026,12 +1049,11 @@ void __jbd2_journal_insert_checkpoint(struct journal_head *, transaction_t *);
 
 struct jbd2_buffer_trigger_type {
 	/*
-	 * Fired a the moment data to write to the journal are known to be
-	 * stable - so either at the moment b_frozen_data is created or just
-	 * before a buffer is written to the journal.  mapped_data is a mapped
-	 * buffer that is the frozen data for commit.
+	 * Fired just before a buffer is written to the journal.
+	 * mapped_data is a mapped buffer that is the frozen data for
+	 * commit.
 	 */
-	void (*t_frozen)(struct jbd2_buffer_trigger_type *type,
+	void (*t_commit)(struct jbd2_buffer_trigger_type *type,
 			 struct buffer_head *bh, void *mapped_data,
 			 size_t size);
 
@@ -1043,7 +1065,7 @@ struct jbd2_buffer_trigger_type {
 			struct buffer_head *bh);
 };
 
-extern void jbd2_buffer_frozen_trigger(struct journal_head *jh,
+extern void jbd2_buffer_commit_trigger(struct journal_head *jh,
 				       void *mapped_data,
 				       struct jbd2_buffer_trigger_type *triggers);
 extern void jbd2_buffer_abort_trigger(struct journal_head *jh,
@@ -1082,9 +1104,7 @@ static inline handle_t *journal_current_handle(void)
  */
 
 extern handle_t *jbd2_journal_start(journal_t *, int nblocks);
-extern handle_t *jbd2__journal_start(journal_t *, int nblocks, int gfp_mask);
-extern int	 jbd2_journal_restart(handle_t *, int nblocks);
-extern int	 jbd2__journal_restart(handle_t *, int nblocks, int gfp_mask);
+extern int	 jbd2_journal_restart (handle_t *, int nblocks);
 extern int	 jbd2_journal_extend (handle_t *, int nblocks);
 extern int	 jbd2_journal_get_write_access(handle_t *, struct buffer_head *);
 extern int	 jbd2_journal_get_create_access (handle_t *, struct buffer_head *);
@@ -1167,8 +1187,7 @@ extern int	   jbd2_journal_init_revoke_caches(void);
 extern void	   jbd2_journal_destroy_revoke(journal_t *);
 extern int	   jbd2_journal_revoke (handle_t *, unsigned long long, struct buffer_head *);
 extern int	   jbd2_journal_cancel_revoke(handle_t *, struct journal_head *);
-extern void	   jbd2_journal_write_revoke_records(journal_t *,
-						     transaction_t *, int);
+extern void	   jbd2_journal_write_revoke_records(journal_t *, transaction_t *);
 
 /* Recovery revoke support */
 extern int	jbd2_journal_set_revoke(journal_t *, unsigned long long, tid_t);
@@ -1259,8 +1278,8 @@ static inline int jbd_space_needed(journal_t *journal)
 {
 	int nblocks = journal->j_max_transaction_buffers;
 	if (journal->j_committing_transaction)
-		nblocks += atomic_read(&journal->j_committing_transaction->
-				       t_outstanding_credits);
+		nblocks += journal->j_committing_transaction->
+					t_outstanding_credits;
 	return nblocks;
 }
 
@@ -1288,12 +1307,6 @@ extern int jbd_blocks_per_page(struct inode *inode);
 #define BUFFER_TRACE(bh, info)	do {} while (0)
 #define BUFFER_TRACE2(bh, bh2, info)	do {} while (0)
 #define JBUFFER_TRACE(jh, info)	do {} while (0)
-
-/* 
- * jbd2_dev_to_name is a utility function used by the jbd2 and ext4 
- * tracing infrastructure to map a dev_t to a device name.
- */
-extern const char *jbd2_dev_to_name(dev_t device);
 
 #endif	/* __KERNEL__ */
 

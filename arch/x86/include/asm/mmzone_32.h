@@ -47,7 +47,7 @@ static inline void resume_map_numa_kva(pgd_t *pgd) {}
 /*
  * generic node memory support, the following assumptions apply:
  *
- * 1) memory comes in 64Mb contiguous chunks which are either present or not
+ * 1) memory comes in 64Mb contigious chunks which are either present or not
  * 2) we will not have more than 64Gb in total
  *
  * for now assume that 64Gb is max amount of RAM for whole system
@@ -91,9 +91,46 @@ static inline int pfn_valid(int pfn)
 #endif /* CONFIG_DISCONTIGMEM */
 
 #ifdef CONFIG_NEED_MULTIPLE_NODES
-/* always use node 0 for bootmem on this numa platform */
-#define bootmem_arch_preferred_node(__bdata, size, align, goal, limit)	\
-	(NODE_DATA(0)->bdata)
+
+/*
+ * Following are macros that are specific to this numa platform.
+ */
+#define reserve_bootmem(addr, size, flags) \
+	reserve_bootmem_node(NODE_DATA(0), (addr), (size), (flags))
+#define alloc_bootmem(x) \
+	__alloc_bootmem_node(NODE_DATA(0), (x), SMP_CACHE_BYTES, __pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_nopanic(x) \
+	__alloc_bootmem_node_nopanic(NODE_DATA(0), (x), SMP_CACHE_BYTES, \
+				__pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_low(x) \
+	__alloc_bootmem_node(NODE_DATA(0), (x), SMP_CACHE_BYTES, 0)
+#define alloc_bootmem_pages(x) \
+	__alloc_bootmem_node(NODE_DATA(0), (x), PAGE_SIZE, __pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_pages_nopanic(x) \
+	__alloc_bootmem_node_nopanic(NODE_DATA(0), (x), PAGE_SIZE, \
+				__pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_low_pages(x) \
+	__alloc_bootmem_node(NODE_DATA(0), (x), PAGE_SIZE, 0)
+#define alloc_bootmem_node(pgdat, x)					\
+({									\
+	struct pglist_data  __maybe_unused			\
+				*__alloc_bootmem_node__pgdat = (pgdat);	\
+	__alloc_bootmem_node(NODE_DATA(0), (x), SMP_CACHE_BYTES,	\
+						__pa(MAX_DMA_ADDRESS));	\
+})
+#define alloc_bootmem_pages_node(pgdat, x)				\
+({									\
+	struct pglist_data  __maybe_unused			\
+				*__alloc_bootmem_node__pgdat = (pgdat);	\
+	__alloc_bootmem_node(NODE_DATA(0), (x), PAGE_SIZE,		\
+						__pa(MAX_DMA_ADDRESS));	\
+})
+#define alloc_bootmem_low_pages_node(pgdat, x)				\
+({									\
+	struct pglist_data  __maybe_unused			\
+				*__alloc_bootmem_node__pgdat = (pgdat);	\
+	__alloc_bootmem_node(NODE_DATA(0), (x), PAGE_SIZE, 0);		\
+})
 #endif /* CONFIG_NEED_MULTIPLE_NODES */
 
 #endif /* _ASM_X86_MMZONE_32_H */

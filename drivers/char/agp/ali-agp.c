@@ -141,37 +141,37 @@ static void m1541_cache_flush(void)
 	}
 }
 
-static struct page *m1541_alloc_page(struct agp_bridge_data *bridge)
+static void *m1541_alloc_page(struct agp_bridge_data *bridge)
 {
-	struct page *page = agp_generic_alloc_page(agp_bridge);
+	void *addr = agp_generic_alloc_page(agp_bridge);
 	u32 temp;
 
-	if (!page)
+	if (!addr)
 		return NULL;
 
 	pci_read_config_dword(agp_bridge->dev, ALI_CACHE_FLUSH_CTRL, &temp);
 	pci_write_config_dword(agp_bridge->dev, ALI_CACHE_FLUSH_CTRL,
 			(((temp & ALI_CACHE_FLUSH_ADDR_MASK) |
-			  page_to_phys(page)) | ALI_CACHE_FLUSH_EN ));
-	return page;
+			  virt_to_gart(addr)) | ALI_CACHE_FLUSH_EN ));
+	return addr;
 }
 
-static void ali_destroy_page(struct page *page, int flags)
+static void ali_destroy_page(void * addr, int flags)
 {
-	if (page) {
+	if (addr) {
 		if (flags & AGP_PAGE_DESTROY_UNMAP) {
 			global_cache_flush();	/* is this really needed?  --hch */
-			agp_generic_destroy_page(page, flags);
+			agp_generic_destroy_page(addr, flags);
 		} else
-			agp_generic_destroy_page(page, flags);
+			agp_generic_destroy_page(addr, flags);
 	}
 }
 
-static void m1541_destroy_page(struct page *page, int flags)
+static void m1541_destroy_page(void * addr, int flags)
 {
 	u32 temp;
 
-	if (page == NULL)
+	if (addr == NULL)
 		return;
 
 	if (flags & AGP_PAGE_DESTROY_UNMAP) {
@@ -180,9 +180,9 @@ static void m1541_destroy_page(struct page *page, int flags)
 		pci_read_config_dword(agp_bridge->dev, ALI_CACHE_FLUSH_CTRL, &temp);
 		pci_write_config_dword(agp_bridge->dev, ALI_CACHE_FLUSH_CTRL,
 				       (((temp & ALI_CACHE_FLUSH_ADDR_MASK) |
-					 page_to_phys(page)) | ALI_CACHE_FLUSH_EN));
+					 virt_to_gart(addr)) | ALI_CACHE_FLUSH_EN));
 	}
-	agp_generic_destroy_page(page, flags);
+	agp_generic_destroy_page(addr, flags);
 }
 
 
@@ -204,7 +204,6 @@ static const struct agp_bridge_driver ali_generic_bridge = {
 	.aperture_sizes		= ali_generic_sizes,
 	.size_type		= U32_APER_SIZE,
 	.num_aperture_sizes	= 7,
-	.needs_scratch_page	= true,
 	.configure		= ali_configure,
 	.fetch_size		= ali_fetch_size,
 	.cleanup		= ali_cleanup,
@@ -347,7 +346,7 @@ found:
 			devs[j].chipset_name = "M1641";
 			break;
 		case 0x43:
-			devs[j].chipset_name = "M1621";
+			devs[j].chipset_name = "M????";
 			break;
 		case 0x47:
 			devs[j].chipset_name = "M1647";

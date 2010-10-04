@@ -24,7 +24,6 @@
 #include <asm/system.h>
 #include <asm/cache.h>
 #include <asm/cputable.h>
-#include <asm/emulated_ops.h>
 
 struct aligninfo {
 	unsigned char len;
@@ -188,7 +187,7 @@ static struct aligninfo aligninfo[128] = {
 	{ 4, ST+F+S+U },	/* 11 1 1010: stfsux */
 	{ 8, ST+F+U },		/* 11 1 1011: stfdux */
 	INVALID,		/* 11 1 1100 */
-	{ 4, LD+F },		/* 11 1 1101: lfiwzx */
+	INVALID,		/* 11 1 1101 */
 	INVALID,		/* 11 1 1110 */
 	INVALID,		/* 11 1 1111 */
 };
@@ -642,14 +641,10 @@ static int emulate_spe(struct pt_regs *regs, unsigned int reg,
  */
 static int emulate_vsx(unsigned char __user *addr, unsigned int reg,
 		       unsigned int areg, struct pt_regs *regs,
-		       unsigned int flags, unsigned int length,
-		       unsigned int elsize)
+		       unsigned int flags, unsigned int length)
 {
 	char *ptr;
-	unsigned long *lptr;
 	int ret = 0;
-	int sw = 0;
-	int i, j;
 
 	flush_vsx_to_thread(current);
 
@@ -658,35 +653,19 @@ static int emulate_vsx(unsigned char __user *addr, unsigned int reg,
 	else
 		ptr = (char *) &current->thread.vr[reg - 32];
 
-	lptr = (unsigned long *) ptr;
-
-	if (flags & SW)
-		sw = elsize-1;
-
-	for (j = 0; j < length; j += elsize) {
-		for (i = 0; i < elsize; ++i) {
-			if (flags & ST)
-				ret |= __put_user(ptr[i^sw], addr + i);
-			else
-				ret |= __get_user(ptr[i^sw], addr + i);
+	if (flags & ST)
+		ret = __copy_to_user(addr, ptr, length);
+        else {
+		if (flags & SPLT){
+			ret = __copy_from_user(ptr, addr, length);
+			ptr += length;
 		}
-		ptr  += elsize;
-		addr += elsize;
+		ret |= __copy_from_user(ptr, addr, length);
 	}
-
-	if (!ret) {
-		if (flags & U)
-			regs->gpr[areg] = regs->dar;
-
-		/* Splat load copies the same data to top and bottom 8 bytes */
-		if (flags & SPLT)
-			lptr[1] = lptr[0];
-		/* For 8 byte loads, zero the top 8 bytes */
-		else if (!(flags & ST) && (8 == length))
-			lptr[1] = 0;
-	} else
+	if (flags & U)
+		regs->gpr[areg] = regs->dar;
+	if (ret)
 		return -EFAULT;
-
 	return 1;
 }
 #endif
@@ -751,10 +730,8 @@ int fix_alignment(struct pt_regs *regs)
 	areg = dsisr & 0x1f;		/* register to update */
 
 #ifdef CONFIG_SPE
-	if ((instr >> 26) == 0x4) {
-		PPC_WARN_ALIGNMENT(spe, regs);
+	if ((instr >> 26) == 0x4)
 		return emulate_spe(regs, reg, instr);
-	}
 #endif
 
 	instr = (dsisr >> 10) & 0x7f;
@@ -787,25 +764,16 @@ int fix_alignment(struct pt_regs *regs)
 
 #ifdef CONFIG_VSX
 	if ((instruction & 0xfc00003e) == 0x7c000018) {
-		unsigned int elsize;
-
-		/* Additional register addressing bit (64 VSX vs 32 FPR/GPR) */
+		/* Additional register addressing bit (64 VSX vs 32 FPR/GPR */
 		reg |= (instruction & 0x1) << 5;
 		/* Simple inline decoder instead of a table */
-		/* VSX has only 8 and 16 byte memory accesses */
-		nb = 8;
 		if (instruction & 0x200)
 			nb = 16;
-
-		/* Vector stores in little-endian mode swap individual
-		   elements, so process them separately */
-		elsize = 4;
-		if (instruction & 0x80)
-			elsize = 8;
-
+		else if (instruction & 0x080)
+			nb = 8;
+		else
+			nb = 4;
 		flags = 0;
-		if (regs->msr & MSR_LE)
-			flags |= SW;
 		if (instruction & 0x100)
 			flags |= ST;
 		if (instruction & 0x040)
@@ -815,28 +783,23 @@ int fix_alignment(struct pt_regs *regs)
 			flags |= SPLT;
 			nb = 8;
 		}
-		PPC_WARN_ALIGNMENT(vsx, regs);
-		return emulate_vsx(addr, reg, areg, regs, flags, nb, elsize);
+		return emulate_vsx(addr, reg, areg, regs, flags, nb);
 	}
 #endif
 	/* A size of 0 indicates an instruction we don't support, with
 	 * the exception of DCBZ which is handled as a special case here
 	 */
-	if (instr == DCBZ) {
-		PPC_WARN_ALIGNMENT(dcbz, regs);
+	if (instr == DCBZ)
 		return emulate_dcbz(regs, addr);
-	}
 	if (unlikely(nb == 0))
 		return 0;
 
 	/* Load/Store Multiple instructions are handled in their own
 	 * function
 	 */
-	if (flags & M) {
-		PPC_WARN_ALIGNMENT(multiple, regs);
+	if (flags & M)
 		return emulate_multiple(regs, addr, reg, nb,
 					flags, instr, swiz);
-	}
 
 	/* Verify the address of the operand */
 	if (unlikely(user_mode(regs) &&
@@ -853,12 +816,8 @@ int fix_alignment(struct pt_regs *regs)
 	}
 
 	/* Special case for 16-byte FP loads and stores */
-	if (nb == 16) {
-		PPC_WARN_ALIGNMENT(fp_pair, regs);
+	if (nb == 16)
 		return emulate_fp_pair(addr, reg, flags);
-	}
-
-	PPC_WARN_ALIGNMENT(unaligned, regs);
 
 	/* If we are loading, get the data from user space, else
 	 * get it from register values

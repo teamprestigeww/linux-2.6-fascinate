@@ -25,21 +25,21 @@
  * Since "a" is usually an address, use one spinlock per cacheline.
  */
 #  define ATOMIC_HASH_SIZE 4
-#  define ATOMIC_HASH(a) (&(__atomic_hash[ (((unsigned long) (a))/L1_CACHE_BYTES) & (ATOMIC_HASH_SIZE-1) ]))
+#  define ATOMIC_HASH(a) (&(__atomic_hash[ (((unsigned long) a)/L1_CACHE_BYTES) & (ATOMIC_HASH_SIZE-1) ]))
 
-extern arch_spinlock_t __atomic_hash[ATOMIC_HASH_SIZE] __lock_aligned;
+extern raw_spinlock_t __atomic_hash[ATOMIC_HASH_SIZE] __lock_aligned;
 
 /* Can't use raw_spin_lock_irq because of #include problems, so
  * this is the substitute */
 #define _atomic_spin_lock_irqsave(l,f) do {	\
-	arch_spinlock_t *s = ATOMIC_HASH(l);		\
+	raw_spinlock_t *s = ATOMIC_HASH(l);		\
 	local_irq_save(f);			\
-	arch_spin_lock(s);			\
+	__raw_spin_lock(s);			\
 } while(0)
 
 #define _atomic_spin_unlock_irqrestore(l,f) do {	\
-	arch_spinlock_t *s = ATOMIC_HASH(l);			\
-	arch_spin_unlock(s);				\
+	raw_spinlock_t *s = ATOMIC_HASH(l);			\
+	__raw_spin_unlock(s);				\
 	local_irq_restore(f);				\
 } while(0)
 
@@ -189,7 +189,7 @@ static __inline__ void atomic_set(atomic_t *v, int i)
 
 static __inline__ int atomic_read(const atomic_t *v)
 {
-	return (*(volatile int *)&(v)->counter);
+	return v->counter;
 }
 
 /* exported interface */
@@ -222,13 +222,13 @@ static __inline__ int atomic_add_unless(atomic_t *v, int a, int u)
 
 #define atomic_inc_not_zero(v) atomic_add_unless((v), 1, 0)
 
-#define atomic_add(i,v)	((void)(__atomic_add_return( (i),(v))))
-#define atomic_sub(i,v)	((void)(__atomic_add_return(-(i),(v))))
+#define atomic_add(i,v)	((void)(__atomic_add_return( ((int)i),(v))))
+#define atomic_sub(i,v)	((void)(__atomic_add_return(-((int)i),(v))))
 #define atomic_inc(v)	((void)(__atomic_add_return(   1,(v))))
 #define atomic_dec(v)	((void)(__atomic_add_return(  -1,(v))))
 
-#define atomic_add_return(i,v)	(__atomic_add_return( (i),(v)))
-#define atomic_sub_return(i,v)	(__atomic_add_return(-(i),(v)))
+#define atomic_add_return(i,v)	(__atomic_add_return( ((int)i),(v)))
+#define atomic_sub_return(i,v)	(__atomic_add_return(-((int)i),(v)))
 #define atomic_inc_return(v)	(__atomic_add_return(   1,(v)))
 #define atomic_dec_return(v)	(__atomic_add_return(  -1,(v)))
 
@@ -286,16 +286,16 @@ atomic64_set(atomic64_t *v, s64 i)
 static __inline__ s64
 atomic64_read(const atomic64_t *v)
 {
-	return (*(volatile long *)&(v)->counter);
+	return v->counter;
 }
 
-#define atomic64_add(i,v)	((void)(__atomic64_add_return( ((s64)(i)),(v))))
-#define atomic64_sub(i,v)	((void)(__atomic64_add_return(-((s64)(i)),(v))))
+#define atomic64_add(i,v)	((void)(__atomic64_add_return( ((s64)i),(v))))
+#define atomic64_sub(i,v)	((void)(__atomic64_add_return(-((s64)i),(v))))
 #define atomic64_inc(v)		((void)(__atomic64_add_return(   1,(v))))
 #define atomic64_dec(v)		((void)(__atomic64_add_return(  -1,(v))))
 
-#define atomic64_add_return(i,v)	(__atomic64_add_return( ((s64)(i)),(v)))
-#define atomic64_sub_return(i,v)	(__atomic64_add_return(-((s64)(i)),(v)))
+#define atomic64_add_return(i,v)	(__atomic64_add_return( ((s64)i),(v)))
+#define atomic64_sub_return(i,v)	(__atomic64_add_return(-((s64)i),(v)))
 #define atomic64_inc_return(v)		(__atomic64_add_return(   1,(v)))
 #define atomic64_dec_return(v)		(__atomic64_add_return(  -1,(v)))
 
@@ -336,12 +336,8 @@ static __inline__ int atomic64_add_unless(atomic64_t *v, long a, long u)
 
 #define atomic64_inc_not_zero(v) atomic64_add_unless((v), 1, 0)
 
-#else /* CONFIG_64BIT */
+#endif /* CONFIG_64BIT */
 
-#include <asm-generic/atomic64.h>
-
-#endif /* !CONFIG_64BIT */
-
-#include <asm-generic/atomic-long.h>
+#include <asm-generic/atomic.h>
 
 #endif /* _ASM_PARISC_ATOMIC_H_ */

@@ -91,18 +91,17 @@ enum {
  */
 static int vsc8211_reset(struct cphy *cphy, int wait)
 {
-	return t3_phy_reset(cphy, MDIO_DEVAD_NONE, 0);
+	return t3_phy_reset(cphy, 0, 0);
 }
 
 static int vsc8211_intr_enable(struct cphy *cphy)
 {
-	return t3_mdio_write(cphy, MDIO_DEVAD_NONE, VSC8211_INTR_ENABLE,
-			     INTR_MASK);
+	return mdio_write(cphy, 0, VSC8211_INTR_ENABLE, INTR_MASK);
 }
 
 static int vsc8211_intr_disable(struct cphy *cphy)
 {
-	return t3_mdio_write(cphy, MDIO_DEVAD_NONE, VSC8211_INTR_ENABLE, 0);
+	return mdio_write(cphy, 0, VSC8211_INTR_ENABLE, 0);
 }
 
 static int vsc8211_intr_clear(struct cphy *cphy)
@@ -110,20 +109,18 @@ static int vsc8211_intr_clear(struct cphy *cphy)
 	u32 val;
 
 	/* Clear PHY interrupts by reading the register. */
-	return t3_mdio_read(cphy, MDIO_DEVAD_NONE, VSC8211_INTR_STATUS, &val);
+	return mdio_read(cphy, 0, VSC8211_INTR_STATUS, &val);
 }
 
 static int vsc8211_autoneg_enable(struct cphy *cphy)
 {
-	return t3_mdio_change_bits(cphy, MDIO_DEVAD_NONE, MII_BMCR,
-				   BMCR_PDOWN | BMCR_ISOLATE,
+	return t3_mdio_change_bits(cphy, 0, MII_BMCR, BMCR_PDOWN | BMCR_ISOLATE,
 				   BMCR_ANENABLE | BMCR_ANRESTART);
 }
 
 static int vsc8211_autoneg_restart(struct cphy *cphy)
 {
-	return t3_mdio_change_bits(cphy, MDIO_DEVAD_NONE, MII_BMCR,
-				   BMCR_PDOWN | BMCR_ISOLATE,
+	return t3_mdio_change_bits(cphy, 0, MII_BMCR, BMCR_PDOWN | BMCR_ISOLATE,
 				   BMCR_ANRESTART);
 }
 
@@ -133,9 +130,9 @@ static int vsc8211_get_link_status(struct cphy *cphy, int *link_ok,
 	unsigned int bmcr, status, lpa, adv;
 	int err, sp = -1, dplx = -1, pause = 0;
 
-	err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_BMCR, &bmcr);
+	err = mdio_read(cphy, 0, MII_BMCR, &bmcr);
 	if (!err)
-		err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_BMSR, &status);
+		err = mdio_read(cphy, 0, MII_BMSR, &status);
 	if (err)
 		return err;
 
@@ -145,8 +142,7 @@ static int vsc8211_get_link_status(struct cphy *cphy, int *link_ok,
 		 * once more to get the current link state.
 		 */
 		if (!(status & BMSR_LSTATUS))
-			err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_BMSR,
-					   &status);
+			err = mdio_read(cphy, 0, MII_BMSR, &status);
 		if (err)
 			return err;
 		*link_ok = (status & BMSR_LSTATUS) != 0;
@@ -160,8 +156,7 @@ static int vsc8211_get_link_status(struct cphy *cphy, int *link_ok,
 		else
 			sp = SPEED_10;
 	} else if (status & BMSR_ANEGCOMPLETE) {
-		err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, VSC8211_AUX_CTRL_STAT,
-				   &status);
+		err = mdio_read(cphy, 0, VSC8211_AUX_CTRL_STAT, &status);
 		if (err)
 			return err;
 
@@ -175,11 +170,9 @@ static int vsc8211_get_link_status(struct cphy *cphy, int *link_ok,
 			sp = SPEED_1000;
 
 		if (fc && dplx == DUPLEX_FULL) {
-			err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_LPA,
-					   &lpa);
+			err = mdio_read(cphy, 0, MII_LPA, &lpa);
 			if (!err)
-				err = t3_mdio_read(cphy, MDIO_DEVAD_NONE,
-						   MII_ADVERTISE, &adv);
+				err = mdio_read(cphy, 0, MII_ADVERTISE, &adv);
 			if (err)
 				return err;
 
@@ -209,9 +202,9 @@ static int vsc8211_get_link_status_fiber(struct cphy *cphy, int *link_ok,
 	unsigned int bmcr, status, lpa, adv;
 	int err, sp = -1, dplx = -1, pause = 0;
 
-	err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_BMCR, &bmcr);
+	err = mdio_read(cphy, 0, MII_BMCR, &bmcr);
 	if (!err)
-		err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_BMSR, &status);
+		err = mdio_read(cphy, 0, MII_BMSR, &status);
 	if (err)
 		return err;
 
@@ -221,8 +214,7 @@ static int vsc8211_get_link_status_fiber(struct cphy *cphy, int *link_ok,
 		 * once more to get the current link state.
 		 */
 		if (!(status & BMSR_LSTATUS))
-			err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_BMSR,
-					   &status);
+			err = mdio_read(cphy, 0, MII_BMSR, &status);
 		if (err)
 			return err;
 		*link_ok = (status & BMSR_LSTATUS) != 0;
@@ -236,10 +228,9 @@ static int vsc8211_get_link_status_fiber(struct cphy *cphy, int *link_ok,
 		else
 			sp = SPEED_10;
 	} else if (status & BMSR_ANEGCOMPLETE) {
-		err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_LPA, &lpa);
+		err = mdio_read(cphy, 0, MII_LPA, &lpa);
 		if (!err)
-			err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, MII_ADVERTISE,
-					   &adv);
+			err = mdio_read(cphy, 0, MII_ADVERTISE, &adv);
 		if (err)
 			return err;
 
@@ -279,23 +270,23 @@ static int vsc8211_set_automdi(struct cphy *phy, int enable)
 {
 	int err;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, VSC8211_EXT_PAGE_AXS, 0x52b5);
+	err = mdio_write(phy, 0, VSC8211_EXT_PAGE_AXS, 0x52b5);
 	if (err)
 		return err;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, 18, 0x12);
+	err = mdio_write(phy, 0, 18, 0x12);
 	if (err)
 		return err;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, 17, enable ? 0x2803 : 0x3003);
+	err = mdio_write(phy, 0, 17, enable ? 0x2803 : 0x3003);
 	if (err)
 		return err;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, 16, 0x87fa);
+	err = mdio_write(phy, 0, 16, 0x87fa);
 	if (err)
 		return err;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, VSC8211_EXT_PAGE_AXS, 0);
+	err = mdio_write(phy, 0, VSC8211_EXT_PAGE_AXS, 0);
 	if (err)
 		return err;
 
@@ -324,7 +315,7 @@ static int vsc8211_intr_handler(struct cphy *cphy)
 	unsigned int cause;
 	int err, cphy_cause = 0;
 
-	err = t3_mdio_read(cphy, MDIO_DEVAD_NONE, VSC8211_INTR_STATUS, &cause);
+	err = mdio_read(cphy, 0, VSC8211_INTR_STATUS, &cause);
 	if (err)
 		return err;
 
@@ -376,13 +367,12 @@ int t3_vsc8211_phy_prep(struct cphy *phy, struct adapter *adapter,
 		  SUPPORTED_TP | SUPPORTED_IRQ, "10/100/1000BASE-T");
 	msleep(20);       /* PHY needs ~10ms to start responding to MDIO */
 
-	err = t3_mdio_read(phy, MDIO_DEVAD_NONE, VSC8211_EXT_CTRL, &val);
+	err = mdio_read(phy, 0, VSC8211_EXT_CTRL, &val);
 	if (err)
 		return err;
 	if (val & VSC_CTRL_MEDIA_MODE_HI) {
 		/* copper interface, just need to configure the LEDs */
-		return t3_mdio_write(phy, MDIO_DEVAD_NONE, VSC8211_LED_CTRL,
-				     0x100);
+		return mdio_write(phy, 0, VSC8211_LED_CTRL, 0x100);
 	}
 
 	phy->caps = SUPPORTED_1000baseT_Full | SUPPORTED_Autoneg |
@@ -390,20 +380,20 @@ int t3_vsc8211_phy_prep(struct cphy *phy, struct adapter *adapter,
 	phy->desc = "1000BASE-X";
 	phy->ops = &vsc8211_fiber_ops;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, VSC8211_EXT_PAGE_AXS, 1);
+	err = mdio_write(phy, 0, VSC8211_EXT_PAGE_AXS, 1);
 	if (err)
 		return err;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, VSC8211_SIGDET_CTRL, 1);
+	err = mdio_write(phy, 0, VSC8211_SIGDET_CTRL, 1);
 	if (err)
 		return err;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, VSC8211_EXT_PAGE_AXS, 0);
+	err = mdio_write(phy, 0, VSC8211_EXT_PAGE_AXS, 0);
 	if (err)
 		return err;
 
-	err = t3_mdio_write(phy, MDIO_DEVAD_NONE, VSC8211_EXT_CTRL,
-			    val | VSC_CTRL_CLAUSE37_VIEW);
+	err = mdio_write(phy, 0, VSC8211_EXT_CTRL,
+			 val | VSC_CTRL_CLAUSE37_VIEW);
 	if (err)
 		return err;
 

@@ -10,7 +10,6 @@
 
 #include <linux/bitmap.h>
 #include <linux/kernel.h>
-#include <linux/kmemcheck.h>
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
@@ -19,6 +18,7 @@
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/freezer.h>
+#include <linux/semaphore.h>
 #include <asm/atomic.h>
 
 #include "csr.h"
@@ -39,10 +39,7 @@ struct nodemgr_csr_info {
 	struct hpsb_host *host;
 	nodeid_t nodeid;
 	unsigned int generation;
-
-	kmemcheck_bitfield_begin(flags);
 	unsigned int speed_unverified:1;
-	kmemcheck_bitfield_end(flags);
 };
 
 
@@ -487,7 +484,7 @@ static struct device_attribute *const fw_host_attrs[] = {
 static ssize_t fw_show_drv_device_ids(struct device_driver *drv, char *buf)
 {
 	struct hpsb_protocol_driver *driver;
-	const struct ieee1394_device_id *id;
+	struct ieee1394_device_id *id;
 	int length = 0;
 	char *scratch = buf;
 
@@ -661,7 +658,7 @@ static int nodemgr_bus_match(struct device * dev, struct device_driver * drv)
 {
 	struct hpsb_protocol_driver *driver;
 	struct unit_directory *ud;
-	const struct ieee1394_device_id *id;
+	struct ieee1394_device_id *id;
 
 	/* We only match unit directories */
 	if (dev->platform_data != &nodemgr_ud_platform_data)
@@ -1296,7 +1293,6 @@ static void nodemgr_node_scan_one(struct hpsb_host *host,
 	u8 *speed;
 
 	ci = kmalloc(sizeof(*ci), GFP_KERNEL);
-	kmemcheck_annotate_bitfield(ci, flags);
 	if (!ci)
 		return;
 
@@ -1396,9 +1392,9 @@ static int update_pdrv(struct device *dev, void *data)
 			pdrv = container_of(drv, struct hpsb_protocol_driver,
 					    driver);
 			if (pdrv->update) {
-				device_lock(&ud->device);
+				down(&ud->device.sem);
 				error = pdrv->update(ud);
-				device_unlock(&ud->device);
+				up(&ud->device.sem);
 			}
 			if (error)
 				device_release_driver(&ud->device);

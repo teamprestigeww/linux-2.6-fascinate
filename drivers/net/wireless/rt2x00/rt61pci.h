@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
+	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -28,13 +28,6 @@
 #define RT61PCI_H
 
 /*
- * RT chip PCI IDs.
- */
-#define RT2561s_PCI_ID			0x0301
-#define RT2561_PCI_ID			0x0302
-#define RT2661_PCI_ID			0x0401
-
-/*
  * RF chip defines.
  */
 #define RF5225				0x0001
@@ -44,7 +37,7 @@
 
 /*
  * Signal information.
- * Default offset is required for RSSI <-> dBm conversion.
+ * Defaul offset is required for RSSI <-> dBm conversion.
  */
 #define DEFAULT_RSSI_OFFSET		120
 
@@ -57,8 +50,8 @@
 #define EEPROM_SIZE			0x0100
 #define BBP_BASE			0x0000
 #define BBP_SIZE			0x0080
-#define RF_BASE				0x0004
-#define RF_SIZE				0x0010
+#define RF_BASE				0x0000
+#define RF_SIZE				0x0014
 
 /*
  * Number of TX queues.
@@ -68,6 +61,12 @@
 /*
  * PCI registers.
  */
+
+/*
+ * PCI Configuration Header
+ */
+#define PCI_CONFIG_HEADER_VENDOR	0x0000
+#define PCI_CONFIG_HEADER_DEVICE	0x0002
 
 /*
  * HOST_CMD_CSR: For HOST to interrupt embedded processor
@@ -89,10 +88,8 @@
 
 /*
  * SOFT_RESET_CSR
- * FORCE_CLOCK_ON: Host force MAC clock ON
  */
 #define SOFT_RESET_CSR			0x0010
-#define SOFT_RESET_CSR_FORCE_CLOCK_ON	FIELD32(0x00000002)
 
 /*
  * MCU_INT_SOURCE_CSR: MCU interrupt source/mask register.
@@ -153,13 +150,13 @@ struct hw_key_entry {
 	u8 key[16];
 	u8 tx_mic[8];
 	u8 rx_mic[8];
-} __packed;
+} __attribute__ ((packed));
 
 struct hw_pairwise_ta_entry {
 	u8 address[6];
 	u8 cipher;
 	u8 reserved;
-} __packed;
+} __attribute__ ((packed));
 
 /*
  * Other on-chip shared memory space.
@@ -232,8 +229,6 @@ struct hw_pairwise_ta_entry {
  * MAC_CSR0: ASIC revision number.
  */
 #define MAC_CSR0			0x3000
-#define MAC_CSR0_REVISION		FIELD32(0x0000000f)
-#define MAC_CSR0_CHIPSET		FIELD32(0x000ffff0)
 
 /*
  * MAC_CSR1: System control register.
@@ -1059,10 +1054,8 @@ struct hw_pairwise_ta_entry {
 
 /*
  * IO_CNTL_CSR
- * RF_PS: Set RF interface value to power save
  */
 #define IO_CNTL_CSR			0x3498
-#define IO_CNTL_CSR_RF_PS		FIELD32(0x00000004)
 
 /*
  * UART_INT_SOURCE_CSR
@@ -1193,8 +1186,7 @@ struct hw_pairwise_ta_entry {
 #define EEPROM_NIC			0x0011
 #define EEPROM_NIC_ENABLE_DIVERSITY	FIELD16(0x0001)
 #define EEPROM_NIC_TX_DIVERSITY		FIELD16(0x0002)
-#define EEPROM_NIC_RX_FIXED		FIELD16(0x0004)
-#define EEPROM_NIC_TX_FIXED		FIELD16(0x0008)
+#define EEPROM_NIC_TX_RX_FIXED		FIELD16(0x000c)
 #define EEPROM_NIC_EXTERNAL_LNA_BG	FIELD16(0x0010)
 #define EEPROM_NIC_CARDBUS_ACCEL	FIELD16(0x0020)
 #define EEPROM_NIC_EXTERNAL_LNA_A	FIELD16(0x0040)
@@ -1485,7 +1477,7 @@ struct hw_pairwise_ta_entry {
 #define RXD_W15_RESERVED		FIELD32(0xffffffff)
 
 /*
- * Macros for converting txpower from EEPROM to mac80211 value
+ * Macro's for converting txpower from EEPROM to mac80211 value
  * and from mac80211 value to register value.
  */
 #define MIN_TXPOWER	0

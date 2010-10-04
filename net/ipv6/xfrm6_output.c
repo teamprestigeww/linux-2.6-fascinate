@@ -30,7 +30,7 @@ EXPORT_SYMBOL(xfrm6_find_1stfragopt);
 static int xfrm6_tunnel_check_size(struct sk_buff *skb)
 {
 	int mtu, ret = 0;
-	struct dst_entry *dst = skb_dst(skb);
+	struct dst_entry *dst = skb->dst;
 
 	mtu = dst_mtu(dst);
 	if (mtu < IPV6_MIN_MTU)
@@ -38,7 +38,7 @@ static int xfrm6_tunnel_check_size(struct sk_buff *skb)
 
 	if (!skb->local_df && skb->len > mtu) {
 		skb->dev = dst->dev;
-		icmpv6_send(skb, ICMPV6_PKT_TOOBIG, 0, mtu);
+		icmpv6_send(skb, ICMPV6_PKT_TOOBIG, 0, mtu, skb->dev);
 		ret = -EMSGSIZE;
 	}
 
@@ -72,7 +72,6 @@ int xfrm6_prepare_output(struct xfrm_state *x, struct sk_buff *skb)
 #endif
 
 	skb->protocol = htons(ETH_P_IPV6);
-	skb->local_df = 1;
 
 	return x->outer_mode->output2(x, skb);
 }
@@ -90,6 +89,6 @@ static int xfrm6_output_finish(struct sk_buff *skb)
 
 int xfrm6_output(struct sk_buff *skb)
 {
-	return NF_HOOK(NFPROTO_IPV6, NF_INET_POST_ROUTING, skb, NULL,
-		       skb_dst(skb)->dev, xfrm6_output_finish);
+	return NF_HOOK(PF_INET6, NF_INET_POST_ROUTING, skb, NULL, skb->dst->dev,
+		       xfrm6_output_finish);
 }

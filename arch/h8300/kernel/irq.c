@@ -81,6 +81,11 @@ struct irq_chip h8300irq_chip = {
 	.end		= h8300_end_irq,
 };
 
+void ack_bad_irq(unsigned int irq)
+{
+	printk("unexpected IRQ trap at vector %02x\n", irq);
+}
+
 #if defined(CONFIG_RAMKERNEL)
 static unsigned long __init *get_vector_address(void)
 {
@@ -178,7 +183,7 @@ asmlinkage void do_IRQ(int irq)
 #if defined(CONFIG_PROC_FS)
 int show_interrupts(struct seq_file *p, void *v)
 {
-	int i = *(loff_t *) v;
+	int i = *(loff_t *) v, j;
 	struct irqaction * action;
 	unsigned long flags;
 
@@ -186,12 +191,12 @@ int show_interrupts(struct seq_file *p, void *v)
 		seq_puts(p, "           CPU0");
 
 	if (i < NR_IRQS) {
-		raw_spin_lock_irqsave(&irq_desc[i].lock, flags);
+		spin_lock_irqsave(&irq_desc[i].lock, flags);
 		action = irq_desc[i].action;
 		if (!action)
 			goto unlock;
 		seq_printf(p, "%3d: ",i);
-		seq_printf(p, "%10u ", kstat_irqs(i));
+		seq_printf(p, "%10u ", kstat_cpu(j).irqs[i]);
 		seq_printf(p, " %14s", irq_desc[i].chip->name);
 		seq_printf(p, "-%-8s", irq_desc[i].name);
 		seq_printf(p, "  %s", action->name);
@@ -200,7 +205,7 @@ int show_interrupts(struct seq_file *p, void *v)
 			seq_printf(p, ", %s", action->name);
 		seq_putc(p, '\n');
 unlock:
-		raw_spin_unlock_irqrestore(&irq_desc[i].lock, flags);
+		spin_unlock_irqrestore(&irq_desc[i].lock, flags);
 	}
 	return 0;
 }

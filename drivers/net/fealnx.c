@@ -74,6 +74,7 @@ static int full_duplex[MAX_UNITS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 #include <linux/timer.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
+#include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
 #include <linux/netdevice.h>
@@ -92,8 +93,8 @@ static int full_duplex[MAX_UNITS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 #include <asm/byteorder.h>
 
 /* These identify the driver base version and may not be removed. */
-static const char version[] __devinitconst =
-	KERN_INFO DRV_NAME ".c:v" DRV_VERSION " " DRV_RELDATE "\n";
+static char version[] =
+KERN_INFO DRV_NAME ".c:v" DRV_VERSION " " DRV_RELDATE "\n";
 
 
 /* This driver was written to use PCI memory space, however some x86 systems
@@ -382,6 +383,8 @@ struct netdev_private {
 
 	spinlock_t lock;
 
+	struct net_device_stats stats;
+
 	/* Media monitoring timer. */
 	struct timer_list timer;
 
@@ -430,7 +433,7 @@ static void netdev_timer(unsigned long data);
 static void reset_timer(unsigned long data);
 static void fealnx_tx_timeout(struct net_device *dev);
 static void init_ring(struct net_device *dev);
-static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev);
+static int start_tx(struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t intr_handler(int irq, void *dev_instance);
 static int netdev_rx(struct net_device *dev);
 static void set_rx_mode(struct net_device *dev);
@@ -581,8 +584,7 @@ static int __devinit fealnx_init_one(struct pci_dev *pdev,
 	if (np->flags == HAS_MII_XCVR) {
 		int phy, phy_idx = 0;
 
-		for (phy = 1; phy < 32 && phy_idx < ARRAY_SIZE(np->phys);
-			       phy++) {
+		for (phy = 1; phy < 32 && phy_idx < 4; phy++) {
 			int mii_status = mdio_read(dev, phy, 1);
 
 			if (mii_status != 0xffff && mii_status != 0x0000) {
@@ -836,7 +838,7 @@ static int netdev_open(struct net_device *dev)
 
 	iowrite32(0x00000001, ioaddr + BCR);	/* Reset */
 
-	if (request_irq(dev->irq, intr_handler, IRQF_SHARED, dev->name, dev))
+	if (request_irq(dev->irq, &intr_handler, IRQF_SHARED, dev->name, dev))
 		return -EAGAIN;
 
 	for (i = 0; i < 3; i++)
@@ -1207,20 +1209,17 @@ static void fealnx_tx_timeout(struct net_device *dev)
 	unsigned long flags;
 	int i;
 
-	printk(KERN_WARNING
-	       "%s: Transmit timed out, status %8.8x, resetting...\n",
-	       dev->name, ioread32(ioaddr + ISR));
+	printk(KERN_WARNING "%s: Transmit timed out, status %8.8x,"
+	       " resetting...\n", dev->name, ioread32(ioaddr + ISR));
 
 	{
 		printk(KERN_DEBUG "  Rx ring %p: ", np->rx_ring);
 		for (i = 0; i < RX_RING_SIZE; i++)
-			printk(KERN_CONT " %8.8x",
-			       (unsigned int) np->rx_ring[i].status);
-		printk(KERN_CONT "\n");
-		printk(KERN_DEBUG "  Tx ring %p: ", np->tx_ring);
+			printk(" %8.8x", (unsigned int) np->rx_ring[i].status);
+		printk("\n" KERN_DEBUG "  Tx ring %p: ", np->tx_ring);
 		for (i = 0; i < TX_RING_SIZE; i++)
-			printk(KERN_CONT " %4.4x", np->tx_ring[i].status);
-		printk(KERN_CONT "\n");
+			printk(" %4.4x", np->tx_ring[i].status);
+		printk("\n");
 	}
 
 	spin_lock_irqsave(&np->lock, flags);
@@ -1231,8 +1230,8 @@ static void fealnx_tx_timeout(struct net_device *dev)
 
 	spin_unlock_irqrestore(&np->lock, flags);
 
-	dev->trans_start = jiffies; /* prevent tx timeout */
-	dev->stats.tx_errors++;
+	dev->trans_start = jiffies;
+	np->stats.tx_errors++;
 	netif_wake_queue(dev); /* or .._start_.. ?? */
 }
 
@@ -1302,7 +1301,7 @@ static void init_ring(struct net_device *dev)
 }
 
 
-static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev)
+static int start_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	unsigned long flags;
@@ -1372,9 +1371,10 @@ static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev)
 		netif_stop_queue(dev);
 	++np->really_tx_count;
 	iowrite32(0, np->mem + TXPDR);
+	dev->trans_start = jiffies;
 
 	spin_unlock_irqrestore(&np->lock, flags);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 
@@ -1477,11 +1477,10 @@ static irqreturn_t intr_handler(int irq, void *dev_instance)
 
 		if (intr_status & CNTOVF) {
 			/* missed pkts */
-			dev->stats.rx_missed_errors +=
-				ioread32(ioaddr + TALLY) & 0x7fff;
+			np->stats.rx_missed_errors += ioread32(ioaddr + TALLY) & 0x7fff;
 
 			/* crc error */
-			dev->stats.rx_crc_errors +=
+			np->stats.rx_crc_errors +=
 			    (ioread32(ioaddr + TALLY) & 0x7fff0000) >> 16;
 		}
 
@@ -1512,30 +1511,30 @@ static irqreturn_t intr_handler(int irq, void *dev_instance)
 
 			if (!(np->crvalue & CR_W_ENH)) {
 				if (tx_status & (CSL | LC | EC | UDF | HF)) {
-					dev->stats.tx_errors++;
+					np->stats.tx_errors++;
 					if (tx_status & EC)
-						dev->stats.tx_aborted_errors++;
+						np->stats.tx_aborted_errors++;
 					if (tx_status & CSL)
-						dev->stats.tx_carrier_errors++;
+						np->stats.tx_carrier_errors++;
 					if (tx_status & LC)
-						dev->stats.tx_window_errors++;
+						np->stats.tx_window_errors++;
 					if (tx_status & UDF)
-						dev->stats.tx_fifo_errors++;
+						np->stats.tx_fifo_errors++;
 					if ((tx_status & HF) && np->mii.full_duplex == 0)
-						dev->stats.tx_heartbeat_errors++;
+						np->stats.tx_heartbeat_errors++;
 
 				} else {
-					dev->stats.tx_bytes +=
+					np->stats.tx_bytes +=
 					    ((tx_control & PKTSMask) >> PKTSShift);
 
-					dev->stats.collisions +=
+					np->stats.collisions +=
 					    ((tx_status & NCRMask) >> NCRShift);
-					dev->stats.tx_packets++;
+					np->stats.tx_packets++;
 				}
 			} else {
-				dev->stats.tx_bytes +=
+				np->stats.tx_bytes +=
 				    ((tx_control & PKTSMask) >> PKTSShift);
-				dev->stats.tx_packets++;
+				np->stats.tx_packets++;
 			}
 
 			/* Free the original skb. */
@@ -1563,12 +1562,10 @@ static irqreturn_t intr_handler(int irq, void *dev_instance)
 			long data;
 
 			data = ioread32(ioaddr + TSR);
-			dev->stats.tx_errors += (data & 0xff000000) >> 24;
-			dev->stats.tx_aborted_errors +=
-				(data & 0xff000000) >> 24;
-			dev->stats.tx_window_errors +=
-				(data & 0x00ff0000) >> 16;
-			dev->stats.collisions += (data & 0x0000ffff);
+			np->stats.tx_errors += (data & 0xff000000) >> 24;
+			np->stats.tx_aborted_errors += (data & 0xff000000) >> 24;
+			np->stats.tx_window_errors += (data & 0x00ff0000) >> 16;
+			np->stats.collisions += (data & 0x0000ffff);
 		}
 
 		if (--boguscnt < 0) {
@@ -1594,11 +1591,10 @@ static irqreturn_t intr_handler(int irq, void *dev_instance)
 
 	/* read the tally counters */
 	/* missed pkts */
-	dev->stats.rx_missed_errors += ioread32(ioaddr + TALLY) & 0x7fff;
+	np->stats.rx_missed_errors += ioread32(ioaddr + TALLY) & 0x7fff;
 
 	/* crc error */
-	dev->stats.rx_crc_errors +=
-		(ioread32(ioaddr + TALLY) & 0x7fff0000) >> 16;
+	np->stats.rx_crc_errors += (ioread32(ioaddr + TALLY) & 0x7fff0000) >> 16;
 
 	if (debug)
 		printk(KERN_DEBUG "%s: exiting interrupt, status=%#4.4x.\n",
@@ -1629,21 +1625,21 @@ static int netdev_rx(struct net_device *dev)
 		if (debug)
 			printk(KERN_DEBUG "  netdev_rx() status was %8.8x.\n", rx_status);
 
-		if ((!((rx_status & RXFSD) && (rx_status & RXLSD))) ||
-		    (rx_status & ErrorSummary)) {
+		if ((!((rx_status & RXFSD) && (rx_status & RXLSD)))
+		    || (rx_status & ErrorSummary)) {
 			if (rx_status & ErrorSummary) {	/* there was a fatal error */
 				if (debug)
 					printk(KERN_DEBUG
 					       "%s: Receive error, Rx status %8.8x.\n",
 					       dev->name, rx_status);
 
-				dev->stats.rx_errors++;	/* end of a packet. */
+				np->stats.rx_errors++;	/* end of a packet. */
 				if (rx_status & (LONG | RUNT))
-					dev->stats.rx_length_errors++;
+					np->stats.rx_length_errors++;
 				if (rx_status & RXER)
-					dev->stats.rx_frame_errors++;
+					np->stats.rx_frame_errors++;
 				if (rx_status & CRC)
-					dev->stats.rx_crc_errors++;
+					np->stats.rx_crc_errors++;
 			} else {
 				int need_to_reset = 0;
 				int desno = 0;
@@ -1655,8 +1651,8 @@ static int netdev_rx(struct net_device *dev)
 					cur = np->cur_rx;
 					while (desno <= np->really_rx_count) {
 						++desno;
-						if ((!(cur->status & RXOWN)) &&
-						    (cur->status & RXLSD))
+						if ((!(cur->status & RXOWN))
+						    && (cur->status & RXLSD))
 							break;
 						/* goto next rx descriptor */
 						cur = cur->next_desc_logical;
@@ -1669,7 +1665,7 @@ static int netdev_rx(struct net_device *dev)
 				if (need_to_reset == 0) {
 					int i;
 
-					dev->stats.rx_length_errors++;
+					np->stats.rx_length_errors++;
 
 					/* free all rx descriptors related this long pkt */
 					for (i = 0; i < desno; ++i) {
@@ -1735,8 +1731,8 @@ static int netdev_rx(struct net_device *dev)
 			}
 			skb->protocol = eth_type_trans(skb, dev);
 			netif_rx(skb);
-			dev->stats.rx_packets++;
-			dev->stats.rx_bytes += pkt_len;
+			np->stats.rx_packets++;
+			np->stats.rx_bytes += pkt_len;
 		}
 
 		np->cur_rx = np->cur_rx->next_desc_logical;
@@ -1756,13 +1752,11 @@ static struct net_device_stats *get_stats(struct net_device *dev)
 
 	/* The chip only need report frame silently dropped. */
 	if (netif_running(dev)) {
-		dev->stats.rx_missed_errors +=
-			ioread32(ioaddr + TALLY) & 0x7fff;
-		dev->stats.rx_crc_errors +=
-			(ioread32(ioaddr + TALLY) & 0x7fff0000) >> 16;
+		np->stats.rx_missed_errors += ioread32(ioaddr + TALLY) & 0x7fff;
+		np->stats.rx_crc_errors += (ioread32(ioaddr + TALLY) & 0x7fff0000) >> 16;
 	}
 
-	return &dev->stats;
+	return &np->stats;
 }
 
 
@@ -1788,18 +1782,20 @@ static void __set_rx_mode(struct net_device *dev)
 	if (dev->flags & IFF_PROMISC) {	/* Set promiscuous. */
 		memset(mc_filter, 0xff, sizeof(mc_filter));
 		rx_mode = CR_W_PROM | CR_W_AB | CR_W_AM;
-	} else if ((netdev_mc_count(dev) > multicast_filter_limit) ||
-		   (dev->flags & IFF_ALLMULTI)) {
+	} else if ((dev->mc_count > multicast_filter_limit)
+		   || (dev->flags & IFF_ALLMULTI)) {
 		/* Too many to match, or accept all multicasts. */
 		memset(mc_filter, 0xff, sizeof(mc_filter));
 		rx_mode = CR_W_AB | CR_W_AM;
 	} else {
-		struct netdev_hw_addr *ha;
+		struct dev_mc_list *mclist;
+		int i;
 
 		memset(mc_filter, 0, sizeof(mc_filter));
-		netdev_for_each_mc_addr(ha, dev) {
+		for (i = 0, mclist = dev->mc_list; mclist && i < dev->mc_count;
+		     i++, mclist = mclist->next) {
 			unsigned int bit;
-			bit = (ether_crc(ETH_ALEN, ha->addr) >> 26) ^ 0x3F;
+			bit = (ether_crc(ETH_ALEN, mclist->dmi_addr) >> 26) ^ 0x3F;
 			mc_filter[bit >> 5] |= (1 << bit);
 		}
 		rx_mode = CR_W_AB | CR_W_AM;
@@ -1941,7 +1937,7 @@ static int netdev_close(struct net_device *dev)
 	return 0;
 }
 
-static DEFINE_PCI_DEVICE_TABLE(fealnx_pci_tbl) = {
+static struct pci_device_id fealnx_pci_tbl[] = {
 	{0x1516, 0x0800, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{0x1516, 0x0803, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 1},
 	{0x1516, 0x0891, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 2},

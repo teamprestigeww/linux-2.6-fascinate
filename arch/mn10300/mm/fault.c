@@ -20,6 +20,7 @@
 #include <linux/mman.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
+#include <linux/smp_lock.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/vt_kern.h>		/* For unblank_screen() */
@@ -257,7 +258,7 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(mm, vma, address, write ? FAULT_FLAG_WRITE : 0);
+	fault = handle_mm_fault(mm, vma, address, write);
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
@@ -338,10 +339,11 @@ no_context:
  */
 out_of_memory:
 	up_read(&mm->mmap_sem);
-	if ((fault_code & MMUFCR_xFC_ACCESS) != MMUFCR_xFC_ACCESS_USR)
-		goto no_context;
-	pagefault_out_of_memory();
-	return;
+	monitor_signal(regs);
+	printk(KERN_ALERT "VM: killing process %s\n", tsk->comm);
+	if ((fault_code & MMUFCR_xFC_ACCESS) == MMUFCR_xFC_ACCESS_USR)
+		do_exit(SIGKILL);
+	goto no_context;
 
 do_sigbus:
 	up_read(&mm->mmap_sem);

@@ -14,7 +14,6 @@
 #include <linux/mm.h>
 #include <linux/bootmem.h>
 #include <linux/spinlock.h>
-#include <linux/gfp.h>
 #include <asm/mipsregs.h>
 #include <asm/jazz.h>
 #include <asm/io.h>
@@ -69,7 +68,8 @@ static int __init vdma_init(void)
 	 */
 	pgtbl = (VDMA_PGTBL_ENTRY *)__get_free_pages(GFP_KERNEL | GFP_DMA,
 						    get_order(VDMA_PGTBL_SIZE));
-	BUG_ON(!pgtbl);
+	if (!pgtbl)
+		BUG();
 	dma_cache_wback_inv((unsigned long)pgtbl, VDMA_PGTBL_SIZE);
 	pgtbl = (VDMA_PGTBL_ENTRY *)KSEG1ADDR(pgtbl);
 
@@ -191,7 +191,7 @@ int vdma_free(unsigned long laddr)
 		return -1;
 	}
 
-	while (i < VDMA_PGTBL_ENTRIES && pgtbl[i].owner == laddr) {
+	while (pgtbl[i].owner == laddr && i < VDMA_PGTBL_ENTRIES) {
 		pgtbl[i].owner = VDMA_PAGE_EMPTY;
 		i++;
 	}

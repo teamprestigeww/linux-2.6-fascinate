@@ -123,7 +123,7 @@ config PMAC_APM_EMU
 
 config PMAC_MEDIABAY
 	bool "Support PowerBook hotswap media bay"
-	depends on PPC_PMAC && PPC32 && BLOCK
+	depends on PPC_PMAC && PPC32
 	help
 	  This option adds support for older PowerBook's hotswap media bay
 	  that can contains batteries, floppy drives, or IDE devices. PCI
@@ -171,8 +171,8 @@ config INPUT_ADBHID
 	  If unsure, say Y.
 
 config MAC_EMUMOUSEBTN
-	tristate "Support for mouse button 2+3 emulation"
-	depends on SYSCTL && INPUT
+	bool "Support for mouse button 2+3 emulation"
+	select INPUT
 	help
 	  This provides generic support for emulating the 2nd and 3rd mouse
 	  button with keypresses.  If you say Y here, the emulation is still
@@ -183,9 +183,6 @@ config MAC_EMUMOUSEBTN
 	  /proc/sys/dev/mac_hid/mouse_button3_keycode
 
 	  If you have an Apple machine with a 1-button mouse, say Y here.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called mac_hid.
 
 config THERM_WINDTUNNEL
 	tristate "Support for thermal management on Windtunnel G4s"

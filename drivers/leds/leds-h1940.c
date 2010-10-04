@@ -16,8 +16,6 @@
 #include <linux/string.h>
 #include <linux/ctype.h>
 #include <linux/leds.h>
-#include <linux/gpio.h>
-
 #include <mach/regs-gpio.h>
 #include <mach/hardware.h>
 #include <mach/h1940-latch.h>
@@ -106,7 +104,7 @@ static struct led_classdev h1940_blueled = {
 	.default_trigger	= "h1940-bluetooth",
 };
 
-static int __devinit h1940leds_probe(struct platform_device *pdev)
+static int __init h1940leds_probe(struct platform_device *pdev)
 {
 	int ret;
 

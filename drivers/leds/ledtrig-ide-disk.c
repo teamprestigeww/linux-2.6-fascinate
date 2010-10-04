@@ -37,8 +37,7 @@ static void ledtrig_ide_timerfunc(unsigned long data)
 {
 	if (ide_lastactivity != ide_activity) {
 		ide_lastactivity = ide_activity;
-		/* INT_MAX will set each LED to its maximum brightness */
-		led_trigger_event(ledtrig_ide, INT_MAX);
+		led_trigger_event(ledtrig_ide, LED_FULL);
 		mod_timer(&ledtrig_ide_timer, jiffies + msecs_to_jiffies(10));
 	} else {
 		led_trigger_event(ledtrig_ide, LED_OFF);

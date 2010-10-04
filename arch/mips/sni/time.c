@@ -1,6 +1,5 @@
 #include <linux/types.h>
 #include <linux/interrupt.h>
-#include <linux/smp.h>
 #include <linux/time.h>
 #include <linux/clockchips.h>
 
@@ -67,7 +66,7 @@ static irqreturn_t a20r_interrupt(int irq, void *dev_id)
 
 static struct irqaction a20r_irqaction = {
 	.handler	= a20r_interrupt,
-	.flags		= IRQF_DISABLED | IRQF_PERCPU | IRQF_TIMER,
+	.flags		= IRQF_DISABLED | IRQF_PERCPU,
 	.name		= "a20r-timer",
 };
 
@@ -182,8 +181,7 @@ void __init plat_time_init(void)
 	setup_pit_timer();
 }
 
-void read_persistent_clock(struct timespec *ts)
+unsigned long read_persistent_clock(void)
 {
-	ts->tv_sec = -1;
-	ts->tv_nsec = 0;
+	return -1;
 }

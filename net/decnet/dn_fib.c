@@ -20,7 +20,6 @@
 #include <linux/string.h>
 #include <linux/net.h>
 #include <linux/socket.h>
-#include <linux/slab.h>
 #include <linux/sockios.h>
 #include <linux/init.h>
 #include <linux/skbuff.h>
@@ -510,7 +509,7 @@ static int dn_fib_rtm_delroute(struct sk_buff *skb, struct nlmsghdr *nlh, void *
 	struct rtattr **rta = arg;
 	struct rtmsg *r = NLMSG_DATA(nlh);
 
-	if (!net_eq(net, &init_net))
+	if (net != &init_net)
 		return -EINVAL;
 
 	if (dn_fib_check_attr(r, rta))
@@ -530,7 +529,7 @@ static int dn_fib_rtm_newroute(struct sk_buff *skb, struct nlmsghdr *nlh, void *
 	struct rtattr **rta = arg;
 	struct rtmsg *r = NLMSG_DATA(nlh);
 
-	if (!net_eq(net, &init_net))
+	if (net != &init_net)
 		return -EINVAL;
 
 	if (dn_fib_check_attr(r, rta))
@@ -608,8 +607,8 @@ static void dn_fib_del_ifaddr(struct dn_ifaddr *ifa)
 	ASSERT_RTNL();
 
 	/* Scan device list */
-	rcu_read_lock();
-	for_each_netdev_rcu(&init_net, dev) {
+	read_lock(&dev_base_lock);
+	for_each_netdev(&init_net, dev) {
 		dn_db = dev->dn_ptr;
 		if (dn_db == NULL)
 			continue;
@@ -620,7 +619,7 @@ static void dn_fib_del_ifaddr(struct dn_ifaddr *ifa)
 			}
 		}
 	}
-	rcu_read_unlock();
+	read_unlock(&dev_base_lock);
 
 	if (found_it == 0) {
 		fib_magic(RTM_DELROUTE, RTN_LOCAL, ifa->ifa_local, 16, ifa);

@@ -464,9 +464,13 @@ static void	usa26_indat_callback(struct urb *urb)
 
 	/* Resubmit urb so we continue receiving */
 	urb->dev = port->serial->dev;
-	err = usb_submit_urb(urb, GFP_ATOMIC);
-	if (err != 0)
-		dbg("%s - resubmit read urb failed. (%d)", __func__, err);
+	if (port->port.count) {
+		err = usb_submit_urb(urb, GFP_ATOMIC);
+		if (err != 0)
+			dbg("%s - resubmit read urb failed. (%d)",
+					__func__, err);
+	}
+	return;
 }
 
 /* Outdat handling is common for all devices */
@@ -479,7 +483,8 @@ static void	usa2x_outdat_callback(struct urb *urb)
 	p_priv = usb_get_serial_port_data(port);
 	dbg("%s - urb %d", __func__, urb == p_priv->out_urbs[1]);
 
-	usb_serial_port_softint(port);
+	if (port->port.count)
+		usb_serial_port_softint(port);
 }
 
 static void	usa26_inack_callback(struct urb *urb)
@@ -610,10 +615,12 @@ static void usa28_indat_callback(struct urb *urb)
 
 		/* Resubmit urb so we continue receiving */
 		urb->dev = port->serial->dev;
-		err = usb_submit_urb(urb, GFP_ATOMIC);
-		if (err != 0)
-			dbg("%s - resubmit read urb failed. (%d)",
-							__func__, err);
+		if (port->port.count) {
+			err = usb_submit_urb(urb, GFP_ATOMIC);
+			if (err != 0)
+				dbg("%s - resubmit read urb failed. (%d)",
+								__func__, err);
+		}
 		p_priv->in_flip ^= 1;
 
 		urb = p_priv->in_urbs[p_priv->in_flip];
@@ -849,9 +856,12 @@ static void	usa49_indat_callback(struct urb *urb)
 
 	/* Resubmit urb so we continue receiving */
 	urb->dev = port->serial->dev;
-	err = usb_submit_urb(urb, GFP_ATOMIC);
-	if (err != 0)
-		dbg("%s - resubmit read urb failed. (%d)", __func__, err);
+	if (port->port.count) {
+		err = usb_submit_urb(urb, GFP_ATOMIC);
+		if (err != 0)
+			dbg("%s - resubmit read urb failed. (%d)",
+							__func__, err);
+	}
 }
 
 static void usa49wg_indat_callback(struct urb *urb)
@@ -894,7 +904,11 @@ static void usa49wg_indat_callback(struct urb *urb)
 				/* no error on any byte */
 				i++;
 				for (x = 1; x < len ; ++x)
-					tty_insert_flip_char(tty, data[i++], 0);
+					if (port->port.count)
+						tty_insert_flip_char(tty,
+								data[i++], 0);
+					else
+						i++;
 			} else {
 				/*
 				 * some bytes had errors, every byte has status
@@ -908,12 +922,14 @@ static void usa49wg_indat_callback(struct urb *urb)
 					if (stat & RXERROR_PARITY)
 						flag |= TTY_PARITY;
 					/* XXX should handle break (0x10) */
-					tty_insert_flip_char(tty,
+					if (port->port.count)
+						tty_insert_flip_char(tty,
 							data[i+1], flag);
 					i += 2;
 				}
 			}
-			tty_flip_buffer_push(tty);
+			if (port->port.count)
+				tty_flip_buffer_push(tty);
 			tty_kref_put(tty);
 		}
 	}
@@ -997,9 +1013,13 @@ static void usa90_indat_callback(struct urb *urb)
 
 	/* Resubmit urb so we continue receiving */
 	urb->dev = port->serial->dev;
-	err = usb_submit_urb(urb, GFP_ATOMIC);
-	if (err != 0)
-		dbg("%s - resubmit read urb failed. (%d)", __func__, err);
+	if (port->port.count) {
+		err = usb_submit_urb(urb, GFP_ATOMIC);
+		if (err != 0)
+			dbg("%s - resubmit read urb failed. (%d)",
+							__func__, err);
+	}
+	return;
 }
 
 
@@ -1189,7 +1209,8 @@ static int keyspan_write_room(struct tty_struct *tty)
 }
 
 
-static int keyspan_open(struct tty_struct *tty, struct usb_serial_port *port)
+static int keyspan_open(struct tty_struct *tty,
+			struct usb_serial_port *port, struct file *filp)
 {
 	struct keyspan_port_private 	*p_priv;
 	struct keyspan_serial_private 	*s_priv;
@@ -1277,16 +1298,8 @@ static inline void stop_urb(struct urb *urb)
 		usb_kill_urb(urb);
 }
 
-static void keyspan_dtr_rts(struct usb_serial_port *port, int on)
-{
-	struct keyspan_port_private *p_priv = usb_get_serial_port_data(port);
-
-	p_priv->rts_state = on;
-	p_priv->dtr_state = on;
-	keyspan_send_setup(port, 0);
-}
-
-static void keyspan_close(struct usb_serial_port *port)
+static void keyspan_close(struct tty_struct *tty,
+			struct usb_serial_port *port, struct file *filp)
 {
 	int			i;
 	struct usb_serial	*serial = port->serial;
@@ -1323,6 +1336,7 @@ static void keyspan_close(struct usb_serial_port *port)
 			stop_urb(p_priv->out_urbs[i]);
 		}
 	}
+	tty_port_tty_set(&port->port, NULL);
 }
 
 /* download the firmware to a pre-renumeration device */
@@ -1493,7 +1507,7 @@ static struct urb *keyspan_setup_urb(struct usb_serial *serial, int endpoint,
 	} else {
 		dev_warn(&serial->interface->dev,
 			 "unsupported endpoint type %x\n",
-			 usb_endpoint_type(ep_desc));
+			 ep_desc->bmAttributes & USB_ENDPOINT_XFERTYPE_MASK);
 		usb_free_urb(urb);
 		return NULL;
 	}
@@ -2398,7 +2412,8 @@ static int keyspan_usa90_send_setup(struct usb_serial *serial,
 		msg.portEnabled = 0;
 	/* Sending intermediate configs */
 	else {
-		msg.portEnabled = 1;
+		if (port->port.count)
+			msg.portEnabled = 1;
 		msg.txBreak = (p_priv->break_on);
 	}
 
@@ -2667,7 +2682,7 @@ static int keyspan_startup(struct usb_serial *serial)
 	return 0;
 }
 
-static void keyspan_disconnect(struct usb_serial *serial)
+static void keyspan_shutdown(struct usb_serial *serial)
 {
 	int				i, j;
 	struct usb_serial_port		*port;
@@ -2707,17 +2722,6 @@ static void keyspan_disconnect(struct usb_serial *serial)
 			usb_free_urb(p_priv->out_urbs[j]);
 		}
 	}
-}
-
-static void keyspan_release(struct usb_serial *serial)
-{
-	int				i;
-	struct usb_serial_port		*port;
-	struct keyspan_serial_private 	*s_priv;
-
-	dbg("%s", __func__);
-
-	s_priv = usb_get_serial_data(serial);
 
 	/*  dbg("Freeing serial->private."); */
 	kfree(s_priv);

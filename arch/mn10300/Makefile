@@ -19,7 +19,7 @@ CCDIR	:= $(strip $(patsubst %/specs,%,$(CCSPECS)))
 KBUILD_CPPFLAGS += -nostdinc -I$(CCDIR)/include
 
 LDFLAGS		:=
-OBJCOPYFLAGS	:= -O binary -R .note -R .comment -R .GCC-command-line -R .note.gnu.build-id -S
+OBJCOPYFLAGS	:= -O binary -R .note -R .comment -S
 #LDFLAGS_vmlinux := -Map linkmap.txt
 CHECKFLAGS	+=
 
@@ -94,8 +94,42 @@ ifdef CONFIG_DEBUG_INFO
 KBUILD_AFLAGS	+= -Wa,--gdwarf2
 endif
 
+###################################################################################################
 #
-# include the appropriate processor- and unit-specific headers
+# juggle some symlinks in the MN10300 asm include dir
 #
-KBUILD_CPPFLAGS += -I$(srctree)/arch/mn10300/proc-$(PROCESSOR)/include
-KBUILD_CPPFLAGS += -I$(srctree)/arch/mn10300/unit-$(UNIT)/include
+#	Update machine proc and unit symlinks if something which affects
+#	them changed.  We use .proc / .unit to indicate when they were
+#	updated last, otherwise make uses the target directory mtime.
+#
+###################################################################################################
+
+# processor specific definitions
+include/asm-mn10300/.proc: $(wildcard include/config/proc/*.h) include/config/auto.conf
+	@echo '  SYMLINK include/asm-mn10300/proc -> include/asm-mn10300/proc-$(PROCESSOR)'
+ifneq ($(KBUILD_SRC),)
+	$(Q)mkdir -p include/asm-mn10300
+	$(Q)ln -fsn $(srctree)/include/asm-mn10300/proc-$(PROCESSOR) include/asm-mn10300/proc
+else
+	$(Q)ln -fsn proc-$(PROCESSOR) include/asm-mn10300/proc
+endif
+	@touch $@
+
+CLEAN_FILES += include/asm-mn10300/proc include/asm-mn10300/.proc
+
+prepare: include/asm-mn10300/.proc
+
+# unit specific definitions
+include/asm-mn10300/.unit: $(wildcard include/config/unit/*.h) include/config/auto.conf
+	@echo '  SYMLINK include/asm-mn10300/unit -> include/asm-mn10300/unit-$(UNIT)'
+ifneq ($(KBUILD_SRC),)
+	$(Q)mkdir -p include/asm-mn10300
+	$(Q)ln -fsn $(srctree)/include/asm-mn10300/unit-$(UNIT) include/asm-mn10300/unit
+else
+	$(Q)ln -fsn unit-$(UNIT) include/asm-mn10300/unit
+endif
+	@touch $@
+
+CLEAN_FILES += include/asm-mn10300/unit include/asm-mn10300/.unit
+
+prepare: include/asm-mn10300/.unit

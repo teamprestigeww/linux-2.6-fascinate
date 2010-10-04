@@ -19,9 +19,8 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <asm/io.h>
-#if defined(CONFIG_OF) && (defined(CONFIG_PPC32) || defined(CONFIG_MICROBLAZE))
+#if defined(CONFIG_OF)
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
 
@@ -76,7 +75,7 @@ static struct uart_port ulite_ports[ULITE_NR_UARTS];
 
 static int ulite_receive(struct uart_port *port, int stat)
 {
-	struct tty_struct *tty = port->state->port.tty;
+	struct tty_struct *tty = port->info->port.tty;
 	unsigned char ch = 0;
 	char flag = TTY_NORMAL;
 
@@ -87,7 +86,7 @@ static int ulite_receive(struct uart_port *port, int stat)
 	/* stats */
 	if (stat & ULITE_STATUS_RXVALID) {
 		port->icount.rx++;
-		ch = ioread32be(port->membase + ULITE_RX);
+		ch = readb(port->membase + ULITE_RX);
 
 		if (stat & ULITE_STATUS_PARITY)
 			port->icount.parity++;
@@ -126,13 +125,13 @@ static int ulite_receive(struct uart_port *port, int stat)
 
 static int ulite_transmit(struct uart_port *port, int stat)
 {
-	struct circ_buf *xmit  = &port->state->xmit;
+	struct circ_buf *xmit  = &port->info->xmit;
 
 	if (stat & ULITE_STATUS_TXFULL)
 		return 0;
 
 	if (port->x_char) {
-		iowrite32be(port->x_char, port->membase + ULITE_TX);
+		writeb(port->x_char, port->membase + ULITE_TX);
 		port->x_char = 0;
 		port->icount.tx++;
 		return 1;
@@ -141,7 +140,7 @@ static int ulite_transmit(struct uart_port *port, int stat)
 	if (uart_circ_empty(xmit) || uart_tx_stopped(port))
 		return 0;
 
-	iowrite32be(xmit->buf[xmit->tail], port->membase + ULITE_TX);
+	writeb(xmit->buf[xmit->tail], port->membase + ULITE_TX);
 	xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE-1);
 	port->icount.tx++;
 
@@ -155,22 +154,17 @@ static int ulite_transmit(struct uart_port *port, int stat)
 static irqreturn_t ulite_isr(int irq, void *dev_id)
 {
 	struct uart_port *port = dev_id;
-	int busy, n = 0;
+	int busy;
 
 	do {
-		int stat = ioread32be(port->membase + ULITE_STATUS);
+		int stat = readb(port->membase + ULITE_STATUS);
 		busy  = ulite_receive(port, stat);
 		busy |= ulite_transmit(port, stat);
-		n++;
 	} while (busy);
 
-	/* work done? */
-	if (n > 1) {
-		tty_flip_buffer_push(port->state->port.tty);
-		return IRQ_HANDLED;
-	} else {
-		return IRQ_NONE;
-	}
+	tty_flip_buffer_push(port->info->port.tty);
+
+	return IRQ_HANDLED;
 }
 
 static unsigned int ulite_tx_empty(struct uart_port *port)
@@ -179,7 +173,7 @@ static unsigned int ulite_tx_empty(struct uart_port *port)
 	unsigned int ret;
 
 	spin_lock_irqsave(&port->lock, flags);
-	ret = ioread32be(port->membase + ULITE_STATUS);
+	ret = readb(port->membase + ULITE_STATUS);
 	spin_unlock_irqrestore(&port->lock, flags);
 
 	return ret & ULITE_STATUS_TXEMPTY ? TIOCSER_TEMT : 0;
@@ -202,7 +196,7 @@ static void ulite_stop_tx(struct uart_port *port)
 
 static void ulite_start_tx(struct uart_port *port)
 {
-	ulite_transmit(port, ioread32be(port->membase + ULITE_STATUS));
+	ulite_transmit(port, readb(port->membase + ULITE_STATUS));
 }
 
 static void ulite_stop_rx(struct uart_port *port)
@@ -227,21 +221,21 @@ static int ulite_startup(struct uart_port *port)
 	int ret;
 
 	ret = request_irq(port->irq, ulite_isr,
-			  IRQF_SHARED | IRQF_SAMPLE_RANDOM, "uartlite", port);
+			  IRQF_DISABLED | IRQF_SAMPLE_RANDOM, "uartlite", port);
 	if (ret)
 		return ret;
 
-	iowrite32be(ULITE_CONTROL_RST_RX | ULITE_CONTROL_RST_TX,
+	writeb(ULITE_CONTROL_RST_RX | ULITE_CONTROL_RST_TX,
 	       port->membase + ULITE_CONTROL);
-	iowrite32be(ULITE_CONTROL_IE, port->membase + ULITE_CONTROL);
+	writeb(ULITE_CONTROL_IE, port->membase + ULITE_CONTROL);
 
 	return 0;
 }
 
 static void ulite_shutdown(struct uart_port *port)
 {
-	iowrite32be(0, port->membase + ULITE_CONTROL);
-	ioread32be(port->membase + ULITE_CONTROL); /* dummy */
+	writeb(0, port->membase + ULITE_CONTROL);
+	readb(port->membase + ULITE_CONTROL); /* dummy */
 	free_irq(port->irq, port);
 }
 
@@ -353,7 +347,7 @@ static void ulite_console_wait_tx(struct uart_port *port)
 
 	/* Spin waiting for TX fifo to have space available */
 	for (i = 0; i < 100000; i++) {
-		val = ioread32be(port->membase + ULITE_STATUS);
+		val = readb(port->membase + ULITE_STATUS);
 		if ((val & ULITE_STATUS_TXFULL) == 0)
 			break;
 		cpu_relax();
@@ -363,7 +357,7 @@ static void ulite_console_wait_tx(struct uart_port *port)
 static void ulite_console_putchar(struct uart_port *port, int ch)
 {
 	ulite_console_wait_tx(port);
-	iowrite32be(ch, port->membase + ULITE_TX);
+	writeb(ch, port->membase + ULITE_TX);
 }
 
 static void ulite_console_write(struct console *co, const char *s,
@@ -380,8 +374,8 @@ static void ulite_console_write(struct console *co, const char *s,
 		spin_lock_irqsave(&port->lock, flags);
 
 	/* save and disable interrupt */
-	ier = ioread32be(port->membase + ULITE_STATUS) & ULITE_STATUS_IE;
-	iowrite32be(0, port->membase + ULITE_CONTROL);
+	ier = readb(port->membase + ULITE_STATUS) & ULITE_STATUS_IE;
+	writeb(0, port->membase + ULITE_CONTROL);
 
 	uart_console_write(port, s, count, ulite_console_putchar);
 
@@ -389,13 +383,13 @@ static void ulite_console_write(struct console *co, const char *s,
 
 	/* restore interrupt state */
 	if (ier)
-		iowrite32be(ULITE_CONTROL_IE, port->membase + ULITE_CONTROL);
+		writeb(ULITE_CONTROL_IE, port->membase + ULITE_CONTROL);
 
 	if (locked)
 		spin_unlock_irqrestore(&port->lock, flags);
 }
 
-static int __devinit ulite_console_setup(struct console *co, char *options)
+static int __init ulite_console_setup(struct console *co, char *options)
 {
 	struct uart_port *port;
 	int baud = 9600;
@@ -582,9 +576,9 @@ static struct platform_driver ulite_platform_driver = {
 /* ---------------------------------------------------------------------
  * OF bus bindings
  */
-#if defined(CONFIG_OF) && (defined(CONFIG_PPC32) || defined(CONFIG_MICROBLAZE))
+#if defined(CONFIG_OF)
 static int __devinit
-ulite_of_probe(struct platform_device *op, const struct of_device_id *match)
+ulite_of_probe(struct of_device *op, const struct of_device_id *match)
 {
 	struct resource res;
 	const unsigned int *id;
@@ -592,31 +586,32 @@ ulite_of_probe(struct platform_device *op, const struct of_device_id *match)
 
 	dev_dbg(&op->dev, "%s(%p, %p)\n", __func__, op, match);
 
-	rc = of_address_to_resource(op->dev.of_node, 0, &res);
+	rc = of_address_to_resource(op->node, 0, &res);
 	if (rc) {
 		dev_err(&op->dev, "invalid address\n");
 		return rc;
 	}
 
-	irq = irq_of_parse_and_map(op->dev.of_node, 0);
+	irq = irq_of_parse_and_map(op->node, 0);
 
-	id = of_get_property(op->dev.of_node, "port-number", NULL);
+	id = of_get_property(op->node, "port-number", NULL);
 
-	return ulite_assign(&op->dev, id ? *id : -1, res.start, irq);
+	return ulite_assign(&op->dev, id ? *id : -1, res.start+3, irq);
 }
 
-static int __devexit ulite_of_remove(struct platform_device *op)
+static int __devexit ulite_of_remove(struct of_device *op)
 {
 	return ulite_release(&op->dev);
 }
 
 static struct of_platform_driver ulite_of_driver = {
+	.owner = THIS_MODULE,
+	.name = "uartlite",
+	.match_table = ulite_of_match,
 	.probe = ulite_of_probe,
 	.remove = __devexit_p(ulite_of_remove),
 	.driver = {
 		.name = "uartlite",
-		.owner = THIS_MODULE,
-		.of_match_table = ulite_of_match,
 	},
 };
 
@@ -631,11 +626,11 @@ static inline void __exit ulite_of_unregister(void)
 {
 	of_unregister_platform_driver(&ulite_of_driver);
 }
-#else /* CONFIG_OF && (CONFIG_PPC32 || CONFIG_MICROBLAZE) */
-/* Appropriate config not enabled; do nothing helpers */
+#else /* CONFIG_OF */
+/* CONFIG_OF not enabled; do nothing helpers */
 static inline int __init ulite_of_register(void) { return 0; }
 static inline void __exit ulite_of_unregister(void) { }
-#endif /* CONFIG_OF && (CONFIG_PPC32 || CONFIG_MICROBLAZE) */
+#endif /* CONFIG_OF */
 
 /* ---------------------------------------------------------------------
  * Module setup/teardown

@@ -35,7 +35,6 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/mutex.h>
-#include <linux/slab.h>
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@ucw.cz>");
 MODULE_DESCRIPTION("TurboGraFX parallel port interface driver");

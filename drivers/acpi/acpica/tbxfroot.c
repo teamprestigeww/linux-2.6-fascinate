@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -75,8 +75,8 @@ static acpi_status acpi_tb_validate_rsdp(struct acpi_table_rsdp *rsdp)
 	 * Note: Sometimes there exists more than one RSDP in memory; the valid
 	 * RSDP has a valid checksum, all others have an invalid checksum.
 	 */
-	if (ACPI_STRNCMP((char *)rsdp, ACPI_SIG_RSDP,
-			 sizeof(ACPI_SIG_RSDP) - 1) != 0) {
+	if (ACPI_STRNCMP((char *)rsdp, ACPI_SIG_RSDP, sizeof(ACPI_SIG_RSDP) - 1)
+	    != 0) {
 
 		/* Nope, BAD Signature */
 
@@ -134,7 +134,7 @@ acpi_status acpi_find_root_pointer(acpi_size *table_address)
 				       ACPI_EBDA_PTR_LENGTH);
 	if (!table_ptr) {
 		ACPI_ERROR((AE_INFO,
-			    "Could not map memory at 0x%8.8X for length %u",
+			    "Could not map memory at %8.8X for length %X",
 			    ACPI_EBDA_PTR_LOCATION, ACPI_EBDA_PTR_LENGTH));
 
 		return_ACPI_STATUS(AE_NO_MEMORY);
@@ -159,7 +159,7 @@ acpi_status acpi_find_root_pointer(acpi_size *table_address)
 					       ACPI_EBDA_WINDOW_SIZE);
 		if (!table_ptr) {
 			ACPI_ERROR((AE_INFO,
-				    "Could not map memory at 0x%8.8X for length %u",
+				    "Could not map memory at %8.8X for length %X",
 				    physical_address, ACPI_EBDA_WINDOW_SIZE));
 
 			return_ACPI_STATUS(AE_NO_MEMORY);
@@ -191,7 +191,7 @@ acpi_status acpi_find_root_pointer(acpi_size *table_address)
 
 	if (!table_ptr) {
 		ACPI_ERROR((AE_INFO,
-			    "Could not map memory at 0x%8.8X for length %u",
+			    "Could not map memory at %8.8X for length %X",
 			    ACPI_HI_RSDP_WINDOW_BASE,
 			    ACPI_HI_RSDP_WINDOW_SIZE));
 

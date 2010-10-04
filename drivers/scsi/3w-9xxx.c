@@ -1,11 +1,10 @@
 /*
    3w-9xxx.c -- 3ware 9000 Storage Controller device driver for Linux.
 
-   Written By: Adam Radford <linuxraid@lsi.com>
-   Modifications By: Tom Couch <linuxraid@lsi.com>
+   Written By: Adam Radford <linuxraid@amcc.com>
+   Modifications By: Tom Couch <linuxraid@amcc.com>
 
-   Copyright (C) 2004-2009 Applied Micro Circuits Corporation.
-   Copyright (C) 2010 LSI Corporation.
+   Copyright (C) 2004-2008 Applied Micro Circuits Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -41,10 +40,10 @@
    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
    Bugs/Comments/Suggestions should be mailed to:
-   linuxraid@lsi.com
+   linuxraid@amcc.com
 
    For more information, goto:
-   http://www.lsi.com
+   http://www.amcc.com
 
    Note: This version of the driver does not contain a bundled firmware
          image.
@@ -76,9 +75,6 @@
                  Add MSI support and "use_msi" module parameter.
                  Fix bug in twa_get_param() on 4GB+.
                  Use pci_resource_len() for ioremap().
-   2.26.02.012 - Add power management support.
-   2.26.02.013 - Fix bug in twa_load_sgl().
-   2.26.02.014 - Force 60 second timeout default.
 */
 
 #include <linux/module.h>
@@ -93,7 +89,6 @@
 #include <linux/time.h>
 #include <linux/mutex.h>
 #include <linux/smp_lock.h>
-#include <linux/slab.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/uaccess.h>
@@ -104,14 +99,14 @@
 #include "3w-9xxx.h"
 
 /* Globals */
-#define TW_DRIVER_VERSION "2.26.02.014"
+#define TW_DRIVER_VERSION "2.26.02.011"
 static TW_Device_Extension *twa_device_extension_list[TW_MAX_SLOT];
 static unsigned int twa_device_extension_count;
 static int twa_major = -1;
 extern struct timezone sys_tz;
 
 /* Module parameters */
-MODULE_AUTHOR ("LSI");
+MODULE_AUTHOR ("AMCC");
 MODULE_DESCRIPTION ("3ware 9000 Storage Controller Linux Driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(TW_DRIVER_VERSION);
@@ -125,7 +120,7 @@ static void twa_aen_queue_event(TW_Device_Extension *tw_dev, TW_Command_Apache_H
 static int twa_aen_read_queue(TW_Device_Extension *tw_dev, int request_id);
 static char *twa_aen_severity_lookup(unsigned char severity_code);
 static void twa_aen_sync_time(TW_Device_Extension *tw_dev, int request_id);
-static long twa_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+static int twa_chrdev_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg);
 static int twa_chrdev_open(struct inode *inode, struct file *file);
 static int twa_fill_sense(TW_Device_Extension *tw_dev, int request_id, int copy_sense, int print_host);
 static void twa_free_request_id(TW_Device_Extension *tw_dev,int request_id);
@@ -190,12 +185,8 @@ static ssize_t twa_show_stats(struct device *dev,
 } /* End twa_show_stats() */
 
 /* This function will set a devices queue depth */
-static int twa_change_queue_depth(struct scsi_device *sdev, int queue_depth,
-				  int reason)
+static int twa_change_queue_depth(struct scsi_device *sdev, int queue_depth)
 {
-	if (reason != SCSI_QDEPTH_DEFAULT)
-		return -EOPNOTSUPP;
-
 	if (queue_depth > TW_Q_LENGTH-2)
 		queue_depth = TW_Q_LENGTH-2;
 	scsi_adjust_queue_depth(sdev, MSG_ORDERED_TAG, queue_depth);
@@ -220,7 +211,7 @@ static struct device_attribute *twa_host_attrs[] = {
 /* File operations struct for character device */
 static const struct file_operations twa_fops = {
 	.owner		= THIS_MODULE,
-	.unlocked_ioctl	= twa_chrdev_ioctl,
+	.ioctl		= twa_chrdev_ioctl,
 	.open		= twa_chrdev_open,
 	.release	= NULL
 };
@@ -637,9 +628,8 @@ out:
 } /* End twa_check_srl() */
 
 /* This function handles ioctl for the character device */
-static long twa_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+static int twa_chrdev_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
 {
-	struct inode *inode = file->f_path.dentry->d_inode;
 	long timeout;
 	unsigned long *cpu_addr, data_buffer_length_adjusted = 0, flags = 0;
 	dma_addr_t dma_handle;
@@ -657,8 +647,6 @@ static long twa_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long 
 	TW_Device_Extension *tw_dev = twa_device_extension_list[iminor(inode)];
 	int retval = TW_IOCTL_ERROR_OS_EFAULT;
 	void __user *argp = (void __user *)arg;
-
-	lock_kernel();
 
 	/* Only let one of these through at a time */
 	if (mutex_lock_interruptible(&tw_dev->ioctl_lock)) {
@@ -743,7 +731,7 @@ static long twa_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long 
 		break;
 	case TW_IOCTL_GET_COMPATIBILITY_INFO:
 		tw_ioctl->driver_command.status = 0;
-		/* Copy compatibility struct into ioctl data buffer */
+		/* Copy compatiblity struct into ioctl data buffer */
 		tw_compat_info = (TW_Compatibility_Info *)tw_ioctl->data_buffer;
 		memcpy(tw_compat_info, &tw_dev->tw_compat_info, sizeof(TW_Compatibility_Info));
 		break;
@@ -879,7 +867,6 @@ out3:
 out2:
 	mutex_unlock(&tw_dev->ioctl_lock);
 out:
-	unlock_kernel();
 	return retval;
 } /* End twa_chrdev_ioctl() */
 
@@ -1390,12 +1377,10 @@ static void twa_load_sgl(TW_Device_Extension *tw_dev, TW_Command_Full *full_comm
 		newcommand = &full_command_packet->command.newcommand;
 		newcommand->request_id__lunl =
 			cpu_to_le16(TW_REQ_LUN_IN(TW_LUN_OUT(newcommand->request_id__lunl), request_id));
-		if (length) {
-			newcommand->sg_list[0].address = TW_CPU_TO_SGL(dma_handle + sizeof(TW_Ioctl_Buf_Apache) - 1);
-			newcommand->sg_list[0].length = cpu_to_le32(length);
-		}
+		newcommand->sg_list[0].address = TW_CPU_TO_SGL(dma_handle + sizeof(TW_Ioctl_Buf_Apache) - 1);
+		newcommand->sg_list[0].length = cpu_to_le32(length);
 		newcommand->sgl_entries__lunh =
-			cpu_to_le16(TW_REQ_LUN_IN(TW_LUN_OUT(newcommand->sgl_entries__lunh), length ? 1 : 0));
+			cpu_to_le16(TW_REQ_LUN_IN(TW_LUN_OUT(newcommand->sgl_entries__lunh), 1));
 	} else {
 		oldcommand = &full_command_packet->command.oldcommand;
 		oldcommand->request_id = request_id;
@@ -1992,18 +1977,8 @@ static void twa_unmap_scsi_data(TW_Device_Extension *tw_dev, int request_id)
 {
 	struct scsi_cmnd *cmd = tw_dev->srb[request_id];
 
-	if (cmd->SCp.phase == TW_PHASE_SGLIST)
-		scsi_dma_unmap(cmd);
+	scsi_dma_unmap(cmd);
 } /* End twa_unmap_scsi_data() */
-
-/* This function gets called when a disk is coming on-line */
-static int twa_slave_configure(struct scsi_device *sdev)
-{
-	/* Force 60 second timeout */
-	blk_queue_rq_timeout(sdev->request_queue, 60 * HZ);
-
-	return 0;
-} /* End twa_slave_configure() */
 
 /* scsi_host_template initializer */
 static struct scsi_host_template driver_template = {
@@ -2014,7 +1989,6 @@ static struct scsi_host_template driver_template = {
 	.bios_param		= twa_scsi_biosparam,
 	.change_queue_depth	= twa_change_queue_depth,
 	.can_queue		= TW_Q_LENGTH-2,
-	.slave_configure	= twa_slave_configure,
 	.this_id		= -1,
 	.sg_tablesize		= TW_APACHE_MAX_SGL_LENGTH,
 	.max_sectors		= TW_MAX_SECTORS,
@@ -2041,10 +2015,10 @@ static int __devinit twa_probe(struct pci_dev *pdev, const struct pci_device_id 
 	pci_set_master(pdev);
 	pci_try_set_mwi(pdev);
 
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(64))
-	    || pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)))
-		if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))
-		    || pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32))) {
+	if (pci_set_dma_mask(pdev, DMA_64BIT_MASK)
+	    || pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK))
+		if (pci_set_dma_mask(pdev, DMA_32BIT_MASK)
+		    || pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK)) {
 			TW_PRINTK(host, TW_DRIVER, 0x23, "Failed to set dma mask");
 			retval = -ENODEV;
 			goto out_disable_device;
@@ -2208,98 +2182,6 @@ static void twa_remove(struct pci_dev *pdev)
 	twa_device_extension_count--;
 } /* End twa_remove() */
 
-#ifdef CONFIG_PM
-/* This function is called on PCI suspend */
-static int twa_suspend(struct pci_dev *pdev, pm_message_t state)
-{
-	struct Scsi_Host *host = pci_get_drvdata(pdev);
-	TW_Device_Extension *tw_dev = (TW_Device_Extension *)host->hostdata;
-
-	printk(KERN_WARNING "3w-9xxx: Suspending host %d.\n", tw_dev->host->host_no);
-
-	TW_DISABLE_INTERRUPTS(tw_dev);
-	free_irq(tw_dev->tw_pci_dev->irq, tw_dev);
-
-	if (test_bit(TW_USING_MSI, &tw_dev->flags))
-		pci_disable_msi(pdev);
-
-	/* Tell the card we are shutting down */
-	if (twa_initconnection(tw_dev, 1, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL)) {
-		TW_PRINTK(tw_dev->host, TW_DRIVER, 0x38, "Connection shutdown failed during suspend");
-	} else {
-		printk(KERN_WARNING "3w-9xxx: Suspend complete.\n");
-	}
-	TW_CLEAR_ALL_INTERRUPTS(tw_dev);
-
-	pci_save_state(pdev);
-	pci_disable_device(pdev);
-	pci_set_power_state(pdev, pci_choose_state(pdev, state));
-
-	return 0;
-} /* End twa_suspend() */
-
-/* This function is called on PCI resume */
-static int twa_resume(struct pci_dev *pdev)
-{
-	int retval = 0;
-	struct Scsi_Host *host = pci_get_drvdata(pdev);
-	TW_Device_Extension *tw_dev = (TW_Device_Extension *)host->hostdata;
-
-	printk(KERN_WARNING "3w-9xxx: Resuming host %d.\n", tw_dev->host->host_no);
-	pci_set_power_state(pdev, PCI_D0);
-	pci_enable_wake(pdev, PCI_D0, 0);
-	pci_restore_state(pdev);
-
-	retval = pci_enable_device(pdev);
-	if (retval) {
-		TW_PRINTK(tw_dev->host, TW_DRIVER, 0x39, "Enable device failed during resume");
-		return retval;
-	}
-
-	pci_set_master(pdev);
-	pci_try_set_mwi(pdev);
-
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(64))
-	    || pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)))
-		if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))
-		    || pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32))) {
-			TW_PRINTK(host, TW_DRIVER, 0x40, "Failed to set dma mask during resume");
-			retval = -ENODEV;
-			goto out_disable_device;
-		}
-
-	/* Initialize the card */
-	if (twa_reset_sequence(tw_dev, 0)) {
-		retval = -ENODEV;
-		goto out_disable_device;
-	}
-
-	/* Now setup the interrupt handler */
-	retval = request_irq(pdev->irq, twa_interrupt, IRQF_SHARED, "3w-9xxx", tw_dev);
-	if (retval) {
-		TW_PRINTK(tw_dev->host, TW_DRIVER, 0x42, "Error requesting IRQ during resume");
-		retval = -ENODEV;
-		goto out_disable_device;
-	}
-
-	/* Now enable MSI if enabled */
-	if (test_bit(TW_USING_MSI, &tw_dev->flags))
-		pci_enable_msi(pdev);
-
-	/* Re-enable interrupts on the card */
-	TW_ENABLE_AND_CLEAR_INTERRUPTS(tw_dev);
-
-	printk(KERN_WARNING "3w-9xxx: Resume complete.\n");
-	return 0;
-
-out_disable_device:
-	scsi_remove_host(host);
-	pci_disable_device(pdev);
-
-	return retval;
-} /* End twa_resume() */
-#endif
-
 /* PCI Devices supported by this driver */
 static struct pci_device_id twa_pci_tbl[] __devinitdata = {
 	{ PCI_VENDOR_ID_3WARE, PCI_DEVICE_ID_3WARE_9000,
@@ -2320,10 +2202,6 @@ static struct pci_driver twa_driver = {
 	.id_table	= twa_pci_tbl,
 	.probe		= twa_probe,
 	.remove		= twa_remove,
-#ifdef CONFIG_PM
-	.suspend	= twa_suspend,
-	.resume		= twa_resume,
-#endif
 	.shutdown	= twa_shutdown
 };
 

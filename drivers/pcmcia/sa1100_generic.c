@@ -32,9 +32,9 @@
 
 #include <linux/module.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/platform_device.h>
 
+#include <pcmcia/cs_types.h>
 #include <pcmcia/cs.h>
 #include <pcmcia/ss.h>
 
@@ -51,7 +51,7 @@ static int (*sa11x0_pcmcia_hw_init[])(struct device *dev) = {
 #ifdef CONFIG_SA1100_CERF
 	pcmcia_cerf_init,
 #endif
-#if defined(CONFIG_SA1100_H3100) || defined(CONFIG_SA1100_H3600)
+#ifdef CONFIG_SA1100_H3600
 	pcmcia_h3600_init,
 #endif
 #ifdef CONFIG_SA1100_SHANNON
@@ -65,7 +65,7 @@ static int (*sa11x0_pcmcia_hw_init[])(struct device *dev) = {
 #endif
 };
 
-static int sa11x0_drv_pcmcia_probe(struct platform_device *dev)
+static int sa11x0_drv_pcmcia_probe(struct device *dev)
 {
 	int i, ret = -ENODEV;
 
@@ -73,7 +73,7 @@ static int sa11x0_drv_pcmcia_probe(struct platform_device *dev)
 	 * Initialise any "on-board" PCMCIA sockets.
 	 */
 	for (i = 0; i < ARRAY_SIZE(sa11x0_pcmcia_hw_init); i++) {
-		ret = sa11x0_pcmcia_hw_init[i](&dev->dev);
+		ret = sa11x0_pcmcia_hw_init[i](dev);
 		if (ret == 0)
 			break;
 	}
@@ -81,27 +81,13 @@ static int sa11x0_drv_pcmcia_probe(struct platform_device *dev)
 	return ret;
 }
 
-static int sa11x0_drv_pcmcia_remove(struct platform_device *dev)
-{
-	struct skt_dev_info *sinfo = platform_get_drvdata(dev);
-	int i;
-
-	platform_set_drvdata(dev, NULL);
-
-	for (i = 0; i < sinfo->nskt; i++)
-		soc_pcmcia_remove_one(&sinfo->skt[i]);
-
-	kfree(sinfo);
-	return 0;
-}
-
-static struct platform_driver sa11x0_pcmcia_driver = {
-	.driver = {
-		.name		= "sa11x0-pcmcia",
-		.owner		= THIS_MODULE,
-	},
+static struct device_driver sa11x0_pcmcia_driver = {
 	.probe		= sa11x0_drv_pcmcia_probe,
-	.remove		= sa11x0_drv_pcmcia_remove,
+	.remove		= soc_common_drv_pcmcia_remove,
+	.name		= "sa11x0-pcmcia",
+	.bus		= &platform_bus_type,
+	.suspend 	= pcmcia_socket_dev_suspend,
+	.resume 	= pcmcia_socket_dev_resume,
 };
 
 /* sa11x0_pcmcia_init()
@@ -114,7 +100,7 @@ static struct platform_driver sa11x0_pcmcia_driver = {
  */
 static int __init sa11x0_pcmcia_init(void)
 {
-	return platform_driver_register(&sa11x0_pcmcia_driver);
+	return driver_register(&sa11x0_pcmcia_driver);
 }
 
 /* sa11x0_pcmcia_exit()
@@ -124,7 +110,7 @@ static int __init sa11x0_pcmcia_init(void)
  */
 static void __exit sa11x0_pcmcia_exit(void)
 {
-	platform_driver_unregister(&sa11x0_pcmcia_driver);
+	driver_unregister(&sa11x0_pcmcia_driver);
 }
 
 MODULE_AUTHOR("John Dorsey <john+@cs.cmu.edu>");

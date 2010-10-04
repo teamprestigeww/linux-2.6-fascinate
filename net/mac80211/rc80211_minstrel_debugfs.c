@@ -49,19 +49,24 @@
 #include <linux/skbuff.h>
 #include <linux/debugfs.h>
 #include <linux/ieee80211.h>
-#include <linux/slab.h>
 #include <net/mac80211.h>
 #include "rc80211_minstrel.h"
 
-int
+struct minstrel_stats_info {
+	struct minstrel_sta_info *mi;
+	char buf[4096];
+	size_t len;
+};
+
+static int
 minstrel_stats_open(struct inode *inode, struct file *file)
 {
 	struct minstrel_sta_info *mi = inode->i_private;
-	struct minstrel_debugfs_info *ms;
+	struct minstrel_stats_info *ms;
 	unsigned int i, tp, prob, eprob;
 	char *p;
 
-	ms = kmalloc(sizeof(*ms) + 4096, GFP_KERNEL);
+	ms = kmalloc(sizeof(*ms), GFP_KERNEL);
 	if (!ms)
 		return -ENOMEM;
 
@@ -78,7 +83,7 @@ minstrel_stats_open(struct inode *inode, struct file *file)
 		p += sprintf(p, "%3u%s", mr->bitrate / 2,
 				(mr->bitrate & 1 ? ".5" : "  "));
 
-		tp = mr->cur_tp / ((18000 << 10) / 96);
+		tp = ((mr->cur_tp * 96) / 18000) >> 10;
 		prob = mr->cur_prob / 18;
 		eprob = mr->probability / 18;
 
@@ -101,23 +106,40 @@ minstrel_stats_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-ssize_t
-minstrel_stats_read(struct file *file, char __user *buf, size_t len, loff_t *ppos)
+static ssize_t
+minstrel_stats_read(struct file *file, char __user *buf, size_t len, loff_t *o)
 {
-	struct minstrel_debugfs_info *ms;
+	struct minstrel_stats_info *ms;
+	char *src;
 
 	ms = file->private_data;
-	return simple_read_from_buffer(buf, len, ppos, ms->buf, ms->len);
+	src = ms->buf;
+
+	len = min(len, ms->len);
+	if (len <= *o)
+		return 0;
+
+	src += *o;
+	len -= *o;
+	*o += len;
+
+	if (copy_to_user(buf, src, len))
+		return -EFAULT;
+
+	return len;
 }
 
-int
+static int
 minstrel_stats_release(struct inode *inode, struct file *file)
 {
-	kfree(file->private_data);
+	struct minstrel_stats_info *ms = file->private_data;
+
+	kfree(ms);
+
 	return 0;
 }
 
-static const struct file_operations minstrel_stat_fops = {
+static struct file_operations minstrel_stat_fops = {
 	.owner = THIS_MODULE,
 	.open = minstrel_stats_open,
 	.read = minstrel_stats_read,

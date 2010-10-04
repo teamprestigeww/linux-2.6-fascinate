@@ -3,7 +3,7 @@
  * IDE driver for Linux.
  *
  * Copyright (c) 2000-2002 Vojtech Pavlik
- * Copyright (c) 2007-2010 Bartlomiej Zolnierkiewicz
+ * Copyright (c) 2007-2008 Bartlomiej Zolnierkiewicz
  *
  * Based on the work of:
  *      Andre Hedrick
@@ -70,8 +70,7 @@ static void amd_set_speed(struct pci_dev *dev, u8 dn, u8 udma_mask,
 	default: return;
 	}
 
-	if (timing->udma)
-		pci_write_config_byte(dev, AMD_UDMA_TIMING + offset + 3 - dn, t);
+	pci_write_config_byte(dev, AMD_UDMA_TIMING + offset + (3 - dn), t);
 }
 
 /*
@@ -79,14 +78,14 @@ static void amd_set_speed(struct pci_dev *dev, u8 dn, u8 udma_mask,
  * to a desired transfer mode.  It also can be called by upper layers.
  */
 
-static void amd_set_drive(ide_hwif_t *hwif, ide_drive_t *drive)
+static void amd_set_drive(ide_drive_t *drive, const u8 speed)
 {
+	ide_hwif_t *hwif = drive->hwif;
 	struct pci_dev *dev = to_pci_dev(hwif->dev);
 	ide_drive_t *peer = ide_get_pair_dev(drive);
 	struct ide_timing t, p;
 	int T, UT;
 	u8 udma_mask = hwif->ultra_mask;
-	const u8 speed = drive->dma_mode;
 
 	T = 1000000000 / amd_clock;
 	UT = (udma_mask == ATA_UDMA2) ? T : (T / 2);
@@ -94,7 +93,7 @@ static void amd_set_drive(ide_hwif_t *hwif, ide_drive_t *drive)
 	ide_timing_compute(drive, speed, &t, T, UT);
 
 	if (peer) {
-		ide_timing_compute(peer, peer->pio_mode, &p, T, UT);
+		ide_timing_compute(peer, peer->current_speed, &p, T, UT);
 		ide_timing_merge(&p, &t, &t, IDE_TIMING_8BIT);
 	}
 
@@ -108,10 +107,9 @@ static void amd_set_drive(ide_hwif_t *hwif, ide_drive_t *drive)
  * amd_set_pio_mode() is a callback from upper layers for PIO-only tuning.
  */
 
-static void amd_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void amd_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
-	drive->dma_mode = drive->pio_mode;
-	amd_set_drive(hwif, drive);
+	amd_set_drive(drive, XFER_PIO_0 + pio);
 }
 
 static void amd7409_cable_detect(struct pci_dev *dev)
@@ -142,7 +140,7 @@ static void amd7411_cable_detect(struct pci_dev *dev)
  * The initialization callback.  Initialize drive independent registers.
  */
 
-static int init_chipset_amd74xx(struct pci_dev *dev)
+static unsigned int init_chipset_amd74xx(struct pci_dev *dev)
 {
 	u8 t = 0, offset = amd_offset(dev);
 
@@ -174,7 +172,7 @@ static int init_chipset_amd74xx(struct pci_dev *dev)
 		t |= 0xf0;
 	pci_write_config_byte(dev, AMD_IDE_CONFIG + offset, t);
 
-	return 0;
+	return dev->irq;
 }
 
 static u8 amd_cable_detect(ide_hwif_t *hwif)
@@ -183,6 +181,14 @@ static u8 amd_cable_detect(ide_hwif_t *hwif)
 		return ATA_CBL_PATA80;
 	else
 		return ATA_CBL_PATA40;
+}
+
+static void __devinit init_hwif_amd74xx(ide_hwif_t *hwif)
+{
+	struct pci_dev *dev = to_pci_dev(hwif->dev);
+
+	if (hwif->irq == 0) /* 0 is bogus but will do for now */
+		hwif->irq = pci_get_legacy_ide_irq(dev, hwif->channel);
 }
 
 static const struct ide_port_ops amd_port_ops = {
@@ -201,6 +207,7 @@ static const struct ide_port_ops amd_port_ops = {
 	{								\
 		.name		= DRV_NAME,				\
 		.init_chipset	= init_chipset_amd74xx,			\
+		.init_hwif	= init_hwif_amd74xx,			\
 		.enablebits	= {{0x40,0x02,0x02}, {0x40,0x01,0x01}},	\
 		.port_ops	= &amd_port_ops,			\
 		.host_flags	= IDE_HFLAGS_AMD,			\
@@ -214,6 +221,7 @@ static const struct ide_port_ops amd_port_ops = {
 	{								\
 		.name		= DRV_NAME,				\
 		.init_chipset	= init_chipset_amd74xx,			\
+		.init_hwif	= init_hwif_amd74xx,			\
 		.enablebits	= {{0x50,0x02,0x02}, {0x50,0x01,0x01}},	\
 		.port_ops	= &amd_port_ops,			\
 		.host_flags	= IDE_HFLAGS_AMD,			\
@@ -342,6 +350,6 @@ static void __exit amd74xx_ide_exit(void)
 module_init(amd74xx_ide_init);
 module_exit(amd74xx_ide_exit);
 
-MODULE_AUTHOR("Vojtech Pavlik, Bartlomiej Zolnierkiewicz");
+MODULE_AUTHOR("Vojtech Pavlik");
 MODULE_DESCRIPTION("AMD PCI IDE driver");
 MODULE_LICENSE("GPL");

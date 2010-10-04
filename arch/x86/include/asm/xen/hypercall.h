@@ -296,8 +296,6 @@ HYPERVISOR_get_debugreg(int reg)
 static inline int
 HYPERVISOR_update_descriptor(u64 ma, u64 desc)
 {
-	if (sizeof(u64) == sizeof(long))
-		return _hypercall2(int, update_descriptor, ma, desc);
 	return _hypercall4(int, update_descriptor, ma, ma>>32, desc, desc>>32);
 }
 
@@ -415,12 +413,6 @@ static inline int
 HYPERVISOR_nmi_op(unsigned long op, unsigned long arg)
 {
 	return _hypercall2(int, nmi_op, op, arg);
-}
-
-static inline unsigned long __must_check
-HYPERVISOR_hvm_op(int op, void *arg)
-{
-       return _hypercall2(unsigned long, hvm_op, op, arg);
 }
 
 static inline void

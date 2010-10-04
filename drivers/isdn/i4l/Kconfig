@@ -2,8 +2,6 @@
 # Old ISDN4Linux config
 #
 
-if ISDN_I4L
-
 config ISDN_PPP
 	bool "Support synchronous PPP"
 	depends on INET
@@ -134,7 +132,8 @@ source "drivers/isdn/sc/Kconfig"
 
 source "drivers/isdn/act2000/Kconfig"
 
-endmenu
-# end ISDN_I4L
-endif
+source "drivers/isdn/hysdn/Kconfig"
 
+endmenu
+
+source "drivers/isdn/gigaset/Kconfig"

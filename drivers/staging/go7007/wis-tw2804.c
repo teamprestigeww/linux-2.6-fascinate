@@ -20,7 +20,6 @@
 #include <linux/i2c.h>
 #include <linux/videodev2.h>
 #include <linux/ioctl.h>
-#include <linux/slab.h>
 
 #include "wis-i2c.h"
 
@@ -292,19 +291,34 @@ static int wis_tw2804_command(struct i2c_client *client,
 	return 0;
 }
 
-static int wis_tw2804_probe(struct i2c_client *client,
-			    const struct i2c_device_id *id)
+static struct i2c_driver wis_tw2804_driver;
+
+static struct i2c_client wis_tw2804_client_templ = {
+	.name		= "TW2804 (WIS)",
+	.driver		= &wis_tw2804_driver,
+};
+
+static int wis_tw2804_detect(struct i2c_adapter *adapter, int addr, int kind)
 {
-	struct i2c_adapter *adapter = client->adapter;
+	struct i2c_client *client;
 	struct wis_tw2804 *dec;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -ENODEV;
+		return 0;
+
+	client = kmalloc(sizeof(struct i2c_client), GFP_KERNEL);
+	if (client == NULL)
+		return -ENOMEM;
+	memcpy(client, &wis_tw2804_client_templ,
+			sizeof(wis_tw2804_client_templ));
+	client->adapter = adapter;
+	client->addr = addr;
 
 	dec = kmalloc(sizeof(struct wis_tw2804), GFP_KERNEL);
-	if (dec == NULL)
+	if (dec == NULL) {
+		kfree(client);
 		return -ENOMEM;
-
+	}
 	dec->channel = -1;
 	dec->norm = V4L2_STD_NTSC;
 	dec->brightness = 128;
@@ -314,41 +328,48 @@ static int wis_tw2804_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, dec);
 
 	printk(KERN_DEBUG "wis-tw2804: creating TW2804 at address %d on %s\n",
-		client->addr, adapter->name);
+		addr, adapter->name);
 
+	i2c_attach_client(client);
 	return 0;
 }
 
-static int wis_tw2804_remove(struct i2c_client *client)
+static int wis_tw2804_detach(struct i2c_client *client)
 {
 	struct wis_tw2804 *dec = i2c_get_clientdata(client);
+	int r;
 
+	r = i2c_detach_client(client);
+	if (r < 0)
+		return r;
+
+	kfree(client);
 	kfree(dec);
 	return 0;
 }
-
-static const struct i2c_device_id wis_tw2804_id[] = {
-	{ "wis_tw2804", 0 },
-	{ }
-};
 
 static struct i2c_driver wis_tw2804_driver = {
 	.driver = {
 		.name	= "WIS TW2804 I2C driver",
 	},
-	.probe		= wis_tw2804_probe,
-	.remove		= wis_tw2804_remove,
+	.id		= I2C_DRIVERID_WIS_TW2804,
+	.detach_client	= wis_tw2804_detach,
 	.command	= wis_tw2804_command,
-	.id_table	= wis_tw2804_id,
 };
 
 static int __init wis_tw2804_init(void)
 {
-	return i2c_add_driver(&wis_tw2804_driver);
+	int r;
+
+	r = i2c_add_driver(&wis_tw2804_driver);
+	if (r < 0)
+		return r;
+	return wis_i2c_add_driver(wis_tw2804_driver.id, wis_tw2804_detect);
 }
 
 static void __exit wis_tw2804_cleanup(void)
 {
+	wis_i2c_del_driver(wis_tw2804_detect);
 	i2c_del_driver(&wis_tw2804_driver);
 }
 

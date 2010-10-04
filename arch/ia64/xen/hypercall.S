@@ -9,7 +9,6 @@
 #include <asm/intrinsics.h>
 #include <asm/xen/privop.h>
 
-#ifdef __INTEL_COMPILER
 /*
  * Hypercalls without parameter.
  */
@@ -58,6 +57,11 @@ __HCALL2(xen_ptcga, HYPERPRIVOP_PTC_GA)
 __HCALL2(xen_set_rr, HYPERPRIVOP_SET_RR)
 __HCALL2(xen_set_kr, HYPERPRIVOP_SET_KR)
 
+#ifdef CONFIG_IA32_SUPPORT
+__HCALL0(xen_get_eflag, HYPERPRIVOP_GET_EFLAG)
+__HCALL1(xen_set_eflag, HYPERPRIVOP_SET_EFLAG)	// refer SDM vol1 3.1.8
+#endif /* CONFIG_IA32_SUPPORT */
+
 GLOBAL_ENTRY(xen_set_rr0_to_rr4)
 	mov r8=r32
 	mov r9=r33
@@ -68,7 +72,6 @@ GLOBAL_ENTRY(xen_set_rr0_to_rr4)
 	br.ret.sptk.many rp
 	;;
 END(xen_set_rr0_to_rr4)
-#endif
 
 GLOBAL_ENTRY(xen_send_ipi)
 	mov r14=r32

@@ -97,7 +97,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mca.h>
-#include <linux/slab.h>
 #include <asm/io.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
@@ -225,7 +224,7 @@ NCR_D700_probe_one(struct NCR_D700_private *p, int siop, int irq,
 	return ret;
 }
 
-static irqreturn_t
+static int
 NCR_D700_intr(int irq, void *data)
 {
 	struct NCR_D700_private *p = (struct NCR_D700_private *)data;

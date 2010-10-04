@@ -1,22 +1,17 @@
 #ifndef _LINUX_TYPES_H
 #define _LINUX_TYPES_H
 
-#include <asm/types.h>
-
-#ifndef __ASSEMBLY__
 #ifdef	__KERNEL__
 
 #define DECLARE_BITMAP(name,bits) \
 	unsigned long name[BITS_TO_LONGS(bits)]
-#else
-#ifndef __EXPORTED_HEADERS__
-#warning "Attempt to use kernel headers from user space, see http://kernelnewbies.org/KernelHeaders"
-#endif /* __EXPORTED_HEADERS__ */
+
 #endif
 
 #include <linux/posix_types.h>
+#include <asm/types.h>
 
-#ifdef __KERNEL__
+#ifndef __KERNEL_STRICT_NAMES
 
 typedef __u32 __kernel_dev_t;
 
@@ -34,6 +29,7 @@ typedef __kernel_timer_t	timer_t;
 typedef __kernel_clockid_t	clockid_t;
 typedef __kernel_mqd_t		mqd_t;
 
+#ifdef __KERNEL__
 typedef _Bool			bool;
 
 typedef __kernel_uid32_t	uid_t;
@@ -48,6 +44,14 @@ typedef unsigned long		uintptr_t;
 typedef __kernel_old_uid_t	old_uid_t;
 typedef __kernel_old_gid_t	old_gid_t;
 #endif /* CONFIG_UID16 */
+
+/* libc5 includes this file to define uid_t, thus uid_t can never change
+ * when it is included by non-kernel code
+ */
+#else
+typedef __kernel_uid_t		uid_t;
+typedef __kernel_gid_t		gid_t;
+#endif /* __KERNEL__ */
 
 #if defined(__GNUC__)
 typedef __kernel_loff_t		loff_t;
@@ -134,7 +138,7 @@ typedef		__s64		int64_t;
  *
  * blkcnt_t is the type of the inode's block count.
  */
-#ifdef CONFIG_LBDAF
+#ifdef CONFIG_LBD
 typedef u64 sector_t;
 typedef u64 blkcnt_t;
 #else
@@ -150,7 +154,7 @@ typedef unsigned long blkcnt_t;
 #define pgoff_t unsigned long
 #endif
 
-#endif /* __KERNEL__ */
+#endif /* __KERNEL_STRICT_NAMES */
 
 /*
  * Below are truly Linux-specific types that should never collide with
@@ -191,26 +195,14 @@ typedef u32 phys_addr_t;
 typedef phys_addr_t resource_size_t;
 
 typedef struct {
-	int counter;
+	volatile int counter;
 } atomic_t;
 
 #ifdef CONFIG_64BIT
 typedef struct {
-	long counter;
+	volatile long counter;
 } atomic64_t;
 #endif
-
-struct list_head {
-	struct list_head *next, *prev;
-};
-
-struct hlist_head {
-	struct hlist_node *first;
-};
-
-struct hlist_node {
-	struct hlist_node *next, **pprev;
-};
 
 struct ustat {
 	__kernel_daddr_t	f_tfree;
@@ -220,5 +212,5 @@ struct ustat {
 };
 
 #endif	/* __KERNEL__ */
-#endif /*  __ASSEMBLY__ */
+
 #endif /* _LINUX_TYPES_H */

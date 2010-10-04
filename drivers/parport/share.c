@@ -614,10 +614,7 @@ parport_register_device(struct parport *port, const char *name,
 	 * pardevice fields. -arca
 	 */
 	port->ops->init_state(tmp, tmp->state);
-	if (!test_and_set_bit(PARPORT_DEVPROC_REGISTERED, &port->devflags)) {
-		port->proc_device = tmp;
-		parport_device_proc_register(tmp);
-	}
+	parport_device_proc_register(tmp);
 	return tmp;
 
  out_free_all:
@@ -649,13 +646,9 @@ void parport_unregister_device(struct pardevice *dev)
 	}
 #endif
 
-	port = dev->port->physport;
+	parport_device_proc_unregister(dev);
 
-	if (port->proc_device == dev) {
-		port->proc_device = NULL;
-		clear_bit(PARPORT_DEVPROC_REGISTERED, &port->devflags);
-		parport_device_proc_unregister(dev);
-	}
+	port = dev->port->physport;
 
 	if (port->cad == dev) {
 		printk(KERN_DEBUG "%s: %s forgot to release port\n",

@@ -87,10 +87,9 @@
 #define OMAP_RTC_INTERRUPTS_IT_ALARM    (1<<3)
 #define OMAP_RTC_INTERRUPTS_IT_TIMER    (1<<2)
 
-static void __iomem	*rtc_base;
 
-#define rtc_read(addr)		__raw_readb(rtc_base + (addr))
-#define rtc_write(val, addr)	__raw_writeb(val, rtc_base + (addr))
+#define rtc_read(addr)		omap_readb(OMAP_RTC_BASE + (addr))
+#define rtc_write(val, addr)	omap_writeb(val, OMAP_RTC_BASE + (addr))
 
 
 /* we rely on the rtc framework to handle locking (rtc->ops_lock),
@@ -331,23 +330,24 @@ static int __init omap_rtc_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
+	/* NOTE:  using static mapping for RTC registers */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		pr_debug("%s: RTC resource data missing\n", pdev->name);
+	if (res && res->start != OMAP_RTC_BASE) {
+		pr_debug("%s: RTC registers at %08x, expected %08x\n",
+			pdev->name, (unsigned) res->start, OMAP_RTC_BASE);
 		return -ENOENT;
 	}
 
-	mem = request_mem_region(res->start, resource_size(res), pdev->name);
+	if (res)
+		mem = request_mem_region(res->start,
+				res->end - res->start + 1,
+				pdev->name);
+	else
+		mem = NULL;
 	if (!mem) {
 		pr_debug("%s: RTC registers at %08x are not free\n",
-			pdev->name, res->start);
+			pdev->name, OMAP_RTC_BASE);
 		return -EBUSY;
-	}
-
-	rtc_base = ioremap(res->start, resource_size(res));
-	if (!rtc_base) {
-		pr_debug("%s: RTC registers can't be mapped\n", pdev->name);
-		goto fail;
 	}
 
 	rtc = rtc_device_register(pdev->name, &pdev->dev,
@@ -355,7 +355,7 @@ static int __init omap_rtc_probe(struct platform_device *pdev)
 	if (IS_ERR(rtc)) {
 		pr_debug("%s: can't register RTC device, err %ld\n",
 			pdev->name, PTR_ERR(rtc));
-		goto fail0;
+		goto fail;
 	}
 	platform_set_drvdata(pdev, rtc);
 	dev_set_drvdata(&rtc->dev, mem);
@@ -377,17 +377,16 @@ static int __init omap_rtc_probe(struct platform_device *pdev)
 
 	/* handle periodic and alarm irqs */
 	if (request_irq(omap_rtc_timer, rtc_irq, IRQF_DISABLED,
-			dev_name(&rtc->dev), rtc)) {
+			rtc->dev.bus_id, rtc)) {
 		pr_debug("%s: RTC timer interrupt IRQ%d already claimed\n",
 			pdev->name, omap_rtc_timer);
-		goto fail1;
+		goto fail0;
 	}
-	if ((omap_rtc_timer != omap_rtc_alarm) &&
-		(request_irq(omap_rtc_alarm, rtc_irq, IRQF_DISABLED,
-			dev_name(&rtc->dev), rtc))) {
+	if (request_irq(omap_rtc_alarm, rtc_irq, IRQF_DISABLED,
+			rtc->dev.bus_id, rtc)) {
 		pr_debug("%s: RTC alarm interrupt IRQ%d already claimed\n",
 			pdev->name, omap_rtc_alarm);
-		goto fail2;
+		goto fail1;
 	}
 
 	/* On boards with split power, RTC_ON_NOFF won't reset the RTC */
@@ -420,12 +419,10 @@ static int __init omap_rtc_probe(struct platform_device *pdev)
 
 	return 0;
 
-fail2:
-	free_irq(omap_rtc_timer, NULL);
 fail1:
-	rtc_device_unregister(rtc);
+	free_irq(omap_rtc_timer, NULL);
 fail0:
-	iounmap(rtc_base);
+	rtc_device_unregister(rtc);
 fail:
 	release_resource(mem);
 	return -EIO;
@@ -433,7 +430,7 @@ fail:
 
 static int __exit omap_rtc_remove(struct platform_device *pdev)
 {
-	struct rtc_device	*rtc = platform_get_drvdata(pdev);
+	struct rtc_device	*rtc = platform_get_drvdata(pdev);;
 
 	device_init_wakeup(&pdev->dev, 0);
 
@@ -441,9 +438,7 @@ static int __exit omap_rtc_remove(struct platform_device *pdev)
 	rtc_write(0, OMAP_RTC_INTERRUPTS_REG);
 
 	free_irq(omap_rtc_timer, rtc);
-
-	if (omap_rtc_timer != omap_rtc_alarm)
-		free_irq(omap_rtc_alarm, rtc);
+	free_irq(omap_rtc_alarm, rtc);
 
 	release_resource(dev_get_drvdata(&rtc->dev));
 	rtc_device_unregister(rtc);

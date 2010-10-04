@@ -66,7 +66,7 @@ static int sharpsl_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 		}
 	}
 
-	skt->socket.pci_irq = SCOOP_DEV[skt->nr].irq;
+	skt->irq = SCOOP_DEV[skt->nr].irq;
 
 	return 0;
 }
@@ -254,9 +254,6 @@ static struct platform_device *sharpsl_pcmcia_device;
 static int __init sharpsl_pcmcia_init(void)
 {
 	int ret;
-
-	if (!platform_scoop_config)
-		return -ENODEV;
 
 	sharpsl_pcmcia_ops.nr = platform_scoop_config->num_devs;
 	sharpsl_pcmcia_device = platform_device_alloc("pxa2xx-pcmcia", -1);

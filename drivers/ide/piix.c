@@ -59,14 +59,15 @@ static int no_piix_dma;
 
 /**
  *	piix_set_pio_mode	-	set host controller for PIO mode
- *	@port: port
  *	@drive: drive
+ *	@pio: PIO mode number
  *
  *	Set the interface PIO mode based upon the settings done by AMI BIOS.
  */
 
-static void piix_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void piix_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	int is_slave		= drive->dn & 1;
 	int master_port		= hwif->channel ? 0x42 : 0x40;
@@ -76,7 +77,6 @@ static void piix_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	u8 slave_data;
 	static DEFINE_SPINLOCK(tune_lock);
 	int control = 0;
-	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 				     /* ISP  RTC */
 	static const u8 timings[][2]= {
@@ -98,7 +98,7 @@ static void piix_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 		control |= 1;	/* Programmable timing on */
 	if (drive->media == ide_disk)
 		control |= 4;	/* Prefetch, post write */
-	if (ide_pio_need_iordy(drive, pio))
+	if (pio > 2)
 		control |= 2;	/* IORDY */
 	if (is_slave) {
 		master_data |=  0x4000;
@@ -127,15 +127,16 @@ static void piix_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 
 /**
  *	piix_set_dma_mode	-	set host controller for DMA mode
- *	@hwif: port
  *	@drive: drive
+ *	@speed: DMA mode
  *
  *	Set a PIIX host controller to the desired DMA mode.  This involves
  *	programming the right timing data into the PCI configuration space.
  */
 
-static void piix_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void piix_set_dma_mode(ide_drive_t *drive, const u8 speed)
 {
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	u8 maslave		= hwif->channel ? 0x42 : 0x40;
 	int a_speed		= 3 << (drive->dn * 4);
@@ -146,7 +147,6 @@ static void piix_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	int			sitre;
 	u16			reg4042, reg4a;
 	u8			reg48, reg54, reg55;
-	const u8 speed		= drive->dma_mode;
 
 	pci_read_config_word(dev, maslave, &reg4042);
 	sitre = (reg4042 & 0x4000) ? 1 : 0;
@@ -176,6 +176,7 @@ static void piix_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 			pci_write_config_byte(dev, 0x54, reg54 & ~v_flag);
 	} else {
 		const u8 mwdma_to_pio[] = { 0, 3, 4 };
+		u8 pio;
 
 		if (reg48 & u_flag)
 			pci_write_config_byte(dev, 0x48, reg48 & ~u_flag);
@@ -187,12 +188,11 @@ static void piix_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 			pci_write_config_byte(dev, 0x55, (u8) reg55 & ~w_flag);
 
 		if (speed >= XFER_MW_DMA_0)
-			drive->pio_mode =
-				mwdma_to_pio[speed - XFER_MW_DMA_0] + XFER_PIO_0;
+			pio = mwdma_to_pio[speed - XFER_MW_DMA_0];
 		else
-			drive->pio_mode = XFER_PIO_2; /* for SWDMA2 */
+			pio = 2; /* only SWDMA2 is allowed */
 
-		piix_set_pio_mode(hwif, drive);
+		piix_set_pio_mode(drive, pio);
 	}
 }
 
@@ -204,7 +204,7 @@ static void piix_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
  *	out to be nice and simple.
  */
 
-static int init_chipset_ich(struct pci_dev *dev)
+static unsigned int init_chipset_ich(struct pci_dev *dev)
 {
 	u32 extra = 0;
 
@@ -263,7 +263,6 @@ static const struct ich_laptop ich_laptop[] = {
 	{ 0x24CA, 0x1025, 0x003d },	/* ICH4 on ACER TM290 */
 	{ 0x266F, 0x1025, 0x0066 },	/* ICH6 on ACER Aspire 1694WLMi */
 	{ 0x2653, 0x1043, 0x82D8 },	/* ICH6M on Asus Eee 701 */
-	{ 0x27df, 0x104d, 0x900e },	/* ICH7 on Sony TZ-90 */
 	/* end marker */
 	{ 0, }
 };
@@ -319,12 +318,19 @@ static const struct ide_port_ops ich_port_ops = {
 	.cable_detect		= piix_cable_detect,
 };
 
+#ifndef CONFIG_IA64
+ #define IDE_HFLAGS_PIIX IDE_HFLAG_LEGACY_IRQS
+#else
+ #define IDE_HFLAGS_PIIX 0
+#endif
+
 #define DECLARE_PIIX_DEV(udma) \
 	{						\
 		.name		= DRV_NAME,		\
 		.init_hwif	= init_hwif_piix,	\
 		.enablebits	= {{0x41,0x80,0x80}, {0x43,0x80,0x80}}, \
 		.port_ops	= &piix_port_ops,	\
+		.host_flags	= IDE_HFLAGS_PIIX,	\
 		.pio_mask	= ATA_PIO4,		\
 		.swdma_mask	= ATA_SWDMA2_ONLY,	\
 		.mwdma_mask	= ATA_MWDMA12_ONLY,	\
@@ -338,6 +344,7 @@ static const struct ide_port_ops ich_port_ops = {
 		.init_hwif	= init_hwif_piix, \
 		.enablebits	= {{0x41,0x80,0x80}, {0x43,0x80,0x80}}, \
 		.port_ops	= &ich_port_ops, \
+		.host_flags	= IDE_HFLAGS_PIIX, \
 		.pio_mask	= ATA_PIO4, \
 		.swdma_mask	= ATA_SWDMA2_ONLY, \
 		.mwdma_mask	= ATA_MWDMA12_ONLY, \
@@ -353,7 +360,8 @@ static const struct ide_port_info piix_pci_info[] __devinitdata = {
 		 */
 		.name		= DRV_NAME,
 		.enablebits	= {{0x6d,0xc0,0x80}, {0x6d,0xc0,0xc0}},
-		.host_flags	= IDE_HFLAG_ISA_PORTS | IDE_HFLAG_NO_DMA,
+		.host_flags	= IDE_HFLAG_ISA_PORTS | IDE_HFLAG_NO_DMA |
+				  IDE_HFLAGS_PIIX,
 		.pio_mask	= ATA_PIO4,
 		/* This is a painful system best to let it self tune for now */
 	},

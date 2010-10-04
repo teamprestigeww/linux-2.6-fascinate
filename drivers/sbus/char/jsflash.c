@@ -31,6 +31,7 @@
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
+#include <linux/slab.h>
 #include <linux/fcntl.h>
 #include <linux/poll.h>
 #include <linux/init.h>
@@ -185,31 +186,31 @@ static void jsfd_do_request(struct request_queue *q)
 {
 	struct request *req;
 
-	req = blk_fetch_request(q);
-	while (req) {
+	while ((req = elv_next_request(q)) != NULL) {
 		struct jsfd_part *jdp = req->rq_disk->private_data;
-		unsigned long offset = blk_rq_pos(req) << 9;
-		size_t len = blk_rq_cur_bytes(req);
-		int err = -EIO;
+		unsigned long offset = req->sector << 9;
+		size_t len = req->current_nr_sectors << 9;
 
-		if ((offset + len) > jdp->dsize)
-			goto end;
+		if ((offset + len) > jdp->dsize) {
+               		end_request(req, 0);
+			continue;
+		}
 
 		if (rq_data_dir(req) != READ) {
 			printk(KERN_ERR "jsfd: write\n");
-			goto end;
+			end_request(req, 0);
+			continue;
 		}
 
 		if ((jdp->dbase & 0xff000000) != 0x20000000) {
 			printk(KERN_ERR "jsfd: bad base %x\n", (int)jdp->dbase);
-			goto end;
+			end_request(req, 0);
+			continue;
 		}
 
 		jsfd_read(req->buffer, jdp->dbase + offset, len);
-		err = 0;
-	end:
-		if (!__blk_end_request_cur(req, err))
-			req = blk_fetch_request(q);
+
+		end_request(req, 1);
 	}
 }
 
@@ -382,22 +383,18 @@ static int jsf_ioctl_program(void __user *arg)
 	return 0;
 }
 
-static long jsf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
+static int jsf_ioctl(struct inode *inode, struct file *f, unsigned int cmd,
+    unsigned long arg)
 {
-	lock_kernel();
 	int error = -ENOTTY;
 	void __user *argp = (void __user *)arg;
 
-	if (!capable(CAP_SYS_ADMIN)) {
-		unlock_kernel();
+	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
-	}
 	switch (cmd) {
 	case JSFLASH_IDENT:
-		if (copy_to_user(argp, &jsf0.id, JSFIDSZ)) {
-			unlock_kernel();
+		if (copy_to_user(argp, &jsf0.id, JSFIDSZ))
 			return -EFAULT;
-		}
 		break;
 	case JSFLASH_ERASE:
 		error = jsf_ioctl_erase(arg);
@@ -407,7 +404,6 @@ static long jsf_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 	}
 
-	unlock_kernel();
 	return error;
 }
 
@@ -443,7 +439,7 @@ static const struct file_operations jsf_fops = {
 	.llseek =	jsf_lseek,
 	.read =		jsf_read,
 	.write =	jsf_write,
-	.unlocked_ioctl =	jsf_ioctl,
+	.ioctl =	jsf_ioctl,
 	.mmap =		jsf_mmap,
 	.open =		jsf_open,
 	.release =	jsf_release,
@@ -451,7 +447,7 @@ static const struct file_operations jsf_fops = {
 
 static struct miscdevice jsf_dev = { JSF_MINOR, "jsflash", &jsf_fops };
 
-static const struct block_device_operations jsfd_fops = {
+static struct block_device_operations jsfd_fops = {
 	.owner =	THIS_MODULE,
 };
 

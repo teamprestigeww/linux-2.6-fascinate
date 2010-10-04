@@ -7,8 +7,6 @@
  *	Casey Schaufler <casey@schaufler-ca.com>
  *
  *  Copyright (C) 2007 Casey Schaufler <casey@schaufler-ca.com>
- *  Copyright (C) 2009 Hewlett-Packard Development Company, L.P.
- *                Paul Moore <paul.moore@hp.com>
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License version 2,
@@ -19,21 +17,27 @@
 #include <linux/pagemap.h>
 #include <linux/mount.h>
 #include <linux/stat.h>
+#include <linux/ext2_fs.h>
 #include <linux/kd.h>
 #include <asm/ioctls.h>
-#include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-#include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/pipe_fs_i.h>
 #include <net/netlabel.h>
 #include <net/cipso_ipv4.h>
 #include <linux/audit.h>
-#include <linux/magic.h>
+
 #include "smack.h"
 
 #define task_security(task)	(task_cred_xxx((task), security))
+
+/*
+ * I hope these are the hokeyist lines of code in the module. Casey.
+ */
+#define DEVPTS_SUPER_MAGIC	0x1cd1
+#define SOCKFS_MAGIC		0x534F434B
+#define TMPFS_MAGIC		0x01021994
 
 /**
  * smk_fetch - Fetch the smack label from a file.
@@ -85,35 +89,24 @@ struct inode_smack *new_inode_smack(char *smack)
  */
 
 /**
- * smack_ptrace_access_check - Smack approval on PTRACE_ATTACH
+ * smack_ptrace_may_access - Smack approval on PTRACE_ATTACH
  * @ctp: child task pointer
- * @mode: ptrace attachment mode
  *
  * Returns 0 if access is OK, an error code otherwise
  *
  * Do the capability checks, and require read and write.
  */
-static int smack_ptrace_access_check(struct task_struct *ctp, unsigned int mode)
+static int smack_ptrace_may_access(struct task_struct *ctp, unsigned int mode)
 {
 	int rc;
-	struct smk_audit_info ad;
-	char *sp, *tsp;
 
-	rc = cap_ptrace_access_check(ctp, mode);
+	rc = cap_ptrace_may_access(ctp, mode);
 	if (rc != 0)
 		return rc;
 
-	sp = current_security();
-	tsp = task_security(ctp);
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
-	smk_ad_setfield_u_tsk(&ad, ctp);
-
-	/* we won't log here, because rc can be overriden */
-	rc = smk_access(sp, tsp, MAY_READWRITE, NULL);
+	rc = smk_access(current_security(), task_security(ctp), MAY_READWRITE);
 	if (rc != 0 && capable(CAP_MAC_OVERRIDE))
-		rc = 0;
-
-	smack_log(sp, tsp, MAY_READWRITE, rc, &ad);
+		return 0;
 	return rc;
 }
 
@@ -128,24 +121,14 @@ static int smack_ptrace_access_check(struct task_struct *ctp, unsigned int mode)
 static int smack_ptrace_traceme(struct task_struct *ptp)
 {
 	int rc;
-	struct smk_audit_info ad;
-	char *sp, *tsp;
 
 	rc = cap_ptrace_traceme(ptp);
 	if (rc != 0)
 		return rc;
 
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
-	smk_ad_setfield_u_tsk(&ad, ptp);
-
-	sp = current_security();
-	tsp = task_security(ptp);
-	/* we won't log here, because rc can be overriden */
-	rc = smk_access(tsp, sp, MAY_READWRITE, NULL);
+	rc = smk_access(task_security(ptp), current_security(), MAY_READWRITE);
 	if (rc != 0 && has_capability(ptp, CAP_MAC_OVERRIDE))
-		rc = 0;
-
-	smack_log(tsp, sp, MAY_READWRITE, rc, &ad);
+		return 0;
 	return rc;
 }
 
@@ -157,12 +140,12 @@ static int smack_ptrace_traceme(struct task_struct *ptp)
  *
  * Returns 0 on success, error code otherwise.
  */
-static int smack_syslog(int type, bool from_file)
+static int smack_syslog(int type)
 {
 	int rc;
 	char *sp = current_security();
 
-	rc = cap_syslog(type, from_file);
+	rc = cap_syslog(type);
 	if (rc != 0)
 		return rc;
 
@@ -220,8 +203,9 @@ static void smack_sb_free_security(struct super_block *sb)
 
 /**
  * smack_sb_copy_data - copy mount options data for processing
+ * @type: file system type
  * @orig: where to start
- * @smackopts: mount options string
+ * @smackopts
  *
  * Returns 0 on success or -ENOMEM on error.
  *
@@ -340,20 +324,14 @@ static int smack_sb_kern_mount(struct super_block *sb, int flags, void *data)
 static int smack_sb_statfs(struct dentry *dentry)
 {
 	struct superblock_smack *sbp = dentry->d_sb->s_security;
-	int rc;
-	struct smk_audit_info ad;
 
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, dentry);
-
-	rc = smk_curacc(sbp->smk_floor, MAY_READ, &ad);
-	return rc;
+	return smk_curacc(sbp->smk_floor, MAY_READ);
 }
 
 /**
  * smack_sb_mount - Smack check for mounting
  * @dev_name: unused
- * @path: mount point
+ * @nd: mount point
  * @type: unused
  * @flags: unused
  * @data: unused
@@ -365,12 +343,8 @@ static int smack_sb_mount(char *dev_name, struct path *path,
 			  char *type, unsigned long flags, void *data)
 {
 	struct superblock_smack *sbp = path->mnt->mnt_sb->s_security;
-	struct smk_audit_info ad;
 
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path(&ad, *path);
-
-	return smk_curacc(sbp->smk_floor, MAY_WRITE, &ad);
+	return smk_curacc(sbp->smk_floor, MAY_WRITE);
 }
 
 /**
@@ -384,14 +358,10 @@ static int smack_sb_mount(char *dev_name, struct path *path,
 static int smack_sb_umount(struct vfsmount *mnt, int flags)
 {
 	struct superblock_smack *sbp;
-	struct smk_audit_info ad;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, mnt->mnt_root);
-	smk_ad_setfield_u_fs_path_mnt(&ad, mnt);
 
 	sbp = mnt->mnt_sb->s_security;
-	return smk_curacc(sbp->smk_floor, MAY_WRITE, &ad);
+
+	return smk_curacc(sbp->smk_floor, MAY_WRITE);
 }
 
 /*
@@ -400,7 +370,7 @@ static int smack_sb_umount(struct vfsmount *mnt, int flags)
 
 /**
  * smack_inode_alloc_security - allocate an inode blob
- * @inode: the inode in need of a blob
+ * @inode - the inode in need of a blob
  *
  * Returns 0 if it gets a blob, -ENOMEM otherwise
  */
@@ -414,7 +384,7 @@ static int smack_inode_alloc_security(struct inode *inode)
 
 /**
  * smack_inode_free_security - free an inode blob
- * @inode: the inode with a blob
+ * @inode - the inode with a blob
  *
  * Clears the blob pointer in inode
  */
@@ -468,20 +438,15 @@ static int smack_inode_init_security(struct inode *inode, struct inode *dir,
 static int smack_inode_link(struct dentry *old_dentry, struct inode *dir,
 			    struct dentry *new_dentry)
 {
-	char *isp;
-	struct smk_audit_info ad;
 	int rc;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, old_dentry);
+	char *isp;
 
 	isp = smk_of_inode(old_dentry->d_inode);
-	rc = smk_curacc(isp, MAY_WRITE, &ad);
+	rc = smk_curacc(isp, MAY_WRITE);
 
 	if (rc == 0 && new_dentry->d_inode != NULL) {
 		isp = smk_of_inode(new_dentry->d_inode);
-		smk_ad_setfield_u_fs_path_dentry(&ad, new_dentry);
-		rc = smk_curacc(isp, MAY_WRITE, &ad);
+		rc = smk_curacc(isp, MAY_WRITE);
 	}
 
 	return rc;
@@ -498,24 +463,18 @@ static int smack_inode_link(struct dentry *old_dentry, struct inode *dir,
 static int smack_inode_unlink(struct inode *dir, struct dentry *dentry)
 {
 	struct inode *ip = dentry->d_inode;
-	struct smk_audit_info ad;
 	int rc;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, dentry);
 
 	/*
 	 * You need write access to the thing you're unlinking
 	 */
-	rc = smk_curacc(smk_of_inode(ip), MAY_WRITE, &ad);
-	if (rc == 0) {
+	rc = smk_curacc(smk_of_inode(ip), MAY_WRITE);
+	if (rc == 0)
 		/*
 		 * You also need write access to the containing directory
 		 */
-		smk_ad_setfield_u_fs_path_dentry(&ad, NULL);
-		smk_ad_setfield_u_fs_inode(&ad, dir);
-		rc = smk_curacc(smk_of_inode(dir), MAY_WRITE, &ad);
-	}
+		rc = smk_curacc(smk_of_inode(dir), MAY_WRITE);
+
 	return rc;
 }
 
@@ -529,24 +488,17 @@ static int smack_inode_unlink(struct inode *dir, struct dentry *dentry)
  */
 static int smack_inode_rmdir(struct inode *dir, struct dentry *dentry)
 {
-	struct smk_audit_info ad;
 	int rc;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, dentry);
 
 	/*
 	 * You need write access to the thing you're removing
 	 */
-	rc = smk_curacc(smk_of_inode(dentry->d_inode), MAY_WRITE, &ad);
-	if (rc == 0) {
+	rc = smk_curacc(smk_of_inode(dentry->d_inode), MAY_WRITE);
+	if (rc == 0)
 		/*
 		 * You also need write access to the containing directory
 		 */
-		smk_ad_setfield_u_fs_path_dentry(&ad, NULL);
-		smk_ad_setfield_u_fs_inode(&ad, dir);
-		rc = smk_curacc(smk_of_inode(dir), MAY_WRITE, &ad);
-	}
+		rc = smk_curacc(smk_of_inode(dir), MAY_WRITE);
 
 	return rc;
 }
@@ -570,19 +522,15 @@ static int smack_inode_rename(struct inode *old_inode,
 {
 	int rc;
 	char *isp;
-	struct smk_audit_info ad;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, old_dentry);
 
 	isp = smk_of_inode(old_dentry->d_inode);
-	rc = smk_curacc(isp, MAY_READWRITE, &ad);
+	rc = smk_curacc(isp, MAY_READWRITE);
 
 	if (rc == 0 && new_dentry->d_inode != NULL) {
 		isp = smk_of_inode(new_dentry->d_inode);
-		smk_ad_setfield_u_fs_path_dentry(&ad, new_dentry);
-		rc = smk_curacc(isp, MAY_READWRITE, &ad);
+		rc = smk_curacc(isp, MAY_READWRITE);
 	}
+
 	return rc;
 }
 
@@ -590,6 +538,7 @@ static int smack_inode_rename(struct inode *old_inode,
  * smack_inode_permission - Smack version of permission()
  * @inode: the inode in question
  * @mask: the access requested
+ * @nd: unused
  *
  * This is the important Smack hook.
  *
@@ -597,17 +546,13 @@ static int smack_inode_rename(struct inode *old_inode,
  */
 static int smack_inode_permission(struct inode *inode, int mask)
 {
-	struct smk_audit_info ad;
-
-	mask &= (MAY_READ|MAY_WRITE|MAY_EXEC|MAY_APPEND);
 	/*
 	 * No permission to check. Existence test. Yup, it's there.
 	 */
 	if (mask == 0)
 		return 0;
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_inode(&ad, inode);
-	return smk_curacc(smk_of_inode(inode), mask, &ad);
+
+	return smk_curacc(smk_of_inode(inode), mask);
 }
 
 /**
@@ -619,16 +564,13 @@ static int smack_inode_permission(struct inode *inode, int mask)
  */
 static int smack_inode_setattr(struct dentry *dentry, struct iattr *iattr)
 {
-	struct smk_audit_info ad;
 	/*
 	 * Need to allow for clearing the setuid bit.
 	 */
 	if (iattr->ia_valid & ATTR_FORCE)
 		return 0;
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, dentry);
 
-	return smk_curacc(smk_of_inode(dentry->d_inode), MAY_WRITE, &ad);
+	return smk_curacc(smk_of_inode(dentry->d_inode), MAY_WRITE);
 }
 
 /**
@@ -640,12 +582,7 @@ static int smack_inode_setattr(struct dentry *dentry, struct iattr *iattr)
  */
 static int smack_inode_getattr(struct vfsmount *mnt, struct dentry *dentry)
 {
-	struct smk_audit_info ad;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, dentry);
-	smk_ad_setfield_u_fs_path_mnt(&ad, mnt);
-	return smk_curacc(smk_of_inode(dentry->d_inode), MAY_READ, &ad);
+	return smk_curacc(smk_of_inode(dentry->d_inode), MAY_READ);
 }
 
 /**
@@ -663,7 +600,6 @@ static int smack_inode_getattr(struct vfsmount *mnt, struct dentry *dentry)
 static int smack_inode_setxattr(struct dentry *dentry, const char *name,
 				const void *value, size_t size, int flags)
 {
-	struct smk_audit_info ad;
 	int rc = 0;
 
 	if (strcmp(name, XATTR_NAME_SMACK) == 0 ||
@@ -671,21 +607,11 @@ static int smack_inode_setxattr(struct dentry *dentry, const char *name,
 	    strcmp(name, XATTR_NAME_SMACKIPOUT) == 0) {
 		if (!capable(CAP_MAC_ADMIN))
 			rc = -EPERM;
-		/*
-		 * check label validity here so import wont fail on
-		 * post_setxattr
-		 */
-		if (size == 0 || size >= SMK_LABELLEN ||
-		    smk_import(value, size) == NULL)
-			rc = -EINVAL;
 	} else
 		rc = cap_inode_setxattr(dentry, name, value, size, flags);
 
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, dentry);
-
 	if (rc == 0)
-		rc = smk_curacc(smk_of_inode(dentry->d_inode), MAY_WRITE, &ad);
+		rc = smk_curacc(smk_of_inode(dentry->d_inode), MAY_WRITE);
 
 	return rc;
 }
@@ -713,6 +639,9 @@ static void smack_inode_post_setxattr(struct dentry *dentry, const char *name,
 	if (strcmp(name, XATTR_NAME_SMACK))
 		return;
 
+	if (size >= SMK_LABELLEN)
+		return;
+
 	isp = dentry->d_inode->i_security;
 
 	/*
@@ -737,12 +666,7 @@ static void smack_inode_post_setxattr(struct dentry *dentry, const char *name,
  */
 static int smack_inode_getxattr(struct dentry *dentry, const char *name)
 {
-	struct smk_audit_info ad;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, dentry);
-
-	return smk_curacc(smk_of_inode(dentry->d_inode), MAY_READ, &ad);
+	return smk_curacc(smk_of_inode(dentry->d_inode), MAY_READ);
 }
 
 /*
@@ -756,7 +680,6 @@ static int smack_inode_getxattr(struct dentry *dentry, const char *name)
  */
 static int smack_inode_removexattr(struct dentry *dentry, const char *name)
 {
-	struct smk_audit_info ad;
 	int rc = 0;
 
 	if (strcmp(name, XATTR_NAME_SMACK) == 0 ||
@@ -767,10 +690,8 @@ static int smack_inode_removexattr(struct dentry *dentry, const char *name)
 	} else
 		rc = cap_inode_removexattr(dentry, name);
 
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, dentry);
 	if (rc == 0)
-		rc = smk_curacc(smk_of_inode(dentry->d_inode), MAY_WRITE, &ad);
+		rc = smk_curacc(smk_of_inode(dentry->d_inode), MAY_WRITE);
 
 	return rc;
 }
@@ -780,7 +701,8 @@ static int smack_inode_removexattr(struct dentry *dentry, const char *name)
  * @inode: the object
  * @name: attribute name
  * @buffer: where to put the result
- * @alloc: unused
+ * @size: size of the buffer
+ * @err: unused
  *
  * Returns the size of the attribute or an error code
  */
@@ -929,16 +851,12 @@ static int smack_file_ioctl(struct file *file, unsigned int cmd,
 			    unsigned long arg)
 {
 	int rc = 0;
-	struct smk_audit_info ad;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path(&ad, file->f_path);
 
 	if (_IOC_DIR(cmd) & _IOC_WRITE)
-		rc = smk_curacc(file->f_security, MAY_WRITE, &ad);
+		rc = smk_curacc(file->f_security, MAY_WRITE);
 
 	if (rc == 0 && (_IOC_DIR(cmd) & _IOC_READ))
-		rc = smk_curacc(file->f_security, MAY_READ, &ad);
+		rc = smk_curacc(file->f_security, MAY_READ);
 
 	return rc;
 }
@@ -946,17 +864,13 @@ static int smack_file_ioctl(struct file *file, unsigned int cmd,
 /**
  * smack_file_lock - Smack check on file locking
  * @file: the object
- * @cmd: unused
+ * @cmd unused
  *
  * Returns 0 if current has write access, error code otherwise
  */
 static int smack_file_lock(struct file *file, unsigned int cmd)
 {
-	struct smk_audit_info ad;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path_dentry(&ad, file->f_path.dentry);
-	return smk_curacc(file->f_security, MAY_WRITE, &ad);
+	return smk_curacc(file->f_security, MAY_WRITE);
 }
 
 /**
@@ -970,11 +884,7 @@ static int smack_file_lock(struct file *file, unsigned int cmd)
 static int smack_file_fcntl(struct file *file, unsigned int cmd,
 			    unsigned long arg)
 {
-	struct smk_audit_info ad;
 	int rc;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_FS);
-	smk_ad_setfield_u_fs_path(&ad, file->f_path);
 
 	switch (cmd) {
 	case F_DUPFD:
@@ -983,7 +893,7 @@ static int smack_file_fcntl(struct file *file, unsigned int cmd,
 	case F_GETLK:
 	case F_GETOWN:
 	case F_GETSIG:
-		rc = smk_curacc(file->f_security, MAY_READ, &ad);
+		rc = smk_curacc(file->f_security, MAY_READ);
 		break;
 	case F_SETFD:
 	case F_SETFL:
@@ -991,10 +901,10 @@ static int smack_file_fcntl(struct file *file, unsigned int cmd,
 	case F_SETLKW:
 	case F_SETOWN:
 	case F_SETSIG:
-		rc = smk_curacc(file->f_security, MAY_WRITE, &ad);
+		rc = smk_curacc(file->f_security, MAY_WRITE);
 		break;
 	default:
-		rc = smk_curacc(file->f_security, MAY_READWRITE, &ad);
+		rc = smk_curacc(file->f_security, MAY_READWRITE);
 	}
 
 	return rc;
@@ -1029,21 +939,14 @@ static int smack_file_send_sigiotask(struct task_struct *tsk,
 {
 	struct file *file;
 	int rc;
-	char *tsp = tsk->cred->security;
-	struct smk_audit_info ad;
 
 	/*
 	 * struct fown_struct is never outside the context of a struct file
 	 */
 	file = container_of(fown, struct file, f_owner);
-	/* we don't log here as rc can be overriden */
-	rc = smk_access(file->f_security, tsp, MAY_WRITE, NULL);
+	rc = smk_access(file->f_security, tsk->cred->security, MAY_WRITE);
 	if (rc != 0 && has_capability(tsk, CAP_MAC_OVERRIDE))
-		rc = 0;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
-	smk_ad_setfield_u_tsk(&ad, tsk);
-	smack_log(file->f_security, tsp, MAY_WRITE, rc, &ad);
+		return 0;
 	return rc;
 }
 
@@ -1056,10 +959,7 @@ static int smack_file_send_sigiotask(struct task_struct *tsk,
 static int smack_file_receive(struct file *file)
 {
 	int may = 0;
-	struct smk_audit_info ad;
 
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
-	smk_ad_setfield_u_fs_path(&ad, file->f_path);
 	/*
 	 * This code relies on bitmasks.
 	 */
@@ -1068,28 +968,12 @@ static int smack_file_receive(struct file *file)
 	if (file->f_mode & FMODE_WRITE)
 		may |= MAY_WRITE;
 
-	return smk_curacc(file->f_security, may, &ad);
+	return smk_curacc(file->f_security, may);
 }
 
 /*
  * Task hooks
  */
-
-/**
- * smack_cred_alloc_blank - "allocate" blank task-level security credentials
- * @new: the new credentials
- * @gfp: the atomicity of any memory allocations
- *
- * Prepare a blank set of credentials for modification.  This must allocate all
- * the memory the LSM module might require such that cred_transfer() can
- * complete without error.
- */
-static int smack_cred_alloc_blank(struct cred *cred, gfp_t gfp)
-{
-	cred->security = NULL;
-	return 0;
-}
-
 
 /**
  * smack_cred_free - "free" task-level security credentials
@@ -1119,22 +1003,19 @@ static int smack_cred_prepare(struct cred *new, const struct cred *old,
 	return 0;
 }
 
-/**
- * smack_cred_transfer - Transfer the old credentials to the new credentials
+/*
+ * commit new credentials
  * @new: the new credentials
  * @old: the original credentials
- *
- * Fill in a set of blank credentials from another set of credentials.
  */
-static void smack_cred_transfer(struct cred *new, const struct cred *old)
+static void smack_cred_commit(struct cred *new, const struct cred *old)
 {
-	new->security = old->security;
 }
 
 /**
  * smack_kernel_act_as - Set the subjective context in a set of credentials
- * @new: points to the set of credentials to be modified.
- * @secid: specifies the security ID to be set
+ * @new points to the set of credentials to be modified.
+ * @secid specifies the security ID to be set
  *
  * Set the security data for a kernel service.
  */
@@ -1151,8 +1032,8 @@ static int smack_kernel_act_as(struct cred *new, u32 secid)
 
 /**
  * smack_kernel_create_files_as - Set the file creation label in a set of creds
- * @new: points to the set of credentials to be modified
- * @inode: points to the inode to use as a reference
+ * @new points to the set of credentials to be modified
+ * @inode points to the inode to use as a reference
  *
  * Set the file creation context in a set of credentials to the same
  * as the objective context of the specified inode
@@ -1167,22 +1048,6 @@ static int smack_kernel_create_files_as(struct cred *new,
 }
 
 /**
- * smk_curacc_on_task - helper to log task related access
- * @p: the task object
- * @access : the access requested
- *
- * Return 0 if access is permitted
- */
-static int smk_curacc_on_task(struct task_struct *p, int access)
-{
-	struct smk_audit_info ad;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
-	smk_ad_setfield_u_tsk(&ad, p);
-	return smk_curacc(task_security(p), access, &ad);
-}
-
-/**
  * smack_task_setpgid - Smack check on setting pgid
  * @p: the task object
  * @pgid: unused
@@ -1191,7 +1056,7 @@ static int smk_curacc_on_task(struct task_struct *p, int access)
  */
 static int smack_task_setpgid(struct task_struct *p, pid_t pgid)
 {
-	return smk_curacc_on_task(p, MAY_WRITE);
+	return smk_curacc(task_security(p), MAY_WRITE);
 }
 
 /**
@@ -1202,7 +1067,7 @@ static int smack_task_setpgid(struct task_struct *p, pid_t pgid)
  */
 static int smack_task_getpgid(struct task_struct *p)
 {
-	return smk_curacc_on_task(p, MAY_READ);
+	return smk_curacc(task_security(p), MAY_READ);
 }
 
 /**
@@ -1213,7 +1078,7 @@ static int smack_task_getpgid(struct task_struct *p)
  */
 static int smack_task_getsid(struct task_struct *p)
 {
-	return smk_curacc_on_task(p, MAY_READ);
+	return smk_curacc(task_security(p), MAY_READ);
 }
 
 /**
@@ -1241,7 +1106,7 @@ static int smack_task_setnice(struct task_struct *p, int nice)
 
 	rc = cap_task_setnice(p, nice);
 	if (rc == 0)
-		rc = smk_curacc_on_task(p, MAY_WRITE);
+		rc = smk_curacc(task_security(p), MAY_WRITE);
 	return rc;
 }
 
@@ -1258,7 +1123,7 @@ static int smack_task_setioprio(struct task_struct *p, int ioprio)
 
 	rc = cap_task_setioprio(p, ioprio);
 	if (rc == 0)
-		rc = smk_curacc_on_task(p, MAY_WRITE);
+		rc = smk_curacc(task_security(p), MAY_WRITE);
 	return rc;
 }
 
@@ -1270,7 +1135,7 @@ static int smack_task_setioprio(struct task_struct *p, int ioprio)
  */
 static int smack_task_getioprio(struct task_struct *p)
 {
-	return smk_curacc_on_task(p, MAY_READ);
+	return smk_curacc(task_security(p), MAY_READ);
 }
 
 /**
@@ -1288,7 +1153,7 @@ static int smack_task_setscheduler(struct task_struct *p, int policy,
 
 	rc = cap_task_setscheduler(p, policy, lp);
 	if (rc == 0)
-		rc = smk_curacc_on_task(p, MAY_WRITE);
+		rc = smk_curacc(task_security(p), MAY_WRITE);
 	return rc;
 }
 
@@ -1300,7 +1165,7 @@ static int smack_task_setscheduler(struct task_struct *p, int policy,
  */
 static int smack_task_getscheduler(struct task_struct *p)
 {
-	return smk_curacc_on_task(p, MAY_READ);
+	return smk_curacc(task_security(p), MAY_READ);
 }
 
 /**
@@ -1311,7 +1176,7 @@ static int smack_task_getscheduler(struct task_struct *p)
  */
 static int smack_task_movememory(struct task_struct *p)
 {
-	return smk_curacc_on_task(p, MAY_WRITE);
+	return smk_curacc(task_security(p), MAY_WRITE);
 }
 
 /**
@@ -1329,23 +1194,18 @@ static int smack_task_movememory(struct task_struct *p)
 static int smack_task_kill(struct task_struct *p, struct siginfo *info,
 			   int sig, u32 secid)
 {
-	struct smk_audit_info ad;
-
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
-	smk_ad_setfield_u_tsk(&ad, p);
 	/*
 	 * Sending a signal requires that the sender
 	 * can write the receiver.
 	 */
 	if (secid == 0)
-		return smk_curacc(task_security(p), MAY_WRITE, &ad);
+		return smk_curacc(task_security(p), MAY_WRITE);
 	/*
 	 * If the secid isn't 0 we're dealing with some USB IO
 	 * specific behavior. This is not clean. For one thing
 	 * we can't take privilege into account.
 	 */
-	return smk_access(smack_from_secid(secid), task_security(p),
-			  MAY_WRITE, &ad);
+	return smk_access(smack_from_secid(secid), task_security(p), MAY_WRITE);
 }
 
 /**
@@ -1356,15 +1216,11 @@ static int smack_task_kill(struct task_struct *p, struct siginfo *info,
  */
 static int smack_task_wait(struct task_struct *p)
 {
-	struct smk_audit_info ad;
-	char *sp = current_security();
-	char *tsp = task_security(p);
 	int rc;
 
-	/* we don't log here, we can be overriden */
-	rc = smk_access(sp, tsp, MAY_WRITE, NULL);
+	rc = smk_access(current_security(), task_security(p), MAY_WRITE);
 	if (rc == 0)
-		goto out_log;
+		return 0;
 
 	/*
 	 * Allow the operation to succeed if either task
@@ -1378,19 +1234,15 @@ static int smack_task_wait(struct task_struct *p)
 	 * the smack value.
 	 */
 	if (capable(CAP_MAC_OVERRIDE) || has_capability(p, CAP_MAC_OVERRIDE))
-		rc = 0;
-	/* we log only if we didn't get overriden */
- out_log:
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_TASK);
-	smk_ad_setfield_u_tsk(&ad, p);
-	smack_log(sp, tsp, MAY_WRITE, rc, &ad);
+		return 0;
+
 	return rc;
 }
 
 /**
  * smack_task_to_inode - copy task smack into the inode blob
  * @p: task to copy from
- * @inode: inode to copy to
+ * inode: inode to copy to
  *
  * Sets the smack pointer in the inode security blob
  */
@@ -1408,7 +1260,7 @@ static void smack_task_to_inode(struct task_struct *p, struct inode *inode)
  * smack_sk_alloc_security - Allocate a socket blob
  * @sk: the socket
  * @family: unused
- * @gfp_flags: memory allocation flags
+ * @priority: memory allocation priority
  *
  * Assign Smack pointers to current
  *
@@ -1425,6 +1277,7 @@ static int smack_sk_alloc_security(struct sock *sk, int family, gfp_t gfp_flags)
 
 	ssp->smk_in = csp;
 	ssp->smk_out = csp;
+	ssp->smk_labeled = SMACK_CIPSO_SOCKET;
 	ssp->smk_packet[0] = '\0';
 
 	sk->sk_security = ssp;
@@ -1441,43 +1294,6 @@ static int smack_sk_alloc_security(struct sock *sk, int family, gfp_t gfp_flags)
 static void smack_sk_free_security(struct sock *sk)
 {
 	kfree(sk->sk_security);
-}
-
-/**
-* smack_host_label - check host based restrictions
-* @sip: the object end
-*
-* looks for host based access restrictions
-*
-* This version will only be appropriate for really small sets of single label
-* hosts.  The caller is responsible for ensuring that the RCU read lock is
-* taken before calling this function.
-*
-* Returns the label of the far end or NULL if it's not special.
-*/
-static char *smack_host_label(struct sockaddr_in *sip)
-{
-	struct smk_netlbladdr *snp;
-	struct in_addr *siap = &sip->sin_addr;
-
-	if (siap->s_addr == 0)
-		return NULL;
-
-	list_for_each_entry_rcu(snp, &smk_netlbladdr_list, list)
-		/*
-		* we break after finding the first match because
-		* the list is sorted from longest to shortest mask
-		* so we have found the most specific match
-		*/
-		if ((&snp->smk_host.sin_addr)->s_addr ==
-		    (siap->s_addr & (&snp->smk_mask)->s_addr)) {
-			/* we have found the special CIPSO option */
-			if (snp->smk_label == smack_cipso_option)
-				return NULL;
-			return snp->smk_label;
-		}
-
-	return NULL;
 }
 
 /**
@@ -1551,10 +1367,11 @@ static void smack_to_secattr(char *smack, struct netlbl_lsm_secattr *nlsp)
  */
 static int smack_netlabel(struct sock *sk, int labeled)
 {
-	struct socket_smack *ssp = sk->sk_security;
+	struct socket_smack *ssp;
 	struct netlbl_lsm_secattr secattr;
 	int rc = 0;
 
+	ssp = sk->sk_security;
 	/*
 	 * Usually the netlabel code will handle changing the
 	 * packet labeling based on the label.
@@ -1572,55 +1389,24 @@ static int smack_netlabel(struct sock *sk, int labeled)
 	else {
 		netlbl_secattr_init(&secattr);
 		smack_to_secattr(ssp->smk_out, &secattr);
-		rc = netlbl_sock_setattr(sk, sk->sk_family, &secattr);
+		rc = netlbl_sock_setattr(sk, &secattr);
 		netlbl_secattr_destroy(&secattr);
 	}
 
 	bh_unlock_sock(sk);
 	local_bh_enable();
+	/*
+	 * Remember the label scheme used so that it is not
+	 * necessary to do the netlabel setting if it has not
+	 * changed the next time through.
+	 *
+	 * The -EDESTADDRREQ case is an indication that there's
+	 * a single level host involved.
+	 */
+	if (rc == 0)
+		ssp->smk_labeled = labeled;
 
 	return rc;
-}
-
-/**
- * smack_netlbel_send - Set the secattr on a socket and perform access checks
- * @sk: the socket
- * @sap: the destination address
- *
- * Set the correct secattr for the given socket based on the destination
- * address and perform any outbound access checks needed.
- *
- * Returns 0 on success or an error code.
- *
- */
-static int smack_netlabel_send(struct sock *sk, struct sockaddr_in *sap)
-{
-	int rc;
-	int sk_lbl;
-	char *hostsp;
-	struct socket_smack *ssp = sk->sk_security;
-	struct smk_audit_info ad;
-
-	rcu_read_lock();
-	hostsp = smack_host_label(sap);
-	if (hostsp != NULL) {
-		sk_lbl = SMACK_UNLABELED_SOCKET;
-#ifdef CONFIG_AUDIT
-		smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_NET);
-		ad.a.u.net.family = sap->sin_family;
-		ad.a.u.net.dport = sap->sin_port;
-		ad.a.u.net.v4info.daddr = sap->sin_addr.s_addr;
-#endif
-		rc = smk_access(ssp->smk_out, hostsp, MAY_WRITE, &ad);
-	} else {
-		sk_lbl = SMACK_CIPSO_SOCKET;
-		rc = 0;
-	}
-	rcu_read_unlock();
-	if (rc != 0)
-		return rc;
-
-	return smack_netlabel(sk, sk_lbl);
 }
 
 /**
@@ -1644,7 +1430,7 @@ static int smack_inode_setsecurity(struct inode *inode, const char *name,
 	struct socket *sock;
 	int rc = 0;
 
-	if (value == NULL || size > SMK_LABELLEN || size == 0)
+	if (value == NULL || size > SMK_LABELLEN)
 		return -EACCES;
 
 	sp = smk_import(value, size);
@@ -1653,7 +1439,6 @@ static int smack_inode_setsecurity(struct inode *inode, const char *name,
 
 	if (strcmp(name, XATTR_SMACK_SUFFIX) == 0) {
 		nsp->smk_inode = sp;
-		nsp->smk_flags |= SMK_INODE_INSTANT;
 		return 0;
 	}
 	/*
@@ -1705,6 +1490,41 @@ static int smack_socket_post_create(struct socket *sock, int family,
 	return smack_netlabel(sock->sk, SMACK_CIPSO_SOCKET);
 }
 
+
+/**
+ * smack_host_label - check host based restrictions
+ * @sip: the object end
+ *
+ * looks for host based access restrictions
+ *
+ * This version will only be appropriate for really small
+ * sets of single label hosts.
+ *
+ * Returns the label of the far end or NULL if it's not special.
+ */
+static char *smack_host_label(struct sockaddr_in *sip)
+{
+	struct smk_netlbladdr *snp;
+	struct in_addr *siap = &sip->sin_addr;
+
+	if (siap->s_addr == 0)
+		return NULL;
+
+	for (snp = smack_netlbladdrs; snp != NULL; snp = snp->smk_next) {
+		/*
+		 * we break after finding the first match because
+		 * the list is sorted from longest to shortest mask
+		 * so we have found the most specific match
+		 */
+		if ((&snp->smk_host.sin_addr)->s_addr  ==
+			(siap->s_addr & (&snp->smk_mask)->s_addr)) {
+			return snp->smk_label;
+		}
+	}
+
+	return NULL;
+}
+
 /**
  * smack_socket_connect - connect access check
  * @sock: the socket
@@ -1718,12 +1538,30 @@ static int smack_socket_post_create(struct socket *sock, int family,
 static int smack_socket_connect(struct socket *sock, struct sockaddr *sap,
 				int addrlen)
 {
+	struct socket_smack *ssp = sock->sk->sk_security;
+	char *hostsp;
+	int rc;
+
 	if (sock->sk == NULL || sock->sk->sk_family != PF_INET)
 		return 0;
+
 	if (addrlen < sizeof(struct sockaddr_in))
 		return -EINVAL;
 
-	return smack_netlabel_send(sock->sk, (struct sockaddr_in *)sap);
+	hostsp = smack_host_label((struct sockaddr_in *)sap);
+	if (hostsp == NULL) {
+		if (ssp->smk_labeled != SMACK_CIPSO_SOCKET)
+			return smack_netlabel(sock->sk, SMACK_CIPSO_SOCKET);
+		return 0;
+	}
+
+	rc = smk_access(ssp->smk_out, hostsp, MAY_WRITE);
+	if (rc != 0)
+		return rc;
+
+	if (ssp->smk_labeled != SMACK_UNLABELED_SOCKET)
+		return smack_netlabel(sock->sk, SMACK_UNLABELED_SOCKET);
+	return 0;
 }
 
 /**
@@ -1808,25 +1646,6 @@ static void smack_shm_free_security(struct shmid_kernel *shp)
 }
 
 /**
- * smk_curacc_shm : check if current has access on shm
- * @shp : the object
- * @access : access requested
- *
- * Returns 0 if current has the requested access, error code otherwise
- */
-static int smk_curacc_shm(struct shmid_kernel *shp, int access)
-{
-	char *ssp = smack_of_shm(shp);
-	struct smk_audit_info ad;
-
-#ifdef CONFIG_AUDIT
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_IPC);
-	ad.a.u.ipc_id = shp->shm_perm.id;
-#endif
-	return smk_curacc(ssp, access, &ad);
-}
-
-/**
  * smack_shm_associate - Smack access check for shm
  * @shp: the object
  * @shmflg: access requested
@@ -1835,10 +1654,11 @@ static int smk_curacc_shm(struct shmid_kernel *shp, int access)
  */
 static int smack_shm_associate(struct shmid_kernel *shp, int shmflg)
 {
+	char *ssp = smack_of_shm(shp);
 	int may;
 
 	may = smack_flags_to_may(shmflg);
-	return smk_curacc_shm(shp, may);
+	return smk_curacc(ssp, may);
 }
 
 /**
@@ -1850,6 +1670,7 @@ static int smack_shm_associate(struct shmid_kernel *shp, int shmflg)
  */
 static int smack_shm_shmctl(struct shmid_kernel *shp, int cmd)
 {
+	char *ssp;
 	int may;
 
 	switch (cmd) {
@@ -1872,7 +1693,9 @@ static int smack_shm_shmctl(struct shmid_kernel *shp, int cmd)
 	default:
 		return -EINVAL;
 	}
-	return smk_curacc_shm(shp, may);
+
+	ssp = smack_of_shm(shp);
+	return smk_curacc(ssp, may);
 }
 
 /**
@@ -1886,10 +1709,11 @@ static int smack_shm_shmctl(struct shmid_kernel *shp, int cmd)
 static int smack_shm_shmat(struct shmid_kernel *shp, char __user *shmaddr,
 			   int shmflg)
 {
+	char *ssp = smack_of_shm(shp);
 	int may;
 
 	may = smack_flags_to_may(shmflg);
-	return smk_curacc_shm(shp, may);
+	return smk_curacc(ssp, may);
 }
 
 /**
@@ -1931,25 +1755,6 @@ static void smack_sem_free_security(struct sem_array *sma)
 }
 
 /**
- * smk_curacc_sem : check if current has access on sem
- * @sma : the object
- * @access : access requested
- *
- * Returns 0 if current has the requested access, error code otherwise
- */
-static int smk_curacc_sem(struct sem_array *sma, int access)
-{
-	char *ssp = smack_of_sem(sma);
-	struct smk_audit_info ad;
-
-#ifdef CONFIG_AUDIT
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_IPC);
-	ad.a.u.ipc_id = sma->sem_perm.id;
-#endif
-	return smk_curacc(ssp, access, &ad);
-}
-
-/**
  * smack_sem_associate - Smack access check for sem
  * @sma: the object
  * @semflg: access requested
@@ -1958,10 +1763,11 @@ static int smk_curacc_sem(struct sem_array *sma, int access)
  */
 static int smack_sem_associate(struct sem_array *sma, int semflg)
 {
+	char *ssp = smack_of_sem(sma);
 	int may;
 
 	may = smack_flags_to_may(semflg);
-	return smk_curacc_sem(sma, may);
+	return smk_curacc(ssp, may);
 }
 
 /**
@@ -1973,6 +1779,7 @@ static int smack_sem_associate(struct sem_array *sma, int semflg)
  */
 static int smack_sem_semctl(struct sem_array *sma, int cmd)
 {
+	char *ssp;
 	int may;
 
 	switch (cmd) {
@@ -2001,7 +1808,8 @@ static int smack_sem_semctl(struct sem_array *sma, int cmd)
 		return -EINVAL;
 	}
 
-	return smk_curacc_sem(sma, may);
+	ssp = smack_of_sem(sma);
+	return smk_curacc(ssp, may);
 }
 
 /**
@@ -2018,7 +1826,9 @@ static int smack_sem_semctl(struct sem_array *sma, int cmd)
 static int smack_sem_semop(struct sem_array *sma, struct sembuf *sops,
 			   unsigned nsops, int alter)
 {
-	return smk_curacc_sem(sma, MAY_READWRITE);
+	char *ssp = smack_of_sem(sma);
+
+	return smk_curacc(ssp, MAY_READWRITE);
 }
 
 /**
@@ -2060,25 +1870,6 @@ static char *smack_of_msq(struct msg_queue *msq)
 }
 
 /**
- * smk_curacc_msq : helper to check if current has access on msq
- * @msq : the msq
- * @access : access requested
- *
- * return 0 if current has access, error otherwise
- */
-static int smk_curacc_msq(struct msg_queue *msq, int access)
-{
-	char *msp = smack_of_msq(msq);
-	struct smk_audit_info ad;
-
-#ifdef CONFIG_AUDIT
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_IPC);
-	ad.a.u.ipc_id = msq->q_perm.id;
-#endif
-	return smk_curacc(msp, access, &ad);
-}
-
-/**
  * smack_msg_queue_associate - Smack access check for msg_queue
  * @msq: the object
  * @msqflg: access requested
@@ -2087,10 +1878,11 @@ static int smk_curacc_msq(struct msg_queue *msq, int access)
  */
 static int smack_msg_queue_associate(struct msg_queue *msq, int msqflg)
 {
+	char *msp = smack_of_msq(msq);
 	int may;
 
 	may = smack_flags_to_may(msqflg);
-	return smk_curacc_msq(msq, may);
+	return smk_curacc(msp, may);
 }
 
 /**
@@ -2102,6 +1894,7 @@ static int smack_msg_queue_associate(struct msg_queue *msq, int msqflg)
  */
 static int smack_msg_queue_msgctl(struct msg_queue *msq, int cmd)
 {
+	char *msp;
 	int may;
 
 	switch (cmd) {
@@ -2123,7 +1916,8 @@ static int smack_msg_queue_msgctl(struct msg_queue *msq, int cmd)
 		return -EINVAL;
 	}
 
-	return smk_curacc_msq(msq, may);
+	msp = smack_of_msq(msq);
+	return smk_curacc(msp, may);
 }
 
 /**
@@ -2137,10 +1931,11 @@ static int smack_msg_queue_msgctl(struct msg_queue *msq, int cmd)
 static int smack_msg_queue_msgsnd(struct msg_queue *msq, struct msg_msg *msg,
 				  int msqflg)
 {
-	int may;
+	char *msp = smack_of_msq(msq);
+	int rc;
 
-	may = smack_flags_to_may(msqflg);
-	return smk_curacc_msq(msq, may);
+	rc = smack_flags_to_may(msqflg);
+	return smk_curacc(msp, rc);
 }
 
 /**
@@ -2156,7 +1951,9 @@ static int smack_msg_queue_msgsnd(struct msg_queue *msq, struct msg_msg *msg,
 static int smack_msg_queue_msgrcv(struct msg_queue *msq, struct msg_msg *msg,
 			struct task_struct *target, long type, int mode)
 {
-	return smk_curacc_msq(msq, MAY_READWRITE);
+	char *msp = smack_of_msq(msq);
+
+	return smk_curacc(msp, MAY_READWRITE);
 }
 
 /**
@@ -2169,19 +1966,15 @@ static int smack_msg_queue_msgrcv(struct msg_queue *msq, struct msg_msg *msg,
 static int smack_ipc_permission(struct kern_ipc_perm *ipp, short flag)
 {
 	char *isp = ipp->security;
-	int may = smack_flags_to_may(flag);
-	struct smk_audit_info ad;
+	int may;
 
-#ifdef CONFIG_AUDIT
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_IPC);
-	ad.a.u.ipc_id = ipp->id;
-#endif
-	return smk_curacc(isp, may, &ad);
+	may = smack_flags_to_may(flag);
+	return smk_curacc(isp, may);
 }
 
 /**
  * smack_ipc_getsecid - Extract smack security id
- * @ipp: the object permissions
+ * @ipcp: the object permissions
  * @secid: where result will be saved
  */
 static void smack_ipc_getsecid(struct kern_ipc_perm *ipp, u32 *secid)
@@ -2193,7 +1986,7 @@ static void smack_ipc_getsecid(struct kern_ipc_perm *ipp, u32 *secid)
 
 /**
  * smack_d_instantiate - Make sure the blob is correct on an inode
- * @opt_dentry: dentry where inode will be attached
+ * @opt_dentry: unused
  * @inode: the object
  *
  * Set the inode's security blob if it hasn't been done already.
@@ -2312,10 +2105,20 @@ static void smack_d_instantiate(struct dentry *opt_dentry, struct inode *inode)
 		/*
 		 * Get the dentry for xattr.
 		 */
-		dp = dget(opt_dentry);
+		if (opt_dentry == NULL) {
+			dp = d_find_alias(inode);
+			if (dp == NULL)
+				break;
+		} else {
+			dp = dget(opt_dentry);
+			if (dp == NULL)
+				break;
+		}
+
 		fetched = smk_fetch(inode, dp);
 		if (fetched != NULL)
 			final = fetched;
+
 		dput(dp);
 		break;
 	}
@@ -2425,12 +2228,8 @@ static int smack_unix_stream_connect(struct socket *sock,
 {
 	struct inode *sp = SOCK_INODE(sock);
 	struct inode *op = SOCK_INODE(other);
-	struct smk_audit_info ad;
 
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_NET);
-	smk_ad_setfield_u_net_sk(&ad, other->sk);
-	return smk_access(smk_of_inode(sp), smk_of_inode(op),
-				 MAY_READWRITE, &ad);
+	return smk_access(smk_of_inode(sp), smk_of_inode(op), MAY_READWRITE);
 }
 
 /**
@@ -2445,17 +2244,14 @@ static int smack_unix_may_send(struct socket *sock, struct socket *other)
 {
 	struct inode *sp = SOCK_INODE(sock);
 	struct inode *op = SOCK_INODE(other);
-	struct smk_audit_info ad;
 
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_NET);
-	smk_ad_setfield_u_net_sk(&ad, other->sk);
-	return smk_access(smk_of_inode(sp), smk_of_inode(op), MAY_WRITE, &ad);
+	return smk_access(smk_of_inode(sp), smk_of_inode(op), MAY_WRITE);
 }
 
 /**
  * smack_socket_sendmsg - Smack check based on destination host
  * @sock: the socket
- * @msg: the message
+ * @msghdr: the message
  * @size: the size of the message
  *
  * Return 0 if the current subject can write to the destination
@@ -2466,19 +2262,38 @@ static int smack_socket_sendmsg(struct socket *sock, struct msghdr *msg,
 				int size)
 {
 	struct sockaddr_in *sip = (struct sockaddr_in *) msg->msg_name;
+	struct socket_smack *ssp = sock->sk->sk_security;
+	char *hostsp;
+	int rc;
 
 	/*
 	 * Perfectly reasonable for this to be NULL
 	 */
-	if (sip == NULL || sip->sin_family != AF_INET)
+	if (sip == NULL || sip->sin_family != PF_INET)
 		return 0;
 
-	return smack_netlabel_send(sock->sk, sip);
+	hostsp = smack_host_label(sip);
+	if (hostsp == NULL) {
+		if (ssp->smk_labeled != SMACK_CIPSO_SOCKET)
+			return smack_netlabel(sock->sk, SMACK_CIPSO_SOCKET);
+		return 0;
+	}
+
+	rc = smk_access(ssp->smk_out, hostsp, MAY_WRITE);
+	if (rc != 0)
+		return rc;
+
+	if (ssp->smk_labeled != SMACK_UNLABELED_SOCKET)
+		return smack_netlabel(sock->sk, SMACK_UNLABELED_SOCKET);
+
+	return 0;
+
 }
 
 
 /**
- * smack_from_secattr - Convert a netlabel attr.mls.lvl/attr.mls.cat pair to smack
+ * smack_from_secattr - Convert a netlabel attr.mls.lvl/attr.mls.cat
+ * 	pair to smack
  * @sap: netlabel secattr
  * @sip: where to put the result
  *
@@ -2564,7 +2379,7 @@ static int smack_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	char smack[SMK_LABELLEN];
 	char *csp;
 	int rc;
-	struct smk_audit_info ad;
+
 	if (sk->sk_family != PF_INET && sk->sk_family != PF_INET6)
 		return 0;
 
@@ -2582,19 +2397,13 @@ static int smack_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
 
 	netlbl_secattr_destroy(&secattr);
 
-#ifdef CONFIG_AUDIT
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_NET);
-	ad.a.u.net.family = sk->sk_family;
-	ad.a.u.net.netif = skb->skb_iif;
-	ipv4_skb_to_auditdata(skb, &ad.a, NULL);
-#endif
 	/*
 	 * Receiving a packet requires that the other end
 	 * be able to write here. Read access is not required.
 	 * This is the simplist possible security model
 	 * for networking.
 	 */
-	rc = smk_access(csp, ssp->smk_in, MAY_WRITE, &ad);
+	rc = smk_access(csp, ssp->smk_in, MAY_WRITE);
 	if (rc != 0)
 		netlbl_skbuff_err(skb, rc, 0);
 	return rc;
@@ -2605,7 +2414,7 @@ static int smack_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
  * @sock: the socket
  * @optval: user's destination
  * @optlen: size thereof
- * @len: max thereof
+ * @len: max thereoe
  *
  * returns zero on success, an error code otherwise
  */
@@ -2684,24 +2493,31 @@ static int smack_socket_getpeersec_dgram(struct socket *sock,
 }
 
 /**
- * smack_sock_graft - Initialize a newly created socket with an existing sock
- * @sk: child sock
- * @parent: parent socket
+ * smack_sock_graft - graft access state between two sockets
+ * @sk: fresh sock
+ * @parent: donor socket
  *
- * Set the smk_{in,out} state of an existing sock based on the process that
- * is creating the new socket.
+ * Sets the netlabel socket state on sk from parent
  */
 static void smack_sock_graft(struct sock *sk, struct socket *parent)
 {
 	struct socket_smack *ssp;
+	int rc;
 
-	if (sk == NULL ||
-	    (sk->sk_family != PF_INET && sk->sk_family != PF_INET6))
+	if (sk == NULL)
+		return;
+
+	if (sk->sk_family != PF_INET && sk->sk_family != PF_INET6)
 		return;
 
 	ssp = sk->sk_security;
 	ssp->smk_in = ssp->smk_out = current_security();
-	/* cssp->smk_packet is already set in smack_inet_csk_clone() */
+	ssp->smk_packet[0] = '\0';
+
+	rc = smack_netlabel(sk, SMACK_CIPSO_SOCKET);
+	if (rc != 0)
+		printk(KERN_WARNING "Smack: \"%s\" netlbl error %d.\n",
+		       __func__, -rc);
 }
 
 /**
@@ -2716,87 +2532,33 @@ static void smack_sock_graft(struct sock *sk, struct socket *parent)
 static int smack_inet_conn_request(struct sock *sk, struct sk_buff *skb,
 				   struct request_sock *req)
 {
-	u16 family = sk->sk_family;
+	struct netlbl_lsm_secattr skb_secattr;
 	struct socket_smack *ssp = sk->sk_security;
-	struct netlbl_lsm_secattr secattr;
-	struct sockaddr_in addr;
-	struct iphdr *hdr;
 	char smack[SMK_LABELLEN];
 	int rc;
-	struct smk_audit_info ad;
 
-	/* handle mapped IPv4 packets arriving via IPv6 sockets */
-	if (family == PF_INET6 && skb->protocol == htons(ETH_P_IP))
-		family = PF_INET;
+	if (skb == NULL)
+		return -EACCES;
 
-	netlbl_secattr_init(&secattr);
-	rc = netlbl_skbuff_getattr(skb, family, &secattr);
+	netlbl_secattr_init(&skb_secattr);
+	rc = netlbl_skbuff_getattr(skb, sk->sk_family, &skb_secattr);
 	if (rc == 0)
-		smack_from_secattr(&secattr, smack);
+		smack_from_secattr(&skb_secattr, smack);
 	else
 		strncpy(smack, smack_known_huh.smk_known, SMK_MAXLEN);
-	netlbl_secattr_destroy(&secattr);
-
-#ifdef CONFIG_AUDIT
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_NET);
-	ad.a.u.net.family = family;
-	ad.a.u.net.netif = skb->skb_iif;
-	ipv4_skb_to_auditdata(skb, &ad.a, NULL);
-#endif
+	netlbl_secattr_destroy(&skb_secattr);
 	/*
-	 * Receiving a packet requires that the other end be able to write
-	 * here. Read access is not required.
+	 * Receiving a packet requires that the other end
+	 * be able to write here. Read access is not required.
+	 *
+	 * If the request is successful save the peer's label
+	 * so that SO_PEERCRED can report it.
 	 */
-	rc = smk_access(smack, ssp->smk_in, MAY_WRITE, &ad);
-	if (rc != 0)
-		return rc;
-
-	/*
-	 * Save the peer's label in the request_sock so we can later setup
-	 * smk_packet in the child socket so that SO_PEERCRED can report it.
-	 */
-	req->peer_secid = smack_to_secid(smack);
-
-	/*
-	 * We need to decide if we want to label the incoming connection here
-	 * if we do we only need to label the request_sock and the stack will
-	 * propogate the wire-label to the sock when it is created.
-	 */
-	hdr = ip_hdr(skb);
-	addr.sin_addr.s_addr = hdr->saddr;
-	rcu_read_lock();
-	if (smack_host_label(&addr) == NULL) {
-		rcu_read_unlock();
-		netlbl_secattr_init(&secattr);
-		smack_to_secattr(smack, &secattr);
-		rc = netlbl_req_setattr(req, &secattr);
-		netlbl_secattr_destroy(&secattr);
-	} else {
-		rcu_read_unlock();
-		netlbl_req_delattr(req);
-	}
+	rc = smk_access(smack, ssp->smk_in, MAY_WRITE);
+	if (rc == 0)
+		strncpy(ssp->smk_packet, smack, SMK_MAXLEN);
 
 	return rc;
-}
-
-/**
- * smack_inet_csk_clone - Copy the connection information to the new socket
- * @sk: the new socket
- * @req: the connection's request_sock
- *
- * Transfer the connection's peer label to the newly created socket.
- */
-static void smack_inet_csk_clone(struct sock *sk,
-				 const struct request_sock *req)
-{
-	struct socket_smack *ssp = sk->sk_security;
-	char *smack;
-
-	if (req->peer_secid != 0) {
-		smack = smack_from_secid(req->peer_secid);
-		strncpy(ssp->smk_packet, smack, SMK_MAXLEN);
-	} else
-		ssp->smk_packet[0] = '\0';
 }
 
 /*
@@ -2849,7 +2611,6 @@ static int smack_key_permission(key_ref_t key_ref,
 				const struct cred *cred, key_perm_t perm)
 {
 	struct key *keyp;
-	struct smk_audit_info ad;
 
 	keyp = key_ref_to_ptr(key_ref);
 	if (keyp == NULL)
@@ -2865,13 +2626,8 @@ static int smack_key_permission(key_ref_t key_ref,
 	 */
 	if (cred->security == NULL)
 		return -EACCES;
-#ifdef CONFIG_AUDIT
-	smk_ad_init(&ad, __func__, LSM_AUDIT_DATA_KEY);
-	ad.a.u.key_struct.key = keyp->serial;
-	ad.a.u.key_struct.key_desc = keyp->description;
-#endif
-	return smk_access(cred->security, keyp->security,
-				 MAY_READWRITE, &ad);
+
+	return smk_access(cred->security, keyp->security, MAY_READWRITE);
 }
 #endif /* CONFIG_KEYS */
 
@@ -2993,7 +2749,7 @@ static void smack_audit_rule_free(void *vrule)
 
 #endif /* CONFIG_AUDIT */
 
-/**
+/*
  * smack_secid_to_secctx - return the smack label for a secid
  * @secid: incoming integer
  * @secdata: destination
@@ -3010,7 +2766,7 @@ static int smack_secid_to_secctx(u32 secid, char **secdata, u32 *seclen)
 	return 0;
 }
 
-/**
+/*
  * smack_secctx_to_secid - return the secid for a smack label
  * @secdata: smack label
  * @seclen: how long result is
@@ -3024,10 +2780,11 @@ static int smack_secctx_to_secid(const char *secdata, u32 seclen, u32 *secid)
 	return 0;
 }
 
-/**
+/*
  * smack_release_secctx - don't do anything.
- * @secdata: unused
- * @seclen: unused
+ * @key_ref: unused
+ * @context: unused
+ * @perm: unused
  *
  * Exists to make sure nothing gets done, and properly
  */
@@ -3035,33 +2792,20 @@ static void smack_release_secctx(char *secdata, u32 seclen)
 {
 }
 
-static int smack_inode_notifysecctx(struct inode *inode, void *ctx, u32 ctxlen)
-{
-	return smack_inode_setsecurity(inode, XATTR_SMACK_SUFFIX, ctx, ctxlen, 0);
-}
-
-static int smack_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen)
-{
-	return __vfs_setxattr_noperm(dentry, XATTR_NAME_SMACK, ctx, ctxlen, 0);
-}
-
-static int smack_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
-{
-	int len = 0;
-	len = smack_inode_getsecurity(inode, XATTR_SMACK_SUFFIX, ctx, true);
-
-	if (len < 0)
-		return len;
-	*ctxlen = len;
-	return 0;
-}
-
 struct security_operations smack_ops = {
 	.name =				"smack",
 
-	.ptrace_access_check =		smack_ptrace_access_check,
+	.ptrace_may_access =		smack_ptrace_may_access,
 	.ptrace_traceme =		smack_ptrace_traceme,
+	.capget = 			cap_capget,
+	.capset = 			cap_capset,
+	.capable = 			cap_capable,
 	.syslog = 			smack_syslog,
+	.settime = 			cap_settime,
+	.vm_enough_memory = 		cap_vm_enough_memory,
+
+	.bprm_set_creds = 		cap_bprm_set_creds,
+	.bprm_secureexec = 		cap_bprm_secureexec,
 
 	.sb_alloc_security = 		smack_sb_alloc_security,
 	.sb_free_security = 		smack_sb_free_security,
@@ -3085,6 +2829,8 @@ struct security_operations smack_ops = {
 	.inode_post_setxattr = 		smack_inode_post_setxattr,
 	.inode_getxattr = 		smack_inode_getxattr,
 	.inode_removexattr = 		smack_inode_removexattr,
+	.inode_need_killpriv =		cap_inode_need_killpriv,
+	.inode_killpriv =		cap_inode_killpriv,
 	.inode_getsecurity = 		smack_inode_getsecurity,
 	.inode_setsecurity = 		smack_inode_setsecurity,
 	.inode_listsecurity = 		smack_inode_listsecurity,
@@ -3100,12 +2846,12 @@ struct security_operations smack_ops = {
 	.file_send_sigiotask = 		smack_file_send_sigiotask,
 	.file_receive = 		smack_file_receive,
 
-	.cred_alloc_blank =		smack_cred_alloc_blank,
 	.cred_free =			smack_cred_free,
 	.cred_prepare =			smack_cred_prepare,
-	.cred_transfer =		smack_cred_transfer,
+	.cred_commit =			smack_cred_commit,
 	.kernel_act_as =		smack_kernel_act_as,
 	.kernel_create_files_as =	smack_kernel_create_files_as,
+	.task_fix_setuid =		cap_task_fix_setuid,
 	.task_setpgid = 		smack_task_setpgid,
 	.task_getpgid = 		smack_task_getpgid,
 	.task_getsid = 			smack_task_getsid,
@@ -3119,6 +2865,7 @@ struct security_operations smack_ops = {
 	.task_kill = 			smack_task_kill,
 	.task_wait = 			smack_task_wait,
 	.task_to_inode = 		smack_task_to_inode,
+	.task_prctl =			cap_task_prctl,
 
 	.ipc_permission = 		smack_ipc_permission,
 	.ipc_getsecid =			smack_ipc_getsecid,
@@ -3145,6 +2892,9 @@ struct security_operations smack_ops = {
 	.sem_semctl = 			smack_sem_semctl,
 	.sem_semop = 			smack_sem_semop,
 
+	.netlink_send =			cap_netlink_send,
+	.netlink_recv = 		cap_netlink_recv,
+
 	.d_instantiate = 		smack_d_instantiate,
 
 	.getprocattr = 			smack_getprocattr,
@@ -3163,7 +2913,6 @@ struct security_operations smack_ops = {
 	.sk_free_security = 		smack_sk_free_security,
 	.sock_graft = 			smack_sock_graft,
 	.inet_conn_request = 		smack_inet_conn_request,
-	.inet_csk_clone =		smack_inet_csk_clone,
 
  /* key management security hooks */
 #ifdef CONFIG_KEYS
@@ -3183,21 +2932,7 @@ struct security_operations smack_ops = {
 	.secid_to_secctx = 		smack_secid_to_secctx,
 	.secctx_to_secid = 		smack_secctx_to_secid,
 	.release_secctx = 		smack_release_secctx,
-	.inode_notifysecctx =		smack_inode_notifysecctx,
-	.inode_setsecctx =		smack_inode_setsecctx,
-	.inode_getsecctx =		smack_inode_getsecctx,
 };
-
-
-static __init void init_smack_know_list(void)
-{
-	list_add(&smack_known_huh.list, &smack_known_list);
-	list_add(&smack_known_hat.list, &smack_known_list);
-	list_add(&smack_known_star.list, &smack_known_list);
-	list_add(&smack_known_floor.list, &smack_known_list);
-	list_add(&smack_known_invalid.list, &smack_known_list);
-	list_add(&smack_known_web.list, &smack_known_list);
-}
 
 /**
  * smack_init - initialize the smack system
@@ -3219,8 +2954,6 @@ static __init int smack_init(void)
 	cred = (struct cred *) current->cred;
 	cred->security = &smack_known_floor.smk_known;
 
-	/* initialize the smack_know_list */
-	init_smack_know_list();
 	/*
 	 * Initialize locks
 	 */

@@ -17,17 +17,15 @@
  * for more details.
  */
 #include <linux/init.h>
-#include <linux/interrupt.h>
-#include <linux/io.h>
 #include <linux/irq.h>
-#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/topology.h>
+#include <linux/io.h>
+#include <linux/interrupt.h>
 
 static inline struct ipr_desc *get_ipr_desc(unsigned int irq)
 {
 	struct irq_chip *chip = get_irq_chip(irq);
-	return container_of(chip, struct ipr_desc, chip);
+	return (void *)((char *)chip - offsetof(struct ipr_desc, chip));
 }
 
 static void disable_ipr_irq(unsigned int irq)
@@ -36,7 +34,6 @@ static void disable_ipr_irq(unsigned int irq)
 	unsigned long addr = get_ipr_desc(irq)->ipr_offsets[p->ipr_idx];
 	/* Set the priority in IPR to 0 */
 	__raw_writew(__raw_readw(addr) & (0xffff ^ (0xf << p->shift)), addr);
-	(void)__raw_readw(addr);	/* Read back to flush write posting */
 }
 
 static void enable_ipr_irq(unsigned int irq)
@@ -62,17 +59,9 @@ void register_ipr_controller(struct ipr_desc *desc)
 
 	for (i = 0; i < desc->nr_irqs; i++) {
 		struct ipr_data *p = desc->ipr_data + i;
-		struct irq_desc *irq_desc;
 
 		BUG_ON(p->ipr_idx >= desc->nr_offsets);
 		BUG_ON(!desc->ipr_offsets[p->ipr_idx]);
-
-		irq_desc = irq_to_desc_alloc_node(p->irq, numa_node_id());
-		if (unlikely(!irq_desc)) {
-			printk(KERN_INFO "can not get irq_desc for %d\n",
-			       p->irq);
-			continue;
-		}
 
 		disable_irq_nosync(p->irq);
 		set_irq_chip_and_handler_name(p->irq, &desc->chip,

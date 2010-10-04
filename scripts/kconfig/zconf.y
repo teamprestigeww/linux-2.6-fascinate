@@ -14,6 +14,8 @@
 #define LKC_DIRECT_LINK
 #include "lkc.h"
 
+#include "zconf.hash.c"
+
 #define printd(mask, fmt...) if (cdebug & (mask)) printf(fmt)
 
 #define PRINTD		0x0001
@@ -27,7 +29,7 @@ static void zconf_error(const char *err, ...);
 static void zconferror(const char *err);
 static bool zconf_endtoken(struct kconf_id *id, int starttoken, int endtoken);
 
-struct symbol *symbol_hash[SYMBOL_HASHSIZE];
+struct symbol *symbol_hash[257];
 
 static struct menu *current_menu, *current_entry;
 
@@ -97,11 +99,6 @@ static struct menu *current_menu, *current_entry;
 	if (current_menu == $$)
 		menu_end_menu();
 } if_entry menu_entry choice_entry
-
-%{
-/* Include zconf.hash.c here so it can see the token constants. */
-#include "zconf.hash.c"
-%}
 
 %%
 input: stmt_list;
@@ -475,7 +472,7 @@ void conf_parse(const char *name)
 	zconf_initscan(name);
 
 	sym_init();
-	_menu_init();
+	menu_init();
 	modules_sym = sym_lookup(NULL, 0);
 	modules_sym->type = S_BOOLEAN;
 	modules_sym->flags |= SYMBOL_AUTO;
@@ -504,7 +501,7 @@ void conf_parse(const char *name)
 	sym_set_change_count(1);
 }
 
-static const char *zconf_tokenname(int token)
+const char *zconf_tokenname(int token)
 {
 	switch (token) {
 	case T_MENU:		return "menu";
@@ -568,7 +565,7 @@ static void zconferror(const char *err)
 #endif
 }
 
-static void print_quoted_string(FILE *out, const char *str)
+void print_quoted_string(FILE *out, const char *str)
 {
 	const char *p;
 	int len;
@@ -585,15 +582,15 @@ static void print_quoted_string(FILE *out, const char *str)
 	putc('"', out);
 }
 
-static void print_symbol(FILE *out, struct menu *menu)
+void print_symbol(FILE *out, struct menu *menu)
 {
 	struct symbol *sym = menu->sym;
 	struct property *prop;
 
 	if (sym_is_choice(sym))
-		fprintf(out, "\nchoice\n");
+		fprintf(out, "choice\n");
 	else
-		fprintf(out, "\nconfig %s\n", sym->name);
+		fprintf(out, "config %s\n", sym->name);
 	switch (sym->type) {
 	case S_BOOLEAN:
 		fputs("  boolean\n", out);
@@ -639,21 +636,6 @@ static void print_symbol(FILE *out, struct menu *menu)
 		case P_CHOICE:
 			fputs("  #choice value\n", out);
 			break;
-		case P_SELECT:
-			fputs( "  select ", out);
-			expr_fprint(prop->expr, out);
-			fputc('\n', out);
-			break;
-		case P_RANGE:
-			fputs( "  range ", out);
-			expr_fprint(prop->expr, out);
-			fputc('\n', out);
-			break;
-		case P_MENU:
-			fputs( "  menu ", out);
-			print_quoted_string(out, prop->text);
-			fputc('\n', out);
-			break;
 		default:
 			fprintf(out, "  unknown prop %d!\n", prop->type);
 			break;
@@ -665,6 +647,7 @@ static void print_symbol(FILE *out, struct menu *menu)
 			menu->help[len] = 0;
 		fprintf(out, "  help\n%s\n", menu->help);
 	}
+	fputc('\n', out);
 }
 
 void zconfdump(FILE *out)
@@ -697,6 +680,7 @@ void zconfdump(FILE *out)
 				expr_fprint(prop->visible.expr, out);
 				fputc('\n', out);
 			}
+			fputs("\n", out);
 		}
 
 		if (menu->list)

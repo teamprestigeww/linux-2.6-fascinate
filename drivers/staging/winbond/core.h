@@ -3,26 +3,25 @@
 
 #include <linux/wireless.h>
 
-#include "mlme_s.h"
-#include "wbhal_s.h"
+#include "bssdscpt.h"
 #include "mto.h"
+#include "wbhal_s.h"
 
 #define WBLINUX_PACKET_ARRAY_SIZE (ETHERNET_TX_DESCRIPTORS*4)
 
 #define WB_MAX_LINK_NAME_LEN 40
 
 struct wbsoft_priv {
-	u32 adapterIndex;	/* 20060703.4 Add for using padapterContext
-							global adapter point */
+	u32 adapterIndex;	// 20060703.4 Add for using padapterContext global adapter point
 
-	struct wb_local_para sLocalPara;	/* Myself connected
-							parameters */
+	WB_LOCALDESCRIPT sLocalPara;	// Myself connected parameters
+	PWB_BSSDESCRIPTION asBSSDescriptElement;
 
-	MLME_FRAME sMlmeFrame;	/* connect to peerSTA parameters */
+	MLME_FRAME sMlmeFrame;	// connect to peerSTA parameters
 
-	struct wb35_mto_params sMtoPara;	/* MTO_struct ... */
-	struct hw_data sHwData;	/*For HAL */
-	struct wb35_mds Mds;
+	MTO_PARAMETERS sMtoPara;	// MTO_struct ...
+	hw_data_t sHwData;	//For HAL
+	MDS Mds;
 
 	spinlock_t SpinLock;
 
@@ -32,7 +31,7 @@ struct wbsoft_priv {
 	u32 TxByteCount;
 
 	struct sk_buff *packet_return;
-	s32 netif_state_stop;	/* 1: stop  0: normal */
+	s32 netif_state_stop;	// 1: stop  0: normal
 	struct iw_statistics iw_stats;
 
 	u8 LinkName[WB_MAX_LINK_NAME_LEN];

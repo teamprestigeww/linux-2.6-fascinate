@@ -1,7 +1,32 @@
 /*
- * Copyright 2006-2009 Analog Devices Inc.
+ * file:        include/asm-blackfin/mach-bf561/bfin_serial_5xx.h
+ * based on:
+ * author:
  *
- * Licensed under the GPL-2 or later.
+ * created:
+ * description:
+ *	blackfin serial driver head file
+ * rev:
+ *
+ * modified:
+ *
+ *
+ * bugs:         enter bugs at http://blackfin.uclinux.org/
+ *
+ * this program is free software; you can redistribute it and/or modify
+ * it under the terms of the gnu general public license as published by
+ * the free software foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * this program is distributed in the hope that it will be useful,
+ * but without any warranty; without even the implied warranty of
+ * merchantability or fitness for a particular purpose.  see the
+ * gnu general public license for more details.
+ *
+ * you should have received a copy of the gnu general public license
+ * along with this program; see the file copying.
+ * if not, write to the free software foundation,
+ * 59 temple place - suite 330, boston, ma 02111-1307, usa.
  */
 
 #include <linux/serial.h>
@@ -29,8 +54,8 @@
 #define UART_CLEAR_DLAB(uart)   do { UART_PUT_LCR(uart, UART_GET_LCR(uart) & ~DLAB); SSYNC(); } while (0)
 
 #define UART_GET_CTS(x) gpio_get_value(x->cts_pin)
-#define UART_DISABLE_RTS(x) gpio_set_value(x->rts_pin, 1)
-#define UART_ENABLE_RTS(x) gpio_set_value(x->rts_pin, 0)
+#define UART_SET_RTS(x) gpio_set_value(x->rts_pin, 1)
+#define UART_CLEAR_RTS(x) gpio_set_value(x->rts_pin, 0)
 #define UART_ENABLE_INTS(x, v) UART_PUT_IER(x, v)
 #define UART_DISABLE_INTS(x) UART_PUT_IER(x, 0)
 
@@ -49,7 +74,6 @@
 struct bfin_serial_port {
         struct uart_port        port;
         unsigned int            old_status;
-	int			status_irq;
 	unsigned int lsr;
 #ifdef CONFIG_SERIAL_BFIN_DMA
 	int			tx_done;
@@ -92,7 +116,6 @@ static inline void UART_CLEAR_LSR(struct bfin_serial_port *uart)
 struct bfin_serial_res {
 	unsigned long	uart_base_addr;
 	int		uart_irq;
-	int		uart_status_irq;
 #ifdef CONFIG_SERIAL_BFIN_DMA
 	unsigned int	uart_tx_dma_channel;
 	unsigned int	uart_rx_dma_channel;
@@ -107,7 +130,6 @@ struct bfin_serial_res bfin_serial_resource[] = {
 	{
 	0xFFC00400,
 	IRQ_UART_RX,
-	IRQ_UART_ERROR,
 #ifdef CONFIG_SERIAL_BFIN_DMA
 	CH_UART_TX,
 	CH_UART_RX,
@@ -120,3 +142,23 @@ struct bfin_serial_res bfin_serial_resource[] = {
 };
 
 #define DRIVER_NAME "bfin-uart"
+
+static void bfin_serial_hw_init(struct bfin_serial_port *uart)
+{
+
+#ifdef CONFIG_SERIAL_BFIN_UART0
+	peripheral_request(P_UART0_TX, DRIVER_NAME);
+	peripheral_request(P_UART0_RX, DRIVER_NAME);
+#endif
+
+#ifdef CONFIG_SERIAL_BFIN_CTSRTS
+	if (uart->cts_pin >= 0) {
+		gpio_request(uart->cts_pin, DRIVER_NAME);
+		gpio_direction_input(uart->cts_pin);
+	}
+	if (uart->rts_pin >= 0) {
+		gpio_request(uart->rts_pin, DRIVER_NAME);
+		gpio_direction_output(uart->rts_pin, 0);
+	}
+#endif
+}

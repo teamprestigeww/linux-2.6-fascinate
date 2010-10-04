@@ -71,23 +71,7 @@ pasemi_mac_ethtool_get_settings(struct net_device *netdev,
 	struct pasemi_mac *mac = netdev_priv(netdev);
 	struct phy_device *phydev = mac->phydev;
 
-	if (!phydev)
-		return -EOPNOTSUPP;
-
 	return phy_ethtool_gset(phydev, cmd);
-}
-
-static int
-pasemi_mac_ethtool_set_settings(struct net_device *netdev,
-			       struct ethtool_cmd *cmd)
-{
-	struct pasemi_mac *mac = netdev_priv(netdev);
-	struct phy_device *phydev = mac->phydev;
-
-	if (!phydev)
-		return -EOPNOTSUPP;
-
-	return phy_ethtool_sset(phydev, cmd);
 }
 
 static void
@@ -163,7 +147,6 @@ static void pasemi_mac_get_strings(struct net_device *netdev, u32 stringset,
 
 const struct ethtool_ops pasemi_mac_ethtool_ops = {
 	.get_settings		= pasemi_mac_ethtool_get_settings,
-	.set_settings		= pasemi_mac_ethtool_set_settings,
 	.get_drvinfo		= pasemi_mac_ethtool_get_drvinfo,
 	.get_msglevel		= pasemi_mac_ethtool_get_msglevel,
 	.set_msglevel		= pasemi_mac_ethtool_set_msglevel,

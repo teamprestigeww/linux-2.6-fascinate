@@ -19,6 +19,7 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 
 #include <asm/hardware.h>
@@ -147,8 +148,8 @@ static unsigned int gsc_asic_startup_irq(unsigned int irq)
 	return 0;
 }
 
-static struct irq_chip gsc_asic_interrupt_type = {
-	.name	 =	"GSC-ASIC",
+static struct hw_interrupt_type gsc_asic_interrupt_type = {
+	.typename =	"GSC-ASIC",
 	.startup =	gsc_asic_startup_irq,
 	.shutdown =	gsc_asic_disable_irq,
 	.enable =	gsc_asic_enable_irq,
@@ -157,7 +158,7 @@ static struct irq_chip gsc_asic_interrupt_type = {
 	.end =		no_end_irq,
 };
 
-int gsc_assign_irq(struct irq_chip *type, void *data)
+int gsc_assign_irq(struct hw_interrupt_type *type, void *data)
 {
 	static int irq = GSC_IRQ_BASE;
 	struct irq_desc *desc;

@@ -19,7 +19,6 @@
 #include <linux/fcntl.h>
 #include <linux/in.h>
 #include <linux/if_ether.h>	/* For the statistics structure. */
-#include <linux/slab.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -43,7 +42,7 @@
 
 int nr_rx_ip(struct sk_buff *skb, struct net_device *dev)
 {
-	struct net_device_stats *stats = &dev->stats;
+	struct net_device_stats *stats = netdev_priv(dev);
 
 	if (!netif_running(dev)) {
 		stats->rx_dropped++;
@@ -170,21 +169,29 @@ static int nr_close(struct net_device *dev)
 	return 0;
 }
 
-static netdev_tx_t nr_xmit(struct sk_buff *skb, struct net_device *dev)
+static int nr_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	struct net_device_stats *stats = &dev->stats;
+	struct nr_private *nr = netdev_priv(dev);
+	struct net_device_stats *stats = &nr->stats;
 	unsigned int len = skb->len;
 
 	if (!nr_route_frame(skb, NULL)) {
 		kfree_skb(skb);
 		stats->tx_errors++;
-		return NETDEV_TX_OK;
+		return 0;
 	}
 
 	stats->tx_packets++;
 	stats->tx_bytes += len;
 
-	return NETDEV_TX_OK;
+	return 0;
+}
+
+static struct net_device_stats *nr_get_stats(struct net_device *dev)
+{
+	struct nr_private *nr = netdev_priv(dev);
+
+	return &nr->stats;
 }
 
 static const struct header_ops nr_header_ops = {
@@ -192,22 +199,22 @@ static const struct header_ops nr_header_ops = {
 	.rebuild= nr_rebuild_header,
 };
 
-static const struct net_device_ops nr_netdev_ops = {
-	.ndo_open		= nr_open,
-	.ndo_stop		= nr_close,
-	.ndo_start_xmit		= nr_xmit,
-	.ndo_set_mac_address    = nr_set_mac_address,
-};
 
 void nr_setup(struct net_device *dev)
 {
 	dev->mtu		= NR_MAX_PACKET_SIZE;
-	dev->netdev_ops		= &nr_netdev_ops;
+	dev->hard_start_xmit	= nr_xmit;
+	dev->open		= nr_open;
+	dev->stop		= nr_close;
+
 	dev->header_ops		= &nr_header_ops;
 	dev->hard_header_len	= NR_NETWORK_LEN + NR_TRANSPORT_LEN;
 	dev->addr_len		= AX25_ADDR_LEN;
 	dev->type		= ARPHRD_NETROM;
+	dev->set_mac_address    = nr_set_mac_address;
 
 	/* New-style flags. */
 	dev->flags		= IFF_NOARP;
+
+	dev->get_stats 		= nr_get_stats;
 }

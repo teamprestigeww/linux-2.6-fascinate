@@ -11,16 +11,14 @@
 #include <linux/init.h>
 #include <linux/linkage.h>
 #include <asm/segment.h>
-#include <asm/page_types.h>
-#include <asm/pgtable_types.h>
+#include <asm/page.h>
+#include <asm/pgtable.h>
+#include <asm/desc.h>
 #include <asm/cache.h>
 #include <asm/thread_info.h>
 #include <asm/asm-offsets.h>
 #include <asm/setup.h>
 #include <asm/processor-flags.h>
-#include <asm/msr-index.h>
-#include <asm/cpufeature.h>
-#include <asm/percpu.h>
 
 /* Physical address */
 #define pa(X) ((X) - __PAGE_OFFSET)
@@ -39,40 +37,42 @@
 #define X86_VENDOR_ID	new_cpu_data+CPUINFO_x86_vendor_id
 
 /*
- * This is how much memory in addition to the memory covered up to
- * and including _end we need mapped initially.
+ * This is how much memory *in addition to the memory covered up to
+ * and including _end* we need mapped initially.
  * We need:
- *     (KERNEL_IMAGE_SIZE/4096) / 1024 pages (worst case, non PAE)
- *     (KERNEL_IMAGE_SIZE/4096) / 512 + 4 pages (worst case for PAE)
+ *  - one bit for each possible page, but only in low memory, which means
+ *     2^32/4096/8 = 128K worst case (4G/4G split.)
+ *  - enough space to map all low memory, which means
+ *     (2^32/4096) / 1024 pages (worst case, non PAE)
+ *     (2^32/4096) / 512 + 4 pages (worst case for PAE)
+ *  - a few pages for allocator use before the kernel pagetable has
+ *     been set up
  *
  * Modulo rounding, each megabyte assigned here requires a kilobyte of
  * memory, which is currently unreclaimed.
  *
  * This should be a multiple of a page.
- *
- * KERNEL_IMAGE_SIZE should be greater than pa(_end)
- * and small than max_low_pfn, otherwise will waste some page table entries
  */
-
-#if PTRS_PER_PMD > 1
-#define PAGE_TABLE_SIZE(pages) (((pages) / PTRS_PER_PMD) + PTRS_PER_PGD)
-#else
-#define PAGE_TABLE_SIZE(pages) ((pages) / PTRS_PER_PGD)
-#endif
-
-/* Enough space to fit pagetables for the low memory linear map */
-MAPPING_BEYOND_END = \
-	PAGE_TABLE_SIZE(((1<<32) - __PAGE_OFFSET) >> PAGE_SHIFT) << PAGE_SHIFT
+LOW_PAGES = 1<<(32-PAGE_SHIFT_asm)
 
 /*
- * Worst-case size of the kernel mapping we need to make:
- * the worst-case size of the kernel itself, plus the extra we need
- * to map for the linear map.
+ * To preserve the DMA pool in PAGEALLOC kernels, we'll allocate
+ * pagetables from above the 16MB DMA limit, so we'll have to set
+ * up pagetables 16MB more (worst-case):
  */
-KERNEL_PAGES = (KERNEL_IMAGE_SIZE + MAPPING_BEYOND_END)>>PAGE_SHIFT
+#ifdef CONFIG_DEBUG_PAGEALLOC
+LOW_PAGES = LOW_PAGES + 0x1000000
+#endif
 
-INIT_MAP_SIZE = PAGE_TABLE_SIZE(KERNEL_PAGES) * PAGE_SIZE_asm
-RESERVE_BRK(pagetables, INIT_MAP_SIZE)
+#if PTRS_PER_PMD > 1
+PAGE_TABLE_SIZE = (LOW_PAGES / PTRS_PER_PMD) + PTRS_PER_PGD
+#else
+PAGE_TABLE_SIZE = (LOW_PAGES / PTRS_PER_PGD)
+#endif
+BOOTBITMAP_SIZE = LOW_PAGES / 8
+ALLOCATOR_SLOP = 4
+
+INIT_MAP_BEYOND_END = BOOTBITMAP_SIZE + (PAGE_TABLE_SIZE + ALLOCATOR_SLOP)*PAGE_SIZE_asm
 
 /*
  * 32-bit kernel entrypoint; only used by the boot CPU.  On entry,
@@ -81,7 +81,7 @@ RESERVE_BRK(pagetables, INIT_MAP_SIZE)
  * any particular GDT layout, because we load our own as soon as we
  * can.
  */
-__HEAD
+.section .text.head,"ax",@progbits
 ENTRY(startup_32)
 	/* test KEEP_SEGMENTS flag to see if the bootloader is asking
 		us to not reload segments */
@@ -131,12 +131,6 @@ ENTRY(startup_32)
 	movsl
 1:
 
-#ifdef CONFIG_OLPC_OPENFIRMWARE
-	/* save OFW's pgdir table for later use when calling into OFW */
-	movl %cr3, %eax
-	movl %eax, pa(olpc_ofw_pgd)
-#endif
-
 #ifdef CONFIG_PARAVIRT
 	/* This is can only trip for a broken bootloader... */
 	cmpw $0x207, pa(boot_params + BP_version)
@@ -165,17 +159,16 @@ subarch_entries:
 	.long default_entry		/* normal x86/PC */
 	.long lguest_entry		/* lguest hypervisor */
 	.long xen_entry			/* Xen hypervisor */
-	.long default_entry		/* Moorestown MID */
 num_subarch_entries = (. - subarch_entries) / 4
 .previous
 #endif /* CONFIG_PARAVIRT */
 
 /*
  * Initialize page tables.  This creates a PDE and a set of page
- * tables, which are located immediately beyond __brk_base.  The variable
- * _brk_end is set up to point to the first "safe" location.
+ * tables, which are located immediately beyond _end.  The variable
+ * init_pg_tables_end is set up to point to the first "safe" location.
  * Mappings are created both at virtual address 0 (identity mapping)
- * and PAGE_OFFSET for up to _end.
+ * and PAGE_OFFSET for up to _end+sizeof(page tables)+INIT_MAP_BEYOND_END.
  *
  * Note that the stack is not yet set up!
  */
@@ -196,7 +189,8 @@ default_entry:
 
 	xorl %ebx,%ebx				/* %ebx is kept at zero */
 
-	movl $pa(__brk_base), %edi
+	movl $pa(pg0), %edi
+	movl %edi, pa(init_pg_tables_start)
 	movl $pa(swapper_pg_pmd), %edx
 	movl $PTE_IDENT_ATTR, %eax
 10:
@@ -214,14 +208,14 @@ default_entry:
 	loop 11b
 
 	/*
-	 * End condition: we must map up to the end + MAPPING_BEYOND_END.
+	 * End condition: we must map up to and including INIT_MAP_BEYOND_END
+	 * bytes beyond the end of our own page tables.
 	 */
-	movl $pa(_end) + MAPPING_BEYOND_END + PTE_IDENT_ATTR, %ebp
+	leal (INIT_MAP_BEYOND_END+PTE_IDENT_ATTR)(%edi),%ebp
 	cmpl %ebp,%eax
 	jb 10b
 1:
-	addl $__PAGE_OFFSET, %edi
-	movl %edi, pa(_brk_end)
+	movl %edi,pa(init_pg_tables_end)
 	shrl $12, %eax
 	movl %eax, pa(max_pfn_mapped)
 
@@ -232,7 +226,8 @@ default_entry:
 
 page_pde_offset = (__PAGE_OFFSET >> 20);
 
-	movl $pa(__brk_base), %edi
+	movl $pa(pg0), %edi
+	movl %edi, pa(init_pg_tables_start)
 	movl $pa(swapper_pg_dir), %edx
 	movl $PTE_IDENT_ATTR, %eax
 10:
@@ -246,13 +241,14 @@ page_pde_offset = (__PAGE_OFFSET >> 20);
 	addl $0x1000,%eax
 	loop 11b
 	/*
-	 * End condition: we must map up to the end + MAPPING_BEYOND_END.
+	 * End condition: we must map up to and including INIT_MAP_BEYOND_END
+	 * bytes beyond the end of our own page tables; the +0x007 is
+	 * the attribute bits
 	 */
-	movl $pa(_end) + MAPPING_BEYOND_END + PTE_IDENT_ATTR, %ebp
+	leal (INIT_MAP_BEYOND_END+PTE_IDENT_ATTR)(%edi),%ebp
 	cmpl %ebp,%eax
 	jb 10b
-	addl $__PAGE_OFFSET, %edi
-	movl %edi, pa(_brk_end)
+	movl %edi,pa(init_pg_tables_end)
 	shrl $12, %eax
 	movl %eax, pa(max_pfn_mapped)
 
@@ -270,7 +266,9 @@ page_pde_offset = (__PAGE_OFFSET >> 20);
  * which will be freed later
  */
 
-__CPUINIT
+#ifndef CONFIG_HOTPLUG_CPU
+.section .init.text,"ax",@progbits
+#endif
 
 #ifdef CONFIG_SMP
 ENTRY(startup_32_smp)
@@ -305,27 +303,25 @@ ENTRY(startup_32_smp)
 	orl %edx,%eax
 	movl %eax,%cr4
 
-	testb $X86_CR4_PAE, %al		# check if PAE is enabled
-	jz 6f
+	btl $5, %eax		# check if PAE is enabled
+	jnc 6f
 
 	/* Check if extended functions are implemented */
 	movl $0x80000000, %eax
 	cpuid
-	/* Value must be in the range 0x80000001 to 0x8000ffff */
-	subl $0x80000001, %eax
-	cmpl $(0x8000ffff-0x80000001), %eax
-	ja 6f
+	cmpl $0x80000000, %eax
+	jbe 6f
 	mov $0x80000001, %eax
 	cpuid
 	/* Execute Disable bit supported? */
-	btl $(X86_FEATURE_NX & 31), %edx
+	btl $20, %edx
 	jnc 6f
 
 	/* Setup EFER (Extended Feature Enable Register) */
-	movl $MSR_EFER, %ecx
+	movl $0xc0000080, %ecx
 	rdmsr
 
-	btsl $_EFER_NX, %eax
+	btsl $11, %eax
 	/* Make changes effective */
 	wrmsr
 
@@ -334,7 +330,7 @@ ENTRY(startup_32_smp)
 /*
  * Enable paging
  */
-	movl pa(initial_page_table), %eax
+	movl $pa(swapper_pg_dir),%eax
 	movl %eax,%cr3		/* set the page table pointer.. */
 	movl %cr0,%eax
 	orl  $X86_CR0_PG,%eax
@@ -433,33 +429,14 @@ is386:	movl $2,%ecx		# set MP
 	ljmp $(__KERNEL_CS),$1f
 1:	movl $(__KERNEL_DS),%eax	# reload all the segment registers
 	movl %eax,%ss			# after changing gdt.
+	movl %eax,%fs			# gets reset once there's real percpu
 
 	movl $(__USER_DS),%eax		# DS/ES contains default USER segment
 	movl %eax,%ds
 	movl %eax,%es
 
-	movl $(__KERNEL_PERCPU), %eax
-	movl %eax,%fs			# set this cpu's percpu
-
-#ifdef CONFIG_CC_STACKPROTECTOR
-	/*
-	 * The linker can't handle this by relocation.  Manually set
-	 * base address in stack canary segment descriptor.
-	 */
-	cmpb $0,ready
-	jne 1f
-	movl $gdt_page,%eax
-	movl $stack_canary,%ecx
-	movw %cx, 8 * GDT_ENTRY_STACK_CANARY + 2(%eax)
-	shrl $16, %ecx
-	movb %cl, 8 * GDT_ENTRY_STACK_CANARY + 4(%eax)
-	movb %ch, 8 * GDT_ENTRY_STACK_CANARY + 7(%eax)
-1:
-#endif
-	movl $(__KERNEL_STACK_CANARY),%eax
+	xorl %eax,%eax			# Clear GS and LDT
 	movl %eax,%gs
-
-	xorl %eax,%eax			# Clear LDT
 	lldt %ax
 
 	cld			# gcc2 wants the direction flag cleared at all times
@@ -469,6 +446,8 @@ is386:	movl $2,%ecx		# set MP
 	movb $1, ready
 	cmpb $0,%cl		# the first CPU calls start_kernel
 	je   1f
+	movl $(__KERNEL_PERCPU), %eax
+	movl %eax,%fs		# set this cpu's percpu
 	movl (stack_start), %esp
 1:
 #endif /* CONFIG_SMP */
@@ -569,7 +548,11 @@ early_fault:
 	pushl %eax
 	pushl %edx		/* trapno */
 	pushl $fault_msg
+#ifdef CONFIG_EARLY_PRINTK
+	call early_printk
+#else
 	call printk
+#endif
 #endif
 	call dump_stack
 hlt_loop:
@@ -597,10 +580,11 @@ ignore_int:
 	pushl 32(%esp)
 	pushl 40(%esp)
 	pushl $int_msg
+#ifdef CONFIG_EARLY_PRINTK
+	call early_printk
+#else
 	call printk
-
-	call dump_stack
-
+#endif
 	addl $(5*4),%esp
 	popl %ds
 	popl %es
@@ -610,17 +594,22 @@ ignore_int:
 #endif
 	iret
 
-	__REFDATA
+.section .cpuinit.data,"wa"
 .align 4
 ENTRY(initial_code)
 	.long i386_start_kernel
-ENTRY(initial_page_table)
-	.long pa(swapper_pg_dir)
+
+.section .text
+/*
+ * Real beginning of normal "text" segment
+ */
+ENTRY(stext)
+ENTRY(_stext)
 
 /*
  * BSS section
  */
-__PAGE_ALIGNED_BSS
+.section ".bss.page_aligned","wa"
 	.align PAGE_SIZE_asm
 #ifdef CONFIG_X86_PAE
 swapper_pg_pmd:
@@ -631,18 +620,13 @@ ENTRY(swapper_pg_dir)
 #endif
 swapper_pg_fixmap:
 	.fill 1024,4,0
-#ifdef CONFIG_X86_TRAMPOLINE
-ENTRY(trampoline_pg_dir)
-	.fill 1024,4,0
-#endif
 ENTRY(empty_zero_page)
 	.fill 4096,1,0
-
 /*
  * This starts the data section.
  */
 #ifdef CONFIG_X86_PAE
-__PAGE_ALIGNED_DATA
+.section ".data.page_aligned","wa"
 	/* Page-aligned for the benefit of paravirt? */
 	.align PAGE_SIZE_asm
 ENTRY(swapper_pg_dir)
@@ -676,7 +660,7 @@ early_recursion_flag:
 	.long 0
 
 int_msg:
-	.asciz "Unknown interrupt or fault at: %p %p %p\n"
+	.asciz "Unknown interrupt or fault at EIP %p %p %p\n"
 
 fault_msg:
 /* fault info: */
@@ -718,7 +702,7 @@ idt_descr:
 	.word 0				# 32 bit align gdt_desc.address
 ENTRY(early_gdt_descr)
 	.word GDT_ENTRIES*8-1
-	.long gdt_page			/* Overwritten for secondary CPUs */
+	.long per_cpu__gdt_page		/* Overwritten for secondary CPUs */
 
 /*
  * The boot_gdt must mirror the equivalent in setup.S and is

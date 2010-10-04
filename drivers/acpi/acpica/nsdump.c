@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -180,13 +180,7 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 		return (AE_OK);
 	}
 
-	this_node = acpi_ns_validate_handle(obj_handle);
-	if (!this_node) {
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Invalid object handle %p\n",
-				  obj_handle));
-		return (AE_OK);
-	}
-
+	this_node = acpi_ns_map_handle_to_node(obj_handle);
 	type = this_node->type;
 
 	/* Check if the owner matches */
@@ -205,8 +199,8 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 		/* Check the node type and name */
 
 		if (type > ACPI_TYPE_LOCAL_MAX) {
-			ACPI_WARNING((AE_INFO,
-				      "Invalid ACPI Object Type 0x%08X", type));
+			ACPI_WARNING((AE_INFO, "Invalid ACPI Object Type %08X",
+				      type));
 		}
 
 		if (!acpi_ut_valid_acpi_name(this_node->name.integer)) {
@@ -220,8 +214,9 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 		acpi_os_printf("%4.4s", acpi_ut_get_node_name(this_node));
 	}
 
-	/* Now we can print out the pertinent information */
-
+	/*
+	 * Now we can print out the pertinent information
+	 */
 	acpi_os_printf(" %-12s %p %2.2X ",
 		       acpi_ut_get_type_name(type), this_node,
 		       this_node->owner_id);
@@ -441,7 +436,7 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 			return (AE_OK);
 		}
 
-		acpi_os_printf("(R%u)", obj_desc->common.reference_count);
+		acpi_os_printf("(R%d)", obj_desc->common.reference_count);
 
 		switch (type) {
 		case ACPI_TYPE_METHOD:
@@ -514,7 +509,7 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 
 		case ACPI_DESC_TYPE_OPERAND:
 
-			obj_type = obj_desc->common.type;
+			obj_type = ACPI_GET_OBJECT_TYPE(obj_desc);
 
 			if (obj_type > ACPI_TYPE_LOCAL_MAX) {
 				acpi_os_printf
@@ -544,8 +539,9 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 			goto cleanup;
 		}
 
-		/* Valid object, get the pointer to next level, if any */
-
+		/*
+		 * Valid object, get the pointer to next level, if any
+		 */
 		switch (obj_type) {
 		case ACPI_TYPE_BUFFER:
 		case ACPI_TYPE_STRING:
@@ -606,14 +602,14 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
  *              display_type        - 0 or ACPI_DISPLAY_SUMMARY
  *              max_depth           - Maximum depth of dump. Use ACPI_UINT32_MAX
  *                                    for an effectively unlimited depth.
- *              owner_id            - Dump only objects owned by this ID. Use
+ *              owner_id            - Dump only objects owned by this ID.  Use
  *                                    ACPI_UINT32_MAX to match all owners.
  *              start_handle        - Where in namespace to start/end search
  *
  * RETURN:      None
  *
- * DESCRIPTION: Dump typed objects within the loaded namespace. Uses
- *              acpi_ns_walk_namespace in conjunction with acpi_ns_dump_one_object.
+ * DESCRIPTION: Dump typed objects within the loaded namespace.
+ *              Uses acpi_ns_walk_namespace in conjunction with acpi_ns_dump_one_object.
  *
  ******************************************************************************/
 
@@ -634,8 +630,8 @@ acpi_ns_dump_objects(acpi_object_type type,
 	(void)acpi_ns_walk_namespace(type, start_handle, max_depth,
 				     ACPI_NS_WALK_NO_UNLOCK |
 				     ACPI_NS_WALK_TEMP_NODES,
-				     acpi_ns_dump_one_object, NULL,
-				     (void *)&info, NULL);
+				     acpi_ns_dump_one_object, (void *)&info,
+				     NULL);
 }
 #endif				/* ACPI_FUTURE_USAGE */
 

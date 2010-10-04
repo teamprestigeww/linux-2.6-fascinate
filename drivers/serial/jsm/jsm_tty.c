@@ -30,11 +30,8 @@
 #include <linux/serial_reg.h>
 #include <linux/delay.h>	/* For udelay */
 #include <linux/pci.h>
-#include <linux/slab.h>
 
 #include "jsm.h"
-
-static DECLARE_BITMAP(linemap, MAXLINES);
 
 static void jsm_carrier(struct jsm_channel *ch);
 
@@ -148,7 +145,7 @@ static void jsm_tty_send_xchar(struct uart_port *port, char ch)
 	struct ktermios *termios;
 
 	spin_lock_irqsave(&port->lock, lock_flags);
-	termios = port->state->port.tty->termios;
+	termios = port->info->port.tty->termios;
 	if (ch == termios->c_cc[VSTART])
 		channel->ch_bd->bd_ops->send_start_character(channel);
 
@@ -186,6 +183,7 @@ static void jsm_tty_break(struct uart_port *port, int break_state)
 static int jsm_tty_open(struct uart_port *port)
 {
 	struct jsm_board *brd;
+	int rc = 0;
 	struct jsm_channel *channel = (struct jsm_channel *)port;
 	struct ktermios *termios;
 
@@ -246,7 +244,7 @@ static int jsm_tty_open(struct uart_port *port)
 	channel->ch_cached_lsr = 0;
 	channel->ch_stops_sent = 0;
 
-	termios = port->state->port.tty->termios;
+	termios = port->info->port.tty->termios;
 	channel->ch_c_cflag	= termios->c_cflag;
 	channel->ch_c_iflag	= termios->c_iflag;
 	channel->ch_c_oflag	= termios->c_oflag;
@@ -267,7 +265,7 @@ static int jsm_tty_open(struct uart_port *port)
 	channel->ch_open_count++;
 
 	jsm_printk(OPEN, INFO, &channel->ch_bd->pci_dev, "finish\n");
-	return 0;
+	return rc;
 }
 
 static void jsm_tty_close(struct uart_port *port)
@@ -279,7 +277,7 @@ static void jsm_tty_close(struct uart_port *port)
 	jsm_printk(CLOSE, INFO, &channel->ch_bd->pci_dev, "start\n");
 
 	bd = channel->ch_bd;
-	ts = port->state->port.tty->termios;
+	ts = port->info->port.tty->termios;
 
 	channel->ch_flags &= ~(CH_STOPI);
 
@@ -296,6 +294,8 @@ static void jsm_tty_close(struct uart_port *port)
 		channel->ch_mostat &= ~(UART_MCR_DTR | UART_MCR_RTS);
 		bd->bd_ops->assert_modem_signals(channel);
 	}
+
+	channel->ch_old_baud = 0;
 
 	/* Turn off UART interrupts for this port */
 	channel->ch_bd->bd_ops->uart_off(channel);
@@ -367,7 +367,7 @@ static struct uart_ops jsm_ops = {
  * Init the tty subsystem.  Called once per board after board has been
  * downloaded and init'ed.
  */
-int __devinit jsm_tty_init(struct jsm_board *brd)
+int jsm_tty_init(struct jsm_board *brd)
 {
 	int i;
 	void __iomem *vaddr;
@@ -433,8 +433,7 @@ int __devinit jsm_tty_init(struct jsm_board *brd)
 
 int jsm_uart_port_init(struct jsm_board *brd)
 {
-	int i, rc;
-	unsigned int line;
+	int i;
 	struct jsm_channel *ch;
 
 	if (!brd)
@@ -461,20 +460,11 @@ int jsm_uart_port_init(struct jsm_board *brd)
 		brd->channels[i]->uart_port.membase = brd->re_map_membase;
 		brd->channels[i]->uart_port.fifosize = 16;
 		brd->channels[i]->uart_port.ops = &jsm_ops;
-		line = find_first_zero_bit(linemap, MAXLINES);
-		if (line >= MAXLINES) {
-			printk(KERN_INFO "jsm: linemap is full, added device failed\n");
-			continue;
-		} else
-			set_bit(line, linemap);
-		brd->channels[i]->uart_port.line = line;
-		rc = uart_add_one_port (&jsm_uart_driver, &brd->channels[i]->uart_port);
-		if (rc){
-			printk(KERN_INFO "jsm: Port %d failed. Aborting...\n", i);
-			return rc;
-		}
+		brd->channels[i]->uart_port.line = brd->channels[i]->ch_portnum + brd->boardnum * 2;
+		if (uart_add_one_port (&jsm_uart_driver, &brd->channels[i]->uart_port))
+			printk(KERN_INFO "Added device failed\n");
 		else
-			printk(KERN_INFO "jsm: Port %d added\n", i);
+			printk(KERN_INFO "Added device \n");
 	}
 
 	jsm_printk(INIT, INFO, &brd->pci_dev, "finish\n");
@@ -505,7 +495,6 @@ int jsm_remove_uart_port(struct jsm_board *brd)
 
 		ch = brd->channels[i];
 
-		clear_bit(ch->uart_port.line, linemap);
 		uart_remove_one_port(&jsm_uart_driver, &brd->channels[i]->uart_port);
 	}
 
@@ -532,7 +521,7 @@ void jsm_input(struct jsm_channel *ch)
 	if (!ch)
 		return;
 
-	tp = ch->uart_port.state->port.tty;
+	tp = ch->uart_port.info->port.tty;
 
 	bd = ch->ch_bd;
 	if(!bd)
@@ -759,7 +748,7 @@ static void jsm_carrier(struct jsm_channel *ch)
 void jsm_check_queue_flow_control(struct jsm_channel *ch)
 {
 	struct board_ops *bd_ops = ch->ch_bd->bd_ops;
-	int qleft;
+	int qleft = 0;
 
 	/* Store how much space we have left in the queue */
 	if ((qleft = ch->ch_r_tail - ch->ch_r_head - 1) < 0)
@@ -845,13 +834,13 @@ void jsm_check_queue_flow_control(struct jsm_channel *ch)
  */
 int jsm_tty_write(struct uart_port *port)
 {
-	int bufcount;
+	int bufcount = 0, n = 0;
 	int data_count = 0,data_count1 =0;
 	u16 head;
 	u16 tail;
 	u16 tmask;
 	u32 remain;
-	int temp_tail = port->state->xmit.tail;
+	int temp_tail = port->info->xmit.tail;
 	struct jsm_channel *channel = (struct jsm_channel *)port;
 
 	tmask = WQUEUEMASK;
@@ -861,16 +850,18 @@ int jsm_tty_write(struct uart_port *port)
 	if ((bufcount = tail - head - 1) < 0)
 		bufcount += WQUEUESIZE;
 
-	bufcount = min(bufcount, 56);
+	n = bufcount;
+
+	n = min(n, 56);
 	remain = WQUEUESIZE - head;
 
 	data_count = 0;
-	if (bufcount >= remain) {
-		bufcount -= remain;
-		while ((port->state->xmit.head != temp_tail) &&
+	if (n >= remain) {
+		n -= remain;
+		while ((port->info->xmit.head != temp_tail) &&
 		(data_count < remain)) {
 			channel->ch_wqueue[head++] =
-			port->state->xmit.buf[temp_tail];
+			port->info->xmit.buf[temp_tail];
 
 			temp_tail++;
 			temp_tail &= (UART_XMIT_SIZE - 1);
@@ -880,12 +871,12 @@ int jsm_tty_write(struct uart_port *port)
 	}
 
 	data_count1 = 0;
-	if (bufcount > 0) {
-		remain = bufcount;
-		while ((port->state->xmit.head != temp_tail) &&
+	if (n > 0) {
+		remain = n;
+		while ((port->info->xmit.head != temp_tail) &&
 			(data_count1 < remain)) {
 			channel->ch_wqueue[head++] =
-				port->state->xmit.buf[temp_tail];
+				port->info->xmit.buf[temp_tail];
 
 			temp_tail++;
 			temp_tail &= (UART_XMIT_SIZE - 1);
@@ -894,7 +885,7 @@ int jsm_tty_write(struct uart_port *port)
 		}
 	}
 
-	port->state->xmit.tail = temp_tail;
+	port->info->xmit.tail = temp_tail;
 
 	data_count += data_count1;
 	if (data_count) {

@@ -10,7 +10,6 @@
  */
 
 #include <linux/proc_fs.h>
-#include <linux/slab.h>
 #include <linux/timer.h>
 #include <linux/jiffies.h>
 
@@ -184,7 +183,7 @@ int cf_command(int drvid, int mode,
           (mode != 1) ? "" : " 0 ",
           (mode != 1) ? "" : fwd_nr);
  
-  retval = divert_if.ll_cmd(&cs->ics); /* execute command */
+  retval = divert_if.ll_cmd(&cs->ics); /* excute command */
 
   if (!retval)
    { cs->prev = NULL;

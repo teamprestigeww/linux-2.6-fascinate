@@ -12,7 +12,6 @@
 #include <linux/spinlock.h>
 #include <linux/init.h>
 #include <linux/rculist.h>
-#include <linux/slab.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/arch.h>
 #include <asm/sn/intr.h>
@@ -228,7 +227,7 @@ finish_up:
 	return new_irq_info;
 }
 
-static int sn_set_affinity_irq(unsigned int irq, const struct cpumask *mask)
+static void sn_set_affinity_irq(unsigned int irq, const struct cpumask *mask)
 {
 	struct sn_irq_info *sn_irq_info, *sn_irq_info_safe;
 	nasid_t nasid;
@@ -240,8 +239,6 @@ static int sn_set_affinity_irq(unsigned int irq, const struct cpumask *mask)
 	list_for_each_entry_safe(sn_irq_info, sn_irq_info_safe,
 				 sn_irq_lh[irq], list)
 		(void)sn_retarget_vector(sn_irq_info, nasid, slice);
-
-	return 0;
 }
 
 #ifdef CONFIG_SMP
@@ -296,13 +293,13 @@ unsigned int sn_local_vector_to_irq(u8 vector)
 void sn_irq_init(void)
 {
 	int i;
-	struct irq_desc *base_desc = irq_desc;
+	irq_desc_t *base_desc = irq_desc;
 
 	ia64_first_device_vector = IA64_SN2_FIRST_DEVICE_VECTOR;
 	ia64_last_device_vector = IA64_SN2_LAST_DEVICE_VECTOR;
 
 	for (i = 0; i < NR_IRQS; i++) {
-		if (base_desc[i].chip == &no_irq_chip) {
+		if (base_desc[i].chip == &no_irq_type) {
 			base_desc[i].chip = &irq_type_sn;
 		}
 	}
@@ -378,7 +375,7 @@ void sn_irq_fixup(struct pci_dev *pci_dev, struct sn_irq_info *sn_irq_info)
 	int cpu = nasid_slice_to_cpuid(nasid, slice);
 #ifdef CONFIG_SMP
 	int cpuphys;
-	struct irq_desc *desc;
+	irq_desc_t *desc;
 #endif
 
 	pci_dev_get(pci_dev);

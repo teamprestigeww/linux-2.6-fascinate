@@ -26,7 +26,6 @@
 #include <linux/kernel.h>
 #include <linux/major.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/mm.h>
 #include <linux/init.h>
 #include <linux/poll.h>
@@ -1921,6 +1920,7 @@ static const struct v4l2_file_operations saa_fops = {
 static struct video_device saa_template = {
 	.name = "SAA7146A",
 	.fops = &saa_fops,
+	.minor = -1,
 	.release = video_device_release_empty,
 };
 
@@ -1971,6 +1971,7 @@ static int __devinit configure_saa7146(struct pci_dev *pdev, int num)
 
 	saa->id = pdev->device;
 	saa->irq = pdev->irq;
+	saa->video_dev.minor = -1;
 	saa->saa7146_adr = pci_resource_start(pdev, 0);
 	pci_read_config_byte(pdev, PCI_CLASS_REVISION, &saa->revision);
 
@@ -2132,7 +2133,7 @@ static void stradis_release_saa(struct pci_dev *pdev)
 	free_irq(saa->irq, saa);
 	if (saa->saa7146_mem)
 		iounmap(saa->saa7146_mem);
-	if (video_is_registered(&saa->video_dev))
+	if (saa->video_dev.minor != -1)
 		video_unregister_device(&saa->video_dev);
 }
 

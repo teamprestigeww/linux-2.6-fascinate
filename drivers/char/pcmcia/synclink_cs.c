@@ -51,7 +51,6 @@
 #include <linux/ptrace.h>
 #include <linux/ioport.h>
 #include <linux/mm.h>
-#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
@@ -70,6 +69,7 @@
 #include <linux/workqueue.h>
 #include <linux/hdlc.h>
 
+#include <pcmcia/cs_types.h>
 #include <pcmcia/cs.h>
 #include <pcmcia/cistpl.h>
 #include <pcmcia/cisreg.h>
@@ -219,6 +219,7 @@ typedef struct _mgslpc_info {
 
 	/* PCMCIA support */
 	struct pcmcia_device	*p_dev;
+	dev_node_t	      node;
 	int		      stop;
 
 	/* SPPP/Cisco HDLC device parts */
@@ -381,7 +382,7 @@ static void async_mode(MGSLPC_INFO *info);
 static void tx_timeout(unsigned long context);
 
 static int carrier_raised(struct tty_port *port);
-static void dtr_rts(struct tty_port *port, int onoff);
+static void raise_dtr_rts(struct tty_port *port);
 
 #if SYNCLINK_GENERIC_HDLC
 #define dev_to_port(D) (dev_to_hdlc(D)->priv)
@@ -511,7 +512,7 @@ static void ldisc_receive_buf(struct tty_struct *tty,
 
 static const struct tty_port_operations mgslpc_port_ops = {
 	.carrier_raised = carrier_raised,
-	.dtr_rts = dtr_rts
+	.raise_dtr_rts = raise_dtr_rts
 };
 
 static int mgslpc_probe(struct pcmcia_device *link)
@@ -550,6 +551,11 @@ static int mgslpc_probe(struct pcmcia_device *link)
 
     /* Initialize the struct pcmcia_device structure */
 
+    /* Interrupt setup */
+    link->irq.Attributes = IRQ_TYPE_DYNAMIC_SHARING;
+    link->irq.IRQInfo1   = IRQ_LEVEL_ID;
+    link->irq.Handler = NULL;
+
     link->conf.Attributes = 0;
     link->conf.IntType = INT_MEMORY_AND_IO;
 
@@ -565,60 +571,90 @@ static int mgslpc_probe(struct pcmcia_device *link)
 /* Card has been inserted.
  */
 
-static int mgslpc_ioprobe(struct pcmcia_device *p_dev,
-			  cistpl_cftable_entry_t *cfg,
-			  cistpl_cftable_entry_t *dflt,
-			  unsigned int vcc,
-			  void *priv_data)
-{
-	if (!cfg->io.nwin)
-		return -ENODEV;
-
-	p_dev->resource[0]->start = cfg->io.win[0].base;
-	p_dev->resource[0]->end = cfg->io.win[0].len;
-	p_dev->resource[0]->flags |= pcmcia_io_cfg_data_width(cfg->io.flags);
-	p_dev->io_lines = cfg->io.flags & CISTPL_IO_LINES_MASK;
-
-	return pcmcia_request_io(p_dev);
-}
+#define CS_CHECK(fn, ret) \
+do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
 
 static int mgslpc_config(struct pcmcia_device *link)
 {
     MGSLPC_INFO *info = link->priv;
-    int ret;
+    tuple_t tuple;
+    cisparse_t parse;
+    int last_fn, last_ret;
+    u_char buf[64];
+    cistpl_cftable_entry_t dflt = { 0 };
+    cistpl_cftable_entry_t *cfg;
 
     if (debug_level >= DEBUG_LEVEL_INFO)
 	    printk("mgslpc_config(0x%p)\n", link);
 
-    ret = pcmcia_loop_config(link, mgslpc_ioprobe, NULL);
-    if (ret != 0)
-	    goto failed;
+    tuple.Attributes = 0;
+    tuple.TupleData = buf;
+    tuple.TupleDataMax = sizeof(buf);
+    tuple.TupleOffset = 0;
+
+    /* get CIS configuration entry */
+
+    tuple.DesiredTuple = CISTPL_CFTABLE_ENTRY;
+    CS_CHECK(GetFirstTuple, pcmcia_get_first_tuple(link, &tuple));
+
+    cfg = &(parse.cftable_entry);
+    CS_CHECK(GetTupleData, pcmcia_get_tuple_data(link, &tuple));
+    CS_CHECK(ParseTuple, pcmcia_parse_tuple(&tuple, &parse));
+
+    if (cfg->flags & CISTPL_CFTABLE_DEFAULT) dflt = *cfg;
+    if (cfg->index == 0)
+	    goto cs_failed;
+
+    link->conf.ConfigIndex = cfg->index;
+    link->conf.Attributes |= CONF_ENABLE_IRQ;
+
+    /* IO window settings */
+    link->io.NumPorts1 = 0;
+    if ((cfg->io.nwin > 0) || (dflt.io.nwin > 0)) {
+	    cistpl_io_t *io = (cfg->io.nwin) ? &cfg->io : &dflt.io;
+	    link->io.Attributes1 = IO_DATA_PATH_WIDTH_AUTO;
+	    if (!(io->flags & CISTPL_IO_8BIT))
+		    link->io.Attributes1 = IO_DATA_PATH_WIDTH_16;
+	    if (!(io->flags & CISTPL_IO_16BIT))
+		    link->io.Attributes1 = IO_DATA_PATH_WIDTH_8;
+	    link->io.IOAddrLines = io->flags & CISTPL_IO_LINES_MASK;
+	    link->io.BasePort1 = io->win[0].base;
+	    link->io.NumPorts1 = io->win[0].len;
+	    CS_CHECK(RequestIO, pcmcia_request_io(link, &link->io));
+    }
 
     link->conf.Attributes = CONF_ENABLE_IRQ;
     link->conf.IntType = INT_MEMORY_AND_IO;
     link->conf.ConfigIndex = 8;
     link->conf.Present = PRESENT_OPTION;
 
-    ret = pcmcia_request_irq(link, mgslpc_isr);
-    if (ret)
-	    goto failed;
-    ret = pcmcia_request_configuration(link, &link->conf);
-    if (ret)
-	    goto failed;
+    link->irq.Attributes |= IRQ_HANDLE_PRESENT;
+    link->irq.Handler     = mgslpc_isr;
+    link->irq.Instance    = info;
+    CS_CHECK(RequestIRQ, pcmcia_request_irq(link, &link->irq));
 
-    info->io_base = link->resource[0]->start;
-    info->irq_level = link->irq;
+    CS_CHECK(RequestConfiguration, pcmcia_request_configuration(link, &link->conf));
 
-    dev_info(&link->dev, "index 0x%02x:",
-	    link->conf.ConfigIndex);
+    info->io_base = link->io.BasePort1;
+    info->irq_level = link->irq.AssignedIRQ;
+
+    /* add to linked list of devices */
+    sprintf(info->node.dev_name, "mgslpc0");
+    info->node.major = info->node.minor = 0;
+    link->dev_node = &info->node;
+
+    printk(KERN_INFO "%s: index 0x%02x:",
+	   info->node.dev_name, link->conf.ConfigIndex);
     if (link->conf.Attributes & CONF_ENABLE_IRQ)
-	    printk(", irq %d", link->irq);
-    if (link->resource[0])
-	    printk(", io %pR", link->resource[0]);
+	    printk(", irq %d", link->irq.AssignedIRQ);
+    if (link->io.NumPorts1)
+	    printk(", io 0x%04x-0x%04x", link->io.BasePort1,
+		   link->io.BasePort1+link->io.NumPorts1-1);
     printk("\n");
     return 0;
 
-failed:
+cs_failed:
+    cs_error(link, last_fn, last_ret);
     mgslpc_release((u_long)link);
     return -ENODEV;
 }
@@ -2491,16 +2527,13 @@ static int carrier_raised(struct tty_port *port)
 	return 0;
 }
 
-static void dtr_rts(struct tty_port *port, int onoff)
+static void raise_dtr_rts(struct tty_port *port)
 {
 	MGSLPC_INFO *info = container_of(port, MGSLPC_INFO, port);
 	unsigned long flags;
 
 	spin_lock_irqsave(&info->lock,flags);
-	if (onoff)
-		info->serial_signals |= SerialSignal_RTS + SerialSignal_DTR;
-	else
-		info->serial_signals &= ~SerialSignal_RTS + SerialSignal_DTR;
+	info->serial_signals |= SerialSignal_RTS + SerialSignal_DTR;
 	set_signals(info);
 	spin_unlock_irqrestore(&info->lock,flags);
 }
@@ -2586,12 +2619,13 @@ cleanup:
  * /proc fs routines....
  */
 
-static inline void line_info(struct seq_file *m, MGSLPC_INFO *info)
+static inline int line_info(char *buf, MGSLPC_INFO *info)
 {
 	char	stat_buf[30];
+	int	ret;
 	unsigned long flags;
 
-	seq_printf(m, "%s:io:%04X irq:%d",
+	ret = sprintf(buf, "%s:io:%04X irq:%d",
 		      info->device_name, info->io_base, info->irq_level);
 
 	/* output current serial signal states */
@@ -2615,69 +2649,74 @@ static inline void line_info(struct seq_file *m, MGSLPC_INFO *info)
 		strcat(stat_buf, "|RI");
 
 	if (info->params.mode == MGSL_MODE_HDLC) {
-		seq_printf(m, " HDLC txok:%d rxok:%d",
+		ret += sprintf(buf+ret, " HDLC txok:%d rxok:%d",
 			      info->icount.txok, info->icount.rxok);
 		if (info->icount.txunder)
-			seq_printf(m, " txunder:%d", info->icount.txunder);
+			ret += sprintf(buf+ret, " txunder:%d", info->icount.txunder);
 		if (info->icount.txabort)
-			seq_printf(m, " txabort:%d", info->icount.txabort);
+			ret += sprintf(buf+ret, " txabort:%d", info->icount.txabort);
 		if (info->icount.rxshort)
-			seq_printf(m, " rxshort:%d", info->icount.rxshort);
+			ret += sprintf(buf+ret, " rxshort:%d", info->icount.rxshort);
 		if (info->icount.rxlong)
-			seq_printf(m, " rxlong:%d", info->icount.rxlong);
+			ret += sprintf(buf+ret, " rxlong:%d", info->icount.rxlong);
 		if (info->icount.rxover)
-			seq_printf(m, " rxover:%d", info->icount.rxover);
+			ret += sprintf(buf+ret, " rxover:%d", info->icount.rxover);
 		if (info->icount.rxcrc)
-			seq_printf(m, " rxcrc:%d", info->icount.rxcrc);
+			ret += sprintf(buf+ret, " rxcrc:%d", info->icount.rxcrc);
 	} else {
-		seq_printf(m, " ASYNC tx:%d rx:%d",
+		ret += sprintf(buf+ret, " ASYNC tx:%d rx:%d",
 			      info->icount.tx, info->icount.rx);
 		if (info->icount.frame)
-			seq_printf(m, " fe:%d", info->icount.frame);
+			ret += sprintf(buf+ret, " fe:%d", info->icount.frame);
 		if (info->icount.parity)
-			seq_printf(m, " pe:%d", info->icount.parity);
+			ret += sprintf(buf+ret, " pe:%d", info->icount.parity);
 		if (info->icount.brk)
-			seq_printf(m, " brk:%d", info->icount.brk);
+			ret += sprintf(buf+ret, " brk:%d", info->icount.brk);
 		if (info->icount.overrun)
-			seq_printf(m, " oe:%d", info->icount.overrun);
+			ret += sprintf(buf+ret, " oe:%d", info->icount.overrun);
 	}
 
 	/* Append serial signal status to end */
-	seq_printf(m, " %s\n", stat_buf+1);
+	ret += sprintf(buf+ret, " %s\n", stat_buf+1);
 
-	seq_printf(m, "txactive=%d bh_req=%d bh_run=%d pending_bh=%x\n",
+	ret += sprintf(buf+ret, "txactive=%d bh_req=%d bh_run=%d pending_bh=%x\n",
 		       info->tx_active,info->bh_requested,info->bh_running,
 		       info->pending_bh);
+
+	return ret;
 }
 
 /* Called to print information about devices
  */
-static int mgslpc_proc_show(struct seq_file *m, void *v)
+static int mgslpc_read_proc(char *page, char **start, off_t off, int count,
+		 int *eof, void *data)
 {
+	int len = 0, l;
+	off_t	begin = 0;
 	MGSLPC_INFO *info;
 
-	seq_printf(m, "synclink driver:%s\n", driver_version);
+	len += sprintf(page, "synclink driver:%s\n", driver_version);
 
 	info = mgslpc_device_list;
 	while( info ) {
-		line_info(m, info);
+		l = line_info(page + len, info);
+		len += l;
+		if (len+begin > off+count)
+			goto done;
+		if (len+begin < off) {
+			begin += len;
+			len = 0;
+		}
 		info = info->next_device;
 	}
-	return 0;
-}
 
-static int mgslpc_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, mgslpc_proc_show, NULL);
+	*eof = 1;
+done:
+	if (off >= len+begin)
+		return 0;
+	*start = page + (off-begin);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
-
-static const struct file_operations mgslpc_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= mgslpc_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 
 static int rx_alloc_buffers(MGSLPC_INFO *info)
 {
@@ -2822,13 +2861,13 @@ static const struct tty_operations mgslpc_ops = {
 	.send_xchar = mgslpc_send_xchar,
 	.break_ctl = mgslpc_break,
 	.wait_until_sent = mgslpc_wait_until_sent,
+	.read_proc = mgslpc_read_proc,
 	.set_termios = mgslpc_set_termios,
 	.stop = tx_pause,
 	.start = tx_release,
 	.hangup = mgslpc_hangup,
 	.tiocmget = tiocmget,
 	.tiocmset = tiocmset,
-	.proc_fops = &mgslpc_proc_fops,
 };
 
 static void synclink_cs_cleanup(void)
@@ -3968,9 +4007,10 @@ static int hdlcdev_attach(struct net_device *dev, unsigned short encoding,
  *
  * skb  socket buffer containing HDLC frame
  * dev  pointer to network device structure
+ *
+ * returns 0 if success, otherwise error code
  */
-static netdev_tx_t hdlcdev_xmit(struct sk_buff *skb,
-				      struct net_device *dev)
+static int hdlcdev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	MGSLPC_INFO *info = dev_to_port(dev);
 	unsigned long flags;
@@ -4005,7 +4045,7 @@ static netdev_tx_t hdlcdev_xmit(struct sk_buff *skb,
 	}
 	spin_unlock_irqrestore(&info->lock,flags);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /**
@@ -4271,16 +4311,9 @@ static void hdlcdev_rx(MGSLPC_INFO *info, char *buf, int size)
 	dev->stats.rx_bytes += size;
 
 	netif_rx(skb);
-}
 
-static const struct net_device_ops hdlcdev_ops = {
-	.ndo_open       = hdlcdev_open,
-	.ndo_stop       = hdlcdev_close,
-	.ndo_change_mtu = hdlc_change_mtu,
-	.ndo_start_xmit = hdlc_start_xmit,
-	.ndo_do_ioctl   = hdlcdev_ioctl,
-	.ndo_tx_timeout = hdlcdev_tx_timeout,
-};
+	dev->last_rx = jiffies;
+}
 
 /**
  * called by device driver when adding device instance
@@ -4308,8 +4341,11 @@ static int hdlcdev_init(MGSLPC_INFO *info)
 	dev->irq       = info->irq_level;
 
 	/* network layer callbacks and settings */
-	dev->netdev_ops	    = &hdlcdev_ops;
-	dev->watchdog_timeo = 10 * HZ;
+	dev->do_ioctl       = hdlcdev_ioctl;
+	dev->open           = hdlcdev_open;
+	dev->stop           = hdlcdev_close;
+	dev->tx_timeout     = hdlcdev_tx_timeout;
+	dev->watchdog_timeo = 10*HZ;
 	dev->tx_queue_len   = 50;
 
 	/* generic HDLC layer callbacks and settings */

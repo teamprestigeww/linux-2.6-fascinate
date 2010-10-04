@@ -22,7 +22,6 @@
 #include <linux/init.h>
 #include <linux/time.h>
 #include <linux/mm.h>
-#include <linux/slab.h>
 #include <linux/smp_lock.h>
 #include <linux/string.h>
 #include <sound/core.h>
@@ -89,10 +88,12 @@ static int resize_info_buffer(struct snd_info_buffer *buffer,
 	char *nbuf;
 
 	nsize = PAGE_ALIGN(nsize);
-	nbuf = krealloc(buffer->buffer, nsize, GFP_KERNEL);
+	nbuf = kmalloc(nsize, GFP_KERNEL);
 	if (! nbuf)
 		return -ENOMEM;
 
+	memcpy(nbuf, buffer->buffer, buffer->len);
+	kfree(buffer->buffer);
 	buffer->buffer = nbuf;
 	buffer->len = nsize;
 	return 0;
@@ -107,7 +108,7 @@ static int resize_info_buffer(struct snd_info_buffer *buffer,
  *
  * Returns the size of output string.
  */
-int snd_iprintf(struct snd_info_buffer *buffer, const char *fmt, ...)
+int snd_iprintf(struct snd_info_buffer *buffer, char *fmt,...)
 {
 	va_list args;
 	int len, res;
@@ -153,6 +154,11 @@ EXPORT_SYMBOL(snd_seq_root);
 struct snd_info_entry *snd_oss_root;
 #endif
 
+static inline void snd_info_entry_prepare(struct proc_dir_entry *de)
+{
+	de->owner = THIS_MODULE;
+}
+
 static void snd_remove_proc_entry(struct proc_dir_entry *parent,
 				  struct proc_dir_entry *de)
 {
@@ -164,44 +170,40 @@ static loff_t snd_info_entry_llseek(struct file *file, loff_t offset, int orig)
 {
 	struct snd_info_private_data *data;
 	struct snd_info_entry *entry;
-	loff_t ret = -EINVAL, size;
+	loff_t ret;
 
 	data = file->private_data;
 	entry = data->entry;
-	mutex_lock(&entry->access);
-	if (entry->content == SNDRV_INFO_CONTENT_DATA &&
-	    entry->c.ops->llseek) {
-		offset = entry->c.ops->llseek(entry,
-					      data->file_private_data,
-					      file, offset, orig);
-		goto out;
-	}
-	if (entry->content == SNDRV_INFO_CONTENT_DATA)
-		size = entry->size;
-	else
-		size = 0;
-	switch (orig) {
-	case SEEK_SET:
-		break;
-	case SEEK_CUR:
-		offset += file->f_pos;
-		break;
-	case SEEK_END:
-		if (!size)
+	lock_kernel();
+	switch (entry->content) {
+	case SNDRV_INFO_CONTENT_TEXT:
+		switch (orig) {
+		case SEEK_SET:
+			file->f_pos = offset;
+			ret = file->f_pos;
 			goto out;
-		offset += size;
+		case SEEK_CUR:
+			file->f_pos += offset;
+			ret = file->f_pos;
+			goto out;
+		case SEEK_END:
+		default:
+			ret = -EINVAL;
+			goto out;
+		}
 		break;
-	default:
-		goto out;
+	case SNDRV_INFO_CONTENT_DATA:
+		if (entry->c.ops->llseek) {
+			ret = entry->c.ops->llseek(entry,
+						    data->file_private_data,
+						    file, offset, orig);
+			goto out;
+		}
+		break;
 	}
-	if (offset < 0)
-		goto out;
-	if (size && offset > size)
-		offset = size;
-	file->f_pos = offset;
-	ret = offset;
- out:
-	mutex_unlock(&entry->access);
+	ret = -ENXIO;
+out:
+	unlock_kernel();
 	return ret;
 }
 
@@ -236,15 +238,10 @@ static ssize_t snd_info_entry_read(struct file *file, char __user *buffer,
 			return -EFAULT;
 		break;
 	case SNDRV_INFO_CONTENT_DATA:
-		if (pos >= entry->size)
-			return 0;
-		if (entry->c.ops->read) {
-			size = entry->size - pos;
-			size = min(count, size);
+		if (entry->c.ops->read)
 			size = entry->c.ops->read(entry,
 						  data->file_private_data,
-						  file, buffer, size, pos);
-		}
+						  file, buffer, count, pos);
 		break;
 	}
 	if ((ssize_t) size > 0)
@@ -291,13 +288,10 @@ static ssize_t snd_info_entry_write(struct file *file, const char __user *buffer
 		size = count;
 		break;
 	case SNDRV_INFO_CONTENT_DATA:
-		if (entry->c.ops->write && count > 0) {
-			size_t maxsize = entry->size - pos;
-			count = min(count, maxsize);
+		if (entry->c.ops->write)
 			size = entry->c.ops->write(entry,
 						   data->file_private_data,
 						   file, buffer, count, pos);
-		}
 		break;
 	}
 	if ((ssize_t) size > 0)
@@ -528,11 +522,32 @@ static const struct file_operations snd_info_entry_operations =
 	.release =		snd_info_entry_release,
 };
 
+/**
+ * snd_create_proc_entry - create a procfs entry
+ * @name: the name of the proc file
+ * @mode: the file permission bits, S_Ixxx
+ * @parent: the parent proc-directory entry
+ *
+ * Creates a new proc file entry with the given name and permission
+ * on the given directory.
+ *
+ * Returns the pointer of new instance or NULL on failure.
+ */
+static struct proc_dir_entry *snd_create_proc_entry(const char *name, mode_t mode,
+						    struct proc_dir_entry *parent)
+{
+	struct proc_dir_entry *p;
+	p = create_proc_entry(name, mode, parent);
+	if (p)
+		snd_info_entry_prepare(p);
+	return p;
+}
+
 int __init snd_info_init(void)
 {
 	struct proc_dir_entry *p;
 
-	p = create_proc_entry("asound", S_IFDIR | S_IRUGO | S_IXUGO, NULL);
+	p = snd_create_proc_entry("asound", S_IFDIR | S_IRUGO | S_IXUGO, NULL);
 	if (p == NULL)
 		return -ENOMEM;
 	snd_proc_root = p;
@@ -738,7 +753,7 @@ EXPORT_SYMBOL(snd_info_get_line);
  * Returns the updated pointer of the original string so that
  * it can be used for the next call.
  */
-const char *snd_info_get_str(char *dest, const char *src, int len)
+char *snd_info_get_str(char *dest, char *src, int len)
 {
 	int c;
 
@@ -959,11 +974,12 @@ int snd_info_register(struct snd_info_entry * entry)
 		return -ENXIO;
 	root = entry->parent == NULL ? snd_proc_root : entry->parent->p;
 	mutex_lock(&info_mutex);
-	p = create_proc_entry(entry->name, entry->mode, root);
+	p = snd_create_proc_entry(entry->name, entry->mode, root);
 	if (!p) {
 		mutex_unlock(&info_mutex);
 		return -ENOMEM;
 	}
+	p->owner = entry->module;
 	if (!S_ISDIR(entry->mode))
 		p->proc_fops = &snd_info_entry_operations;
 	p->size = entry->size;

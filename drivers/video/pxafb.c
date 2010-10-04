@@ -59,6 +59,7 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/div64.h>
+#include <mach/pxa-regs.h>
 #include <mach/bitfield.h>
 #include <mach/pxafb.h>
 
@@ -80,8 +81,7 @@
 static int pxafb_activate_var(struct fb_var_screeninfo *var,
 				struct pxafb_info *);
 static void set_ctrlr_state(struct pxafb_info *fbi, u_int state);
-static void setup_base_frame(struct pxafb_info *fbi,
-                             struct fb_var_screeninfo *var, int branch);
+static void setup_base_frame(struct pxafb_info *fbi, int branch);
 static int setup_frame_dma(struct pxafb_info *fbi, int dma, int pal,
 			   unsigned long offset, size_t size);
 
@@ -398,7 +398,6 @@ static void pxafb_setmode(struct fb_var_screeninfo *var,
 	var->lower_margin	= mode->lower_margin;
 	var->sync		= mode->sync;
 	var->grayscale		= mode->cmap_greyscale;
-	var->transp.length	= mode->transparency;
 
 	/* set the initial RGBA bitfields */
 	pxafb_set_pixfmt(var, mode->depth);
@@ -533,22 +532,12 @@ static int pxafb_pan_display(struct fb_var_screeninfo *var,
 			     struct fb_info *info)
 {
 	struct pxafb_info *fbi = (struct pxafb_info *)info;
-	struct fb_var_screeninfo newvar;
 	int dma = DMA_MAX + DMA_BASE;
 
 	if (fbi->state != C_ENABLE)
 		return 0;
 
-	/* Only take .xoffset, .yoffset and .vmode & FB_VMODE_YWRAP from what
-	 * was passed in and copy the rest from the old screeninfo.
-	 */
-	memcpy(&newvar, &fbi->fb.var, sizeof(newvar));
-	newvar.xoffset = var->xoffset;
-	newvar.yoffset = var->yoffset;
-	newvar.vmode &= ~FB_VMODE_YWRAP;
-	newvar.vmode |= var->vmode & FB_VMODE_YWRAP;
-
-	setup_base_frame(fbi, &newvar, 1);
+	setup_base_frame(fbi, 1);
 
 	if (fbi->lccr0 & LCCR0_SDS)
 		lcd_writel(fbi, FBR1, fbi->fdadr[dma + 1] | 0x1);
@@ -827,10 +816,8 @@ static int overlayfb_map_video_memory(struct pxafb_layer *ofb)
 	ofb->video_mem_phys = virt_to_phys(ofb->video_mem);
 	ofb->video_mem_size = size;
 
-	mutex_lock(&ofb->fb.mm_lock);
 	ofb->fb.fix.smem_start	= ofb->video_mem_phys;
 	ofb->fb.fix.smem_len	= ofb->fb.fix.line_length * var->yres_virtual;
-	mutex_unlock(&ofb->fb.mm_lock);
 	ofb->fb.screen_base	= ofb->video_mem;
 	return 0;
 }
@@ -896,20 +883,9 @@ static void __devinit init_pxafb_overlay(struct pxafb_info *fbi,
 	init_completion(&ofb->branch_done);
 }
 
-static inline int pxafb_overlay_supported(void)
-{
-	if (cpu_is_pxa27x() || cpu_is_pxa3xx())
-		return 1;
-
-	return 0;
-}
-
 static int __devinit pxafb_overlay_init(struct pxafb_info *fbi)
 {
 	int i, ret;
-
-	if (!pxafb_overlay_supported())
-		return 0;
 
 	for (i = 0; i < 2; i++) {
 		init_pxafb_overlay(fbi, &fbi->overlay[i], i);
@@ -932,9 +908,6 @@ static int __devinit pxafb_overlay_init(struct pxafb_info *fbi)
 static void __devexit pxafb_overlay_exit(struct pxafb_info *fbi)
 {
 	int i;
-
-	if (!pxafb_overlay_supported())
-		return;
 
 	for (i = 0; i < 2; i++)
 		unregister_framebuffer(&fbi->overlay[i].fb);
@@ -1064,10 +1037,9 @@ static int setup_frame_dma(struct pxafb_info *fbi, int dma, int pal,
 	return 0;
 }
 
-static void setup_base_frame(struct pxafb_info *fbi,
-                             struct fb_var_screeninfo *var,
-                             int branch)
+static void setup_base_frame(struct pxafb_info *fbi, int branch)
 {
+	struct fb_var_screeninfo *var = &fbi->fb.var;
 	struct fb_fix_screeninfo *fix = &fbi->fb.fix;
 	int nbytes, dma, pal, bpp = var->bits_per_pixel;
 	unsigned long offset;
@@ -1223,12 +1195,11 @@ static int pxafb_smart_thread(void *arg)
 	struct pxafb_info *fbi = arg;
 	struct pxafb_mach_info *inf = fbi->dev->platform_data;
 
-	if (!inf->smart_update) {
+	if (!fbi || !inf->smart_update) {
 		pr_err("%s: not properly initialized, thread terminated\n",
 				__func__);
 		return -EINVAL;
 	}
-	inf = fbi->dev->platform_data;
 
 	pr_debug("%s(): task starting\n", __func__);
 
@@ -1346,7 +1317,7 @@ static int pxafb_activate_var(struct fb_var_screeninfo *var,
 #endif
 		setup_parallel_timing(fbi, var);
 
-	setup_base_frame(fbi, var, 0);
+	setup_base_frame(fbi, 0);
 
 	fbi->reg_lccr0 = fbi->lccr0 |
 		(LCCR0_LDM | LCCR0_SFM | LCCR0_IUM | LCCR0_EFM |
@@ -1455,7 +1426,7 @@ static void pxafb_disable_controller(struct pxafb_info *fbi)
 static irqreturn_t pxafb_handle_irq(int irq, void *dev_id)
 {
 	struct pxafb_info *fbi = dev_id;
-	unsigned int lccr0, lcsr;
+	unsigned int lccr0, lcsr, lcsr1;
 
 	lcsr = lcd_readl(fbi, LCSR);
 	if (lcsr & LCSR_LDD) {
@@ -1471,16 +1442,14 @@ static irqreturn_t pxafb_handle_irq(int irq, void *dev_id)
 	lcd_writel(fbi, LCSR, lcsr);
 
 #ifdef CONFIG_FB_PXA_OVERLAY
-	{
-		unsigned int lcsr1 = lcd_readl(fbi, LCSR1);
-		if (lcsr1 & LCSR1_BS(1))
-			complete(&fbi->overlay[0].branch_done);
+	lcsr1 = lcd_readl(fbi, LCSR1);
+	if (lcsr1 & LCSR1_BS(1))
+		complete(&fbi->overlay[0].branch_done);
 
-		if (lcsr1 & LCSR1_BS(2))
-			complete(&fbi->overlay[1].branch_done);
+	if (lcsr1 & LCSR1_BS(2))
+		complete(&fbi->overlay[1].branch_done);
 
-		lcd_writel(fbi, LCSR1, lcsr1);
-	}
+	lcd_writel(fbi, LCSR1, lcsr1);
 #endif
 	return IRQ_HANDLED;
 }
@@ -1652,26 +1621,24 @@ pxafb_freq_policy(struct notifier_block *nb, unsigned long val, void *data)
  * Power management hooks.  Note that we won't be called from IRQ context,
  * unlike the blank functions above, so we may sleep.
  */
-static int pxafb_suspend(struct device *dev)
+static int pxafb_suspend(struct platform_device *dev, pm_message_t state)
 {
-	struct pxafb_info *fbi = dev_get_drvdata(dev);
+	struct pxafb_info *fbi = platform_get_drvdata(dev);
 
 	set_ctrlr_state(fbi, C_DISABLE_PM);
 	return 0;
 }
 
-static int pxafb_resume(struct device *dev)
+static int pxafb_resume(struct platform_device *dev)
 {
-	struct pxafb_info *fbi = dev_get_drvdata(dev);
+	struct pxafb_info *fbi = platform_get_drvdata(dev);
 
 	set_ctrlr_state(fbi, C_ENABLE_PM);
 	return 0;
 }
-
-static const struct dev_pm_ops pxafb_pm_ops = {
-	.suspend	= pxafb_suspend,
-	.resume		= pxafb_resume,
-};
+#else
+#define pxafb_suspend	NULL
+#define pxafb_resume	NULL
 #endif
 
 static int __devinit pxafb_init_video_memory(struct pxafb_info *fbi)
@@ -2097,9 +2064,6 @@ static int __devinit pxafb_probe(struct platform_device *dev)
 		goto failed;
 	}
 
-	if (cpu_is_pxa3xx() && inf->acceleration_enabled)
-		fbi->fb.fix.accel = FB_ACCEL_PXA3XX;
-
 	fbi->backlight_power = inf->pxafb_backlight_power;
 	fbi->lcd_power = inf->pxafb_lcd_power;
 
@@ -2110,14 +2074,14 @@ static int __devinit pxafb_probe(struct platform_device *dev)
 		goto failed_fbi;
 	}
 
-	r = request_mem_region(r->start, resource_size(r), dev->name);
+	r = request_mem_region(r->start, r->end - r->start + 1, dev->name);
 	if (r == NULL) {
 		dev_err(&dev->dev, "failed to request I/O memory\n");
 		ret = -EBUSY;
 		goto failed_fbi;
 	}
 
-	fbi->mmio_base = ioremap(r->start, resource_size(r));
+	fbi->mmio_base = ioremap(r->start, r->end - r->start + 1);
 	if (fbi->mmio_base == NULL) {
 		dev_err(&dev->dev, "failed to map I/O memory\n");
 		ret = -EBUSY;
@@ -2216,7 +2180,7 @@ failed_free_dma:
 failed_free_io:
 	iounmap(fbi->mmio_base);
 failed_free_res:
-	release_mem_region(r->start, resource_size(r));
+	release_mem_region(r->start, r->end - r->start + 1);
 failed_fbi:
 	clk_put(fbi->clk);
 	platform_set_drvdata(dev, NULL);
@@ -2256,7 +2220,7 @@ static int __devexit pxafb_remove(struct platform_device *dev)
 	iounmap(fbi->mmio_base);
 
 	r = platform_get_resource(dev, IORESOURCE_MEM, 0);
-	release_mem_region(r->start, resource_size(r));
+	release_mem_region(r->start, r->end - r->start + 1);
 
 	clk_put(fbi->clk);
 	kfree(fbi);
@@ -2267,12 +2231,11 @@ static int __devexit pxafb_remove(struct platform_device *dev)
 static struct platform_driver pxafb_driver = {
 	.probe		= pxafb_probe,
 	.remove 	= __devexit_p(pxafb_remove),
+	.suspend	= pxafb_suspend,
+	.resume		= pxafb_resume,
 	.driver		= {
 		.owner	= THIS_MODULE,
 		.name	= "pxa2xx-fb",
-#ifdef CONFIG_PM
-		.pm	= &pxafb_pm_ops,
-#endif
 	},
 };
 

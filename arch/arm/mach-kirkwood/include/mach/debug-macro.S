@@ -6,9 +6,9 @@
  * published by the Free Software Foundation.
 */
 
-#include <mach/bridge-regs.h>
+#include <mach/kirkwood.h>
 
-	.macro	addruart, rx, tmp
+	.macro	addruart,rx
 	mrc	p15, 0, \rx, c1, c0
 	tst	\rx, #1					@ MMU enabled?
 	ldreq	\rx, =KIRKWOOD_REGS_PHYS_BASE

@@ -12,7 +12,6 @@
 #include <linux/bitops.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
-#include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>

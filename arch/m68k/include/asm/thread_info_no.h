@@ -12,6 +12,8 @@
 
 #ifdef __KERNEL__
 
+#ifndef __ASSEMBLY__
+
 /*
  * Size of kernel stack for each process. This must be a power of 2...
  */
@@ -26,8 +28,6 @@
  */
 #define THREAD_SIZE (PAGE_SIZE<<THREAD_SIZE_ORDER)
 
-#ifndef __ASSEMBLY__
-
 /*
  * low level task data.
  */
@@ -37,7 +37,6 @@ struct thread_info {
 	unsigned long	   flags;		/* low level flags */
 	int		   cpu;			/* cpu we're on */
 	int		   preempt_count;	/* 0 => preemptable, <0 => BUG */
-	unsigned long	   tp_value;		/* thread pointer */
 	struct restart_block restart_block;
 };
 
@@ -50,7 +49,6 @@ struct thread_info {
 	.exec_domain	= &default_exec_domain,	\
 	.flags		= 0,			\
 	.cpu		= 0,			\
-	.preempt_count	= INIT_PREEMPT_COUNT,	\
 	.restart_block	= {			\
 		.fn = do_no_restart_syscall,	\
 	},					\
@@ -85,7 +83,7 @@ static inline struct thread_info *current_thread_info(void)
 #define TIF_NEED_RESCHED	2	/* rescheduling necessary */
 #define TIF_POLLING_NRFLAG	3	/* true if poll_idle() is polling
 					   TIF_NEED_RESCHED */
-#define TIF_MEMDIE		4	/* is terminating due to OOM killer */
+#define TIF_MEMDIE		4
 #define TIF_FREEZE		16	/* is freezing for suspend */
 
 /* as above, but as bit values */

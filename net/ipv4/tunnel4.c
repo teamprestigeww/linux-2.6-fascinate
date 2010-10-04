@@ -8,7 +8,6 @@
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
-#include <linux/slab.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/protocol.h>
@@ -48,6 +47,7 @@ err:
 
 	return ret;
 }
+
 EXPORT_SYMBOL(xfrm4_tunnel_register);
 
 int xfrm4_tunnel_deregister(struct xfrm_tunnel *handler, unsigned short family)
@@ -71,6 +71,7 @@ int xfrm4_tunnel_deregister(struct xfrm_tunnel *handler, unsigned short family)
 
 	return ret;
 }
+
 EXPORT_SYMBOL(xfrm4_tunnel_deregister);
 
 static int tunnel4_rcv(struct sk_buff *skb)
@@ -131,7 +132,7 @@ static void tunnel64_err(struct sk_buff *skb, u32 info)
 }
 #endif
 
-static const struct net_protocol tunnel4_protocol = {
+static struct net_protocol tunnel4_protocol = {
 	.handler	=	tunnel4_rcv,
 	.err_handler	=	tunnel4_err,
 	.no_policy	=	1,
@@ -139,7 +140,7 @@ static const struct net_protocol tunnel4_protocol = {
 };
 
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
-static const struct net_protocol tunnel64_protocol = {
+static struct net_protocol tunnel64_protocol = {
 	.handler	=	tunnel64_rcv,
 	.err_handler	=	tunnel64_err,
 	.no_policy	=	1,

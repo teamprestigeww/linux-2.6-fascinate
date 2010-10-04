@@ -3,6 +3,7 @@
 #
 # header-y  - list files to be installed. They are preprocessed
 #             to remove __KERNEL__ section of the file
+# unifdef-y - Same as header-y. Obsolete
 # objhdr-y  - Same as header-y but for generated files
 #
 # ==========================================================================
@@ -13,13 +14,11 @@ _dst := $(if $(dst),$(dst),$(obj))
 kbuild-file := $(srctree)/$(obj)/Kbuild
 include $(kbuild-file)
 
-_dst := $(if $(destination-y),$(destination-y),$(_dst))
-
 include scripts/Kbuild.include
 
 install       := $(INSTALL_HDR_PATH)/$(_dst)
 
-header-y      := $(sort $(header-y))
+header-y      := $(sort $(header-y) $(unifdef-y))
 subdirs       := $(patsubst %/,%,$(filter %/, $(header-y)))
 header-y      := $(filter-out %/, $(header-y))
 
@@ -53,12 +52,8 @@ quiet_cmd_remove = REMOVE  $(unwanted)
       cmd_remove = rm -f $(unwanted-file)
 
 quiet_cmd_check = CHECK   $(printdir) ($(words $(all-files)) files)
-# Headers list can be pretty long, xargs helps to avoid
-# the "Argument list too long" error.
-      cmd_check = for f in $(all-files); do                          \
-                  echo "$(install)/$${f}"; done                      \
-                  | xargs                                            \
-                  $(PERL) $< $(INSTALL_HDR_PATH)/include $(SRCARCH); \
+      cmd_check = $(PERL) $< $(INSTALL_HDR_PATH)/include $(SRCARCH) \
+                  $(addprefix $(install)/, $(all-files));           \
 	          touch $@
 
 PHONY += __headersinst __headerscheck

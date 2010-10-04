@@ -2,7 +2,6 @@
  * JFFS2 -- Journalling Flash File System, Version 2.
  *
  * Copyright © 2001-2007 Red Hat, Inc.
- * Copyright © 2004-2010 David Woodhouse <dwmw2@infradead.org>
  *
  * Created by David Woodhouse <dwmw2@infradead.org>
  *
@@ -21,7 +20,6 @@
 #include <linux/vmalloc.h>
 #include <linux/vfs.h>
 #include <linux/crc32.h>
-#include <linux/smp_lock.h>
 #include "nodelist.h"
 
 static int jffs2_flash_setup(struct jffs2_sb_info *c);
@@ -170,13 +168,13 @@ int jffs2_do_setattr (struct inode *inode, struct iattr *iattr)
 	mutex_unlock(&f->sem);
 	jffs2_complete_reservation(c);
 
-	/* We have to do the truncate_setsize() without f->sem held, since
+	/* We have to do the vmtruncate() without f->sem held, since
 	   some pages may be locked and waiting for it in readpage().
 	   We are protected from a simultaneous write() extending i_size
 	   back past iattr->ia_size, because do_truncate() holds the
 	   generic inode semaphore. */
 	if (ivalid & ATTR_SIZE && inode->i_size > iattr->ia_size) {
-		truncate_setsize(inode, iattr->ia_size);
+		vmtruncate(inode, iattr->ia_size);	
 		inode->i_blocks = (inode->i_size + 511) >> 9;
 	}	
 
@@ -226,7 +224,7 @@ int jffs2_statfs(struct dentry *dentry, struct kstatfs *buf)
 }
 
 
-void jffs2_evict_inode (struct inode *inode)
+void jffs2_clear_inode (struct inode *inode)
 {
 	/* We can forget about this inode for now - drop all
 	 *  the nodelists associated with it, etc.
@@ -234,9 +232,7 @@ void jffs2_evict_inode (struct inode *inode)
 	struct jffs2_sb_info *c = JFFS2_SB_INFO(inode->i_sb);
 	struct jffs2_inode_info *f = JFFS2_INODE_INFO(inode);
 
-	D1(printk(KERN_DEBUG "jffs2_evict_inode(): ino #%lu mode %o\n", inode->i_ino, inode->i_mode));
-	truncate_inode_pages(&inode->i_data, 0);
-	end_writeback(inode);
+	D1(printk(KERN_DEBUG "jffs2_clear_inode(): ino #%lu mode %o\n", inode->i_ino, inode->i_mode));
 	jffs2_do_clear_inode(c, f);
 }
 
@@ -316,8 +312,8 @@ struct inode *jffs2_iget(struct super_block *sb, unsigned long ino)
 	case S_IFBLK:
 	case S_IFCHR:
 		/* Read the device numbers from the media */
-		if (f->metadata->size != sizeof(jdev.old_id) &&
-		    f->metadata->size != sizeof(jdev.new_id)) {
+		if (f->metadata->size != sizeof(jdev.old) &&
+		    f->metadata->size != sizeof(jdev.new)) {
 			printk(KERN_NOTICE "Device node has strange size %d\n", f->metadata->size);
 			goto error_io;
 		}
@@ -328,10 +324,10 @@ struct inode *jffs2_iget(struct super_block *sb, unsigned long ino)
 			printk(KERN_NOTICE "Read device numbers for inode %lu failed\n", (unsigned long)inode->i_ino);
 			goto error;
 		}
-		if (f->metadata->size == sizeof(jdev.old_id))
-			rdev = old_decode_dev(je16_to_cpu(jdev.old_id));
+		if (f->metadata->size == sizeof(jdev.old))
+			rdev = old_decode_dev(je16_to_cpu(jdev.old));
 		else
-			rdev = new_decode_dev(je32_to_cpu(jdev.new_id));
+			rdev = new_decode_dev(je32_to_cpu(jdev.new));
 
 	case S_IFSOCK:
 	case S_IFIFO:
@@ -391,7 +387,6 @@ int jffs2_remount_fs (struct super_block *sb, int *flags, char *data)
 	   This also catches the case where it was stopped and this
 	   is just a remount to restart it.
 	   Flush the writebuffer, if neccecary, else we loose it */
-	lock_kernel();
 	if (!(sb->s_flags & MS_RDONLY)) {
 		jffs2_stop_garbage_collect_thread(c);
 		mutex_lock(&c->alloc_sem);
@@ -404,9 +399,23 @@ int jffs2_remount_fs (struct super_block *sb, int *flags, char *data)
 
 	*flags |= MS_NOATIME;
 
-	unlock_kernel();
 	return 0;
 }
+
+void jffs2_write_super (struct super_block *sb)
+{
+	struct jffs2_sb_info *c = JFFS2_SB_INFO(sb);
+	sb->s_dirt = 0;
+
+	if (sb->s_flags & MS_RDONLY)
+		return;
+
+	D1(printk(KERN_DEBUG "jffs2_write_super()\n"));
+	jffs2_garbage_collect_trigger(c);
+	jffs2_erase_pending_blocks(c, 0);
+	jffs2_flush_wbuf_gc(c, 0);
+}
+
 
 /* jffs2_new_inode: allocate a new inode and inocache, add it to the hash,
    fill in the raw_inode while you're at it. */
@@ -468,12 +477,7 @@ struct inode *jffs2_new_inode (struct inode *dir_i, int mode, struct jffs2_raw_i
 	inode->i_blocks = 0;
 	inode->i_size = 0;
 
-	if (insert_inode_locked(inode) < 0) {
-		make_bad_inode(inode);
-		unlock_new_inode(inode);
-		iput(inode);
-		return ERR_PTR(-EINVAL);
-	}
+	insert_inode_hash(inode);
 
 	return inode;
 }

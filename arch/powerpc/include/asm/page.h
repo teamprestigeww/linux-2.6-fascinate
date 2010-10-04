@@ -19,14 +19,12 @@
 #include <asm/kdump.h>
 
 /*
- * On regular PPC32 page size is 4K (but we support 4K/16K/64K/256K pages
+ * On regular PPC32 page size is 4K (but we support 4K/16K/64K pages
  * on PPC44x). For PPC64 we support either 4K or 64K software
  * page size. When using 64K pages however, whether we are really supporting
  * 64K pages in HW or not is irrelevant to those definitions.
  */
-#if defined(CONFIG_PPC_256K_PAGES)
-#define PAGE_SHIFT		18
-#elif defined(CONFIG_PPC_64K_PAGES)
+#if defined(CONFIG_PPC_64K_PAGES)
 #define PAGE_SHIFT		16
 #elif defined(CONFIG_PPC_16K_PAGES)
 #define PAGE_SHIFT		14
@@ -108,21 +106,8 @@ extern phys_addr_t kernstart_addr;
 #define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
 #define virt_addr_valid(kaddr)	pfn_valid(__pa(kaddr) >> PAGE_SHIFT)
 
-/*
- * On Book-E parts we need __va to parse the device tree and we can't
- * determine MEMORY_START until then.  However we can determine PHYSICAL_START
- * from information at hand (program counter, TLB lookup).
- *
- * On non-Book-E PPC64 PAGE_OFFSET and MEMORY_START are constants so use
- * the other definitions for __va & __pa.
- */
-#ifdef CONFIG_BOOKE
-#define __va(x) ((void *)(unsigned long)((phys_addr_t)(x) - PHYSICAL_START + KERNELBASE))
-#define __pa(x) ((unsigned long)(x) + PHYSICAL_START - KERNELBASE)
-#else
-#define __va(x) ((void *)(unsigned long)((phys_addr_t)(x) + PAGE_OFFSET - MEMORY_START))
+#define __va(x) ((void *)((unsigned long)(x) + PAGE_OFFSET - MEMORY_START))
 #define __pa(x) ((unsigned long)(x) - PAGE_OFFSET + MEMORY_START)
-#endif
 
 /*
  * Unfortunately the PLT is in the BSS in the PPC32 ELF ABI,
@@ -152,11 +137,7 @@ extern phys_addr_t kernstart_addr;
  * Don't compare things with KERNELBASE or PAGE_OFFSET to test for
  * "kernelness", use is_kernel_addr() - it should do what you want.
  */
-#ifdef CONFIG_PPC_BOOK3E_64
-#define is_kernel_addr(x)	((x) >= 0x8000000000000000ul)
-#else
 #define is_kernel_addr(x)	((x) >= PAGE_OFFSET)
-#endif
 
 #ifndef __ASSEMBLY__
 
@@ -242,30 +223,11 @@ typedef unsigned long pgprot_t;
 
 #endif
 
-typedef struct { signed long pd; } hugepd_t;
-#define HUGEPD_SHIFT_MASK     0x3f
-
-#ifdef CONFIG_HUGETLB_PAGE
-static inline int hugepd_ok(hugepd_t hpd)
-{
-	return (hpd.pd > 0);
-}
-
-#define is_hugepd(pdep)               (hugepd_ok(*((hugepd_t *)(pdep))))
-#else /* CONFIG_HUGETLB_PAGE */
-#define is_hugepd(pdep)			0
-#endif /* CONFIG_HUGETLB_PAGE */
-
 struct page;
 extern void clear_user_page(void *page, unsigned long vaddr, struct page *pg);
 extern void copy_user_page(void *to, void *from, unsigned long vaddr,
 		struct page *p);
 extern int page_is_ram(unsigned long pfn);
-
-#ifdef CONFIG_PPC_SMLPAR
-void arch_free_page(struct page *page, int order);
-#define HAVE_ARCH_FREE_PAGE
-#endif
 
 struct vm_area_struct;
 

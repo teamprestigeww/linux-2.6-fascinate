@@ -125,7 +125,7 @@ struct e100_serial {
 	int errorcode;
 
 #ifdef CONFIG_ETRAX_RS485
-	struct serial_rs485	rs485;  /* RS-485 support */
+	struct rs485_control	rs485;  /* RS-485 support */
 #endif
 };
 

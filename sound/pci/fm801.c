@@ -55,7 +55,7 @@ static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card *
  *    1 = MediaForte 256-PCS
  *    2 = MediaForte 256-PCPR
  *    3 = MediaForte 64-PCR
- *   16 = setup tuner only (this is additional bit), i.e. SF64-PCR FM card
+ *   16 = setup tuner only (this is additional bit), i.e. SF-64-PCR FM card
  *  High 16-bits are video (radio) device number + 1
  */
 static int tea575x_tuner[SNDRV_CARDS];
@@ -67,10 +67,7 @@ MODULE_PARM_DESC(id, "ID string for the FM801 soundcard.");
 module_param_array(enable, bool, NULL, 0444);
 MODULE_PARM_DESC(enable, "Enable FM801 soundcard.");
 module_param_array(tea575x_tuner, int, NULL, 0444);
-MODULE_PARM_DESC(tea575x_tuner, "TEA575x tuner access method (1 = SF256-PCS, 2=SF256-PCPR, 3=SF64-PCR, +16=tuner-only).");
-
-#define TUNER_ONLY		(1<<4)
-#define TUNER_TYPE_MASK		(~TUNER_ONLY & 0xFFFF)
+MODULE_PARM_DESC(tea575x_tuner, "Enable TEA575x tuner.");
 
 /*
  *  Direct registers
@@ -163,7 +160,7 @@ struct fm801 {
 	unsigned int multichannel: 1,	/* multichannel support */
 		     secondary: 1;	/* secondary codec */
 	unsigned char secondary_addr;	/* address of the secondary codec */
-	unsigned int tea575x_tuner;	/* tuner access method & flags */
+	unsigned int tea575x_tuner;	/* tuner flags */
 
 	unsigned short ply_ctrl; /* playback control */
 	unsigned short cap_ctrl; /* capture control */
@@ -205,7 +202,7 @@ struct fm801 {
 #endif
 };
 
-static DEFINE_PCI_DEVICE_TABLE(snd_fm801_ids) = {
+static struct pci_device_id snd_fm801_ids[] = {
 	{ 0x1319, 0x0801, PCI_ANY_ID, PCI_ANY_ID, PCI_CLASS_MULTIMEDIA_AUDIO << 8, 0xffff00, 0, },   /* FM801 */
 	{ 0x5213, 0x0510, PCI_ANY_ID, PCI_ANY_ID, PCI_CLASS_MULTIMEDIA_AUDIO << 8, 0xffff00, 0, },   /* Gallant Odyssey Sound 4 */
 	{ 0, }
@@ -1290,7 +1287,7 @@ static int snd_fm801_chip_init(struct fm801 *chip, int resume)
 {
 	unsigned short cmdw;
 
-	if (chip->tea575x_tuner & TUNER_ONLY)
+	if (chip->tea575x_tuner & 0x0010)
 		goto __ac97_ok;
 
 	/* codec cold reset + AC'97 warm reset */
@@ -1299,13 +1296,11 @@ static int snd_fm801_chip_init(struct fm801 *chip, int resume)
 	udelay(100);
 	outw(0, FM801_REG(chip, CODEC_CTRL));
 
-	if (wait_for_codec(chip, 0, AC97_RESET, msecs_to_jiffies(750)) < 0)
-		if (!resume) {
-			snd_printk(KERN_INFO "Primary AC'97 codec not found, "
-					    "assume SF64-PCR (tuner-only)\n");
-			chip->tea575x_tuner = 3 | TUNER_ONLY;
-			goto __ac97_ok;
-		}
+	if (wait_for_codec(chip, 0, AC97_RESET, msecs_to_jiffies(750)) < 0) {
+		snd_printk(KERN_ERR "Primary AC'97 codec not found\n");
+		if (! resume)
+			return -EIO;
+	}
 
 	if (chip->multichannel) {
 		if (chip->secondary_addr) {
@@ -1419,7 +1414,7 @@ static int __devinit snd_fm801_create(struct snd_card *card,
 		return err;
 	}
 	chip->port = pci_resource_start(pci, 0);
-	if ((tea575x_tuner & TUNER_ONLY) == 0) {
+	if ((tea575x_tuner & 0x0010) == 0) {
 		if (request_irq(pci->irq, snd_fm801_interrupt, IRQF_SHARED,
 				"FM801", chip)) {
 			snd_printk(KERN_ERR "unable to grab IRQ %d\n", chip->irq);
@@ -1434,14 +1429,6 @@ static int __devinit snd_fm801_create(struct snd_card *card,
 		chip->multichannel = 1;
 
 	snd_fm801_chip_init(chip, 0);
-	/* init might set tuner access method */
-	tea575x_tuner = chip->tea575x_tuner;
-
-	if (chip->irq >= 0 && (tea575x_tuner & TUNER_ONLY)) {
-		pci_clear_master(pci);
-		free_irq(chip->irq, chip);
-		chip->irq = -1;
-	}
 
 	if ((err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops)) < 0) {
 		snd_fm801_free(chip);
@@ -1451,13 +1438,12 @@ static int __devinit snd_fm801_create(struct snd_card *card,
 	snd_card_set_dev(card, &pci->dev);
 
 #ifdef TEA575X_RADIO
-	if ((tea575x_tuner & TUNER_TYPE_MASK) > 0 &&
-	    (tea575x_tuner & TUNER_TYPE_MASK) < 4) {
+	if (tea575x_tuner > 0 && (tea575x_tuner & 0x000f) < 4) {
 		chip->tea.dev_nr = tea575x_tuner >> 16;
 		chip->tea.card = card;
 		chip->tea.freq_fixup = 10700;
 		chip->tea.private_data = chip;
-		chip->tea.ops = &snd_fm801_tea_ops[(tea575x_tuner & TUNER_TYPE_MASK) - 1];
+		chip->tea.ops = &snd_fm801_tea_ops[(tea575x_tuner & 0x000f) - 1];
 		snd_tea575x_init(&chip->tea);
 	}
 #endif
@@ -1482,9 +1468,9 @@ static int __devinit snd_card_fm801_probe(struct pci_dev *pci,
 		return -ENOENT;
 	}
 
-	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
-	if (err < 0)
-		return err;
+	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
+	if (card == NULL)
+		return -ENOMEM;
 	if ((err = snd_fm801_create(card, pci, tea575x_tuner[dev], &chip)) < 0) {
 		snd_card_free(card);
 		return err;
@@ -1497,7 +1483,7 @@ static int __devinit snd_card_fm801_probe(struct pci_dev *pci,
 	sprintf(card->longname, "%s at 0x%lx, irq %i",
 		card->shortname, chip->port, chip->irq);
 
-	if (chip->tea575x_tuner & TUNER_ONLY)
+	if (tea575x_tuner[dev] & 0x0010)
 		goto __fm801_tuner_only;
 
 	if ((err = snd_fm801_pcm(chip, 0, NULL)) < 0) {

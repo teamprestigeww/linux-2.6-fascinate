@@ -17,12 +17,6 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-/*
- * CMI8788:
- *
- * SPI 0 -> AK4396
- */
-
 #include <linux/delay.h>
 #include <linux/pci.h>
 #include <sound/control.h>
@@ -48,37 +42,31 @@ MODULE_PARM_DESC(id, "ID string");
 module_param_array(enable, bool, NULL, 0444);
 MODULE_PARM_DESC(enable, "enable card");
 
-static DEFINE_PCI_DEVICE_TABLE(hifier_ids) = {
+static struct pci_device_id hifier_ids[] __devinitdata = {
 	{ OXYGEN_PCI_SUBID(0x14c3, 0x1710) },
 	{ OXYGEN_PCI_SUBID(0x14c3, 0x1711) },
-	{ OXYGEN_PCI_SUBID_BROKEN_EEPROM },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, hifier_ids);
 
 struct hifier_data {
-	u8 ak4396_regs[5];
+	u8 ak4396_ctl2;
 };
 
 static void ak4396_write(struct oxygen *chip, u8 reg, u8 value)
 {
-	struct hifier_data *data = chip->model_data;
-
 	oxygen_write_spi(chip, OXYGEN_SPI_TRIGGER  |
 			 OXYGEN_SPI_DATA_LENGTH_2 |
 			 OXYGEN_SPI_CLOCK_160 |
 			 (0 << OXYGEN_SPI_CODEC_SHIFT) |
 			 OXYGEN_SPI_CEN_LATCH_CLOCK_HI,
 			 AK4396_WRITE | (reg << 8) | value);
-	data->ak4396_regs[reg] = value;
 }
 
-static void ak4396_write_cached(struct oxygen *chip, u8 reg, u8 value)
+static void update_ak4396_volume(struct oxygen *chip)
 {
-	struct hifier_data *data = chip->model_data;
-
-	if (value != data->ak4396_regs[reg])
-		ak4396_write(chip, reg, value);
+	ak4396_write(chip, AK4396_LCH_ATT, chip->dac_volume[0]);
+	ak4396_write(chip, AK4396_RCH_ATT, chip->dac_volume[1]);
 }
 
 static void hifier_registers_init(struct oxygen *chip)
@@ -86,19 +74,16 @@ static void hifier_registers_init(struct oxygen *chip)
 	struct hifier_data *data = chip->model_data;
 
 	ak4396_write(chip, AK4396_CONTROL_1, AK4396_DIF_24_MSB | AK4396_RSTN);
-	ak4396_write(chip, AK4396_CONTROL_2,
-		     data->ak4396_regs[AK4396_CONTROL_2]);
+	ak4396_write(chip, AK4396_CONTROL_2, data->ak4396_ctl2);
 	ak4396_write(chip, AK4396_CONTROL_3, AK4396_PCM);
-	ak4396_write(chip, AK4396_LCH_ATT, chip->dac_volume[0]);
-	ak4396_write(chip, AK4396_RCH_ATT, chip->dac_volume[1]);
+	update_ak4396_volume(chip);
 }
 
 static void hifier_init(struct oxygen *chip)
 {
 	struct hifier_data *data = chip->model_data;
 
-	data->ak4396_regs[AK4396_CONTROL_2] =
-		AK4396_SMUTE | AK4396_DEM_OFF | AK4396_DFS_NORMAL;
+	data->ak4396_ctl2 = AK4396_SMUTE | AK4396_DEM_OFF | AK4396_DFS_NORMAL;
 	hifier_registers_init(chip);
 
 	snd_component_add(chip->card, "AK4396");
@@ -120,29 +105,20 @@ static void set_ak4396_params(struct oxygen *chip,
 	struct hifier_data *data = chip->model_data;
 	u8 value;
 
-	value = data->ak4396_regs[AK4396_CONTROL_2] & ~AK4396_DFS_MASK;
+	value = data->ak4396_ctl2 & ~AK4396_DFS_MASK;
 	if (params_rate(params) <= 54000)
 		value |= AK4396_DFS_NORMAL;
 	else if (params_rate(params) <= 108000)
 		value |= AK4396_DFS_DOUBLE;
 	else
 		value |= AK4396_DFS_QUAD;
+	data->ak4396_ctl2 = value;
 
 	msleep(1); /* wait for the new MCLK to become stable */
 
-	if (value != data->ak4396_regs[AK4396_CONTROL_2]) {
-		ak4396_write(chip, AK4396_CONTROL_1,
-			     AK4396_DIF_24_MSB);
-		ak4396_write(chip, AK4396_CONTROL_2, value);
-		ak4396_write(chip, AK4396_CONTROL_1,
-			     AK4396_DIF_24_MSB | AK4396_RSTN);
-	}
-}
-
-static void update_ak4396_volume(struct oxygen *chip)
-{
-	ak4396_write_cached(chip, AK4396_LCH_ATT, chip->dac_volume[0]);
-	ak4396_write_cached(chip, AK4396_RCH_ATT, chip->dac_volume[1]);
+	ak4396_write(chip, AK4396_CONTROL_1, AK4396_DIF_24_MSB);
+	ak4396_write(chip, AK4396_CONTROL_2, value);
+	ak4396_write(chip, AK4396_CONTROL_1, AK4396_DIF_24_MSB | AK4396_RSTN);
 }
 
 static void update_ak4396_mute(struct oxygen *chip)
@@ -150,10 +126,11 @@ static void update_ak4396_mute(struct oxygen *chip)
 	struct hifier_data *data = chip->model_data;
 	u8 value;
 
-	value = data->ak4396_regs[AK4396_CONTROL_2] & ~AK4396_SMUTE;
+	value = data->ak4396_ctl2 & ~AK4396_SMUTE;
 	if (chip->dac_mute)
 		value |= AK4396_SMUTE;
-	ak4396_write_cached(chip, AK4396_CONTROL_2, value);
+	data->ak4396_ctl2 = value;
+	ak4396_write(chip, AK4396_CONTROL_2, value);
 }
 
 static void set_cs5340_params(struct oxygen *chip,
@@ -163,14 +140,22 @@ static void set_cs5340_params(struct oxygen *chip,
 
 static const DECLARE_TLV_DB_LINEAR(ak4396_db_scale, TLV_DB_GAIN_MUTE, 0);
 
+static int hifier_control_filter(struct snd_kcontrol_new *template)
+{
+	if (!strcmp(template->name, "Stereo Upmixing"))
+		return 1; /* stereo only - we don't need upmixing */
+	return 0;
+}
+
 static const struct oxygen_model model_hifier = {
 	.shortname = "C-Media CMI8787",
 	.longname = "C-Media Oxygen HD Audio",
 	.chip = "CMI8788",
+	.owner = THIS_MODULE,
 	.init = hifier_init,
+	.control_filter = hifier_control_filter,
 	.cleanup = hifier_cleanup,
 	.resume = hifier_resume,
-	.get_i2s_mclk = oxygen_default_i2s_mclk,
 	.set_dac_params = set_ak4396_params,
 	.set_adc_params = set_cs5340_params,
 	.update_dac_volume = update_ak4396_volume,
@@ -188,13 +173,6 @@ static const struct oxygen_model model_hifier = {
 	.adc_i2s_format = OXYGEN_I2S_FORMAT_LJUST,
 };
 
-static int __devinit get_hifier_model(struct oxygen *chip,
-				      const struct pci_device_id *id)
-{
-	chip->model = model_hifier;
-	return 0;
-}
-
 static int __devinit hifier_probe(struct pci_dev *pci,
 				  const struct pci_device_id *pci_id)
 {
@@ -207,8 +185,7 @@ static int __devinit hifier_probe(struct pci_dev *pci,
 		++dev;
 		return -ENOENT;
 	}
-	err = oxygen_pci_probe(pci, index[dev], id[dev], THIS_MODULE,
-			       hifier_ids, get_hifier_model);
+	err = oxygen_pci_probe(pci, index[dev], id[dev], &model_hifier, 0);
 	if (err >= 0)
 		++dev;
 	return err;

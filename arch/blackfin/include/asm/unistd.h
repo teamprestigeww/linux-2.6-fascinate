@@ -1,9 +1,3 @@
-/*
- * Copyright 2004-2009 Analog Devices Inc.
- *
- * Licensed under the GPL-2 or later.
- */
-
 #ifndef __ASM_BFIN_UNISTD_H
 #define __ASM_BFIN_UNISTD_H
 /*
@@ -384,16 +378,8 @@
 #define __NR_dup3		363
 #define __NR_pipe2		364
 #define __NR_inotify_init1	365
-#define __NR_preadv		366
-#define __NR_pwritev		367
-#define __NR_rt_tgsigqueueinfo	368
-#define __NR_perf_event_open	369
-#define __NR_recvmmsg		370
-#define __NR_fanotify_init	371
-#define __NR_fanotify_mark	372
-#define __NR_prlimit64		373
 
-#define __NR_syscall		374
+#define __NR_syscall		366
 #define NR_syscalls		__NR_syscall
 
 /* Old optional stuff no one actually uses */

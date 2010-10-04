@@ -14,17 +14,15 @@
 #include <linux/module.h>
 #include <linux/scatterlist.h>
 #include <linux/string.h>
-#include <linux/gfp.h>
 
 #include <asm/cache.h>
 #include <asm/io.h>
 
 #include <dma-coherence.h>
 
-static inline unsigned long dma_addr_to_virt(struct device *dev,
-	dma_addr_t dma_addr)
+static inline unsigned long dma_addr_to_virt(dma_addr_t dma_addr)
 {
-	unsigned long addr = plat_dma_addr_to_phys(dev, dma_addr);
+	unsigned long addr = plat_dma_addr_to_phys(dma_addr);
 
 	return (unsigned long)phys_to_virt(addr);
 }
@@ -91,9 +89,6 @@ void *dma_alloc_coherent(struct device *dev, size_t size,
 {
 	void *ret;
 
-	if (dma_alloc_from_coherent(dev, size, dma_handle, &ret))
-		return ret;
-
 	gfp = massage_gfp_flags(dev, gfp);
 
 	ret = (void *) __get_free_pages(gfp, get_order(size));
@@ -116,7 +111,7 @@ EXPORT_SYMBOL(dma_alloc_coherent);
 void dma_free_noncoherent(struct device *dev, size_t size, void *vaddr,
 	dma_addr_t dma_handle)
 {
-	plat_unmap_dma_mem(dev, dma_handle, size, DMA_BIDIRECTIONAL);
+	plat_unmap_dma_mem(dev, dma_handle);
 	free_pages((unsigned long) vaddr, get_order(size));
 }
 
@@ -126,12 +121,8 @@ void dma_free_coherent(struct device *dev, size_t size, void *vaddr,
 	dma_addr_t dma_handle)
 {
 	unsigned long addr = (unsigned long) vaddr;
-	int order = get_order(size);
 
-	if (dma_release_from_coherent(dev, order, vaddr))
-		return;
-
-	plat_unmap_dma_mem(dev, dma_handle, size, DMA_BIDIRECTIONAL);
+	plat_unmap_dma_mem(dev, dma_handle);
 
 	if (!plat_device_is_coherent(dev))
 		addr = CAC_ADDR(addr);
@@ -179,10 +170,10 @@ void dma_unmap_single(struct device *dev, dma_addr_t dma_addr, size_t size,
 	enum dma_data_direction direction)
 {
 	if (cpu_is_noncoherent_r10000(dev))
-		__dma_sync(dma_addr_to_virt(dev, dma_addr), size,
+		__dma_sync(dma_addr_to_virt(dma_addr), size,
 		           direction);
 
-	plat_unmap_dma_mem(dev, dma_addr, size, direction);
+	plat_unmap_dma_mem(dev, dma_addr);
 }
 
 EXPORT_SYMBOL(dma_unmap_single);
@@ -218,13 +209,30 @@ dma_addr_t dma_map_page(struct device *dev, struct page *page,
 		unsigned long addr;
 
 		addr = (unsigned long) page_address(page) + offset;
-		__dma_sync(addr, size, direction);
+		dma_cache_wback_inv(addr, size);
 	}
 
 	return plat_map_dma_mem_page(dev, page) + offset;
 }
 
 EXPORT_SYMBOL(dma_map_page);
+
+void dma_unmap_page(struct device *dev, dma_addr_t dma_address, size_t size,
+	enum dma_data_direction direction)
+{
+	BUG_ON(direction == DMA_NONE);
+
+	if (!plat_device_is_coherent(dev) && direction != DMA_TO_DEVICE) {
+		unsigned long addr;
+
+		addr = plat_dma_addr_to_phys(dma_address);
+		dma_cache_wback_inv(addr, size);
+	}
+
+	plat_unmap_dma_mem(dev, dma_address);
+}
+
+EXPORT_SYMBOL(dma_unmap_page);
 
 void dma_unmap_sg(struct device *dev, struct scatterlist *sg, int nhwentries,
 	enum dma_data_direction direction)
@@ -241,7 +249,7 @@ void dma_unmap_sg(struct device *dev, struct scatterlist *sg, int nhwentries,
 			if (addr)
 				__dma_sync(addr, sg->length, direction);
 		}
-		plat_unmap_dma_mem(dev, sg->dma_address, sg->length, direction);
+		plat_unmap_dma_mem(dev, sg->dma_address);
 	}
 }
 
@@ -255,7 +263,7 @@ void dma_sync_single_for_cpu(struct device *dev, dma_addr_t dma_handle,
 	if (cpu_is_noncoherent_r10000(dev)) {
 		unsigned long addr;
 
-		addr = dma_addr_to_virt(dev, dma_handle);
+		addr = dma_addr_to_virt(dma_handle);
 		__dma_sync(addr, size, direction);
 	}
 }
@@ -271,7 +279,7 @@ void dma_sync_single_for_device(struct device *dev, dma_addr_t dma_handle,
 	if (!plat_device_is_coherent(dev)) {
 		unsigned long addr;
 
-		addr = dma_addr_to_virt(dev, dma_handle);
+		addr = dma_addr_to_virt(dma_handle);
 		__dma_sync(addr, size, direction);
 	}
 }
@@ -286,7 +294,7 @@ void dma_sync_single_range_for_cpu(struct device *dev, dma_addr_t dma_handle,
 	if (cpu_is_noncoherent_r10000(dev)) {
 		unsigned long addr;
 
-		addr = dma_addr_to_virt(dev, dma_handle);
+		addr = dma_addr_to_virt(dma_handle);
 		__dma_sync(addr + offset, size, direction);
 	}
 }
@@ -302,7 +310,7 @@ void dma_sync_single_range_for_device(struct device *dev, dma_addr_t dma_handle,
 	if (!plat_device_is_coherent(dev)) {
 		unsigned long addr;
 
-		addr = dma_addr_to_virt(dev, dma_handle);
+		addr = dma_addr_to_virt(dma_handle);
 		__dma_sync(addr + offset, size, direction);
 	}
 }
@@ -356,6 +364,13 @@ int dma_supported(struct device *dev, u64 mask)
 }
 
 EXPORT_SYMBOL(dma_supported);
+
+int dma_is_consistent(struct device *dev, dma_addr_t dma_addr)
+{
+	return plat_device_is_coherent(dev);
+}
+
+EXPORT_SYMBOL(dma_is_consistent);
 
 void dma_cache_sync(struct device *dev, void *vaddr, size_t size,
 	       enum dma_data_direction direction)

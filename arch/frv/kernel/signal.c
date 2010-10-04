@@ -21,7 +21,6 @@
 #include <linux/unistd.h>
 #include <linux/personality.h>
 #include <linux/freezer.h>
-#include <linux/tracehook.h>
 #include <asm/ucontext.h>
 #include <asm/uaccess.h>
 #include <asm/cacheflush.h>
@@ -120,9 +119,6 @@ static int restore_sigcontext(struct sigcontext __user *sc, int *_gr8)
 {
 	struct user_context *user = current->thread.user;
 	unsigned long tbr, psr;
-
-	/* Always make any pending restarted system calls return -EINTR */
-	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	tbr = user->i.tbr;
 	psr = user->i.psr;
@@ -253,8 +249,6 @@ static int setup_frame(int sig, struct k_sigaction *ka, sigset_t *set)
 	struct sigframe __user *frame;
 	int rsig;
 
-	set_fs(USER_DS);
-
 	frame = get_sigframe(ka, sizeof(*frame));
 
 	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
@@ -298,23 +292,22 @@ static int setup_frame(int sig, struct k_sigaction *ka, sigset_t *set)
 				   (unsigned long) (frame->retcode + 2));
 	}
 
-	/* Set up registers for the signal handler */
+	/* set up registers for signal handler */
+	__frame->sp   = (unsigned long) frame;
+	__frame->lr   = (unsigned long) &frame->retcode;
+	__frame->gr8  = sig;
+
 	if (current->personality & FDPIC_FUNCPTRS) {
 		struct fdpic_func_descriptor __user *funcptr =
 			(struct fdpic_func_descriptor __user *) ka->sa.sa_handler;
-		struct fdpic_func_descriptor desc;
-		if (copy_from_user(&desc, funcptr, sizeof(desc)))
-			goto give_sigsegv;
-		__frame->pc = desc.text;
-		__frame->gr15 = desc.GOT;
+		__get_user(__frame->pc, &funcptr->text);
+		__get_user(__frame->gr15, &funcptr->GOT);
 	} else {
 		__frame->pc   = (unsigned long) ka->sa.sa_handler;
 		__frame->gr15 = 0;
 	}
 
-	__frame->sp   = (unsigned long) frame;
-	__frame->lr   = (unsigned long) &frame->retcode;
-	__frame->gr8  = sig;
+	set_fs(USER_DS);
 
 	/* the tracer may want to single-step inside the handler */
 	if (test_thread_flag(TIF_SINGLESTEP))
@@ -329,7 +322,7 @@ static int setup_frame(int sig, struct k_sigaction *ka, sigset_t *set)
 	return 0;
 
 give_sigsegv:
-	force_sigsegv(sig, current);
+	force_sig(SIGSEGV, current);
 	return -EFAULT;
 
 } /* end setup_frame() */
@@ -343,8 +336,6 @@ static int setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 {
 	struct rt_sigframe __user *frame;
 	int rsig;
-
-	set_fs(USER_DS);
 
 	frame = get_sigframe(ka, sizeof(*frame));
 
@@ -400,23 +391,22 @@ static int setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 	}
 
 	/* Set up registers for signal handler */
+	__frame->sp  = (unsigned long) frame;
+	__frame->lr   = (unsigned long) &frame->retcode;
+	__frame->gr8 = sig;
+	__frame->gr9 = (unsigned long) &frame->info;
+
 	if (current->personality & FDPIC_FUNCPTRS) {
 		struct fdpic_func_descriptor __user *funcptr =
 			(struct fdpic_func_descriptor __user *) ka->sa.sa_handler;
-		struct fdpic_func_descriptor desc;
-		if (copy_from_user(&desc, funcptr, sizeof(desc)))
-			goto give_sigsegv;
-		__frame->pc = desc.text;
-		__frame->gr15 = desc.GOT;
+		__get_user(__frame->pc, &funcptr->text);
+		__get_user(__frame->gr15, &funcptr->GOT);
 	} else {
 		__frame->pc   = (unsigned long) ka->sa.sa_handler;
 		__frame->gr15 = 0;
 	}
 
-	__frame->sp  = (unsigned long) frame;
-	__frame->lr  = (unsigned long) &frame->retcode;
-	__frame->gr8 = sig;
-	__frame->gr9 = (unsigned long) &frame->info;
+	set_fs(USER_DS);
 
 	/* the tracer may want to single-step inside the handler */
 	if (test_thread_flag(TIF_SINGLESTEP))
@@ -431,7 +421,7 @@ static int setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 	return 0;
 
 give_sigsegv:
-	force_sigsegv(sig, current);
+	force_sig(SIGSEGV, current);
 	return -EFAULT;
 
 } /* end setup_rt_frame() */
@@ -446,7 +436,7 @@ static int handle_signal(unsigned long sig, siginfo_t *info,
 	int ret;
 
 	/* Are we from a system call? */
-	if (__frame->syscallno != -1) {
+	if (in_syscall(__frame)) {
 		/* If so, check system call restarting.. */
 		switch (__frame->gr8) {
 		case -ERESTART_RESTARTBLOCK:
@@ -465,7 +455,6 @@ static int handle_signal(unsigned long sig, siginfo_t *info,
 			__frame->gr8 = __frame->orig_gr8;
 			__frame->pc -= 4;
 		}
-		__frame->syscallno = -1;
 	}
 
 	/* Set up the stack frame */
@@ -527,9 +516,6 @@ static void do_signal(void)
 			 * clear the TIF_RESTORE_SIGMASK flag */
 			if (test_thread_flag(TIF_RESTORE_SIGMASK))
 				clear_thread_flag(TIF_RESTORE_SIGMASK);
-
-			tracehook_signal_handler(signr, &info, &ka, __frame,
-						 test_thread_flag(TIF_SINGLESTEP));
 		}
 
 		return;
@@ -537,7 +523,7 @@ static void do_signal(void)
 
 no_signal:
 	/* Did we come from a system call? */
-	if (__frame->syscallno != -1) {
+	if (__frame->syscallno >= 0) {
 		/* Restart the system call - no handlers present */
 		switch (__frame->gr8) {
 		case -ERESTARTNOHAND:
@@ -548,11 +534,10 @@ no_signal:
 			break;
 
 		case -ERESTART_RESTARTBLOCK:
-			__frame->gr7 = __NR_restart_syscall;
+			__frame->gr8 = __NR_restart_syscall;
 			__frame->pc -= 4;
 			break;
 		}
-		__frame->syscallno = -1;
 	}
 
 	/* if there's no signal to deliver, we just put the saved sigmask
@@ -578,13 +563,5 @@ asmlinkage void do_notify_resume(__u32 thread_info_flags)
 	/* deal with pending signal delivery */
 	if (thread_info_flags & (_TIF_SIGPENDING | _TIF_RESTORE_SIGMASK))
 		do_signal();
-
-	/* deal with notification on about to resume userspace execution */
-	if (thread_info_flags & _TIF_NOTIFY_RESUME) {
-		clear_thread_flag(TIF_NOTIFY_RESUME);
-		tracehook_notify_resume(__frame);
-		if (current->replacement_session_keyring)
-			key_replace_session_keyring();
-	}
 
 } /* end do_notify_resume() */

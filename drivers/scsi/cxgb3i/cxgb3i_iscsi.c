@@ -12,10 +12,7 @@
  */
 
 #include <linux/inet.h>
-#include <linux/slab.h>
 #include <linux/crypto.h>
-#include <linux/if_vlan.h>
-#include <net/dst.h>
 #include <net/tcp.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
@@ -56,52 +53,36 @@ static LIST_HEAD(cxgb3i_snic_list);
 static DEFINE_RWLOCK(cxgb3i_snic_rwlock);
 
 /**
- * cxgb3i_adpater_find_by_tdev - find the cxgb3i_adapter structure via t3cdev
- * @tdev: t3cdev pointer
+ * cxgb3i_adapter_add - init a s3 adapter structure and any h/w settings
+ * @t3dev: t3cdev adapter
+ * return the resulting cxgb3i_adapter struct
  */
-struct cxgb3i_adapter *cxgb3i_adapter_find_by_tdev(struct t3cdev *tdev)
+struct cxgb3i_adapter *cxgb3i_adapter_add(struct t3cdev *t3dev)
 {
 	struct cxgb3i_adapter *snic;
-
-	read_lock(&cxgb3i_snic_rwlock);
-	list_for_each_entry(snic, &cxgb3i_snic_list, list_head) {
-		if (snic->tdev == tdev) {
-			read_unlock(&cxgb3i_snic_rwlock);
-			return snic;
-		}
-	}
-	read_unlock(&cxgb3i_snic_rwlock);
-	return NULL;
-}
-
-static inline int adapter_update(struct cxgb3i_adapter *snic)
-{
-	cxgb3i_log_info("snic 0x%p, t3dev 0x%p, updating.\n",
-			snic, snic->tdev);
-	return cxgb3i_adapter_ddp_info(snic->tdev, &snic->tag_format,
-					&snic->tx_max_size,
-					&snic->rx_max_size);
-}
-
-static int adapter_add(struct cxgb3i_adapter *snic)
-{
-	struct t3cdev *t3dev = snic->tdev;
 	struct adapter *adapter = tdev2adap(t3dev);
-	int i, err;
+	int i;
 
+	snic = kzalloc(sizeof(*snic), GFP_KERNEL);
+	if (!snic) {
+		cxgb3i_api_debug("cxgb3 %s, OOM.\n", t3dev->name);
+		return NULL;
+	}
+	spin_lock_init(&snic->lock);
+
+	snic->tdev = t3dev;
 	snic->pdev = adapter->pdev;
 	snic->tag_format.sw_bits = sw_tag_idx_bits + sw_tag_age_bits;
 
-	err = cxgb3i_adapter_ddp_info(t3dev, &snic->tag_format,
+	if (cxgb3i_adapter_ddp_init(t3dev, &snic->tag_format,
 				    &snic->tx_max_size,
-				    &snic->rx_max_size);
-	if (err < 0)
-		return err;
+				    &snic->rx_max_size) < 0)
+		goto free_snic;
 
 	for_each_port(adapter, i) {
 		snic->hba[i] = cxgb3i_hba_host_add(snic, adapter->port[i]);
 		if (!snic->hba[i])
-			return -EINVAL;
+			goto ulp_cleanup;
 	}
 	snic->hba_cnt = adapter->params.nports;
 
@@ -110,84 +91,58 @@ static int adapter_add(struct cxgb3i_adapter *snic)
 	list_add_tail(&snic->list_head, &cxgb3i_snic_list);
 	write_unlock(&cxgb3i_snic_rwlock);
 
-	cxgb3i_log_info("t3dev 0x%p open, snic 0x%p, %u scsi hosts added.\n",
-			t3dev, snic, snic->hba_cnt);
-	return 0;
+	return snic;
+
+ulp_cleanup:
+	cxgb3i_adapter_ddp_cleanup(t3dev);
+free_snic:
+	kfree(snic);
+	return NULL;
 }
 
 /**
- * cxgb3i_adapter_open - init a s3 adapter structure and any h/w settings
+ * cxgb3i_adapter_remove - release all the resources held and cleanup any
+ *	h/w settings
  * @t3dev: t3cdev adapter
  */
-void cxgb3i_adapter_open(struct t3cdev *t3dev)
+void cxgb3i_adapter_remove(struct t3cdev *t3dev)
 {
-	struct cxgb3i_adapter *snic = cxgb3i_adapter_find_by_tdev(t3dev);
-	int err;
-
-	if (snic)
-		err = adapter_update(snic);
-	else {
-		snic = kzalloc(sizeof(*snic), GFP_KERNEL);
-		if (snic) {
-			spin_lock_init(&snic->lock);
-			snic->tdev = t3dev;
-			err = adapter_add(snic);
-		} else
-			err = -ENOMEM;
-	}
-
-	if (err < 0) {
-		cxgb3i_log_info("snic 0x%p, f 0x%x, t3dev 0x%p open, err %d.\n",
-				snic, snic ? snic->flags : 0, t3dev, err);
-		if (snic) {
-			snic->flags &= ~CXGB3I_ADAPTER_FLAG_RESET;
-			cxgb3i_adapter_close(t3dev);
-		}
-	}
-}
-
-/**
- * cxgb3i_adapter_close - release the resources held and cleanup h/w settings
- * @t3dev: t3cdev adapter
- */
-void cxgb3i_adapter_close(struct t3cdev *t3dev)
-{
-	struct cxgb3i_adapter *snic = cxgb3i_adapter_find_by_tdev(t3dev);
 	int i;
-
-	if (!snic || snic->flags & CXGB3I_ADAPTER_FLAG_RESET) {
-		cxgb3i_log_info("t3dev 0x%p close, snic 0x%p, f 0x%x.\n",
-				t3dev, snic, snic ? snic->flags : 0);
-		return;
-	}
+	struct cxgb3i_adapter *snic;
 
 	/* remove from the list */
 	write_lock(&cxgb3i_snic_rwlock);
-	list_del(&snic->list_head);
-	write_unlock(&cxgb3i_snic_rwlock);
-
-	for (i = 0; i < snic->hba_cnt; i++) {
-		if (snic->hba[i]) {
-			cxgb3i_hba_host_remove(snic->hba[i]);
-			snic->hba[i] = NULL;
+	list_for_each_entry(snic, &cxgb3i_snic_list, list_head) {
+		if (snic->tdev == t3dev) {
+			list_del(&snic->list_head);
+			break;
 		}
 	}
-	cxgb3i_log_info("t3dev 0x%p close, snic 0x%p, %u scsi hosts removed.\n",
-			t3dev, snic, snic->hba_cnt);
-	kfree(snic);
+	write_unlock(&cxgb3i_snic_rwlock);
+
+	if (snic) {
+		for (i = 0; i < snic->hba_cnt; i++) {
+			if (snic->hba[i]) {
+				cxgb3i_hba_host_remove(snic->hba[i]);
+				snic->hba[i] = NULL;
+			}
+		}
+
+		/* release ddp resources */
+		cxgb3i_adapter_ddp_cleanup(snic->tdev);
+		kfree(snic);
+	}
 }
 
 /**
- * cxgb3i_hba_find_by_netdev - find the cxgb3i_hba structure via net_device
+ * cxgb3i_hba_find_by_netdev - find the cxgb3i_hba structure with a given
+ *	net_device
  * @t3dev: t3cdev adapter
  */
-static struct cxgb3i_hba *cxgb3i_hba_find_by_netdev(struct net_device *ndev)
+struct cxgb3i_hba *cxgb3i_hba_find_by_netdev(struct net_device *ndev)
 {
 	struct cxgb3i_adapter *snic;
 	int i;
-
-	if (ndev->priv_flags & IFF_802_1Q_VLAN)
-		ndev = vlan_dev_real_dev(ndev);
 
 	read_lock(&cxgb3i_snic_rwlock);
 	list_for_each_entry(snic, &cxgb3i_snic_list, list_head) {
@@ -215,10 +170,10 @@ struct cxgb3i_hba *cxgb3i_hba_host_add(struct cxgb3i_adapter *snic,
 	int err;
 
 	shost = iscsi_host_alloc(&cxgb3i_host_template,
-				 sizeof(struct cxgb3i_hba), 1);
+				 sizeof(struct cxgb3i_hba),
+				 CXGB3I_SCSI_QDEPTH_DFLT);
 	if (!shost) {
-		cxgb3i_log_info("snic 0x%p, ndev 0x%p, host_alloc failed.\n",
-				snic, ndev);
+		cxgb3i_log_info("iscsi_host_alloc failed.\n");
 		return NULL;
 	}
 
@@ -236,8 +191,7 @@ struct cxgb3i_hba *cxgb3i_hba_host_add(struct cxgb3i_adapter *snic,
 	pci_dev_get(snic->pdev);
 	err = iscsi_host_add(shost, &snic->pdev->dev);
 	if (err) {
-		cxgb3i_log_info("snic 0x%p, ndev 0x%p, host_add failed.\n",
-				snic, ndev);
+		cxgb3i_log_info("iscsi_host_add failed.\n");
 		goto pci_dev_put;
 	}
 
@@ -267,26 +221,19 @@ void cxgb3i_hba_host_remove(struct cxgb3i_hba *hba)
 
 /**
  * cxgb3i_ep_connect - establish TCP connection to target portal
- * @shost:		scsi host to use
  * @dst_addr:		target IP address
  * @non_blocking:	blocking or non-blocking call
  *
  * Initiates a TCP/IP connection to the dst_addr
  */
-static struct iscsi_endpoint *cxgb3i_ep_connect(struct Scsi_Host *shost,
-						struct sockaddr *dst_addr,
+static struct iscsi_endpoint *cxgb3i_ep_connect(struct sockaddr *dst_addr,
 						int non_blocking)
 {
 	struct iscsi_endpoint *ep;
 	struct cxgb3i_endpoint *cep;
-	struct cxgb3i_hba *hba = NULL;
+	struct cxgb3i_hba *hba;
 	struct s3_conn *c3cn = NULL;
 	int err = 0;
-
-	if (shost)
-		hba = iscsi_host_priv(shost);
-
-	cxgb3i_api_debug("shost 0x%p, hba 0x%p.\n", shost, hba);
 
 	c3cn = cxgb3i_c3cn_create();
 	if (!c3cn) {
@@ -295,27 +242,17 @@ static struct iscsi_endpoint *cxgb3i_ep_connect(struct Scsi_Host *shost,
 		goto release_conn;
 	}
 
-	err = cxgb3i_c3cn_connect(hba ? hba->ndev : NULL, c3cn,
-				 (struct sockaddr_in *)dst_addr);
+	err = cxgb3i_c3cn_connect(c3cn, (struct sockaddr_in *)dst_addr);
 	if (err < 0) {
 		cxgb3i_log_info("ep connect failed.\n");
 		goto release_conn;
 	}
-
 	hba = cxgb3i_hba_find_by_netdev(c3cn->dst_cache->dev);
 	if (!hba) {
 		err = -ENOSPC;
 		cxgb3i_log_info("NOT going through cxgbi device.\n");
 		goto release_conn;
 	}
-
-	if (shost && hba != iscsi_host_priv(shost)) {
-		err = -ENOSPC;
-		cxgb3i_log_info("Could not connect through request host%u\n",
-				shost->host_no);
-		goto release_conn;
-	}
-
 	if (c3cn_is_closing(c3cn)) {
 		err = -ENOSPC;
 		cxgb3i_log_info("ep connect unable to connect.\n");
@@ -398,12 +335,13 @@ static void cxgb3i_ep_disconnect(struct iscsi_endpoint *ep)
  * @cmds_max:		max # of commands
  * @qdepth:		scsi queue depth
  * @initial_cmdsn:	initial iscsi CMDSN for this session
+ * @host_no:		pointer to return host no
  *
  * Creates a new iSCSI session
  */
 static struct iscsi_cls_session *
 cxgb3i_session_create(struct iscsi_endpoint *ep, u16 cmds_max, u16 qdepth,
-		      u32 initial_cmdsn)
+		      u32 initial_cmdsn, u32 *host_no)
 {
 	struct cxgb3i_endpoint *cep;
 	struct cxgb3i_hba *hba;
@@ -422,8 +360,10 @@ cxgb3i_session_create(struct iscsi_endpoint *ep, u16 cmds_max, u16 qdepth,
 	cxgb3i_api_debug("ep 0x%p, cep 0x%p, hba 0x%p.\n", ep, cep, hba);
 	BUG_ON(hba != iscsi_host_priv(shost));
 
+	*host_no = shost->host_no;
+
 	cls_session = iscsi_session_setup(&cxgb3i_iscsi_transport, shost,
-					  cmds_max, 0,
+					  cmds_max,
 					  sizeof(struct iscsi_tcp_task) +
 					  sizeof(struct cxgb3i_task_data),
 					  initial_cmdsn, ISCSI_MAX_TARGET);
@@ -454,9 +394,9 @@ static void cxgb3i_session_destroy(struct iscsi_cls_session *cls_session)
 }
 
 /**
- * cxgb3i_conn_max_xmit_dlength -- calc the max. xmit pdu segment size
+ * cxgb3i_conn_max_xmit_dlength -- check the max. xmit pdu segment size,
+ * reduce it to be within the hardware limit if needed
  * @conn: iscsi connection
- * check the max. xmit pdu payload, reduce it if needed
  */
 static inline int cxgb3i_conn_max_xmit_dlength(struct iscsi_conn *conn)
 
@@ -477,7 +417,8 @@ static inline int cxgb3i_conn_max_xmit_dlength(struct iscsi_conn *conn)
 }
 
 /**
- * cxgb3i_conn_max_recv_dlength -- check the max. recv pdu segment size
+ * cxgb3i_conn_max_recv_dlength -- check the max. recv pdu segment size against
+ * the hardware limit
  * @conn: iscsi connection
  * return 0 if the value is valid, < 0 otherwise.
  */
@@ -592,7 +533,8 @@ static int cxgb3i_conn_bind(struct iscsi_cls_session *cls_session,
 	cxgb3i_conn_max_recv_dlength(conn);
 
 	spin_lock_bh(&conn->session->lock);
-	sprintf(conn->portal_address, "%pI4", &c3cn->daddr.sin_addr.s_addr);
+	sprintf(conn->portal_address, NIPQUAD_FMT,
+		NIPQUAD(c3cn->daddr.sin_addr.s_addr));
 	conn->portal_port = ntohs(c3cn->daddr.sin_port);
 	spin_unlock_bh(&conn->session->lock);
 
@@ -709,12 +651,6 @@ static int cxgb3i_host_set_param(struct Scsi_Host *shost,
 {
 	struct cxgb3i_hba *hba = iscsi_host_priv(shost);
 
-	if (!hba->ndev) {
-		shost_printk(KERN_ERR, shost, "Could not set host param. "
-			     "Netdev for host not set.\n");
-		return -ENODEV;
-	}
-
 	cxgb3i_api_debug("param %d, buf %s.\n", param, buf);
 
 	switch (param) {
@@ -745,12 +681,6 @@ static int cxgb3i_host_get_param(struct Scsi_Host *shost,
 	struct cxgb3i_hba *hba = iscsi_host_priv(shost);
 	int len = 0;
 
-	if (!hba->ndev) {
-		shost_printk(KERN_ERR, shost, "Could not set host param. "
-			     "Netdev for host not set.\n");
-		return -ENODEV;
-	}
-
 	cxgb3i_api_debug("hba %s, param %d.\n", hba->ndev->name, param);
 
 	switch (param) {
@@ -765,7 +695,7 @@ static int cxgb3i_host_get_param(struct Scsi_Host *shost,
 		__be32 addr;
 
 		addr = cxgb3i_get_private_ipv4addr(hba->ndev);
-		len = sprintf(buf, "%pI4", &addr);
+		len = sprintf(buf, NIPQUAD_FMT, NIPQUAD(addr));
 		break;
 	}
 	default:
@@ -829,9 +759,9 @@ static void cxgb3i_parse_itt(struct iscsi_conn *conn, itt_t itt,
 
 /**
  * cxgb3i_reserve_itt - generate tag for a give task
+ * Try to set up ddp for a scsi read task.
  * @task: iscsi task
  * @hdr_itt: tag, filled in by this function
- * Set up ddp for scsi read tasks if possible.
  */
 int cxgb3i_reserve_itt(struct iscsi_task *task, itt_t *hdr_itt)
 {
@@ -879,9 +809,9 @@ int cxgb3i_reserve_itt(struct iscsi_task *task, itt_t *hdr_itt)
 
 /**
  * cxgb3i_release_itt - release the tag for a given task
+ * if the tag is a ddp tag, release the ddp setup
  * @task:	iscsi task
  * @hdr_itt:	tag
- * If the tag is a ddp tag, release the ddp setup
  */
 void cxgb3i_release_itt(struct iscsi_task *task, itt_t hdr_itt)
 {
@@ -910,14 +840,13 @@ static struct scsi_host_template cxgb3i_host_template = {
 	.proc_name		= "cxgb3i",
 	.queuecommand		= iscsi_queuecommand,
 	.change_queue_depth	= iscsi_change_queue_depth,
-	.can_queue		= CXGB3I_SCSI_HOST_QDEPTH,
+	.can_queue		= CXGB3I_SCSI_QDEPTH_DFLT - 1,
 	.sg_tablesize		= SG_ALL,
 	.max_sectors		= 0xFFFF,
 	.cmd_per_lun		= ISCSI_DEF_CMD_PER_LUN,
 	.eh_abort_handler	= iscsi_eh_abort,
 	.eh_device_reset_handler = iscsi_eh_device_reset,
-	.eh_target_reset_handler = iscsi_eh_recover_target,
-	.target_alloc		= iscsi_target_alloc,
+	.eh_target_reset_handler = iscsi_eh_target_reset,
 	.use_clustering		= DISABLE_CLUSTERING,
 	.this_id		= -1,
 };
@@ -949,7 +878,7 @@ static struct iscsi_transport cxgb3i_iscsi_transport = {
 				ISCSI_USERNAME | ISCSI_PASSWORD |
 				ISCSI_USERNAME_IN | ISCSI_PASSWORD_IN |
 				ISCSI_FAST_ABORT | ISCSI_ABORT_TMO |
-				ISCSI_LU_RESET_TMO | ISCSI_TGT_RESET_TMO |
+				ISCSI_LU_RESET_TMO |
 				ISCSI_PING_TMO | ISCSI_RECV_TMO |
 				ISCSI_IFACE_NAME | ISCSI_INITIATOR_NAME,
 	.host_param_mask	= ISCSI_HOST_HWADDRESS | ISCSI_HOST_IPADDRESS |

@@ -74,6 +74,7 @@
 #define EN50221_TAG_CA_INFO		0x9f8031
 
 struct avc_command_frame {
+	int length;
 	u8 ctype;
 	u8 subunit;
 	u8 opcode;
@@ -81,54 +82,22 @@ struct avc_command_frame {
 };
 
 struct avc_response_frame {
+	int length;
 	u8 response;
 	u8 subunit;
 	u8 opcode;
 	u8 operand[509];
 };
 
-#define LAST_OPERAND (509 - 1)
-
-static inline void clear_operands(struct avc_command_frame *c, int from, int to)
-{
-	memset(&c->operand[from], 0, to - from + 1);
-}
-
-static void pad_operands(struct avc_command_frame *c, int from)
-{
-	int to = ALIGN(from, 4);
-
-	if (from <= to && to <= LAST_OPERAND)
-		clear_operands(c, from, to);
-}
-
-#define AVC_DEBUG_READ_DESCRIPTOR              0x0001
-#define AVC_DEBUG_DSIT                         0x0002
-#define AVC_DEBUG_DSD                          0x0004
-#define AVC_DEBUG_REGISTER_REMOTE_CONTROL      0x0008
-#define AVC_DEBUG_LNB_CONTROL                  0x0010
-#define AVC_DEBUG_TUNE_QPSK                    0x0020
-#define AVC_DEBUG_TUNE_QPSK2                   0x0040
-#define AVC_DEBUG_HOST2CA                      0x0080
-#define AVC_DEBUG_CA2HOST                      0x0100
-#define AVC_DEBUG_APPLICATION_PMT              0x4000
-#define AVC_DEBUG_FCP_PAYLOADS                 0x8000
+#define AVC_DEBUG_FCP_SUBACTIONS	1
+#define AVC_DEBUG_FCP_PAYLOADS		2
 
 static int avc_debug;
 module_param_named(debug, avc_debug, int, 0644);
-MODULE_PARM_DESC(debug, "Verbose logging (none = 0"
-	", FCP subactions"
-	": READ DESCRIPTOR = "		__stringify(AVC_DEBUG_READ_DESCRIPTOR)
-	", DSIT = "			__stringify(AVC_DEBUG_DSIT)
-	", REGISTER_REMOTE_CONTROL = "	__stringify(AVC_DEBUG_REGISTER_REMOTE_CONTROL)
-	", LNB CONTROL = "		__stringify(AVC_DEBUG_LNB_CONTROL)
-	", TUNE QPSK = "		__stringify(AVC_DEBUG_TUNE_QPSK)
-	", TUNE QPSK2 = "		__stringify(AVC_DEBUG_TUNE_QPSK2)
-	", HOST2CA = "			__stringify(AVC_DEBUG_HOST2CA)
-	", CA2HOST = "			__stringify(AVC_DEBUG_CA2HOST)
-	"; Application sent PMT = "	__stringify(AVC_DEBUG_APPLICATION_PMT)
-	", FCP payloads = "		__stringify(AVC_DEBUG_FCP_PAYLOADS)
-	", or a combination, or all = -1)");
+MODULE_PARM_DESC(debug, "Verbose logging (default = 0"
+	", FCP subactions = "	__stringify(AVC_DEBUG_FCP_SUBACTIONS)
+	", FCP payloads = "	__stringify(AVC_DEBUG_FCP_PAYLOADS)
+	", or all = -1)");
 
 static const char *debug_fcp_ctype(unsigned int ctype)
 {
@@ -146,92 +115,74 @@ static const char *debug_fcp_ctype(unsigned int ctype)
 }
 
 static const char *debug_fcp_opcode(unsigned int opcode,
-				    const u8 *data, int length)
+				    const u8 *data, size_t length)
 {
 	switch (opcode) {
-	case AVC_OPCODE_VENDOR:
-		break;
-	case AVC_OPCODE_READ_DESCRIPTOR:
-		return avc_debug & AVC_DEBUG_READ_DESCRIPTOR ?
-				"ReadDescriptor" : NULL;
-	case AVC_OPCODE_DSIT:
-		return avc_debug & AVC_DEBUG_DSIT ?
-				"DirectSelectInfo.Type" : NULL;
-	case AVC_OPCODE_DSD:
-		return avc_debug & AVC_DEBUG_DSD ? "DirectSelectData" : NULL;
-	default:
-		return "Unknown";
+	case AVC_OPCODE_VENDOR:			break;
+	case AVC_OPCODE_READ_DESCRIPTOR:	return "ReadDescriptor";
+	case AVC_OPCODE_DSIT:			return "DirectSelectInfo.Type";
+	case AVC_OPCODE_DSD:			return "DirectSelectData";
+	default:				return "?";
 	}
 
 	if (length < 7 ||
 	    data[3] != SFE_VENDOR_DE_COMPANYID_0 ||
 	    data[4] != SFE_VENDOR_DE_COMPANYID_1 ||
 	    data[5] != SFE_VENDOR_DE_COMPANYID_2)
-		return "Vendor/Unknown";
+		return "Vendor";
 
 	switch (data[6]) {
-	case SFE_VENDOR_OPCODE_REGISTER_REMOTE_CONTROL:
-		return avc_debug & AVC_DEBUG_REGISTER_REMOTE_CONTROL ?
-				"RegisterRC" : NULL;
-	case SFE_VENDOR_OPCODE_LNB_CONTROL:
-		return avc_debug & AVC_DEBUG_LNB_CONTROL ? "LNBControl" : NULL;
-	case SFE_VENDOR_OPCODE_TUNE_QPSK:
-		return avc_debug & AVC_DEBUG_TUNE_QPSK ? "TuneQPSK" : NULL;
-	case SFE_VENDOR_OPCODE_TUNE_QPSK2:
-		return avc_debug & AVC_DEBUG_TUNE_QPSK2 ? "TuneQPSK2" : NULL;
-	case SFE_VENDOR_OPCODE_HOST2CA:
-		return avc_debug & AVC_DEBUG_HOST2CA ? "Host2CA" : NULL;
-	case SFE_VENDOR_OPCODE_CA2HOST:
-		return avc_debug & AVC_DEBUG_CA2HOST ? "CA2Host" : NULL;
+	case SFE_VENDOR_OPCODE_REGISTER_REMOTE_CONTROL:	return "RegisterRC";
+	case SFE_VENDOR_OPCODE_LNB_CONTROL:		return "LNBControl";
+	case SFE_VENDOR_OPCODE_TUNE_QPSK:		return "TuneQPSK";
+	case SFE_VENDOR_OPCODE_HOST2CA:			return "Host2CA";
+	case SFE_VENDOR_OPCODE_CA2HOST:			return "CA2Host";
 	}
-	return "Vendor/Unknown";
+	return "Vendor";
 }
 
-static void debug_fcp(const u8 *data, int length)
+static void debug_fcp(const u8 *data, size_t length)
 {
-	unsigned int subunit_type, subunit_id, opcode;
-	const char *op, *prefix;
+	unsigned int subunit_type, subunit_id, op;
+	const char *prefix = data[0] > 7 ? "FCP <- " : "FCP -> ";
 
-	prefix       = data[0] > 7 ? "FCP <- " : "FCP -> ";
-	subunit_type = data[1] >> 3;
-	subunit_id   = data[1] & 7;
-	opcode       = subunit_type == 0x1e || subunit_id == 5 ? ~0 : data[2];
-	op           = debug_fcp_opcode(opcode, data, length);
-
-	if (op) {
+	if (avc_debug & AVC_DEBUG_FCP_SUBACTIONS) {
+		subunit_type = data[1] >> 3;
+		subunit_id = data[1] & 7;
+		op = subunit_type == 0x1e || subunit_id == 5 ? ~0 : data[2];
 		printk(KERN_INFO "%ssu=%x.%x l=%d: %-8s - %s\n",
 		       prefix, subunit_type, subunit_id, length,
-		       debug_fcp_ctype(data[0]), op);
-		if (avc_debug & AVC_DEBUG_FCP_PAYLOADS)
-			print_hex_dump(KERN_INFO, prefix, DUMP_PREFIX_NONE,
-				       16, 1, data, length, false);
+		       debug_fcp_ctype(data[0]),
+		       debug_fcp_opcode(op, data, length));
 	}
+
+	if (avc_debug & AVC_DEBUG_FCP_PAYLOADS)
+		print_hex_dump(KERN_INFO, prefix, DUMP_PREFIX_NONE, 16, 1,
+			       data, length, false);
 }
 
-static void debug_pmt(char *msg, int length)
-{
-	printk(KERN_INFO "APP PMT -> l=%d\n", length);
-	print_hex_dump(KERN_INFO, "APP PMT -> ", DUMP_PREFIX_NONE,
-		       16, 1, msg, length, false);
-}
-
-static int avc_write(struct firedtv *fdtv)
+static int __avc_write(struct firedtv *fdtv,
+		const struct avc_command_frame *c, struct avc_response_frame *r)
 {
 	int err, retry;
 
-	fdtv->avc_reply_received = false;
+	if (r)
+		fdtv->avc_reply_received = false;
 
 	for (retry = 0; retry < 6; retry++) {
 		if (unlikely(avc_debug))
-			debug_fcp(fdtv->avc_data, fdtv->avc_data_length);
+			debug_fcp(&c->ctype, c->length);
 
 		err = fdtv->backend->write(fdtv, FCP_COMMAND_REGISTER,
-				fdtv->avc_data, fdtv->avc_data_length);
+					   (void *)&c->ctype, c->length);
 		if (err) {
+			fdtv->avc_reply_received = true;
 			dev_err(fdtv->device, "FCP command write failed\n");
-
 			return err;
 		}
+
+		if (!r)
+			return 0;
 
 		/*
 		 * AV/C specs say that answers should be sent within 150 ms.
@@ -239,41 +190,49 @@ static int avc_write(struct firedtv *fdtv)
 		 */
 		if (wait_event_timeout(fdtv->avc_wait,
 				       fdtv->avc_reply_received,
-				       msecs_to_jiffies(200)) != 0)
+				       msecs_to_jiffies(200)) != 0) {
+			r->length = fdtv->response_length;
+			memcpy(&r->response, fdtv->response, r->length);
+
 			return 0;
+		}
 	}
 	dev_err(fdtv->device, "FCP response timed out\n");
-
 	return -ETIMEDOUT;
 }
 
-static bool is_register_rc(struct avc_response_frame *r)
+static int avc_write(struct firedtv *fdtv,
+		const struct avc_command_frame *c, struct avc_response_frame *r)
 {
-	return r->opcode     == AVC_OPCODE_VENDOR &&
-	       r->operand[0] == SFE_VENDOR_DE_COMPANYID_0 &&
-	       r->operand[1] == SFE_VENDOR_DE_COMPANYID_1 &&
-	       r->operand[2] == SFE_VENDOR_DE_COMPANYID_2 &&
-	       r->operand[3] == SFE_VENDOR_OPCODE_REGISTER_REMOTE_CONTROL;
+	int ret;
+
+	if (mutex_lock_interruptible(&fdtv->avc_mutex))
+		return -EINTR;
+
+	ret = __avc_write(fdtv, c, r);
+
+	mutex_unlock(&fdtv->avc_mutex);
+	return ret;
 }
 
 int avc_recv(struct firedtv *fdtv, void *data, size_t length)
 {
-	struct avc_response_frame *r = data;
+	struct avc_response_frame *r =
+			data - offsetof(struct avc_response_frame, response);
 
 	if (unlikely(avc_debug))
 		debug_fcp(data, length);
 
-	if (length >= 8 && is_register_rc(r)) {
-		switch (r->response) {
-		case AVC_RESPONSE_CHANGED:
-			fdtv_handle_rc(fdtv, r->operand[4] << 8 | r->operand[5]);
+	if (length >= 8 &&
+	    r->operand[0] == SFE_VENDOR_DE_COMPANYID_0 &&
+	    r->operand[1] == SFE_VENDOR_DE_COMPANYID_1 &&
+	    r->operand[2] == SFE_VENDOR_DE_COMPANYID_2 &&
+	    r->operand[3] == SFE_VENDOR_OPCODE_REGISTER_REMOTE_CONTROL) {
+		if (r->response == AVC_RESPONSE_CHANGED) {
+			fdtv_handle_rc(fdtv,
+			    r->operand[4] << 8 | r->operand[5]);
 			schedule_work(&fdtv->remote_ctrl_work);
-			break;
-		case AVC_RESPONSE_INTERIM:
-			if (is_register_rc((void *)fdtv->avc_data))
-				goto wake;
-			break;
-		default:
+		} else if (r->response != AVC_RESPONSE_INTERIM) {
 			dev_info(fdtv->device,
 				 "remote control result = %d\n", r->response);
 		}
@@ -285,53 +244,29 @@ int avc_recv(struct firedtv *fdtv, void *data, size_t length)
 		return -EIO;
 	}
 
-	memcpy(fdtv->avc_data, data, length);
-	fdtv->avc_data_length = length;
-wake:
+	memcpy(fdtv->response, data, length);
+	fdtv->response_length = length;
+
 	fdtv->avc_reply_received = true;
 	wake_up(&fdtv->avc_wait);
 
 	return 0;
 }
 
-static int add_pid_filter(struct firedtv *fdtv, u8 *operand)
-{
-	int i, n, pos = 1;
-
-	for (i = 0, n = 0; i < 16; i++) {
-		if (test_bit(i, &fdtv->channel_active)) {
-			operand[pos++] = 0x13; /* flowfunction relay */
-			operand[pos++] = 0x80; /* dsd_sel_spec_valid_flags -> PID */
-			operand[pos++] = (fdtv->channel_pid[i] >> 8) & 0x1f;
-			operand[pos++] = fdtv->channel_pid[i] & 0xff;
-			operand[pos++] = 0x00; /* tableID */
-			operand[pos++] = 0x00; /* filter_length */
-			n++;
-		}
-	}
-	operand[0] = n;
-
-	return pos;
-}
-
 /*
  * tuning command for setting the relative LNB frequency
  * (not supported by the AVC standard)
  */
-static int avc_tuner_tuneqpsk(struct firedtv *fdtv,
-			      struct dvb_frontend_parameters *params)
+static void avc_tuner_tuneqpsk(struct firedtv *fdtv,
+			       struct dvb_frontend_parameters *params,
+			       struct avc_command_frame *c)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-
 	c->opcode = AVC_OPCODE_VENDOR;
 
 	c->operand[0] = SFE_VENDOR_DE_COMPANYID_0;
 	c->operand[1] = SFE_VENDOR_DE_COMPANYID_1;
 	c->operand[2] = SFE_VENDOR_DE_COMPANYID_2;
-	if (fdtv->type == FIREDTV_DVB_S2)
-		c->operand[3] = SFE_VENDOR_OPCODE_TUNE_QPSK2;
-	else
-		c->operand[3] = SFE_VENDOR_OPCODE_TUNE_QPSK;
+	c->operand[3] = SFE_VENDOR_OPCODE_TUNE_QPSK;
 
 	c->operand[4] = (params->frequency >> 24) & 0xff;
 	c->operand[5] = (params->frequency >> 16) & 0xff;
@@ -371,18 +306,15 @@ static int avc_tuner_tuneqpsk(struct firedtv *fdtv,
 		c->operand[13] = 0x1;
 		c->operand[14] = 0xff;
 		c->operand[15] = 0xff;
-
-		return 16;
+		c->length = 20;
 	} else {
-		return 13;
+		c->length = 16;
 	}
 }
 
-static int avc_tuner_dsd_dvb_c(struct firedtv *fdtv,
-			       struct dvb_frontend_parameters *params)
+static void avc_tuner_dsd_dvb_c(struct dvb_frontend_parameters *params,
+				struct avc_command_frame *c)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-
 	c->opcode = AVC_OPCODE_DSD;
 
 	c->operand[0] = 0;    /* source plug */
@@ -442,15 +374,16 @@ static int avc_tuner_dsd_dvb_c(struct firedtv *fdtv,
 
 	c->operand[20] = 0x00;
 	c->operand[21] = 0x00;
+	/* Nr_of_dsd_sel_specs = 0 -> no PIDs are transmitted */
+	c->operand[22] = 0x00;
 
-	return 22 + add_pid_filter(fdtv, &c->operand[22]);
+	c->length = 28;
 }
 
-static int avc_tuner_dsd_dvb_t(struct firedtv *fdtv,
-			       struct dvb_frontend_parameters *params)
+static void avc_tuner_dsd_dvb_t(struct dvb_frontend_parameters *params,
+				struct avc_command_frame *c)
 {
 	struct dvb_ofdm_parameters *ofdm = &params->u.ofdm;
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
 
 	c->opcode = AVC_OPCODE_DSD;
 
@@ -544,59 +477,57 @@ static int avc_tuner_dsd_dvb_t(struct firedtv *fdtv,
 
 	c->operand[15] = 0x00; /* network_ID[0] */
 	c->operand[16] = 0x00; /* network_ID[1] */
+	/* Nr_of_dsd_sel_specs = 0 -> no PIDs are transmitted */
+	c->operand[17] = 0x00;
 
-	return 17 + add_pid_filter(fdtv, &c->operand[17]);
+	c->length = 24;
 }
 
 int avc_tuner_dsd(struct firedtv *fdtv,
 		  struct dvb_frontend_parameters *params)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	int pos, ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer; /* FIXME: unused */
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
 
 	switch (fdtv->type) {
 	case FIREDTV_DVB_S:
-	case FIREDTV_DVB_S2: pos = avc_tuner_tuneqpsk(fdtv, params); break;
-	case FIREDTV_DVB_C: pos = avc_tuner_dsd_dvb_c(fdtv, params); break;
-	case FIREDTV_DVB_T: pos = avc_tuner_dsd_dvb_t(fdtv, params); break;
+	case FIREDTV_DVB_S2: avc_tuner_tuneqpsk(fdtv, params, c); break;
+	case FIREDTV_DVB_C: avc_tuner_dsd_dvb_c(params, c); break;
+	case FIREDTV_DVB_T: avc_tuner_dsd_dvb_t(params, c); break;
 	default:
 		BUG();
 	}
-	pad_operands(c, pos);
 
-	fdtv->avc_data_length = ALIGN(3 + pos, 4);
-	ret = avc_write(fdtv);
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
+
+	msleep(500);
 #if 0
-	/*
-	 * FIXME:
-	 * u8 *status was an out-parameter of avc_tuner_dsd, unused by caller.
-	 * Check for AVC_RESPONSE_ACCEPTED here instead?
-	 */
+	/* FIXME: */
+	/* u8 *status was an out-parameter of avc_tuner_dsd, unused by caller */
 	if (status)
 		*status = r->operand[2];
 #endif
-	mutex_unlock(&fdtv->avc_mutex);
-
-	if (ret == 0)
-		msleep(500);
-
-	return ret;
+	return 0;
 }
 
 int avc_tuner_set_pids(struct firedtv *fdtv, unsigned char pidc, u16 pid[])
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	int ret, pos, k;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer; /* FIXME: unused */
+	int pos, k;
 
 	if (pidc > 16 && pidc != 0xff)
 		return -EINVAL;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -619,27 +550,24 @@ int avc_tuner_set_pids(struct firedtv *fdtv, unsigned char pidc, u16 pid[])
 			c->operand[pos++] = 0x00; /* tableID */
 			c->operand[pos++] = 0x00; /* filter_length */
 		}
-	pad_operands(c, pos);
 
-	fdtv->avc_data_length = ALIGN(3 + pos, 4);
-	ret = avc_write(fdtv);
+	c->length = ALIGN(3 + pos, 4);
 
-	/* FIXME: check response code? */
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
-	mutex_unlock(&fdtv->avc_mutex);
-
-	if (ret == 0)
-		msleep(50);
-
-	return ret;
+	msleep(50);
+	return 0;
 }
 
 int avc_tuner_get_ts(struct firedtv *fdtv)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	int ret, sl;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer; /* FIXME: unused */
+	int sl;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -654,33 +582,26 @@ int avc_tuner_get_ts(struct firedtv *fdtv)
 	c->operand[4] = 0x00;	/* antenna number */
 	c->operand[5] = 0x0; 	/* system_specific_search_flags */
 	c->operand[6] = sl;	/* system_specific_multiplex selection_length */
-	/*
-	 * operand[7]: valid_flags[0]
-	 * operand[8]: valid_flags[1]
-	 * operand[7 + sl]: nr_of_dsit_sel_specs (always 0)
-	 */
-	clear_operands(c, 7, 24);
+	c->operand[7] = 0x00;	/* valid_flags [0] */
+	c->operand[8] = 0x00;	/* valid_flags [1] */
+	c->operand[7 + sl] = 0x00; /* nr_of_dsit_sel_specs (always 0) */
 
-	fdtv->avc_data_length = fdtv->type == FIREDTV_DVB_T ? 24 : 28;
-	ret = avc_write(fdtv);
+	c->length = fdtv->type == FIREDTV_DVB_T ? 24 : 28;
 
-	/* FIXME: check response code? */
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
-	mutex_unlock(&fdtv->avc_mutex);
-
-	if (ret == 0)
-		msleep(250);
-
-	return ret;
+	msleep(250);
+	return 0;
 }
 
 int avc_identify_subunit(struct firedtv *fdtv)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	struct avc_response_frame *r = (void *)fdtv->avc_data;
-	int ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -693,34 +614,31 @@ int avc_identify_subunit(struct firedtv *fdtv)
 	c->operand[4] = 0x08; /* length lowbyte  */
 	c->operand[5] = 0x00; /* offset highbyte */
 	c->operand[6] = 0x0d; /* offset lowbyte  */
-	clear_operands(c, 7, 8); /* padding */
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
-	if (ret < 0)
-		goto out;
+	c->length = 12;
+
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
 	if ((r->response != AVC_RESPONSE_STABLE &&
 	     r->response != AVC_RESPONSE_ACCEPTED) ||
 	    (r->operand[3] << 8) + r->operand[4] != 8) {
 		dev_err(fdtv->device, "cannot read subunit identifier\n");
-		ret = -EINVAL;
+		return -EINVAL;
 	}
-out:
-	mutex_unlock(&fdtv->avc_mutex);
-
-	return ret;
+	return 0;
 }
 
 #define SIZEOF_ANTENNA_INPUT_INFO 22
 
 int avc_tuner_status(struct firedtv *fdtv, struct firedtv_tuner_status *stat)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	struct avc_response_frame *r = (void *)fdtv->avc_data;
-	int length, ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer;
+	int length;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -728,30 +646,27 @@ int avc_tuner_status(struct firedtv *fdtv, struct firedtv_tuner_status *stat)
 
 	c->operand[0] = DESCRIPTOR_TUNER_STATUS;
 	c->operand[1] = 0xff;	/* read_result_status */
-	/*
-	 * operand[2]: reserved
-	 * operand[3]: SIZEOF_ANTENNA_INPUT_INFO >> 8
-	 * operand[4]: SIZEOF_ANTENNA_INPUT_INFO & 0xff
-	 */
-	clear_operands(c, 2, 31);
+	c->operand[2] = 0x00;	/* reserved */
+	c->operand[3] = 0;	/* SIZEOF_ANTENNA_INPUT_INFO >> 8; */
+	c->operand[4] = 0;	/* SIZEOF_ANTENNA_INPUT_INFO & 0xff; */
+	c->operand[5] = 0x00;
+	c->operand[6] = 0x00;
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
-	if (ret < 0)
-		goto out;
+	c->length = 12;
+
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
 	if (r->response != AVC_RESPONSE_STABLE &&
 	    r->response != AVC_RESPONSE_ACCEPTED) {
 		dev_err(fdtv->device, "cannot read tuner status\n");
-		ret = -EINVAL;
-		goto out;
+		return -EINVAL;
 	}
 
 	length = r->operand[9];
 	if (r->operand[1] != 0x10 || length != SIZEOF_ANTENNA_INPUT_INFO) {
 		dev_err(fdtv->device, "got invalid tuner status\n");
-		ret = -EINVAL;
-		goto out;
+		return -EINVAL;
 	}
 
 	stat->active_system		= r->operand[10];
@@ -787,21 +702,20 @@ int avc_tuner_status(struct firedtv *fdtv, struct firedtv_tuner_status *stat)
 	stat->ca_dvb_flag		= r->operand[31] >> 3 & 1;
 	stat->ca_error_flag		= r->operand[31] >> 2 & 1;
 	stat->ca_initialization_status	= r->operand[31] >> 1 & 1;
-out:
-	mutex_unlock(&fdtv->avc_mutex);
 
-	return ret;
+	return 0;
 }
 
 int avc_lnb_control(struct firedtv *fdtv, char voltage, char burst,
 		    char conttone, char nrdiseq,
 		    struct dvb_diseqc_master_cmd *diseqcmd)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	struct avc_response_frame *r = (void *)fdtv->avc_data;
-	int pos, j, k, ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer;
+	int i, j, k;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -811,41 +725,41 @@ int avc_lnb_control(struct firedtv *fdtv, char voltage, char burst,
 	c->operand[1] = SFE_VENDOR_DE_COMPANYID_1;
 	c->operand[2] = SFE_VENDOR_DE_COMPANYID_2;
 	c->operand[3] = SFE_VENDOR_OPCODE_LNB_CONTROL;
+
 	c->operand[4] = voltage;
 	c->operand[5] = nrdiseq;
 
-	pos = 6;
+	i = 6;
+
 	for (j = 0; j < nrdiseq; j++) {
-		c->operand[pos++] = diseqcmd[j].msg_len;
+		c->operand[i++] = diseqcmd[j].msg_len;
 
 		for (k = 0; k < diseqcmd[j].msg_len; k++)
-			c->operand[pos++] = diseqcmd[j].msg[k];
+			c->operand[i++] = diseqcmd[j].msg[k];
 	}
-	c->operand[pos++] = burst;
-	c->operand[pos++] = conttone;
-	pad_operands(c, pos);
 
-	fdtv->avc_data_length = ALIGN(3 + pos, 4);
-	ret = avc_write(fdtv);
-	if (ret < 0)
-		goto out;
+	c->operand[i++] = burst;
+	c->operand[i++] = conttone;
+
+	c->length = ALIGN(3 + i, 4);
+
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
 	if (r->response != AVC_RESPONSE_ACCEPTED) {
 		dev_err(fdtv->device, "LNB control failed\n");
-		ret = -EINVAL;
+		return -EINVAL;
 	}
-out:
-	mutex_unlock(&fdtv->avc_mutex);
 
-	return ret;
+	return 0;
 }
 
 int avc_register_remote_control(struct firedtv *fdtv)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	int ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_NOTIFY;
 	c->subunit = AVC_SUBUNIT_TYPE_UNIT | 7;
@@ -855,16 +769,10 @@ int avc_register_remote_control(struct firedtv *fdtv)
 	c->operand[1] = SFE_VENDOR_DE_COMPANYID_1;
 	c->operand[2] = SFE_VENDOR_DE_COMPANYID_2;
 	c->operand[3] = SFE_VENDOR_OPCODE_REGISTER_REMOTE_CONTROL;
-	c->operand[4] = 0; /* padding */
 
-	fdtv->avc_data_length = 8;
-	ret = avc_write(fdtv);
+	c->length = 8;
 
-	/* FIXME: check response code? */
-
-	mutex_unlock(&fdtv->avc_mutex);
-
-	return ret;
+	return avc_write(fdtv, c, NULL);
 }
 
 void avc_remote_ctrl_work(struct work_struct *work)
@@ -879,10 +787,11 @@ void avc_remote_ctrl_work(struct work_struct *work)
 #if 0 /* FIXME: unused */
 int avc_tuner_host2ca(struct firedtv *fdtv)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	int ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer; /* FIXME: unused */
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -894,16 +803,15 @@ int avc_tuner_host2ca(struct firedtv *fdtv)
 	c->operand[3] = SFE_VENDOR_OPCODE_HOST2CA;
 	c->operand[4] = 0; /* slot */
 	c->operand[5] = SFE_VENDOR_TAG_CA_APPLICATION_INFO; /* ca tag */
-	clear_operands(c, 6, 8);
+	c->operand[6] = 0; /* more/last */
+	c->operand[7] = 0; /* length */
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
+	c->length = 12;
 
-	/* FIXME: check response code? */
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
-	mutex_unlock(&fdtv->avc_mutex);
-
-	return ret;
+	return 0;
 }
 #endif
 
@@ -934,11 +842,12 @@ static int get_ca_object_length(struct avc_response_frame *r)
 
 int avc_ca_app_info(struct firedtv *fdtv, char *app_info, unsigned int *len)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	struct avc_response_frame *r = (void *)fdtv->avc_data;
-	int pos, ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer;
+	int pos;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_STATUS;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -950,12 +859,11 @@ int avc_ca_app_info(struct firedtv *fdtv, char *app_info, unsigned int *len)
 	c->operand[3] = SFE_VENDOR_OPCODE_CA2HOST;
 	c->operand[4] = 0; /* slot */
 	c->operand[5] = SFE_VENDOR_TAG_CA_APPLICATION_INFO; /* ca tag */
-	clear_operands(c, 6, LAST_OPERAND);
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
-	if (ret < 0)
-		goto out;
+	c->length = 12;
+
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
 	/* FIXME: check response code and validate response data */
 
@@ -967,19 +875,18 @@ int avc_ca_app_info(struct firedtv *fdtv, char *app_info, unsigned int *len)
 	app_info[4] = 0x01;
 	memcpy(&app_info[5], &r->operand[pos], 5 + r->operand[pos + 4]);
 	*len = app_info[3] + 4;
-out:
-	mutex_unlock(&fdtv->avc_mutex);
 
-	return ret;
+	return 0;
 }
 
 int avc_ca_info(struct firedtv *fdtv, char *app_info, unsigned int *len)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	struct avc_response_frame *r = (void *)fdtv->avc_data;
-	int pos, ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer;
+	int pos;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_STATUS;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -991,14 +898,11 @@ int avc_ca_info(struct firedtv *fdtv, char *app_info, unsigned int *len)
 	c->operand[3] = SFE_VENDOR_OPCODE_CA2HOST;
 	c->operand[4] = 0; /* slot */
 	c->operand[5] = SFE_VENDOR_TAG_CA_APPLICATION_INFO; /* ca tag */
-	clear_operands(c, 6, LAST_OPERAND);
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
-	if (ret < 0)
-		goto out;
+	c->length = 12;
 
-	/* FIXME: check response code and validate response data */
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
 	pos = get_ca_object_pos(r);
 	app_info[0] = (EN50221_TAG_CA_INFO >> 16) & 0xff;
@@ -1008,18 +912,17 @@ int avc_ca_info(struct firedtv *fdtv, char *app_info, unsigned int *len)
 	app_info[4] = r->operand[pos + 0];
 	app_info[5] = r->operand[pos + 1];
 	*len = app_info[3] + 4;
-out:
-	mutex_unlock(&fdtv->avc_mutex);
 
-	return ret;
+	return 0;
 }
 
 int avc_ca_reset(struct firedtv *fdtv)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	int ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer; /* FIXME: unused */
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -1035,20 +938,19 @@ int avc_ca_reset(struct firedtv *fdtv)
 	c->operand[7] = 1; /* length */
 	c->operand[8] = 0; /* force hardware reset */
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
+	c->length = 12;
 
-	/* FIXME: check response code? */
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
-	mutex_unlock(&fdtv->avc_mutex);
-
-	return ret;
+	return 0;
 }
 
 int avc_ca_pmt(struct firedtv *fdtv, char *msg, int length)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	struct avc_response_frame *r = (void *)fdtv->avc_data;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer;
 	int list_management;
 	int program_info_length;
 	int pmt_cmd_id;
@@ -1056,12 +958,8 @@ int avc_ca_pmt(struct firedtv *fdtv, char *msg, int length)
 	int write_pos;
 	int es_info_length;
 	int crc32_csum;
-	int ret;
 
-	if (unlikely(avc_debug & AVC_DEBUG_APPLICATION_PMT))
-		debug_pmt(msg, length);
-
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_CONTROL;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -1085,28 +983,28 @@ int avc_ca_pmt(struct firedtv *fdtv, char *msg, int length)
 	c->operand[4] = 0; /* slot */
 	c->operand[5] = SFE_VENDOR_TAG_CA_PMT; /* ca tag */
 	c->operand[6] = 0; /* more/last */
-	/* Use three bytes for length field in case length > 127 */
-	c->operand[10] = list_management;
-	c->operand[11] = 0x01; /* pmt_cmd=OK_descramble */
+	/* c->operand[7] = XXXprogram_info_length + 17; */ /* length */
+	c->operand[8] = list_management;
+	c->operand[9] = 0x01; /* pmt_cmd=OK_descramble */
 
 	/* TS program map table */
 
-	c->operand[12] = 0x02; /* Table id=2 */
-	c->operand[13] = 0x80; /* Section syntax + length */
-
-	c->operand[15] = msg[1]; /* Program number */
-	c->operand[16] = msg[2];
-	c->operand[17] = msg[3]; /* Version number and current/next */
-	c->operand[18] = 0x00; /* Section number=0 */
-	c->operand[19] = 0x00; /* Last section number=0 */
-	c->operand[20] = 0x1f; /* PCR_PID=1FFF */
-	c->operand[21] = 0xff;
-	c->operand[22] = (program_info_length >> 8); /* Program info length */
-	c->operand[23] = (program_info_length & 0xff);
+	c->operand[10] = 0x02; /* Table id=2 */
+	c->operand[11] = 0x80; /* Section syntax + length */
+	/* c->operand[12] = XXXprogram_info_length + 12; */
+	c->operand[13] = msg[1]; /* Program number */
+	c->operand[14] = msg[2];
+	c->operand[15] = 0x01; /* Version number=0 + current/next=1 */
+	c->operand[16] = 0x00; /* Section number=0 */
+	c->operand[17] = 0x00; /* Last section number=0 */
+	c->operand[18] = 0x1f; /* PCR_PID=1FFF */
+	c->operand[19] = 0xff;
+	c->operand[20] = (program_info_length >> 8); /* Program info length */
+	c->operand[21] = (program_info_length & 0xff);
 
 	/* CA descriptors at programme level */
 	read_pos = 6;
-	write_pos = 24;
+	write_pos = 22;
 	if (program_info_length > 0) {
 		pmt_cmd_id = msg[read_pos++];
 		if (pmt_cmd_id != 1 && pmt_cmd_id != 4)
@@ -1141,43 +1039,43 @@ int avc_ca_pmt(struct firedtv *fdtv, char *msg, int length)
 			write_pos += es_info_length;
 		}
 	}
-	write_pos += 4; /* CRC */
 
-	c->operand[7] = 0x82;
-	c->operand[8] = (write_pos - 10) >> 8;
-	c->operand[9] = (write_pos - 10) & 0xff;
-	c->operand[14] = write_pos - 15;
+	/* CRC */
+	c->operand[write_pos++] = 0x00;
+	c->operand[write_pos++] = 0x00;
+	c->operand[write_pos++] = 0x00;
+	c->operand[write_pos++] = 0x00;
+
+	c->operand[7] = write_pos - 8;
+	c->operand[12] = write_pos - 13;
 
 	crc32_csum = crc32_be(0, &c->operand[10], c->operand[12] - 1);
 	c->operand[write_pos - 4] = (crc32_csum >> 24) & 0xff;
 	c->operand[write_pos - 3] = (crc32_csum >> 16) & 0xff;
 	c->operand[write_pos - 2] = (crc32_csum >>  8) & 0xff;
 	c->operand[write_pos - 1] = (crc32_csum >>  0) & 0xff;
-	pad_operands(c, write_pos);
 
-	fdtv->avc_data_length = ALIGN(3 + write_pos, 4);
-	ret = avc_write(fdtv);
-	if (ret < 0)
-		goto out;
+	c->length = ALIGN(3 + write_pos, 4);
+
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
 	if (r->response != AVC_RESPONSE_ACCEPTED) {
 		dev_err(fdtv->device,
 			"CA PMT failed with response 0x%x\n", r->response);
-		ret = -EFAULT;
+		return -EFAULT;
 	}
-out:
-	mutex_unlock(&fdtv->avc_mutex);
 
-	return ret;
+	return 0;
 }
 
 int avc_ca_get_time_date(struct firedtv *fdtv, int *interval)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	struct avc_response_frame *r = (void *)fdtv->avc_data;
-	int ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_STATUS;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -1189,28 +1087,28 @@ int avc_ca_get_time_date(struct firedtv *fdtv, int *interval)
 	c->operand[3] = SFE_VENDOR_OPCODE_CA2HOST;
 	c->operand[4] = 0; /* slot */
 	c->operand[5] = SFE_VENDOR_TAG_CA_DATE_TIME; /* ca tag */
-	clear_operands(c, 6, LAST_OPERAND);
+	c->operand[6] = 0; /* more/last */
+	c->operand[7] = 0; /* length */
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
-	if (ret < 0)
-		goto out;
+	c->length = 12;
+
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
 	/* FIXME: check response code and validate response data */
 
 	*interval = r->operand[get_ca_object_pos(r)];
-out:
-	mutex_unlock(&fdtv->avc_mutex);
 
-	return ret;
+	return 0;
 }
 
 int avc_ca_enter_menu(struct firedtv *fdtv)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	int ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer; /* FIXME: unused */
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_STATUS;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -1222,25 +1120,24 @@ int avc_ca_enter_menu(struct firedtv *fdtv)
 	c->operand[3] = SFE_VENDOR_OPCODE_HOST2CA;
 	c->operand[4] = 0; /* slot */
 	c->operand[5] = SFE_VENDOR_TAG_CA_ENTER_MENU;
-	clear_operands(c, 6, 8);
+	c->operand[6] = 0; /* more/last */
+	c->operand[7] = 0; /* length */
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
+	c->length = 12;
 
-	/* FIXME: check response code? */
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
-	mutex_unlock(&fdtv->avc_mutex);
-
-	return ret;
+	return 0;
 }
 
 int avc_ca_get_mmi(struct firedtv *fdtv, char *mmi_object, unsigned int *len)
 {
-	struct avc_command_frame *c = (void *)fdtv->avc_data;
-	struct avc_response_frame *r = (void *)fdtv->avc_data;
-	int ret;
+	char buffer[sizeof(struct avc_command_frame)];
+	struct avc_command_frame *c = (void *)buffer;
+	struct avc_response_frame *r = (void *)buffer;
 
-	mutex_lock(&fdtv->avc_mutex);
+	memset(c, 0, sizeof(*c));
 
 	c->ctype   = AVC_CTYPE_STATUS;
 	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
@@ -1252,57 +1149,51 @@ int avc_ca_get_mmi(struct firedtv *fdtv, char *mmi_object, unsigned int *len)
 	c->operand[3] = SFE_VENDOR_OPCODE_CA2HOST;
 	c->operand[4] = 0; /* slot */
 	c->operand[5] = SFE_VENDOR_TAG_CA_MMI;
-	clear_operands(c, 6, LAST_OPERAND);
+	c->operand[6] = 0; /* more/last */
+	c->operand[7] = 0; /* length */
 
-	fdtv->avc_data_length = 12;
-	ret = avc_write(fdtv);
-	if (ret < 0)
-		goto out;
+	c->length = 12;
+
+	if (avc_write(fdtv, c, r) < 0)
+		return -EIO;
 
 	/* FIXME: check response code and validate response data */
 
 	*len = get_ca_object_length(r);
 	memcpy(mmi_object, &r->operand[get_ca_object_pos(r)], *len);
-out:
-	mutex_unlock(&fdtv->avc_mutex);
 
-	return ret;
+	return 0;
 }
 
 #define CMP_OUTPUT_PLUG_CONTROL_REG_0	0xfffff0000904ULL
 
-static int cmp_read(struct firedtv *fdtv, u64 addr, __be32 *data)
+static int cmp_read(struct firedtv *fdtv, void *buf, u64 addr, size_t len)
 {
 	int ret;
 
-	mutex_lock(&fdtv->avc_mutex);
+	if (mutex_lock_interruptible(&fdtv->avc_mutex))
+		return -EINTR;
 
-	ret = fdtv->backend->read(fdtv, addr, data);
+	ret = fdtv->backend->read(fdtv, addr, buf, len);
 	if (ret < 0)
 		dev_err(fdtv->device, "CMP: read I/O error\n");
 
 	mutex_unlock(&fdtv->avc_mutex);
-
 	return ret;
 }
 
-static int cmp_lock(struct firedtv *fdtv, u64 addr, __be32 data[])
+static int cmp_lock(struct firedtv *fdtv, void *data, u64 addr, __be32 arg)
 {
 	int ret;
 
-	mutex_lock(&fdtv->avc_mutex);
+	if (mutex_lock_interruptible(&fdtv->avc_mutex))
+		return -EINTR;
 
-	/* data[] is stack-allocated and should not be DMA-mapped. */
-	memcpy(fdtv->avc_data, data, 8);
-
-	ret = fdtv->backend->lock(fdtv, addr, fdtv->avc_data);
+	ret = fdtv->backend->lock(fdtv, addr, data, arg);
 	if (ret < 0)
 		dev_err(fdtv->device, "CMP: lock I/O error\n");
-	else
-		memcpy(data, fdtv->avc_data, 8);
 
 	mutex_unlock(&fdtv->avc_mutex);
-
 	return ret;
 }
 
@@ -1328,25 +1219,25 @@ static inline void set_opcr(__be32 *opcr, u32 value, u32 mask, u32 shift)
 
 int cmp_establish_pp_connection(struct firedtv *fdtv, int plug, int channel)
 {
-	__be32 old_opcr, opcr[2];
+	__be32 old_opcr, opcr;
 	u64 opcr_address = CMP_OUTPUT_PLUG_CONTROL_REG_0 + (plug << 2);
 	int attempts = 0;
 	int ret;
 
-	ret = cmp_read(fdtv, opcr_address, opcr);
+	ret = cmp_read(fdtv, &opcr, opcr_address, 4);
 	if (ret < 0)
 		return ret;
 
 repeat:
-	if (!get_opcr_online(*opcr)) {
+	if (!get_opcr_online(opcr)) {
 		dev_err(fdtv->device, "CMP: output offline\n");
 		return -EBUSY;
 	}
 
-	old_opcr = *opcr;
+	old_opcr = opcr;
 
-	if (get_opcr_p2p_connections(*opcr)) {
-		if (get_opcr_channel(*opcr) != channel) {
+	if (get_opcr_p2p_connections(opcr)) {
+		if (get_opcr_channel(opcr) != channel) {
 			dev_err(fdtv->device, "CMP: cannot change channel\n");
 			return -EBUSY;
 		}
@@ -1354,11 +1245,11 @@ repeat:
 
 		/* We don't allocate isochronous resources. */
 	} else {
-		set_opcr_channel(opcr, channel);
-		set_opcr_data_rate(opcr, 2); /* S400 */
+		set_opcr_channel(&opcr, channel);
+		set_opcr_data_rate(&opcr, 2); /* S400 */
 
 		/* FIXME: this is for the worst case - optimize */
-		set_opcr_overhead_id(opcr, 0);
+		set_opcr_overhead_id(&opcr, 0);
 
 		/*
 		 * FIXME: allocate isochronous channel and bandwidth at IRM
@@ -1366,16 +1257,13 @@ repeat:
 		 */
 	}
 
-	set_opcr_p2p_connections(opcr, get_opcr_p2p_connections(*opcr) + 1);
+	set_opcr_p2p_connections(&opcr, get_opcr_p2p_connections(opcr) + 1);
 
-	opcr[1] = *opcr;
-	opcr[0] = old_opcr;
-
-	ret = cmp_lock(fdtv, opcr_address, opcr);
+	ret = cmp_lock(fdtv, &opcr, opcr_address, old_opcr);
 	if (ret < 0)
 		return ret;
 
-	if (old_opcr != *opcr) {
+	if (old_opcr != opcr) {
 		/*
 		 * FIXME: if old_opcr.P2P_Connections > 0,
 		 * deallocate isochronous channel and bandwidth at IRM
@@ -1393,30 +1281,27 @@ repeat:
 
 void cmp_break_pp_connection(struct firedtv *fdtv, int plug, int channel)
 {
-	__be32 old_opcr, opcr[2];
+	__be32 old_opcr, opcr;
 	u64 opcr_address = CMP_OUTPUT_PLUG_CONTROL_REG_0 + (plug << 2);
 	int attempts = 0;
 
-	if (cmp_read(fdtv, opcr_address, opcr) < 0)
+	if (cmp_read(fdtv, &opcr, opcr_address, 4) < 0)
 		return;
 
 repeat:
-	if (!get_opcr_online(*opcr) || !get_opcr_p2p_connections(*opcr) ||
-	    get_opcr_channel(*opcr) != channel) {
+	if (!get_opcr_online(opcr) || !get_opcr_p2p_connections(opcr) ||
+	    get_opcr_channel(opcr) != channel) {
 		dev_err(fdtv->device, "CMP: no connection to break\n");
 		return;
 	}
 
-	old_opcr = *opcr;
-	set_opcr_p2p_connections(opcr, get_opcr_p2p_connections(*opcr) - 1);
+	old_opcr = opcr;
+	set_opcr_p2p_connections(&opcr, get_opcr_p2p_connections(opcr) - 1);
 
-	opcr[1] = *opcr;
-	opcr[0] = old_opcr;
-
-	if (cmp_lock(fdtv, opcr_address, opcr) < 0)
+	if (cmp_lock(fdtv, &opcr, opcr_address, old_opcr) < 0)
 		return;
 
-	if (old_opcr != *opcr) {
+	if (old_opcr != opcr) {
 		/*
 		 * FIXME: if old_opcr.P2P_Connections == 1, i.e. we were last
 		 * owner, deallocate isochronous channel and bandwidth at IRM

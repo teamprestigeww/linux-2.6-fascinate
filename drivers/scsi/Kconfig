@@ -1,15 +1,9 @@
 menu "SCSI device support"
 
-config SCSI_MOD
-       tristate
-       default y if SCSI=n || SCSI=y
-       default m if SCSI=m
-
 config RAID_ATTRS
 	tristate "RAID Transport Class"
 	default n
 	depends on BLOCK
-	depends on SCSI_MOD
 	---help---
 	  Provides RAID
 
@@ -127,11 +121,10 @@ config BLK_DEV_SR
 	tristate "SCSI CDROM support"
 	depends on SCSI
 	---help---
-	  If you want to use a CD or DVD drive attached to your computer
-	  by SCSI, FireWire, USB or ATAPI, say Y and read the SCSI-HOWTO
-	  and the CDROM-HOWTO at <http://www.tldp.org/docs.html#howto>.
-
-	  Make sure to say Y or M to "ISO 9660 CD-ROM file system support".
+	  If you want to use a SCSI or FireWire CD-ROM under Linux,
+	  say Y and read the SCSI-HOWTO and the CDROM-HOWTO at
+	  <http://www.tldp.org/docs.html#howto>. Also make sure to say
+	  Y or M to "ISO 9660 CD-ROM file system support" later.
 
 	  To compile this driver as a module, choose M here and read
 	  <file:Documentation/scsi/scsi.txt>.
@@ -197,19 +190,20 @@ config SCSI_ENCLOSURE
 	  it has an enclosure device.  Selecting this option will just allow
 	  certain enclosure conditions to be reported and is not required.
 
+comment "Some SCSI devices (e.g. CD jukebox) support multiple LUNs"
+	depends on SCSI
+
 config SCSI_MULTI_LUN
 	bool "Probe all LUNs on each SCSI device"
 	depends on SCSI
 	help
-	  Some devices support more than one LUN (Logical Unit Number) in order
-	  to allow access to several media, e.g. CD jukebox, USB card reader,
-	  mobile phone in mass storage mode. This option forces the kernel to
-	  probe for all LUNs by default. This setting can be overriden by
-	  max_luns boot/module parameter. Note that this option does not affect
-	  devices conforming to SCSI-3 or higher as they can explicitely report
-	  their number of LUNs. It is safe to say Y here unless you have one of
-	  those rare devices which reacts in an unexpected way when probed for
-	  multiple LUNs.
+	  If you have a SCSI device that supports more than one LUN (Logical
+	  Unit Number), e.g. a CD jukebox, and only one LUN is detected, you
+	  can say Y here to force the SCSI driver to probe for multiple LUNs.
+	  A SCSI device with multiple LUNs acts logically like multiple SCSI
+	  devices. The vast majority of SCSI devices have only one LUN, and
+	  so most people can say N here. The max_luns boot/module parameter 
+	  allows to override this setting.
 
 config SCSI_CONSTANTS
 	bool "Verbose SCSI error reporting (kernel size +=12K)"
@@ -230,15 +224,14 @@ config SCSI_LOGGING
 	  can enable logging by saying Y to "/proc file system support" and
 	  "Sysctl support" below and executing the command
 
-	  echo <bitmask> > /proc/sys/dev/scsi/logging_level
+	  echo "scsi log token [level]" > /proc/scsi/scsi
 
-	  where <bitmask> is a four byte value representing the logging type
-	  and logging level for each type of logging selected.
+	  at boot time after the /proc file system has been mounted.
 
-	  There are a number of logging types and you can find them in the
-	  source at <file:drivers/scsi/scsi_logging.h>. The logging levels
-	  are also described in that file and they determine the verbosity of
-	  the logging for each logging type.
+	  There are a number of things that can be used for 'token' (you can
+	  find them in the source: <file:drivers/scsi/scsi.c>), and this
+	  allows you to select the types of information you want, and the
+	  level allows you to select the level of verbosity.
 
 	  If you say N here, it may be harder to track down some types of SCSI
 	  problems. If you say Y here your kernel will be somewhat larger, but
@@ -264,21 +257,10 @@ config SCSI_SCAN_ASYNC
 	  or async on the kernel's command line.
 
 config SCSI_WAIT_SCAN
-	tristate  # No prompt here, this is an invisible symbol.
+	tristate
 	default m
 	depends on SCSI
 	depends on MODULES
-# scsi_wait_scan is a loadable module which waits until all the async scans are
-# complete.  The idea is to use it in initrd/ initramfs scripts.  You modprobe
-# it after all the modprobes of the root SCSI drivers and it will wait until
-# they have all finished scanning their buses before allowing the boot to
-# proceed.  (This method is not applicable if targets boot independently in
-# parallel with the initiator, or with transports with non-deterministic target
-# discovery schemes, or if a transport driver does not support scsi_wait_scan.)
-#
-# This symbol is not exposed as a prompt because little is to be gained by
-# disabling it, whereas people who accidentally switch it off may wonder why
-# their mkinitrd gets into trouble.
 
 menu "SCSI Transports"
 	depends on SCSI
@@ -370,17 +352,7 @@ config ISCSI_TCP
 
 	 http://open-iscsi.org
 
-config ISCSI_BOOT_SYSFS
-	tristate "iSCSI Boot Sysfs Interface"
-	default	n
-	help
-	  This option enables support for exposing iSCSI boot information
-	  via sysfs to userspace. If you wish to export this information,
-	  say Y. Otherwise, say N.
-
 source "drivers/scsi/cxgb3i/Kconfig"
-source "drivers/scsi/bnx2i/Kconfig"
-source "drivers/scsi/be2iscsi/Kconfig"
 
 config SGIWD93_SCSI
 	tristate "SGI WD93C93 SCSI Driver"
@@ -402,16 +374,6 @@ config BLK_DEV_3W_XXXX_RAID
 	  Please read the comments at the top of
 	  <file:drivers/scsi/3w-xxxx.c>.
 
-config SCSI_HPSA
-	tristate "HP Smart Array SCSI driver"
-	depends on PCI && SCSI
-	help
-	  This driver supports HP Smart Array Controllers (circa 2009).
-	  It is a SCSI alternative to the cciss driver, which is a block
-	  driver.  Anyone wishing to use HP Smart Array controllers who
-	  would prefer the devices be presented to linux as SCSI devices,
-	  rather than as generic block devices should say Y here.
-
 config SCSI_3W_9XXX
 	tristate "3ware 9xxx SATA-RAID support"
 	depends on PCI && SCSI
@@ -422,17 +384,6 @@ config SCSI_3W_9XXX
 
 	  Please read the comments at the top of
 	  <file:drivers/scsi/3w-9xxx.c>.
-
-config SCSI_3W_SAS
-	tristate "3ware 97xx SAS/SATA-RAID support"
-	depends on PCI && SCSI
-	help
-	  This driver supports the LSI 3ware 9750 6Gb/s SAS/SATA-RAID cards.
-
-	  <http://www.lsi.com>
-
-	  Please read the comments at the top of
-	  <file:drivers/scsi/3w-sas.c>.
 
 config SCSI_7000FASST
 	tristate "7000FASST SCSI support"
@@ -555,7 +506,6 @@ config SCSI_AIC7XXX_OLD
 
 source "drivers/scsi/aic7xxx/Kconfig.aic79xx"
 source "drivers/scsi/aic94xx/Kconfig"
-source "drivers/scsi/mvsas/Kconfig"
 
 config SCSI_DPT_I2O
 	tristate "Adaptec I2O RAID support "
@@ -620,7 +570,6 @@ config SCSI_ARCMSR_AER
 	  To enable this function, choose Y here.
 
 source "drivers/scsi/megaraid/Kconfig.megaraid"
-source "drivers/scsi/mpt2sas/Kconfig"
 
 config SCSI_HPTIOP
 	tristate "HighPoint RocketRAID 3xxx/4xxx Controller support"
@@ -656,44 +605,18 @@ config SCSI_FLASHPOINT
 	  substantial, so users of MultiMaster Host Adapters may not
 	  wish to include it.
 
-config VMWARE_PVSCSI
-	tristate "VMware PVSCSI driver support"
-	depends on PCI && SCSI && X86
-	help
-	  This driver supports VMware's para virtualized SCSI HBA.
-	  To compile this driver as a module, choose M here: the
-	  module will be called vmw_pvscsi.
-
 config LIBFC
 	tristate "LibFC module"
 	select SCSI_FC_ATTRS
-	select CRC32
 	---help---
 	  Fibre Channel library module
-
-config LIBFCOE
-	tristate "LibFCoE module"
-	select LIBFC
-	---help---
-	  Library for Fibre Channel over Ethernet module
 
 config FCOE
 	tristate "FCoE module"
 	depends on PCI
-	select LIBFCOE
+	select LIBFC
 	---help---
 	  Fibre Channel over Ethernet module
-
-config FCOE_FNIC
-	tristate "Cisco FNIC Driver"
-	depends on PCI && X86
-	select LIBFCOE
-	help
-	  This is support for the Cisco PCI-Express FCoE HBA.
-
-	  To compile this driver as a module, choose M here and read
-	  <file:Documentation/scsi/scsi.txt>.
-	  The module will be called fnic.
 
 config SCSI_DMX3191D
 	tristate "DMX3191D SCSI support"
@@ -1106,6 +1029,16 @@ config SCSI_IZIP_SLOW_CTR
 
 	  Generally, saying N is fine.
 
+config SCSI_MVSAS
+	tristate "Marvell 88SE6440 SAS/SATA support"
+	depends on PCI && SCSI
+	select SCSI_SAS_LIBSAS
+	help
+	  This driver supports Marvell SAS/SATA PCI devices.
+
+	  To compiler this driver as a module, choose M here: the module
+	  will be called mvsas.
+
 config SCSI_NCR53C406A
 	tristate "NCR53c406a SCSI support"
 	depends on ISA && SCSI
@@ -1444,7 +1377,7 @@ config SCSI_LPFC_DEBUG_FS
 	bool "Emulex LightPulse Fibre Channel debugfs Support"
 	depends on SCSI_LPFC && DEBUG_FS
 	help
-	  This makes debugging information from the lpfc driver
+	  This makes debugging infomation from the lpfc driver
 	  available via the debugfs filesystem.
 
 config SCSI_SIM710
@@ -1452,7 +1385,7 @@ config SCSI_SIM710
 	depends on (EISA || MCA) && SCSI
 	select SCSI_SPI_ATTRS
 	---help---
-	  This driver is for NCR53c710 based SCSI host adapters.
+	  This driver for NCR53c710 based SCSI host adapters.
 
 	  It currently supports Compaq EISA cards and NCR MCA cards
 
@@ -1602,7 +1535,6 @@ config SCSI_NSP32
 config SCSI_DEBUG
 	tristate "SCSI debugging host simulator"
 	depends on SCSI
-	select CRC_T10DIF
 	help
 	  This is a host adapter simulator that can simulate multiple hosts
 	  each with multiple dummy SCSI devices (disks). It defaults to one
@@ -1855,24 +1787,6 @@ config ZFCP
           called zfcp. If you want to compile it as a module, say M here
           and read <file:Documentation/kbuild/modules.txt>.
 
-config ZFCP_DIF
-	tristate "T10 DIF/DIX support for the zfcp driver (EXPERIMENTAL)"
-	depends on ZFCP && EXPERIMENTAL
-
-config SCSI_PMCRAID
-	tristate "PMC SIERRA Linux MaxRAID adapter support"
-	depends on PCI && SCSI && NET
-	---help---
-	  This driver supports the PMC SIERRA MaxRAID adapters.
-
-config SCSI_PM8001
-	tristate "PMC-Sierra SPC 8001 SAS/SATA Based Host Adapter driver"
-	depends on PCI && SCSI
-	select SCSI_SAS_LIBSAS
-	help
-	  This driver supports PMC-Sierra PCIE SAS/SATA 8x6G SPC 8001 chip
-	  based host adapters.
-
 config SCSI_SRP
 	tristate "SCSI RDMA Protocol helper library"
 	depends on SCSI && PCI
@@ -1883,22 +1797,10 @@ config SCSI_SRP
 	  To compile this driver as a module, choose M here: the
 	  module will be called libsrp.
 
-config SCSI_BFA_FC
-	tristate "Brocade BFA Fibre Channel Support"
-	depends on PCI && SCSI
-	select SCSI_FC_ATTRS
-	help
-	  This bfa driver supports all Brocade PCIe FC/FCOE host adapters.
-
-	  To compile this driver as a module, choose M here. The module will
-	  be called bfa.
-
 endif # SCSI_LOWLEVEL
 
 source "drivers/scsi/pcmcia/Kconfig"
 
 source "drivers/scsi/device_handler/Kconfig"
-
-source "drivers/scsi/osd/Kconfig"
 
 endmenu

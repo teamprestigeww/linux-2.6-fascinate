@@ -225,7 +225,7 @@ ahc_linux_pci_dev_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		ahc_get_pci_bus(pci),
 		ahc_get_pci_slot(pci),
 		ahc_get_pci_function(pci));
-	name = kmalloc(strlen(buf) + 1, GFP_ATOMIC);
+	name = malloc(strlen(buf) + 1, M_DEVBUF, M_NOWAIT);
 	if (name == NULL)
 		return (-ENOMEM);
 	strcpy(name, buf);
@@ -241,10 +241,10 @@ ahc_linux_pci_dev_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (sizeof(dma_addr_t) > 4
 	    && ahc->features & AHC_LARGE_SCBS
 	    && dma_set_mask(dev, mask_39bit) == 0
-	    && dma_get_required_mask(dev) > DMA_BIT_MASK(32)) {
+	    && dma_get_required_mask(dev) > DMA_32BIT_MASK) {
 		ahc->flags |= AHC_39BIT_ADDRESSING;
 	} else {
-		if (dma_set_mask(dev, DMA_BIT_MASK(32))) {
+		if (dma_set_mask(dev, DMA_32BIT_MASK)) {
 			ahc_free(ahc);
 			printk(KERN_WARNING "aic7xxx: No suitable DMA available.\n");
                 	return (-ENODEV);
@@ -412,7 +412,7 @@ ahc_pci_map_registers(struct ahc_softc *ahc)
 		 */
 		if (ahc_pci_test_register_access(ahc) != 0) {
 
-			printk("aic7xxx: PCI Device %d:%d:%d "
+			printf("aic7xxx: PCI Device %d:%d:%d "
 			       "failed memory mapped test.  Using PIO.\n",
 			       ahc_get_pci_bus(ahc->dev_softc),
 			       ahc_get_pci_slot(ahc->dev_softc),
@@ -425,7 +425,7 @@ ahc_pci_map_registers(struct ahc_softc *ahc)
 		} else
 			command |= PCIM_CMD_MEMEN;
 	} else {
-		printk("aic7xxx: PCI%d:%d:%d MEM region 0x%llx "
+		printf("aic7xxx: PCI%d:%d:%d MEM region 0x%llx "
 		       "unavailable. Cannot memory map device.\n",
 		       ahc_get_pci_bus(ahc->dev_softc),
 		       ahc_get_pci_slot(ahc->dev_softc),
@@ -444,7 +444,7 @@ ahc_pci_map_registers(struct ahc_softc *ahc)
 			ahc->bsh.ioport = (u_long)base;
 			command |= PCIM_CMD_PORTEN;
 		} else {
-			printk("aic7xxx: PCI%d:%d:%d IO region 0x%llx[0..255] "
+			printf("aic7xxx: PCI%d:%d:%d IO region 0x%llx[0..255] "
 			       "unavailable. Cannot map device.\n",
 			       ahc_get_pci_bus(ahc->dev_softc),
 			       ahc_get_pci_slot(ahc->dev_softc),

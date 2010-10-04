@@ -55,6 +55,7 @@ int main(void)
 	DEFINE(LRET,  offsetof(struct pt_regs, pc)       - sizeof(long));
 
 	DEFINE(PT_PTRACED, PT_PTRACED);
+	DEFINE(PT_DTRACE, PT_DTRACE);
 
 	return 0;
 }

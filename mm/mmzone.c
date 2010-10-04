@@ -6,7 +6,6 @@
 
 
 #include <linux/stddef.h>
-#include <linux/mm.h>
 #include <linux/mmzone.h>
 #include <linux/module.h>
 
@@ -73,38 +72,3 @@ struct zoneref *next_zones_zonelist(struct zoneref *z,
 	*zone = zonelist_zone(z);
 	return z;
 }
-
-#ifdef CONFIG_ARCH_HAS_HOLES_MEMORYMODEL
-int memmap_valid_within(unsigned long pfn,
-					struct page *page, struct zone *zone)
-{
-	if (page_to_pfn(page) != pfn)
-		return 0;
-
-	if (page_zone(page) != zone)
-		return 0;
-
-	return 1;
-}
-#endif /* CONFIG_ARCH_HAS_HOLES_MEMORYMODEL */
-
-#ifdef CONFIG_SMP
-/* Called when a more accurate view of NR_FREE_PAGES is needed */
-unsigned long zone_nr_free_pages(struct zone *zone)
-{
-	unsigned long nr_free_pages = zone_page_state(zone, NR_FREE_PAGES);
-
-	/*
-	 * While kswapd is awake, it is considered the zone is under some
-	 * memory pressure. Under pressure, there is a risk that
-	 * per-cpu-counter-drift will allow the min watermark to be breached
-	 * potentially causing a live-lock. While kswapd is awake and
-	 * free pages are low, get a better estimate for free pages
-	 */
-	if (nr_free_pages < zone->percpu_drift_mark &&
-			!waitqueue_active(&zone->zone_pgdat->kswapd_wait))
-		return zone_page_state_snapshot(zone, NR_FREE_PAGES);
-
-	return nr_free_pages;
-}
-#endif /* CONFIG_SMP */

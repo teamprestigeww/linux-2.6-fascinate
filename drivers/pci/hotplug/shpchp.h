@@ -48,10 +48,10 @@ extern int shpchp_debug;
 extern struct workqueue_struct *shpchp_wq;
 
 #define dbg(format, arg...)						\
-do {									\
-	if (shpchp_debug)						\
-		printk(KERN_DEBUG "%s: " format, MY_NAME , ## arg);	\
-} while (0)
+	do {								\
+		if (shpchp_debug)					\
+			printk("%s: " format, MY_NAME , ## arg);	\
+	} while (0)
 #define err(format, arg...)						\
 	printk(KERN_ERR "%s: " format, MY_NAME , ## arg)
 #define info(format, arg...)						\
@@ -62,7 +62,7 @@ do {									\
 #define ctrl_dbg(ctrl, format, arg...)					\
 	do {								\
 		if (shpchp_debug)					\
-			dev_printk(KERN_DEBUG, &ctrl->pci_dev->dev,	\
+			dev_printk(, &ctrl->pci_dev->dev,		\
 					format, ## arg);		\
 	} while (0)
 #define ctrl_err(ctrl, format, arg...)					\
@@ -121,7 +121,7 @@ struct controller {
 #define PCI_DEVICE_ID_AMD_GOLAM_7450	0x7450
 #define PCI_DEVICE_ID_AMD_POGO_7458	0x7458
 
-/* AMD PCI-X bridge registers */
+/* AMD PCIX bridge registers */
 #define PCIX_MEM_BASE_LIMIT_OFFSET	0x1C
 #define PCIX_MISCII_OFFSET		0x48
 #define PCIX_MISC_BRIDGE_ERRORS_OFFSET	0x80
@@ -188,12 +188,21 @@ static inline const char *slot_name(struct slot *slot)
 
 #ifdef CONFIG_ACPI
 #include <linux/pci-acpi.h>
+static inline int get_hp_params_from_firmware(struct pci_dev *dev,
+					      struct hotplug_params *hpp)
+{
+	if (ACPI_FAILURE(acpi_get_hp_params_from_firmware(dev->bus, hpp)))
+			return -ENODEV;
+	return 0;
+}
+
 static inline int get_hp_hw_control_from_firmware(struct pci_dev *dev)
 {
 	u32 flags = OSC_SHPC_NATIVE_HP_CONTROL;
 	return acpi_get_hp_hw_control_from_firmware(dev, flags);
 }
 #else
+#define get_hp_params_from_firmware(dev, hpp) (-ENODEV)
 #define get_hp_hw_control_from_firmware(dev) (0)
 #endif
 
@@ -333,6 +342,8 @@ struct hpc_ops {
 	int (*set_attention_status)(struct slot *slot, u8 status);
 	int (*get_latch_status)(struct slot *slot, u8 *status);
 	int (*get_adapter_status)(struct slot *slot, u8 *status);
+	int (*get_max_bus_speed)(struct slot *slot, enum pci_bus_speed *speed);
+	int (*get_cur_bus_speed)(struct slot *slot, enum pci_bus_speed *speed);
 	int (*get_adapter_speed)(struct slot *slot, enum pci_bus_speed *speed);
 	int (*get_mode1_ECC_cap)(struct slot *slot, u8 *mode);
 	int (*get_prog_int)(struct slot *slot, u8 *prog_int);

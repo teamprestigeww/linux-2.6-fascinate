@@ -1,4 +1,6 @@
 /*
+ *	linux/arch/mips/dec/ioasic-irq.c
+ *
  *	DEC I/O ASIC interrupts.
  *
  *	Copyright (c) 2002, 2003  Maciej W. Rozycki

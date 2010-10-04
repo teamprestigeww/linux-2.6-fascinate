@@ -215,7 +215,7 @@ static int cx24108_tuner_set_params(struct dvb_frontend* fe, struct dvb_frontend
 		freq = 2150000; /* satellite IF is 950..2150MHz */
 
 	/* decide which VCO to use for the input frequency */
-	for(i = 1; (i < ARRAY_SIZE(osci) - 1) && (osci[i] < freq); i++);
+	for(i = 1; (i < ARRAY_SIZE(osci)) && (osci[i] < freq); i++);
 	printk("cx24108 debug: select vco #%d (f=%d)\n",i,freq);
 	band=bandsel[i];
 	/* the gain values must be set by SetSymbolrate */
@@ -814,7 +814,7 @@ static int __devinit dvb_bt8xx_probe(struct bttv_sub_device *sub)
 
 	mutex_init(&card->lock);
 	card->bttv_nr = sub->core->nr;
-	strlcpy(card->card_name, sub->core->v4l2_dev.name, sizeof(card->card_name));
+	strncpy(card->card_name, sub->core->name, sizeof(sub->core->name));
 	card->i2c_adapter = &sub->core->i2c_adap;
 
 	switch(sub->core->type) {

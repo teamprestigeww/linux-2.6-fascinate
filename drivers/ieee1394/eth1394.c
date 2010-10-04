@@ -169,11 +169,10 @@ static int ether1394_header_cache(const struct neighbour *neigh,
 static void ether1394_header_cache_update(struct hh_cache *hh,
 					  const struct net_device *dev,
 					  const unsigned char *haddr);
-static netdev_tx_t ether1394_tx(struct sk_buff *skb,
-				struct net_device *dev);
+static int ether1394_tx(struct sk_buff *skb, struct net_device *dev);
 static void ether1394_iso(struct hpsb_iso *iso);
 
-static const struct ethtool_ops ethtool_ops;
+static struct ethtool_ops ethtool_ops;
 
 static int ether1394_write(struct hpsb_host *host, int srcid, int destid,
 			   quadlet_t *data, u64 addr, size_t len, u16 flags);
@@ -182,7 +181,7 @@ static void ether1394_remove_host(struct hpsb_host *host);
 static void ether1394_host_reset(struct hpsb_host *host);
 
 /* Function for incoming 1394 packets */
-static const struct hpsb_address_ops addr_ops = {
+const static struct hpsb_address_ops addr_ops = {
 	.write =	ether1394_write,
 };
 
@@ -362,7 +361,7 @@ static int eth1394_new_node(struct eth1394_host_info *hi,
 	node_info->pdg.sz = 0;
 	node_info->fifo = CSR1212_INVALID_ADDR_SPACE;
 
-	dev_set_drvdata(&ud->device, node_info);
+	ud->device.driver_data = node_info;
 	new_node->ud = ud;
 
 	priv = netdev_priv(hi->dev);
@@ -407,7 +406,7 @@ static int eth1394_remove(struct device *dev)
 	list_del(&old_node->list);
 	kfree(old_node);
 
-	node_info = dev_get_drvdata(&ud->device);
+	node_info = (struct eth1394_node_info*)ud->device.driver_data;
 
 	spin_lock_irqsave(&node_info->pdg.lock, flags);
 	/* The partial datagram list should be empty, but we'll just
@@ -417,7 +416,7 @@ static int eth1394_remove(struct device *dev)
 	spin_unlock_irqrestore(&node_info->pdg.lock, flags);
 
 	kfree(node_info);
-	dev_set_drvdata(&ud->device, NULL);
+	ud->device.driver_data = NULL;
 	return 0;
 }
 
@@ -439,7 +438,7 @@ static int eth1394_update(struct unit_directory *ud)
 	return eth1394_new_node(hi, ud);
 }
 
-static const struct ieee1394_device_id eth1394_id_table[] = {
+static struct ieee1394_device_id eth1394_id_table[] = {
 	{
 		.match_flags = (IEEE1394_MATCH_SPECIFIER_ID |
 				IEEE1394_MATCH_VERSION),
@@ -689,7 +688,7 @@ static void ether1394_host_reset(struct hpsb_host *host)
 	ether1394_reset_priv(dev, 0);
 
 	list_for_each_entry(node, &priv->ip_node_list, list) {
-		node_info = dev_get_drvdata(&node->ud->device);
+		node_info = node->ud->device.driver_data;
 
 		spin_lock_irqsave(&node_info->pdg.lock, flags);
 
@@ -873,7 +872,8 @@ static __be16 ether1394_parse_encap(struct sk_buff *skb, struct net_device *dev,
 		if (!node)
 			return cpu_to_be16(0);
 
-		node_info = dev_get_drvdata(&node->ud->device);
+		node_info =
+		    (struct eth1394_node_info *)node->ud->device.driver_data;
 
 		/* Update our speed/payload/fifo_offset table */
 		node_info->maxpayload =	maxpayload;
@@ -1080,7 +1080,7 @@ static int ether1394_data_handler(struct net_device *dev, int srcid, int destid,
 		priv->ud_list[NODEID_TO_NODE(srcid)] = ud;
 	}
 
-	node_info = dev_get_drvdata(&ud->device);
+	node_info = (struct eth1394_node_info *)ud->device.driver_data;
 
 	/* First, did we receive a fragmented or unfragmented datagram? */
 	hdr->words.word1 = ntohs(hdr->words.word1);
@@ -1258,6 +1258,7 @@ static void ether1394_iso(struct hpsb_iso *iso)
 	char *buf;
 	struct eth1394_host_info *hi;
 	struct net_device *dev;
+	struct eth1394_priv *priv;
 	unsigned int len;
 	u32 specifier_id;
 	u16 source_id;
@@ -1287,6 +1288,8 @@ static void ether1394_iso(struct hpsb_iso *iso)
 			       (be32_to_cpu(data[1]) & 0xff000000) >> 24;
 		source_id = be32_to_cpu(data[0]) >> 16;
 
+		priv = netdev_priv(dev);
+
 		if (info->channel != (iso->host->csr.broadcast_channel & 0x3f)
 		    || specifier_id != ETHER1394_GASP_SPECIFIER_ID) {
 			/* This packet is not for us */
@@ -1298,6 +1301,7 @@ static void ether1394_iso(struct hpsb_iso *iso)
 
 	hpsb_iso_recv_release_packets(iso, i);
 
+	dev->last_rx = jiffies;
 }
 
 /******************************************
@@ -1552,8 +1556,7 @@ static void ether1394_complete_cb(void *__ptask)
 }
 
 /* Transmit a packet (called by kernel) */
-static netdev_tx_t ether1394_tx(struct sk_buff *skb,
-				struct net_device *dev)
+static int ether1394_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct eth1394hdr hdr_buf;
 	struct eth1394_priv *priv = netdev_priv(dev);
@@ -1614,7 +1617,8 @@ static netdev_tx_t ether1394_tx(struct sk_buff *skb,
 		if (!node)
 			goto fail;
 
-		node_info = dev_get_drvdata(&node->ud->device);
+		node_info =
+		    (struct eth1394_node_info *)node->ud->device.driver_data;
 		if (node_info->fifo == CSR1212_INVALID_ADDR_SPACE)
 			goto fail;
 
@@ -1692,6 +1696,14 @@ fail:
 	dev->stats.tx_errors++;
 	spin_unlock_irqrestore(&priv->lock, flags);
 
+	/*
+	 * FIXME: According to a patch from 2003-02-26, "returning non-zero
+	 * causes serious problems" here, allegedly.  Before that patch,
+	 * -ERRNO was returned which is not appropriate under Linux 2.6.
+	 * Perhaps more needs to be done?  Stop the queue in serious
+	 * conditions and restart it elsewhere?
+	 */
+	/* return NETDEV_TX_BUSY; */
 	return NETDEV_TX_OK;
 }
 
@@ -1702,7 +1714,7 @@ static void ether1394_get_drvinfo(struct net_device *dev,
 	strcpy(info->bus_info, "ieee1394"); /* FIXME provide more detail? */
 }
 
-static const struct ethtool_ops ethtool_ops = {
+static struct ethtool_ops ethtool_ops = {
 	.get_drvinfo = ether1394_get_drvinfo
 };
 

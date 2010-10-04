@@ -1,10 +1,11 @@
 /*
- * core function to access sclp interface
+ *  drivers/s390/char/sclp.c
+ *     core function to access sclp interface
  *
- * Copyright IBM Corp. 1999, 2009
- *
- * Author(s): Martin Peschke <mpeschke@de.ibm.com>
- *	      Martin Schwidefsky <schwidefsky@de.ibm.com>
+ *  S390 version
+ *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Author(s): Martin Peschke <mpeschke@de.ibm.com>
+ *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
 #include <linux/module.h>
@@ -15,9 +16,6 @@
 #include <linux/reboot.h>
 #include <linux/jiffies.h>
 #include <linux/init.h>
-#include <linux/suspend.h>
-#include <linux/completion.h>
-#include <linux/platform_device.h>
 #include <asm/types.h>
 #include <asm/s390_ext.h>
 
@@ -48,16 +46,6 @@ static struct sclp_req sclp_read_req;
 static struct sclp_req sclp_init_req;
 static char sclp_read_sccb[PAGE_SIZE] __attribute__((__aligned__(PAGE_SIZE)));
 static char sclp_init_sccb[PAGE_SIZE] __attribute__((__aligned__(PAGE_SIZE)));
-
-/* Suspend request */
-static DECLARE_COMPLETION(sclp_request_queue_flushed);
-
-static void sclp_suspend_req_cb(struct sclp_req *req, void *data)
-{
-	complete(&sclp_request_queue_flushed);
-}
-
-static struct sclp_req sclp_suspend_req;
 
 /* Timer for request retries. */
 static struct timer_list sclp_request_timer;
@@ -95,12 +83,6 @@ static volatile enum sclp_mask_state_t {
 	sclp_mask_state_idle,
 	sclp_mask_state_initializing
 } sclp_mask_state = sclp_mask_state_idle;
-
-/* Internal state: is the driver suspended? */
-static enum sclp_suspend_state_t {
-	sclp_suspend_state_running,
-	sclp_suspend_state_suspended,
-} sclp_suspend_state = sclp_suspend_state_running;
 
 /* Maximum retry counts */
 #define SCLP_INIT_RETRY		3
@@ -196,7 +178,7 @@ __sclp_start_request(struct sclp_req *req)
 	req->start_count++;
 
 	if (rc == 0) {
-		/* Successfully started request */
+		/* Sucessfully started request */
 		req->status = SCLP_REQ_RUNNING;
 		sclp_running_state = sclp_running_state_running;
 		__sclp_set_request_timer(SCLP_RETRY_INTERVAL * HZ,
@@ -229,8 +211,6 @@ sclp_process_queue(void)
 	del_timer(&sclp_request_timer);
 	while (!list_empty(&sclp_req_queue)) {
 		req = list_entry(sclp_req_queue.next, struct sclp_req, list);
-		if (!req->sccb)
-			goto do_post;
 		rc = __sclp_start_request(req);
 		if (rc == 0)
 			break;
@@ -242,7 +222,6 @@ sclp_process_queue(void)
 						 sclp_request_timeout, 0);
 			break;
 		}
-do_post:
 		/* Post-processing for aborted request */
 		list_del(&req->list);
 		if (req->callback) {
@@ -254,19 +233,6 @@ do_post:
 	spin_unlock_irqrestore(&sclp_lock, flags);
 }
 
-static int __sclp_can_add_request(struct sclp_req *req)
-{
-	if (req == &sclp_suspend_req || req == &sclp_init_req)
-		return 1;
-	if (sclp_suspend_state != sclp_suspend_state_running)
-		return 0;
-	if (sclp_init_state != sclp_init_state_initialized)
-		return 0;
-	if (sclp_activation_state != sclp_activation_state_active)
-		return 0;
-	return 1;
-}
-
 /* Queue a new request. Return zero on success, non-zero otherwise. */
 int
 sclp_add_request(struct sclp_req *req)
@@ -275,7 +241,9 @@ sclp_add_request(struct sclp_req *req)
 	int rc;
 
 	spin_lock_irqsave(&sclp_lock, flags);
-	if (!__sclp_can_add_request(req)) {
+	if ((sclp_init_state != sclp_init_state_initialized ||
+	     sclp_activation_state != sclp_activation_state_active) &&
+	    req != &sclp_init_req) {
 		spin_unlock_irqrestore(&sclp_lock, flags);
 		return -EIO;
 	}
@@ -286,16 +254,10 @@ sclp_add_request(struct sclp_req *req)
 	/* Start if request is first in list */
 	if (sclp_running_state == sclp_running_state_idle &&
 	    req->list.prev == &sclp_req_queue) {
-		if (!req->sccb) {
-			list_del(&req->list);
-			rc = -ENODATA;
-			goto out;
-		}
 		rc = __sclp_start_request(req);
 		if (rc)
 			list_del(&req->list);
 	}
-out:
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	return rc;
 }
@@ -598,7 +560,6 @@ sclp_register(struct sclp_register *reg)
 	/* Trigger initial state change callback */
 	reg->sclp_receive_mask = 0;
 	reg->sclp_send_mask = 0;
-	reg->pm_event_posted = 0;
 	list_add(&reg->list, &sclp_reg_list);
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	rc = sclp_init_mask(1);
@@ -919,134 +880,20 @@ static struct notifier_block sclp_reboot_notifier = {
 	.notifier_call = sclp_reboot_event
 };
 
-/*
- * Suspend/resume SCLP notifier implementation
- */
-
-static void sclp_pm_event(enum sclp_pm_event sclp_pm_event, int rollback)
-{
-	struct sclp_register *reg;
-	unsigned long flags;
-
-	if (!rollback) {
-		spin_lock_irqsave(&sclp_lock, flags);
-		list_for_each_entry(reg, &sclp_reg_list, list)
-			reg->pm_event_posted = 0;
-		spin_unlock_irqrestore(&sclp_lock, flags);
-	}
-	do {
-		spin_lock_irqsave(&sclp_lock, flags);
-		list_for_each_entry(reg, &sclp_reg_list, list) {
-			if (rollback && reg->pm_event_posted)
-				goto found;
-			if (!rollback && !reg->pm_event_posted)
-				goto found;
-		}
-		spin_unlock_irqrestore(&sclp_lock, flags);
-		return;
-found:
-		spin_unlock_irqrestore(&sclp_lock, flags);
-		if (reg->pm_event_fn)
-			reg->pm_event_fn(reg, sclp_pm_event);
-		reg->pm_event_posted = rollback ? 0 : 1;
-	} while (1);
-}
-
-/*
- * Susend/resume callbacks for platform device
- */
-
-static int sclp_freeze(struct device *dev)
-{
-	unsigned long flags;
-	int rc;
-
-	sclp_pm_event(SCLP_PM_EVENT_FREEZE, 0);
-
-	spin_lock_irqsave(&sclp_lock, flags);
-	sclp_suspend_state = sclp_suspend_state_suspended;
-	spin_unlock_irqrestore(&sclp_lock, flags);
-
-	/* Init supend data */
-	memset(&sclp_suspend_req, 0, sizeof(sclp_suspend_req));
-	sclp_suspend_req.callback = sclp_suspend_req_cb;
-	sclp_suspend_req.status = SCLP_REQ_FILLED;
-	init_completion(&sclp_request_queue_flushed);
-
-	rc = sclp_add_request(&sclp_suspend_req);
-	if (rc == 0)
-		wait_for_completion(&sclp_request_queue_flushed);
-	else if (rc != -ENODATA)
-		goto fail_thaw;
-
-	rc = sclp_deactivate();
-	if (rc)
-		goto fail_thaw;
-	return 0;
-
-fail_thaw:
-	spin_lock_irqsave(&sclp_lock, flags);
-	sclp_suspend_state = sclp_suspend_state_running;
-	spin_unlock_irqrestore(&sclp_lock, flags);
-	sclp_pm_event(SCLP_PM_EVENT_THAW, 1);
-	return rc;
-}
-
-static int sclp_undo_suspend(enum sclp_pm_event event)
-{
-	unsigned long flags;
-	int rc;
-
-	rc = sclp_reactivate();
-	if (rc)
-		return rc;
-
-	spin_lock_irqsave(&sclp_lock, flags);
-	sclp_suspend_state = sclp_suspend_state_running;
-	spin_unlock_irqrestore(&sclp_lock, flags);
-
-	sclp_pm_event(event, 0);
-	return 0;
-}
-
-static int sclp_thaw(struct device *dev)
-{
-	return sclp_undo_suspend(SCLP_PM_EVENT_THAW);
-}
-
-static int sclp_restore(struct device *dev)
-{
-	return sclp_undo_suspend(SCLP_PM_EVENT_RESTORE);
-}
-
-static const struct dev_pm_ops sclp_pm_ops = {
-	.freeze		= sclp_freeze,
-	.thaw		= sclp_thaw,
-	.restore	= sclp_restore,
-};
-
-static struct platform_driver sclp_pdrv = {
-	.driver = {
-		.name	= "sclp",
-		.owner	= THIS_MODULE,
-		.pm	= &sclp_pm_ops,
-	},
-};
-
-static struct platform_device *sclp_pdev;
-
 /* Initialize SCLP driver. Return zero if driver is operational, non-zero
  * otherwise. */
 static int
 sclp_init(void)
 {
 	unsigned long flags;
-	int rc = 0;
+	int rc;
 
 	spin_lock_irqsave(&sclp_lock, flags);
 	/* Check for previous or running initialization */
-	if (sclp_init_state != sclp_init_state_uninitialized)
-		goto fail_unlock;
+	if (sclp_init_state != sclp_init_state_uninitialized) {
+		spin_unlock_irqrestore(&sclp_lock, flags);
+		return 0;
+	}
 	sclp_init_state = sclp_init_state_initializing;
 	/* Set up variables */
 	INIT_LIST_HEAD(&sclp_req_queue);
@@ -1057,17 +904,27 @@ sclp_init(void)
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	rc = sclp_check_interface();
 	spin_lock_irqsave(&sclp_lock, flags);
-	if (rc)
-		goto fail_init_state_uninitialized;
+	if (rc) {
+		sclp_init_state = sclp_init_state_uninitialized;
+		spin_unlock_irqrestore(&sclp_lock, flags);
+		return rc;
+	}
 	/* Register reboot handler */
 	rc = register_reboot_notifier(&sclp_reboot_notifier);
-	if (rc)
-		goto fail_init_state_uninitialized;
+	if (rc) {
+		sclp_init_state = sclp_init_state_uninitialized;
+		spin_unlock_irqrestore(&sclp_lock, flags);
+		return rc;
+	}
 	/* Register interrupt handler */
 	rc = register_early_external_interrupt(0x2401, sclp_interrupt_handler,
 					       &ext_int_info_hwc);
-	if (rc)
-		goto fail_unregister_reboot_notifier;
+	if (rc) {
+		unregister_reboot_notifier(&sclp_reboot_notifier);
+		sclp_init_state = sclp_init_state_uninitialized;
+		spin_unlock_irqrestore(&sclp_lock, flags);
+		return rc;
+	}
 	sclp_init_state = sclp_init_state_initialized;
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	/* Enable service-signal external interruption - needs to happen with
@@ -1075,56 +932,11 @@ sclp_init(void)
 	ctl_set_bit(0, 9);
 	sclp_init_mask(1);
 	return 0;
-
-fail_unregister_reboot_notifier:
-	unregister_reboot_notifier(&sclp_reboot_notifier);
-fail_init_state_uninitialized:
-	sclp_init_state = sclp_init_state_uninitialized;
-fail_unlock:
-	spin_unlock_irqrestore(&sclp_lock, flags);
-	return rc;
 }
-
-/*
- * SCLP panic notifier: If we are suspended, we thaw SCLP in order to be able
- * to print the panic message.
- */
-static int sclp_panic_notify(struct notifier_block *self,
-			     unsigned long event, void *data)
-{
-	if (sclp_suspend_state == sclp_suspend_state_suspended)
-		sclp_undo_suspend(SCLP_PM_EVENT_THAW);
-	return NOTIFY_OK;
-}
-
-static struct notifier_block sclp_on_panic_nb = {
-	.notifier_call = sclp_panic_notify,
-	.priority = SCLP_PANIC_PRIO,
-};
 
 static __init int sclp_initcall(void)
 {
-	int rc;
-
-	rc = platform_driver_register(&sclp_pdrv);
-	if (rc)
-		return rc;
-	sclp_pdev = platform_device_register_simple("sclp", -1, NULL, 0);
-	rc = IS_ERR(sclp_pdev) ? PTR_ERR(sclp_pdev) : 0;
-	if (rc)
-		goto fail_platform_driver_unregister;
-	rc = atomic_notifier_chain_register(&panic_notifier_list,
-					    &sclp_on_panic_nb);
-	if (rc)
-		goto fail_platform_device_unregister;
-
 	return sclp_init();
-
-fail_platform_device_unregister:
-	platform_device_unregister(sclp_pdev);
-fail_platform_driver_unregister:
-	platform_driver_unregister(&sclp_pdrv);
-	return rc;
 }
 
 arch_initcall(sclp_initcall);

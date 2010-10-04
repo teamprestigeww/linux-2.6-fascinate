@@ -22,7 +22,6 @@
 #include <linux/list.h>
 #include <linux/skbuff.h>
 #include <linux/poll.h>
-#include <net/net_namespace.h>
 
 struct ppp_channel;
 
@@ -36,12 +35,12 @@ struct ppp_channel_ops {
 
 struct ppp_channel {
 	void		*private;	/* channel private data */
-	const struct ppp_channel_ops *ops; /* operations for this channel */
+	struct ppp_channel_ops *ops;	/* operations for this channel */
 	int		mtu;		/* max transmit packet size */
 	int		hdrlen;		/* amount of headroom channel needs */
 	void		*ppp;		/* opaque to channel */
+	/* the following are not used at present */
 	int		speed;		/* transfer rate (bytes/second) */
-	/* the following is not used at present */
 	int		latency;	/* overhead time in milliseconds */
 };
 
@@ -57,9 +56,6 @@ extern void ppp_input(struct ppp_channel *, struct sk_buff *);
    that we may have missed a packet. */
 extern void ppp_input_error(struct ppp_channel *, int code);
 
-/* Attach a channel to a given PPP unit in specified net. */
-extern int ppp_register_net_channel(struct net *, struct ppp_channel *);
-
 /* Attach a channel to a given PPP unit. */
 extern int ppp_register_channel(struct ppp_channel *);
 
@@ -71,9 +67,6 @@ extern int ppp_channel_index(struct ppp_channel *);
 
 /* Get the unit number associated with a channel, or -1 if none */
 extern int ppp_unit_number(struct ppp_channel *);
-
-/* Get the device name associated with a channel, or NULL if none */
-extern char *ppp_dev_name(struct ppp_channel *);
 
 /*
  * SMP locking notes:

@@ -2,7 +2,6 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/blkdev.h>
-#include <linux/gfp.h>
 #include <scsi/scsi_host.h>
 #include <linux/ata.h>
 #include <linux/libata.h>
@@ -46,6 +45,8 @@ static const struct portinfo pata_icside_portinfo_v6_2 = {
 	.stepping	= 6,
 };
 
+#define PATA_ICSIDE_MAX_SG	128
+
 struct pata_icside_state {
 	void __iomem *irq_port;
 	void __iomem *ioc_base;
@@ -56,6 +57,7 @@ struct pata_icside_state {
 		u8 disabled;
 		unsigned int speed[ATA_MAX_DEVICES];
 	} port[2];
+	struct scatterlist sg[PATA_ICSIDE_MAX_SG];
 };
 
 struct pata_icside_info {
@@ -220,7 +222,9 @@ static void pata_icside_bmdma_setup(struct ata_queued_cmd *qc)
 {
 	struct ata_port *ap = qc->ap;
 	struct pata_icside_state *state = ap->host->private_data;
+	struct scatterlist *sg, *rsg = state->sg;
 	unsigned int write = qc->tf.flags & ATA_TFLAG_WRITE;
+	unsigned int si;
 
 	/*
 	 * We are simplex; BUG if we try to fiddle with DMA
@@ -229,12 +233,20 @@ static void pata_icside_bmdma_setup(struct ata_queued_cmd *qc)
 	BUG_ON(dma_channel_active(state->dma));
 
 	/*
+	 * Copy ATAs scattered sg list into a contiguous array of sg
+	 */
+	for_each_sg(qc->sg, sg, qc->n_elem, si) {
+		memcpy(rsg, sg, sizeof(*sg));
+		rsg++;
+	}
+
+	/*
 	 * Route the DMA signals to the correct interface
 	 */
 	writeb(state->port[ap->port_no].port_sel, state->ioc_base);
 
 	set_dma_speed(state->dma, state->port[ap->port_no].speed[qc->dev->devno]);
-	set_dma_sg(state->dma, qc->sg, qc->n_elem);
+	set_dma_sg(state->dma, state->sg, rsg - state->sg);
 	set_dma_mode(state->dma, write ? DMA_MODE_WRITE : DMA_MODE_READ);
 
 	/* issue r/w command */
@@ -285,7 +297,7 @@ static int icside_dma_init(struct pata_icside_info *info)
 
 	if (ec->dma != NO_DMA && !request_dma(ec->dma, DRV_NAME)) {
 		state->dma = ec->dma;
-		info->mwdma_mask = ATA_MWDMA2;
+		info->mwdma_mask = 0x07;	/* MW0..2 */
 	}
 
 	return 0;
@@ -294,8 +306,8 @@ static int icside_dma_init(struct pata_icside_info *info)
 
 static struct scsi_host_template pata_icside_sht = {
 	ATA_BASE_SHT(DRV_NAME),
-	.sg_tablesize		= SCSI_MAX_SG_CHAIN_SEGMENTS,
-	.dma_boundary		= IOMD_DMA_BOUNDARY,
+	.sg_tablesize		= PATA_ICSIDE_MAX_SG,
+	.dma_boundary		= ~0, /* no dma boundaries */
 };
 
 static void pata_icside_postreset(struct ata_link *link, unsigned int *classes)
@@ -321,7 +333,7 @@ static void pata_icside_postreset(struct ata_link *link, unsigned int *classes)
 }
 
 static struct ata_port_operations pata_icside_port_ops = {
-	.inherits		= &ata_bmdma_port_ops,
+	.inherits		= &ata_sff_port_ops,
 	/* no need to build any PRD tables for DMA */
 	.qc_prep		= ata_noop_qc_prep,
 	.sff_data_xfer		= ata_sff_data_xfer_noirq,
@@ -333,8 +345,7 @@ static struct ata_port_operations pata_icside_port_ops = {
 	.cable_detect		= ata_cable_40wire,
 	.set_dmamode		= pata_icside_set_dmamode,
 	.postreset		= pata_icside_postreset,
-
-	.port_start		= ATA_OP_NULL,	/* don't need PRD table */
+	.post_internal_cmd	= pata_icside_bmdma_stop,
 };
 
 static void __devinit
@@ -462,7 +473,7 @@ static int __devinit pata_icside_add_ports(struct pata_icside_info *info)
 	for (i = 0; i < info->nr_ports; i++) {
 		struct ata_port *ap = host->ports[i];
 
-		ap->pio_mask = ATA_PIO4;
+		ap->pio_mask = 0x1f;
 		ap->mwdma_mask = info->mwdma_mask;
 		ap->flags |= ATA_FLAG_SLAVE_POSS;
 		ap->ops = &pata_icside_port_ops;
@@ -470,7 +481,7 @@ static int __devinit pata_icside_add_ports(struct pata_icside_info *info)
 		pata_icside_setup_ioaddr(ap, info->base, info, info->port[i]);
 	}
 
-	return ata_host_activate(host, ec->irq, ata_bmdma_interrupt, 0,
+	return ata_host_activate(host, ec->irq, ata_sff_interrupt, 0,
 				 &pata_icside_sht);
 }
 

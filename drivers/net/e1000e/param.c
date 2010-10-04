@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel PRO/1000 Linux driver
-  Copyright(c) 1999 - 2010 Intel Corporation.
+  Copyright(c) 1999 - 2008 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -248,7 +248,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 	}
 
 	{ /* Transmit Interrupt Delay */
-		static const struct e1000_option opt = {
+		const struct e1000_option opt = {
 			.type = range_option,
 			.name = "Transmit Interrupt Delay",
 			.err  = "using default of "
@@ -267,7 +267,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 		}
 	}
 	{ /* Transmit Absolute Interrupt Delay */
-		static const struct e1000_option opt = {
+		const struct e1000_option opt = {
 			.type = range_option,
 			.name = "Transmit Absolute Interrupt Delay",
 			.err  = "using default of "
@@ -286,7 +286,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 		}
 	}
 	{ /* Receive Interrupt Delay */
-		static struct e1000_option opt = {
+		struct e1000_option opt = {
 			.type = range_option,
 			.name = "Receive Interrupt Delay",
 			.err  = "using default of "
@@ -305,7 +305,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 		}
 	}
 	{ /* Receive Absolute Interrupt Delay */
-		static const struct e1000_option opt = {
+		const struct e1000_option opt = {
 			.type = range_option,
 			.name = "Receive Absolute Interrupt Delay",
 			.err  = "using default of "
@@ -324,7 +324,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 		}
 	}
 	{ /* Interrupt Throttling Rate */
-		static const struct e1000_option opt = {
+		const struct e1000_option opt = {
 			.type = range_option,
 			.name = "Interrupt Throttling Rate (ints/sec)",
 			.err  = "using default of "
@@ -350,11 +350,6 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 					opt.name);
 				adapter->itr_setting = adapter->itr;
 				adapter->itr = 20000;
-				break;
-			case 4:
-				e_info("%s set to simplified (2000-8000 ints) "
-				       "mode\n", opt.name);
-				adapter->itr_setting = 4;
 				break;
 			default:
 				/*
@@ -386,7 +381,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 		}
 	}
 	{ /* Interrupt Mode */
-		static struct e1000_option opt = {
+		struct e1000_option opt = {
 			.type = range_option,
 			.name = "Interrupt Mode",
 			.err  = "defaulting to 2 (MSI-X)",
@@ -404,7 +399,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 		}
 	}
 	{ /* Smart Power Down */
-		static const struct e1000_option opt = {
+		const struct e1000_option opt = {
 			.type = enable_option,
 			.name = "PHY Smart Power Down",
 			.err  = "defaulting to Disabled",
@@ -420,7 +415,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 		}
 	}
 	{ /* CRC Stripping */
-		static const struct e1000_option opt = {
+		const struct e1000_option opt = {
 			.type = enable_option,
 			.name = "CRC Stripping",
 			.err  = "defaulting to enabled",
@@ -432,12 +427,10 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 			e1000_validate_option(&crc_stripping, &opt, adapter);
 			if (crc_stripping == OPTION_ENABLED)
 				adapter->flags2 |= FLAG2_CRC_STRIPPING;
-		} else {
-			adapter->flags2 |= FLAG2_CRC_STRIPPING;
 		}
 	}
 	{ /* Kumeran Lock Loss Workaround */
-		static const struct e1000_option opt = {
+		const struct e1000_option opt = {
 			.type = enable_option,
 			.name = "Kumeran Lock Loss Workaround",
 			.err  = "defaulting to Enabled",
@@ -457,7 +450,7 @@ void __devinit e1000e_check_options(struct e1000_adapter *adapter)
 		}
 	}
 	{ /* Write-protect NVM */
-		static const struct e1000_option opt = {
+		const struct e1000_option opt = {
 			.type = enable_option,
 			.name = "Write-protect NVM",
 			.err  = "defaulting to Enabled",

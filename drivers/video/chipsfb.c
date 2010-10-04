@@ -19,6 +19,7 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -413,6 +414,7 @@ chipsfb_pci_init(struct pci_dev *dp, const struct pci_device_id *ent)
 	}
 
 	pci_set_drvdata(dp, p);
+	p->device = &dp->dev;
 
 	init_chips(p, addr);
 

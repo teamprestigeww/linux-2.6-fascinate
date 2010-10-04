@@ -21,13 +21,12 @@ hpsim_irq_noop (unsigned int irq)
 {
 }
 
-static int
+static void
 hpsim_set_affinity_noop(unsigned int a, const struct cpumask *b)
 {
-	return 0;
 }
 
-static struct irq_chip irq_type_hp_sim = {
+static struct hw_interrupt_type irq_type_hp_sim = {
 	.name =		"hpsim",
 	.startup =	hpsim_irq_startup,
 	.shutdown =	hpsim_irq_noop,
@@ -41,12 +40,12 @@ static struct irq_chip irq_type_hp_sim = {
 void __init
 hpsim_irq_init (void)
 {
-	struct irq_desc *idesc;
+	irq_desc_t *idesc;
 	int i;
 
 	for (i = 0; i < NR_IRQS; ++i) {
 		idesc = irq_desc + i;
-		if (idesc->chip == &no_irq_chip)
+		if (idesc->chip == &no_irq_type)
 			idesc->chip = &irq_type_hp_sim;
 	}
 }

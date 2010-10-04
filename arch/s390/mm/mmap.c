@@ -28,7 +28,6 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <asm/pgalloc.h>
-#include <asm/compat.h>
 
 /*
  * Top of mmap area (just below the process stack).
@@ -40,7 +39,7 @@
 
 static inline unsigned long mmap_base(void)
 {
-	unsigned long gap = rlimit(RLIMIT_STACK);
+	unsigned long gap = current->signal->rlim[RLIMIT_STACK].rlim_cur;
 
 	if (gap < MIN_GAP)
 		gap = MIN_GAP;
@@ -56,12 +55,12 @@ static inline int mmap_is_legacy(void)
 	/*
 	 * Force standard allocation for 64 bit programs.
 	 */
-	if (!is_compat_task())
+	if (!test_thread_flag(TIF_31BIT))
 		return 1;
 #endif
 	return sysctl_legacy_va_layout ||
 	    (current->personality & ADDR_COMPAT_LAYOUT) ||
-	    rlimit(RLIMIT_STACK) == RLIM_INFINITY;
+	    current->signal->rlim[RLIMIT_STACK].rlim_cur == RLIM_INFINITY;
 }
 
 #ifndef CONFIG_64BIT
@@ -92,7 +91,7 @@ EXPORT_SYMBOL_GPL(arch_pick_mmap_layout);
 
 int s390_mmap_check(unsigned long addr, unsigned long len)
 {
-	if (!is_compat_task() &&
+	if (!test_thread_flag(TIF_31BIT) &&
 	    len >= TASK_SIZE && TASK_SIZE < (1UL << 53))
 		return crst_table_upgrade(current->mm, 1UL << 53);
 	return 0;
@@ -109,7 +108,8 @@ s390_get_unmapped_area(struct file *filp, unsigned long addr,
 	area = arch_get_unmapped_area(filp, addr, len, pgoff, flags);
 	if (!(area & ~PAGE_MASK))
 		return area;
-	if (area == -ENOMEM && !is_compat_task() && TASK_SIZE < (1UL << 53)) {
+	if (area == -ENOMEM &&
+	    !test_thread_flag(TIF_31BIT) && TASK_SIZE < (1UL << 53)) {
 		/* Upgrade the page table to 4 levels and retry. */
 		rc = crst_table_upgrade(mm, 1UL << 53);
 		if (rc)
@@ -131,7 +131,8 @@ s390_get_unmapped_area_topdown(struct file *filp, const unsigned long addr,
 	area = arch_get_unmapped_area_topdown(filp, addr, len, pgoff, flags);
 	if (!(area & ~PAGE_MASK))
 		return area;
-	if (area == -ENOMEM && !is_compat_task() && TASK_SIZE < (1UL << 53)) {
+	if (area == -ENOMEM &&
+	    !test_thread_flag(TIF_31BIT) && TASK_SIZE < (1UL << 53)) {
 		/* Upgrade the page table to 4 levels and retry. */
 		rc = crst_table_upgrade(mm, 1UL << 53);
 		if (rc)

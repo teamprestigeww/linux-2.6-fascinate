@@ -20,16 +20,22 @@
 #include <linux/kernel.h>
 #include <linux/param.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/spi/spi.h>
-#include <linux/gpio.h>
 #include <asm/machdep.h>
 #include <asm/coldfire.h>
 #include <asm/mcfsim.h>
 #include <asm/mcfuart.h>
 #include <asm/mcfdma.h>
 #include <asm/mcfwdebug.h>
-#include <asm/mcfqspi.h>
+
+/***************************************************************************/
+
+void coldfire_reset(void);
+
+extern unsigned int mcf_timervector;
+extern unsigned int mcf_profilevector;
+extern unsigned int mcf_timerlevel;
 
 /***************************************************************************/
 
@@ -55,157 +61,8 @@ static struct platform_device m532x_uart = {
 	.dev.platform_data	= m532x_uart_platform,
 };
 
-static struct resource m532x_fec_resources[] = {
-	{
-		.start		= 0xfc030000,
-		.end		= 0xfc0307ff,
-		.flags		= IORESOURCE_MEM,
-	},
-	{
-		.start		= 64 + 36,
-		.end		= 64 + 36,
-		.flags		= IORESOURCE_IRQ,
-	},
-	{
-		.start		= 64 + 40,
-		.end		= 64 + 40,
-		.flags		= IORESOURCE_IRQ,
-	},
-	{
-		.start		= 64 + 42,
-		.end		= 64 + 42,
-		.flags		= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device m532x_fec = {
-	.name			= "fec",
-	.id			= 0,
-	.num_resources		= ARRAY_SIZE(m532x_fec_resources),
-	.resource		= m532x_fec_resources,
-};
-
-#if defined(CONFIG_SPI_COLDFIRE_QSPI) || defined(CONFIG_SPI_COLDFIRE_QSPI_MODULE)
-static struct resource m532x_qspi_resources[] = {
-	{
-		.start		= MCFQSPI_IOBASE,
-		.end		= MCFQSPI_IOBASE + MCFQSPI_IOSIZE - 1,
-		.flags		= IORESOURCE_MEM,
-	},
-	{
-		.start		= MCFINT_VECBASE + MCFINT_QSPI,
-		.end		= MCFINT_VECBASE + MCFINT_QSPI,
-		.flags		= IORESOURCE_IRQ,
-	},
-};
-
-#define MCFQSPI_CS0    84
-#define MCFQSPI_CS1    85
-#define MCFQSPI_CS2    86
-
-static int m532x_cs_setup(struct mcfqspi_cs_control *cs_control)
-{
-	int status;
-
-	status = gpio_request(MCFQSPI_CS0, "MCFQSPI_CS0");
-	if (status) {
-		pr_debug("gpio_request for MCFQSPI_CS0 failed\n");
-		goto fail0;
-	}
-	status = gpio_direction_output(MCFQSPI_CS0, 1);
-	if (status) {
-		pr_debug("gpio_direction_output for MCFQSPI_CS0 failed\n");
-		goto fail1;
-	}
-
-	status = gpio_request(MCFQSPI_CS1, "MCFQSPI_CS1");
-	if (status) {
-		pr_debug("gpio_request for MCFQSPI_CS1 failed\n");
-		goto fail1;
-	}
-	status = gpio_direction_output(MCFQSPI_CS1, 1);
-	if (status) {
-		pr_debug("gpio_direction_output for MCFQSPI_CS1 failed\n");
-		goto fail2;
-	}
-
-	status = gpio_request(MCFQSPI_CS2, "MCFQSPI_CS2");
-	if (status) {
-		pr_debug("gpio_request for MCFQSPI_CS2 failed\n");
-		goto fail2;
-	}
-	status = gpio_direction_output(MCFQSPI_CS2, 1);
-	if (status) {
-		pr_debug("gpio_direction_output for MCFQSPI_CS2 failed\n");
-		goto fail3;
-	}
-
-	return 0;
-
-fail3:
-	gpio_free(MCFQSPI_CS2);
-fail2:
-	gpio_free(MCFQSPI_CS1);
-fail1:
-	gpio_free(MCFQSPI_CS0);
-fail0:
-	return status;
-}
-
-static void m532x_cs_teardown(struct mcfqspi_cs_control *cs_control)
-{
-	gpio_free(MCFQSPI_CS2);
-	gpio_free(MCFQSPI_CS1);
-	gpio_free(MCFQSPI_CS0);
-}
-
-static void m532x_cs_select(struct mcfqspi_cs_control *cs_control,
-			    u8 chip_select, bool cs_high)
-{
-	gpio_set_value(MCFQSPI_CS0 + chip_select, cs_high);
-}
-
-static void m532x_cs_deselect(struct mcfqspi_cs_control *cs_control,
-			      u8 chip_select, bool cs_high)
-{
-	gpio_set_value(MCFQSPI_CS0 + chip_select, !cs_high);
-}
-
-static struct mcfqspi_cs_control m532x_cs_control = {
-	.setup                  = m532x_cs_setup,
-	.teardown               = m532x_cs_teardown,
-	.select                 = m532x_cs_select,
-	.deselect               = m532x_cs_deselect,
-};
-
-static struct mcfqspi_platform_data m532x_qspi_data = {
-	.bus_num		= 0,
-	.num_chipselect		= 3,
-	.cs_control		= &m532x_cs_control,
-};
-
-static struct platform_device m532x_qspi = {
-	.name			= "mcfqspi",
-	.id			= 0,
-	.num_resources		= ARRAY_SIZE(m532x_qspi_resources),
-	.resource		= m532x_qspi_resources,
-	.dev.platform_data	= &m532x_qspi_data,
-};
-
-static void __init m532x_qspi_init(void)
-{
-	/* setup QSPS pins for QSPI with gpio CS control */
-	writew(0x01f0, MCF_GPIO_PAR_QSPI);
-}
-#endif /* defined(CONFIG_SPI_COLDFIRE_QSPI) || defined(CONFIG_SPI_COLDFIRE_QSPI_MODULE) */
-
-
 static struct platform_device *m532x_devices[] __initdata = {
 	&m532x_uart,
-	&m532x_fec,
-#if defined(CONFIG_SPI_COLDFIRE_QSPI) || defined(CONFIG_SPI_COLDFIRE_QSPI_MODULE)
-	&m532x_qspi,
-#endif
 };
 
 /***************************************************************************/
@@ -213,11 +70,18 @@ static struct platform_device *m532x_devices[] __initdata = {
 static void __init m532x_uart_init_line(int line, int irq)
 {
 	if (line == 0) {
+		MCF_INTC0_ICR26 = 0x3;
+		MCF_INTC0_CIMR = 26;
 		/* GPIO initialization */
 		MCF_GPIO_PAR_UART |= 0x000F;
 	} else if (line == 1) {
+		MCF_INTC0_ICR27 = 0x3;
+		MCF_INTC0_CIMR = 27;
 		/* GPIO initialization */
 		MCF_GPIO_PAR_UART |= 0x0FF0;
+	} else if (line == 2) {
+		MCF_INTC0_ICR28 = 0x3;
+		MCF_INTC0_CIMR = 28;
 	}
 }
 
@@ -229,29 +93,33 @@ static void __init m532x_uarts_init(void)
 	for (line = 0; (line < nrlines); line++)
 		m532x_uart_init_line(line, m532x_uart_platform[line].irq);
 }
-/***************************************************************************/
-
-static void __init m532x_fec_init(void)
-{
-	/* Set multi-function pins to ethernet mode for fec0 */
-	MCF_GPIO_PAR_FECI2C |= (MCF_GPIO_PAR_FECI2C_PAR_MDC_EMDC |
-		MCF_GPIO_PAR_FECI2C_PAR_MDIO_EMDIO);
-	MCF_GPIO_PAR_FEC = (MCF_GPIO_PAR_FEC_PAR_FEC_7W_FEC |
-		MCF_GPIO_PAR_FEC_PAR_FEC_MII_FEC);
-}
 
 /***************************************************************************/
 
-static void m532x_cpu_reset(void)
+void mcf_settimericr(unsigned int timer, unsigned int level)
 {
-	local_irq_disable();
-	__raw_writeb(MCF_RCR_SWRESET, MCF_RCR);
+	volatile unsigned char *icrp;
+	unsigned int icr;
+	unsigned char irq;
+
+	if (timer <= 2) {
+		switch (timer) {
+		case 2:  irq = 33; icr = MCFSIM_ICR_TIMER2; break;
+		default: irq = 32; icr = MCFSIM_ICR_TIMER1; break;
+		}
+		
+		icrp = (volatile unsigned char *) (icr);
+		*icrp = level;
+		mcf_enable_irq0(irq);
+	}
 }
 
 /***************************************************************************/
 
 void __init config_BSP(char *commandp, int size)
 {
+	mcf_setimr(MCFSIM_IMR_MASKALL);
+
 #if !defined(CONFIG_BOOTPARAM)
 	/* Copy command line from FLASH to local buffer... */
 	memcpy(commandp, (char *) 0x4000, 4);
@@ -262,6 +130,10 @@ void __init config_BSP(char *commandp, int size)
 		memset(commandp, 0, size);
 	}
 #endif
+
+	mcf_timervector = 64+32;
+	mcf_profilevector = 64+33;
+	mach_reset = coldfire_reset;
 
 #ifdef CONFIG_BDM_DISABLE
 	/*
@@ -278,10 +150,6 @@ void __init config_BSP(char *commandp, int size)
 static int __init init_BSP(void)
 {
 	m532x_uarts_init();
-	m532x_fec_init();
-#if defined(CONFIG_SPI_COLDFIRE_QSPI) || defined(CONFIG_SPI_COLDFIRE_QSPI_MODULE)
-	m532x_qspi_init();
-#endif
 	platform_add_devices(m532x_devices, ARRAY_SIZE(m532x_devices));
 	return 0;
 }
@@ -515,8 +383,8 @@ void gpio_init(void)
 	/* Initialize TIN3 as a GPIO output to enable the write
 	   half of the latch */
 	MCF_GPIO_PAR_TIMER = 0x00;
-	__raw_writeb(0x08, MCFGPIO_PDDR_TIMER);
-	__raw_writeb(0x00, MCFGPIO_PCLRR_TIMER);
+	MCF_GPIO_PDDR_TIMER = 0x08;
+	MCF_GPIO_PCLRR_TIMER = 0x0;
 
 }
 

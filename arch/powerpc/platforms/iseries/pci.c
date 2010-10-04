@@ -27,12 +27,10 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/string.h>
-#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/of.h>
-#include <linux/ratelimit.h>
 
 #include <asm/types.h>
 #include <asm/io.h>
@@ -320,7 +318,6 @@ static void __init iomm_table_allocate_entry(struct pci_dev *dev, int bar_num)
 {
 	struct resource *bar_res = &dev->resource[bar_num];
 	long bar_size = pci_resource_len(dev, bar_num);
-	struct device_node *dn = pci_device_to_OF_node(dev);
 
 	/*
 	 * No space to allocate, quick exit, skip Allocation.
@@ -338,9 +335,9 @@ static void __init iomm_table_allocate_entry(struct pci_dev *dev, int bar_num)
 	 * Allocate the number of table entries needed for BAR.
 	 */
 	while (bar_size > 0 ) {
-		iomm_table[current_iomm_table_entry] = dn;
+		iomm_table[current_iomm_table_entry] = dev->sysdata;
 		ds_addr_table[current_iomm_table_entry] =
-			iseries_ds_addr(dn) | (bar_num << 24);
+			iseries_ds_addr(dev->sysdata) | (bar_num << 24);
 		bar_size -= IOMM_TABLE_ENTRY_SIZE;
 		++current_iomm_table_entry;
 	}
@@ -413,7 +410,7 @@ void __init iSeries_pcibios_fixup_resources(struct pci_dev *pdev)
 	struct device_node *node;
 	int i;
 
-	node = pci_device_to_OF_node(pdev);
+	node = find_device_node(bus, pdev->devfn);
 	pr_debug("PCI: iSeries %s, pdev %p, node %p\n",
 		 pci_name(pdev), pdev, node);
 	if (!node) {
@@ -444,12 +441,10 @@ void __init iSeries_pcibios_fixup_resources(struct pci_dev *pdev)
 		}
 	}
 
+	pdev->sysdata = node;
 	allocate_device_bars(pdev);
-	if (likely(sub_bus))
-		iseries_device_information(pdev, bus, *sub_bus);
-	else
-		printk(KERN_ERR "PCI: Device node %s has missing or invalid "
-				"linux,subbus property\n", node->full_name);
+	iseries_device_information(pdev, bus, *sub_bus);
+	iommu_devnode_init_iSeries(pdev, node);
 }
 
 /*
@@ -589,9 +584,14 @@ static inline struct device_node *xlate_iomm_address(
 
 	orig_addr = (unsigned long __force)addr;
 	if ((orig_addr < BASE_IO_MEMORY) || (orig_addr >= max_io_memory)) {
-		static DEFINE_RATELIMIT_STATE(ratelimit, 60 * HZ, 10);
+		static unsigned long last_jiffies;
+		static int num_printed;
 
-		if (__ratelimit(&ratelimit))
+		if (time_after(jiffies, last_jiffies + 60 * HZ)) {
+			last_jiffies = jiffies;
+			num_printed = 0;
+		}
+		if (num_printed++ < 10)
 			printk(KERN_ERR
 				"iSeries_%s: invalid access at IO address %p\n",
 				func, addr);

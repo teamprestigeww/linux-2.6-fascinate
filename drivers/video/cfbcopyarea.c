@@ -26,6 +26,7 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/fb.h>
+#include <linux/slab.h>
 #include <asm/types.h>
 #include <asm/io.h>
 #include "fb_draw.h"
@@ -113,7 +114,7 @@ bitcpy(struct fb_info *p, unsigned long __iomem *dst, int dst_idx,
 				d0 >>= right;
 			} else if (src_idx+n <= bits) {
 				// Single source word
-				d0 <<= left;
+				d0 <<= left;;
 			} else {
 				// 2 source words
 				d1 = FB_READL(src + 1);

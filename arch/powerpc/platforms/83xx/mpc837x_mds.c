@@ -48,10 +48,8 @@ static int mpc837xmds_usb_cfg(void)
 		return -1;
 
 	np = of_find_node_by_name(NULL, "usb");
-	if (!np) {
-		ret = -ENODEV;
-		goto out;
-	}
+	if (!np)
+		return -ENODEV;
 	phy_type = of_get_property(np, "phy_type", NULL);
 	if (phy_type && !strcmp(phy_type, "ulpi")) {
 		clrbits8(bcsr_regs + 12, BCSR12_USB_SER_PIN);
@@ -67,9 +65,8 @@ static int mpc837xmds_usb_cfg(void)
 	}
 
 	of_node_put(np);
-out:
 	iounmap(bcsr_regs);
-	return ret;
+	return 0;
 }
 
 /* ************************************************************************
@@ -87,10 +84,14 @@ static void __init mpc837x_mds_setup_arch(void)
 		ppc_md.progress("mpc837x_mds_setup_arch()", 0);
 
 #ifdef CONFIG_PCI
-	for_each_compatible_node(np, "pci", "fsl,mpc8349-pci")
+	for_each_compatible_node(np, "pci", "fsl,mpc8349-pci") {
+		if (!of_device_is_available(np)) {
+			pr_warning("%s: disabled by the firmware.\n",
+				   np->full_name);
+			continue;
+		}
 		mpc83xx_add_bridge(np);
-	for_each_compatible_node(np, "pci", "fsl,mpc8314-pcie")
-		mpc83xx_add_bridge(np);
+	}
 #endif
 	mpc837xmds_usb_cfg();
 }
@@ -99,13 +100,12 @@ static struct of_device_id mpc837x_ids[] = {
 	{ .type = "soc", },
 	{ .compatible = "soc", },
 	{ .compatible = "simple-bus", },
-	{ .compatible = "gianfar", },
 	{},
 };
 
 static int __init mpc837x_declare_of_platform_devices(void)
 {
-	/* Publish platform_device */
+	/* Publish of_device */
 	of_platform_bus_probe(NULL, mpc837x_ids, NULL);
 
 	return 0;

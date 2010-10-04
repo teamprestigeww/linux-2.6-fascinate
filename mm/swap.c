@@ -30,7 +30,6 @@
 #include <linux/notifier.h>
 #include <linux/backing-dev.h>
 #include <linux/memcontrol.h>
-#include <linux/gfp.h>
 
 #include "internal.h"
 
@@ -56,7 +55,7 @@ static void __page_cache_release(struct page *page)
 		del_page_from_lru(zone, page);
 		spin_unlock_irqrestore(&zone->lru_lock, flags);
 	}
-	free_hot_cold_page(page, 0);
+	free_hot_page(page);
 }
 
 static void put_compound_page(struct page *page)
@@ -119,7 +118,7 @@ static void pagevec_move_tail(struct pagevec *pvec)
 			spin_lock(&zone->lru_lock);
 		}
 		if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page)) {
-			int lru = page_lru_base_type(page);
+			int lru = page_is_file_cache(page);
 			list_move_tail(&page->lru, &zone->lru[lru].list);
 			pgmoved++;
 		}
@@ -182,7 +181,7 @@ void activate_page(struct page *page)
 	spin_lock_irq(&zone->lru_lock);
 	if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page)) {
 		int file = page_is_file_cache(page);
-		int lru = page_lru_base_type(page);
+		int lru = LRU_BASE + file;
 		del_page_from_lru_list(zone, page, lru);
 
 		SetPageActive(page);
@@ -190,7 +189,7 @@ void activate_page(struct page *page)
 		add_page_to_lru_list(zone, page, lru);
 		__count_vm_event(PGACTIVATE);
 
-		update_page_reclaim_stat(zone, page, file, 1);
+		update_page_reclaim_stat(zone, page, !!file, 1);
 	}
 	spin_unlock_irq(&zone->lru_lock);
 }
@@ -224,7 +223,6 @@ void __lru_cache_add(struct page *page, enum lru_list lru)
 		____pagevec_lru_add(pvec, lru);
 	put_cpu_var(lru_add_pvecs);
 }
-EXPORT_SYMBOL(__lru_cache_add);
 
 /**
  * lru_cache_add_lru - add a page to a page list
@@ -450,9 +448,32 @@ void pagevec_strip(struct pagevec *pvec)
 	for (i = 0; i < pagevec_count(pvec); i++) {
 		struct page *page = pvec->pages[i];
 
-		if (page_has_private(page) && trylock_page(page)) {
-			if (page_has_private(page))
+		if (PagePrivate(page) && trylock_page(page)) {
+			if (PagePrivate(page))
 				try_to_release_page(page, 0);
+			unlock_page(page);
+		}
+	}
+}
+
+/**
+ * pagevec_swap_free - try to free swap space from the pages in a pagevec
+ * @pvec: pagevec with swapcache pages to free the swap space of
+ *
+ * The caller needs to hold an extra reference to each page and
+ * not hold the page lock on the pages.  This function uses a
+ * trylock on the page lock so it may not always free the swap
+ * space associated with a page.
+ */
+void pagevec_swap_free(struct pagevec *pvec)
+{
+	int i;
+
+	for (i = 0; i < pagevec_count(pvec); i++) {
+		struct page *page = pvec->pages[i];
+
+		if (PageSwapCache(page) && trylock_page(page)) {
+			try_to_free_swap(page);
 			unlock_page(page);
 		}
 	}
@@ -493,12 +514,55 @@ unsigned pagevec_lookup_tag(struct pagevec *pvec, struct address_space *mapping,
 
 EXPORT_SYMBOL(pagevec_lookup_tag);
 
+#ifdef CONFIG_SMP
+/*
+ * We tolerate a little inaccuracy to avoid ping-ponging the counter between
+ * CPUs
+ */
+#define ACCT_THRESHOLD	max(16, NR_CPUS * 2)
+
+static DEFINE_PER_CPU(long, committed_space);
+
+void vm_acct_memory(long pages)
+{
+	long *local;
+
+	preempt_disable();
+	local = &__get_cpu_var(committed_space);
+	*local += pages;
+	if (*local > ACCT_THRESHOLD || *local < -ACCT_THRESHOLD) {
+		atomic_long_add(*local, &vm_committed_space);
+		*local = 0;
+	}
+	preempt_enable();
+}
+
+#ifdef CONFIG_HOTPLUG_CPU
+
+/* Drop the CPU's cached committed space back into the central pool. */
+static int cpu_swap_callback(struct notifier_block *nfb,
+			     unsigned long action,
+			     void *hcpu)
+{
+	long *committed;
+
+	committed = &per_cpu(committed_space, (long)hcpu);
+	if (action == CPU_DEAD || action == CPU_DEAD_FROZEN) {
+		atomic_long_add(*committed, &vm_committed_space);
+		*committed = 0;
+		drain_cpu_pagevecs((long)hcpu);
+	}
+	return NOTIFY_OK;
+}
+#endif /* CONFIG_HOTPLUG_CPU */
+#endif /* CONFIG_SMP */
+
 /*
  * Perform any setup for the swap system
  */
 void __init swap_setup(void)
 {
-	unsigned long megs = totalram_pages >> (20 - PAGE_SHIFT);
+	unsigned long megs = num_physpages >> (20 - PAGE_SHIFT);
 
 #ifdef CONFIG_SWAP
 	bdi_init(swapper_space.backing_dev_info);
@@ -513,4 +577,7 @@ void __init swap_setup(void)
 	 * Right now other parts of the system means that we
 	 * _really_ don't want to cluster much more
 	 */
+#ifdef CONFIG_HOTPLUG_CPU
+	hotcpu_notifier(cpu_swap_callback, 0);
+#endif
 }

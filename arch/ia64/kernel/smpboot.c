@@ -44,6 +44,7 @@
 #include <asm/cache.h>
 #include <asm/current.h>
 #include <asm/delay.h>
+#include <asm/ia32.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/machvec.h>
@@ -390,12 +391,6 @@ smp_callin (void)
 
 	fix_b0_for_bsp();
 
-	/*
-	 * numa_node_id() works after this.
-	 */
-	set_numa_node(cpu_to_node_map[cpuid]);
-	set_numa_mem(local_memory_node(cpu_to_node_map[cpuid]));
-
 	ipi_call_lock_irq();
 	spin_lock(&vector_lock);
 	/* Setup the per cpu irq handling data structures */
@@ -447,6 +442,10 @@ smp_callin (void)
 	    last_cpuinfo->model != this_cpuinfo->model)
 		calibrate_delay();
 	local_cpu_data->loops_per_jiffy = loops_per_jiffy;
+
+#ifdef CONFIG_IA32_SUPPORT
+	ia32_gdt_init();
+#endif
 
 	/*
 	 * Allow the master to continue.
@@ -508,18 +507,21 @@ do_boot_cpu (int sapicid, int cpu)
 		.done	= COMPLETION_INITIALIZER(c_idle.done),
 	};
 
-	/*
-	 * We can't use kernel_thread since we must avoid to
-	 * reschedule the child.
-	 */
  	c_idle.idle = get_idle_for_cpu(cpu);
  	if (c_idle.idle) {
 		init_idle(c_idle.idle, cpu);
  		goto do_rest;
 	}
 
-	schedule_work(&c_idle.work);
-	wait_for_completion(&c_idle.done);
+	/*
+	 * We can't use kernel_thread since we must avoid to reschedule the child.
+	 */
+	if (!keventd_up() || current_is_keventd())
+		c_idle.work.func(&c_idle.work);
+	else {
+		schedule_work(&c_idle.work);
+		wait_for_completion(&c_idle.done);
+	}
 
 	if (IS_ERR(c_idle.idle))
 		panic("failed fork for CPU %d", cpu);
@@ -579,14 +581,14 @@ smp_build_cpu_map (void)
 
 	ia64_cpu_to_sapicid[0] = boot_cpu_id;
 	cpus_clear(cpu_present_map);
-	set_cpu_present(0, true);
-	set_cpu_possible(0, true);
+	cpu_set(0, cpu_present_map);
+	cpu_set(0, cpu_possible_map);
 	for (cpu = 1, i = 0; i < smp_boot_data.cpu_count; i++) {
 		sapicid = smp_boot_data.cpu_phys_id[i];
 		if (sapicid == boot_cpu_id)
 			continue;
-		set_cpu_present(cpu, true);
-		set_cpu_possible(cpu, true);
+		cpu_set(cpu, cpu_present_map);
+		cpu_set(cpu, cpu_possible_map);
 		ia64_cpu_to_sapicid[cpu] = sapicid;
 		cpu++;
 	}
@@ -624,9 +626,12 @@ smp_prepare_cpus (unsigned int max_cpus)
 	 */
 	if (!max_cpus) {
 		printk(KERN_INFO "SMP mode deactivated.\n");
-		init_cpu_online(cpumask_of(0));
-		init_cpu_present(cpumask_of(0));
-		init_cpu_possible(cpumask_of(0));
+		cpus_clear(cpu_online_map);
+		cpus_clear(cpu_present_map);
+		cpus_clear(cpu_possible_map);
+		cpu_set(0, cpu_online_map);
+		cpu_set(0, cpu_present_map);
+		cpu_set(0, cpu_possible_map);
 		return;
 	}
 }
@@ -635,7 +640,6 @@ void __devinit smp_prepare_boot_cpu(void)
 {
 	cpu_set(smp_processor_id(), cpu_online_map);
 	cpu_set(smp_processor_id(), cpu_callin_map);
-	set_numa_node(cpu_to_node_map[smp_processor_id()]);
 	per_cpu(cpu_state, smp_processor_id()) = CPU_ONLINE;
 	paravirt_post_smp_prepare_boot_cpu();
 }
@@ -677,7 +681,7 @@ extern void fixup_irqs(void);
 int migrate_platform_irqs(unsigned int cpu)
 {
 	int new_cpei_cpu;
-	struct irq_desc *desc = NULL;
+	irq_desc_t *desc = NULL;
 	const struct cpumask *mask;
 	int 		retval = 0;
 
@@ -864,7 +868,7 @@ init_smp_config(void)
 void __devinit
 identify_siblings(struct cpuinfo_ia64 *c)
 {
-	long status;
+	s64 status;
 	u16 pltid;
 	pal_logical_to_physical_t info;
 

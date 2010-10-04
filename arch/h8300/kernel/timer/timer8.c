@@ -75,6 +75,7 @@ static struct irqaction timer8_irq = {
 	.name		= "timer-8",
 	.handler	= timer_interrupt,
 	.flags		= IRQF_DISABLED | IRQF_TIMER,
+	.mask		= CPU_MASK_NONE,
 };
 
 static const int __initdata divide_rate[] = {8, 64, 8192};
@@ -94,7 +95,7 @@ void __init h8300_timer_setup(void)
 	ctrl_bclr(0, MSTPCRL)
 #endif
 
-	/* initialize timer */
+	/* initalize timer */
 	ctrl_outw(cnt, _8BASE + TCORA);
 	ctrl_outw(0x0000, _8BASE + _8TCSR);
 	ctrl_outw((CMIEA|CCLR_CMA|CKS2) << 8 | div,

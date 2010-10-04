@@ -38,11 +38,8 @@
 #define DASD_ECKD_CCW_RELEASE		 0x94
 #define DASD_ECKD_CCW_READ_CKD_MT	 0x9e
 #define DASD_ECKD_CCW_WRITE_CKD_MT	 0x9d
-#define DASD_ECKD_CCW_WRITE_TRACK_DATA	 0xA5
-#define DASD_ECKD_CCW_READ_TRACK_DATA	 0xA6
 #define DASD_ECKD_CCW_RESERVE		 0xB4
 #define DASD_ECKD_CCW_PFX		 0xE7
-#define DASD_ECKD_CCW_PFX_READ		 0xEA
 #define DASD_ECKD_CCW_RSCK		 0xF9
 
 /*
@@ -50,11 +47,6 @@
  */
 #define PSF_ORDER_PRSSD 0x18
 #define PSF_ORDER_SSC	0x1D
-
-/*
- * Size that is reportet for large volumes in the old 16-bit no_cyl field
- */
-#define LV_COMPAT_CYL 0xFFFE
 
 /*****************************************************************************
  * SECTION: Type Definitions
@@ -126,9 +118,7 @@ struct DE_eckd_data {
 	unsigned long long ep_sys_time; /* Ext Parameter - System Time Stamp */
 	__u8 ep_format;        /* Extended Parameter format byte       */
 	__u8 ep_prio;          /* Extended Parameter priority I/O byte */
-	__u8 ep_reserved1;     /* Extended Parameter Reserved	       */
-	__u8 ep_rec_per_track; /* Number of records on a track	       */
-	__u8 ep_reserved[4];   /* Extended Parameter Reserved	       */
+	__u8 ep_reserved[6];   /* Extended Parameter Reserved          */
 } __attribute__ ((packed));
 
 struct LO_eckd_data {
@@ -149,37 +139,11 @@ struct LO_eckd_data {
 	__u16 length;
 } __attribute__ ((packed));
 
-struct LRE_eckd_data {
-	struct {
-		unsigned char orientation:2;
-		unsigned char operation:6;
-	} __attribute__ ((packed)) operation;
-	struct {
-		unsigned char length_valid:1;
-		unsigned char length_scope:1;
-		unsigned char imbedded_ccw_valid:1;
-		unsigned char check_bytes:2;
-		unsigned char imbedded_count_valid:1;
-		unsigned char reserved:1;
-		unsigned char read_count_suffix:1;
-	} __attribute__ ((packed)) auxiliary;
-	__u8 imbedded_ccw;
-	__u8 count;
-	struct ch_t seek_addr;
-	struct chr_t search_arg;
-	__u8 sector;
-	__u16 length;
-	__u8 imbedded_count;
-	__u8 extended_operation;
-	__u16 extended_parameter_length;
-	__u8 extended_parameter[0];
-} __attribute__ ((packed));
-
 /* Prefix data for format 0x00 and 0x01 */
 struct PFX_eckd_data {
 	unsigned char format;
 	struct {
-		unsigned char define_extent:1;
+		unsigned char define_extend:1;
 		unsigned char time_stamp:1;
 		unsigned char verify_base:1;
 		unsigned char hyper_pav:1;
@@ -189,8 +153,9 @@ struct PFX_eckd_data {
 	__u8 aux;
 	__u8 base_lss;
 	__u8 reserved[7];
-	struct DE_eckd_data define_extent;
-	struct LRE_eckd_data locate_record;
+	struct DE_eckd_data define_extend;
+	struct LO_eckd_data locate_record;
+	__u8 LO_extended_data[4];
 } __attribute__ ((packed));
 
 struct dasd_eckd_characteristics {
@@ -263,8 +228,7 @@ struct dasd_eckd_characteristics {
 	__u8 factor7;
 	__u8 factor8;
 	__u8 reserved2[3];
-	__u8 reserved3[6];
-	__u32 long_no_cyl;
+	__u8 reserved3[10];
 } __attribute__ ((packed));
 
 /* elements of the configuration data */
@@ -320,12 +284,7 @@ struct dasd_gneq {
 		__u8 identifier:2;
 		__u8 reserved:6;
 	} __attribute__ ((packed)) flags;
-	__u8 reserved[5];
-	struct {
-		__u8 value:2;
-		__u8 number:6;
-	} __attribute__ ((packed)) timeout;
-	__u8 reserved3;
+	__u8 reserved[7];
 	__u16 subsystemID;
 	__u8 reserved2[22];
 } __attribute__ ((packed));
@@ -419,7 +378,6 @@ struct alias_lcu {
 	struct summary_unit_check_work_data suc_data;
 	struct read_uac_work_data ruac_data;
 	struct dasd_ccw_req *rsu_cqr;
-	struct completion lcu_setup;
 };
 
 struct alias_pav_group {
@@ -430,6 +388,7 @@ struct alias_pav_group {
 	struct list_head aliaslist;
 	struct dasd_device *next;
 };
+
 
 struct dasd_eckd_private {
 	struct dasd_eckd_characteristics rdc_data;
@@ -447,7 +406,6 @@ struct dasd_eckd_private {
 	int uses_cdl;
 	struct attrib_data_t attrib;	/* e.g. cache operations */
 	struct dasd_rssd_features features;
-	u32 real_cyl;
 
 	/* alias managemnet */
 	struct dasd_uid uid;
@@ -465,7 +423,5 @@ int dasd_alias_remove_device(struct dasd_device *);
 struct dasd_device *dasd_alias_get_start_dev(struct dasd_device *);
 void dasd_alias_handle_summary_unit_check(struct dasd_device *, struct irb *);
 void dasd_eckd_reset_ccw_to_base_io(struct dasd_ccw_req *);
-void dasd_alias_lcu_setup_complete(struct dasd_device *);
-void dasd_alias_wait_for_lcu_setup(struct dasd_device *);
-int dasd_alias_update_add_device(struct dasd_device *);
+
 #endif				/* DASD_ECKD_H */

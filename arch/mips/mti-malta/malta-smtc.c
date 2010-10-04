@@ -21,11 +21,11 @@ static void msmtc_send_ipi_single(int cpu, unsigned int action)
 	smtc_send_ipi(cpu, LINUX_SMP_IPI, action);
 }
 
-static void msmtc_send_ipi_mask(const struct cpumask *mask, unsigned int action)
+static void msmtc_send_ipi_mask(cpumask_t mask, unsigned int action)
 {
 	unsigned int i;
 
-	for_each_cpu(i, mask)
+	for_each_cpu_mask(i, mask)
 		msmtc_send_ipi_single(i, action);
 }
 
@@ -114,9 +114,9 @@ struct plat_smp_ops msmtc_smp_ops = {
  */
 
 
-int plat_set_irq_affinity(unsigned int irq, const struct cpumask *affinity)
+void plat_set_irq_affinity(unsigned int irq, const struct cpumask *affinity)
 {
-	cpumask_t tmask;
+	cpumask_t tmask = *affinity;
 	int cpu = 0;
 	void smtc_set_irq_affinity(unsigned int irq, cpumask_t aff);
 
@@ -139,12 +139,11 @@ int plat_set_irq_affinity(unsigned int irq, const struct cpumask *affinity)
 	 * be made to forward to an offline "CPU".
 	 */
 
-	cpumask_copy(&tmask, affinity);
 	for_each_cpu(cpu, affinity) {
 		if ((cpu_data[cpu].vpe_id != 0) || !cpu_online(cpu))
 			cpu_clear(cpu, tmask);
 	}
-	cpumask_copy(irq_desc[irq].affinity, &tmask);
+	irq_desc[irq].affinity = tmask;
 
 	if (cpus_empty(tmask))
 		/*
@@ -156,7 +155,5 @@ int plat_set_irq_affinity(unsigned int irq, const struct cpumask *affinity)
 
 	/* Do any generic SMTC IRQ affinity setup */
 	smtc_set_irq_affinity(irq, tmask);
-
-	return 0;
 }
 #endif /* CONFIG_MIPS_MT_SMTC_IRQAFF */

@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-sa1100/include/mach/system.h
  *
- * Copyright (c) 1999 Nicolas Pitre <nico@fluxnic.net>
+ * Copyright (c) 1999 Nicolas Pitre <nico@cam.org>
  */
 #include <mach/hardware.h>
 
@@ -10,7 +10,7 @@ static inline void arch_idle(void)
 	cpu_do_idle();
 }
 
-static inline void arch_reset(char mode, const char *cmd)
+static inline void arch_reset(char mode)
 {
 	if (mode == 's') {
 		/* Jump into ROM at address 0 */

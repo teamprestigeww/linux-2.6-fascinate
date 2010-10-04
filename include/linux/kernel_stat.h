@@ -5,7 +5,6 @@
 #include <linux/threads.h>
 #include <linux/percpu.h>
 #include <linux/cpumask.h>
-#include <linux/interrupt.h>
 #include <asm/irq.h>
 #include <asm/cputime.h>
 
@@ -25,15 +24,13 @@ struct cpu_usage_stat {
 	cputime64_t iowait;
 	cputime64_t steal;
 	cputime64_t guest;
-	cputime64_t guest_nice;
 };
 
 struct kernel_stat {
 	struct cpu_usage_stat	cpustat;
-#ifndef CONFIG_GENERIC_HARDIRQS
+#ifndef CONFIG_SPARSE_IRQ
        unsigned int irqs[NR_IRQS];
 #endif
-	unsigned int softirqs[NR_SOFTIRQS];
 };
 
 DECLARE_PER_CPU(struct kernel_stat, kstat);
@@ -44,7 +41,7 @@ DECLARE_PER_CPU(struct kernel_stat, kstat);
 
 extern unsigned long long nr_context_switches(void);
 
-#ifndef CONFIG_GENERIC_HARDIRQS
+#ifndef CONFIG_SPARSE_IRQ
 #define kstat_irqs_this_cpu(irq) \
 	(kstat_this_cpu.irqs[irq])
 
@@ -55,30 +52,17 @@ static inline void kstat_incr_irqs_this_cpu(unsigned int irq,
 {
 	kstat_this_cpu.irqs[irq]++;
 }
+#endif
 
+
+#ifndef CONFIG_SPARSE_IRQ
 static inline unsigned int kstat_irqs_cpu(unsigned int irq, int cpu)
 {
        return kstat_cpu(cpu).irqs[irq];
 }
 #else
-#include <linux/irq.h>
 extern unsigned int kstat_irqs_cpu(unsigned int irq, int cpu);
-#define kstat_irqs_this_cpu(DESC) \
-	((DESC)->kstat_irqs[smp_processor_id()])
-#define kstat_incr_irqs_this_cpu(irqno, DESC) \
-	((DESC)->kstat_irqs[smp_processor_id()]++)
-
 #endif
-
-static inline void kstat_incr_softirqs_this_cpu(unsigned int irq)
-{
-	kstat_this_cpu.softirqs[irq]++;
-}
-
-static inline unsigned int kstat_softirqs_cpu(unsigned int irq, int cpu)
-{
-       return kstat_cpu(cpu).softirqs[irq];
-}
 
 /*
  * Number of interrupts per specific IRQ source, since bootup
@@ -94,12 +78,7 @@ static inline unsigned int kstat_irqs(unsigned int irq)
 	return sum;
 }
 
-
-/*
- * Lock/unlock the current runqueue - to extract task statistics:
- */
 extern unsigned long long task_delta_exec(struct task_struct *);
-
 extern void account_user_time(struct task_struct *, cputime_t, cputime_t);
 extern void account_system_time(struct task_struct *, int, cputime_t, cputime_t);
 extern void account_steal_time(cputime_t);

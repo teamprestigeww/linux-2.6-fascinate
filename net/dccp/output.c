@@ -13,7 +13,6 @@
 #include <linux/dccp.h>
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
-#include <linux/slab.h>
 
 #include <net/inet_sock.h>
 #include <net/sock.h>
@@ -100,8 +99,8 @@ static int dccp_transmit_skb(struct sock *sk, struct sk_buff *skb)
 		/* Build DCCP header and checksum it. */
 		dh = dccp_zeroed_hdr(skb, dccp_header_size);
 		dh->dccph_type	= dcb->dccpd_type;
-		dh->dccph_sport	= inet->inet_sport;
-		dh->dccph_dport	= inet->inet_dport;
+		dh->dccph_sport	= inet->sport;
+		dh->dccph_dport	= inet->dport;
 		dh->dccph_doff	= (dccp_header_size + dcb->dccpd_opt_len) / 4;
 		dh->dccph_ccval	= dcb->dccpd_ccval;
 		dh->dccph_cscov = dp->dccps_pcslen;
@@ -129,14 +128,14 @@ static int dccp_transmit_skb(struct sock *sk, struct sk_buff *skb)
 			break;
 		}
 
-		icsk->icsk_af_ops->send_check(sk, skb);
+		icsk->icsk_af_ops->send_check(sk, 0, skb);
 
 		if (set_ack)
 			dccp_event_ack_sent(sk);
 
 		DCCP_INC_STATS(DCCP_MIB_OUTSEGS);
 
-		err = icsk->icsk_af_ops->queue_xmit(skb);
+		err = icsk->icsk_af_ops->queue_xmit(skb, 0);
 		return net_xmit_eval(err);
 	}
 	return -ENOBUFS;
@@ -162,27 +161,21 @@ unsigned int dccp_sync_mss(struct sock *sk, u32 pmtu)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct dccp_sock *dp = dccp_sk(sk);
 	u32 ccmps = dccp_determine_ccmps(dp);
-	u32 cur_mps = ccmps ? min(pmtu, ccmps) : pmtu;
+	int cur_mps = ccmps ? min(pmtu, ccmps) : pmtu;
 
 	/* Account for header lengths and IPv4/v6 option overhead */
 	cur_mps -= (icsk->icsk_af_ops->net_header_len + icsk->icsk_ext_hdr_len +
 		    sizeof(struct dccp_hdr) + sizeof(struct dccp_hdr_ext));
 
 	/*
-	 * Leave enough headroom for common DCCP header options.
-	 * This only considers options which may appear on DCCP-Data packets, as
-	 * per table 3 in RFC 4340, 5.8. When running out of space for other
-	 * options (eg. Ack Vector which can take up to 255 bytes), it is better
-	 * to schedule a separate Ack. Thus we leave headroom for the following:
-	 *  - 1 byte for Slow Receiver (11.6)
-	 *  - 6 bytes for Timestamp (13.1)
-	 *  - 10 bytes for Timestamp Echo (13.3)
-	 *  - 8 bytes for NDP count (7.7, when activated)
-	 *  - 6 bytes for Data Checksum (9.3)
-	 *  - %DCCPAV_MIN_OPTLEN bytes for Ack Vector size (11.4, when enabled)
+	 * FIXME: this should come from the CCID infrastructure, where, say,
+	 * TFRC will say it wants TIMESTAMPS, ELAPSED time, etc, for now lets
+	 * put a rough estimate for NDP + TIMESTAMP + TIMESTAMP_ECHO + ELAPSED
+	 * TIME + TFRC_OPT_LOSS_EVENT_RATE + TFRC_OPT_RECEIVE_RATE + padding to
+	 * make it a multiple of 4
 	 */
-	cur_mps -= roundup(1 + 6 + 10 + dp->dccps_send_ndp_count * 8 + 6 +
-			   (dp->dccps_hc_rx_ackvec ? DCCPAV_MIN_OPTLEN : 0), 4);
+
+	cur_mps -= roundup(5 + 6 + 10 + 6 + 6 + 6, 4);
 
 	/* And store cached results */
 	icsk->icsk_pmtu_cookie = pmtu;
@@ -195,17 +188,15 @@ EXPORT_SYMBOL_GPL(dccp_sync_mss);
 
 void dccp_write_space(struct sock *sk)
 {
-	struct socket_wq *wq;
+	read_lock(&sk->sk_callback_lock);
 
-	rcu_read_lock();
-	wq = rcu_dereference(sk->sk_wq);
-	if (wq_has_sleeper(wq))
-		wake_up_interruptible(&wq->wait);
+	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
+		wake_up_interruptible(sk->sk_sleep);
 	/* Should agree with poll, otherwise some programs break */
 	if (sock_writeable(sk))
 		sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
 
-	rcu_read_unlock();
+	read_unlock(&sk->sk_callback_lock);
 }
 
 /**
@@ -227,7 +218,7 @@ static int dccp_wait_for_ccid(struct sock *sk, struct sk_buff *skb, int delay)
 		dccp_pr_debug("delayed send by %d msec\n", delay);
 		jiffdelay = msecs_to_jiffies(delay);
 
-		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 
 		sk->sk_write_pending++;
 		release_sock(sk);
@@ -243,7 +234,7 @@ static int dccp_wait_for_ccid(struct sock *sk, struct sk_buff *skb, int delay)
 		rc = ccid_hc_tx_send_packet(dp->dccps_hc_tx_ccid, sk, skb);
 	} while ((delay = rc) > 0);
 out:
-	finish_wait(sk_sleep(sk), &wait);
+	finish_wait(sk->sk_sleep, &wait);
 	return rc;
 
 do_error:
@@ -279,20 +270,7 @@ void dccp_write_xmit(struct sock *sk, int block)
 			const int len = skb->len;
 
 			if (sk->sk_state == DCCP_PARTOPEN) {
-				const u32 cur_mps = dp->dccps_mss_cache - DCCP_FEATNEG_OVERHEAD;
-				/*
-				 * See 8.1.5 - Handshake Completion.
-				 *
-				 * For robustness we resend Confirm options until the client has
-				 * entered OPEN. During the initial feature negotiation, the MPS
-				 * is smaller than usual, reduced by the Change/Confirm options.
-				 */
-				if (!list_empty(&dp->dccps_featneg) && len > cur_mps) {
-					DCCP_WARN("Payload too large (%d) for featneg.\n", len);
-					dccp_send_ack(sk);
-					dccp_feat_list_purge(&dp->dccps_featneg);
-				}
-
+				/* See 8.1.5.  Handshake Completion */
 				inet_csk_schedule_ack(sk);
 				inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK,
 						  inet_csk(sk)->icsk_rto,
@@ -353,7 +331,7 @@ struct sk_buff *dccp_make_response(struct sock *sk, struct dst_entry *dst,
 	/* Reserve space for headers. */
 	skb_reserve(skb, sk->sk_prot->max_header);
 
-	skb_dst_set(skb, dst_clone(dst));
+	skb->dst = dst_clone(dst);
 
 	dreq = dccp_rsk(req);
 	if (inet_rsk(req)->acked)	/* increase ISS upon retransmission */

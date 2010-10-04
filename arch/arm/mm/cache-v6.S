@@ -12,7 +12,6 @@
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <asm/assembler.h>
-#include <asm/unwind.h>
 
 #include "proc-macros.S"
 
@@ -20,31 +19,6 @@
 #define CACHE_LINE_SIZE		32
 #define D_CACHE_LINE_SIZE	32
 #define BTB_FLUSH_SIZE		8
-
-#ifdef CONFIG_ARM_ERRATA_411920
-/*
- * Invalidate the entire I cache (this code is a workaround for the ARM1136
- * erratum 411920 - Invalidate Instruction Cache operation can fail. This
- * erratum is present in 1136, 1156 and 1176. It does not affect the MPCore.
- *
- * Registers:
- *   r0 - set to 0
- *   r1 - corrupted
- */
-ENTRY(v6_icache_inval_all)
-	mov	r0, #0
-	mrs	r1, cpsr
-	cpsid	ifa				@ disable interrupts
-	mcr	p15, 0, r0, c7, c5, 0		@ invalidate entire I-cache
-	mcr	p15, 0, r0, c7, c5, 0		@ invalidate entire I-cache
-	mcr	p15, 0, r0, c7, c5, 0		@ invalidate entire I-cache
-	mcr	p15, 0, r0, c7, c5, 0		@ invalidate entire I-cache
-	msr	cpsr_cx, r1			@ restore interrupts
-	.rept	11				@ ARM Ltd recommends at least
-	nop					@ 11 NOPs
-	.endr
-	mov	pc, lr
-#endif
 
 /*
  *	v6_flush_cache_all()
@@ -57,11 +31,7 @@ ENTRY(v6_flush_kern_cache_all)
 	mov	r0, #0
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c14, 0		@ D cache clean+invalidate
-#ifndef CONFIG_ARM_ERRATA_411920
 	mcr	p15, 0, r0, c7, c5, 0		@ I+BTB cache invalidate
-#else
-	b	v6_icache_inval_all
-#endif
 #else
 	mcr	p15, 0, r0, c7, c15, 0		@ Cache clean+invalidate
 #endif
@@ -122,53 +92,33 @@ ENTRY(v6_coherent_kern_range)
  *	- the Icache does not read data from the write buffer
  */
 ENTRY(v6_coherent_user_range)
- UNWIND(.fnstart		)
+
 #ifdef HARVARD_CACHE
 	bic	r0, r0, #CACHE_LINE_SIZE - 1
-1:
- USER(	mcr	p15, 0, r0, c7, c10, 1	)	@ clean D line
+1:	mcr	p15, 0, r0, c7, c10, 1		@ clean D line
 	add	r0, r0, #CACHE_LINE_SIZE
-2:
 	cmp	r0, r1
 	blo	1b
 #endif
 	mov	r0, #0
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
-#ifndef CONFIG_ARM_ERRATA_411920
 	mcr	p15, 0, r0, c7, c5, 0		@ I+BTB cache invalidate
-#else
-	b	v6_icache_inval_all
-#endif
 #else
 	mcr	p15, 0, r0, c7, c5, 6		@ invalidate BTB
 #endif
 	mov	pc, lr
 
 /*
- * Fault handling for the cache operation above. If the virtual address in r0
- * isn't mapped, just try the next page.
- */
-9001:
-	mov	r0, r0, lsr #12
-	mov	r0, r0, lsl #12
-	add	r0, r0, #4096
-	b	2b
- UNWIND(.fnend		)
-ENDPROC(v6_coherent_user_range)
-ENDPROC(v6_coherent_kern_range)
-
-/*
- *	v6_flush_kern_dcache_area(void *addr, size_t size)
+ *	v6_flush_kern_dcache_page(kaddr)
  *
  *	Ensure that the data held in the page kaddr is written back
  *	to the page in question.
  *
- *	- addr	- kernel address
- *	- size	- region size
+ *	- kaddr   - kernel address (guaranteed to be page aligned)
  */
-ENTRY(v6_flush_kern_dcache_area)
-	add	r1, r0, r1
+ENTRY(v6_flush_kern_dcache_page)
+	add	r1, r0, #PAGE_SZ
 1:
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c14, 1		@ clean & invalidate D line
@@ -195,7 +145,7 @@ ENTRY(v6_flush_kern_dcache_area)
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
  */
-v6_dma_inv_range:
+ENTRY(v6_dma_inv_range)
 	tst	r0, #D_CACHE_LINE_SIZE - 1
 	bic	r0, r0, #D_CACHE_LINE_SIZE - 1
 #ifdef HARVARD_CACHE
@@ -211,10 +161,6 @@ v6_dma_inv_range:
 	mcrne	p15, 0, r1, c7, c15, 1		@ clean & invalidate unified line
 #endif
 1:
-#ifdef CONFIG_DMA_CACHE_RWFO
-	ldr	r2, [r0]			@ read for ownership
-	str	r2, [r0]			@ write for ownership
-#endif
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c6, 1		@ invalidate D line
 #else
@@ -232,12 +178,9 @@ v6_dma_inv_range:
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
  */
-v6_dma_clean_range:
+ENTRY(v6_dma_clean_range)
 	bic	r0, r0, #D_CACHE_LINE_SIZE - 1
 1:
-#ifdef CONFIG_DMA_CACHE_RWFO
-	ldr	r2, [r0]			@ read for ownership
-#endif
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c10, 1		@ clean D line
 #else
@@ -256,12 +199,13 @@ v6_dma_clean_range:
  *	- end     - virtual end address of region
  */
 ENTRY(v6_dma_flush_range)
+#ifdef CONFIG_CACHE_FLUSH_RANGE_LIMIT
+	sub	r2, r1, r0
+	cmp	r2, #CONFIG_CACHE_FLUSH_RANGE_LIMIT
+	bhi	v6_dma_flush_dcache_all
+#endif
 	bic	r0, r0, #D_CACHE_LINE_SIZE - 1
 1:
-#ifdef CONFIG_DMA_CACHE_RWFO
-	ldr	r2, [r0]			@ read for ownership
-	str	r2, [r0]			@ write for ownership
-#endif
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c14, 1		@ clean & invalidate D line
 #else
@@ -274,39 +218,17 @@ ENTRY(v6_dma_flush_range)
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
 	mov	pc, lr
 
-/*
- *	dma_map_area(start, size, dir)
- *	- start	- kernel virtual start address
- *	- size	- size of region
- *	- dir	- DMA direction
- */
-ENTRY(v6_dma_map_area)
-	add	r1, r1, r0
-	teq	r2, #DMA_FROM_DEVICE
-	beq	v6_dma_inv_range
-#ifndef CONFIG_DMA_CACHE_RWFO
-	b	v6_dma_clean_range
+#ifdef CONFIG_CACHE_FLUSH_RANGE_LIMIT
+v6_dma_flush_dcache_all:
+	mov	r0, #0
+#ifdef HARVARD_CACHE
+	mcr	p15, 0, r0, c7, c14, 0		@ D cache clean+invalidate
 #else
-	teq	r2, #DMA_TO_DEVICE
-	beq	v6_dma_clean_range
-	b	v6_dma_flush_range
+	mcr	p15, 0, r0, c7, c15, 0		@ Cache clean+invalidate
 #endif
-ENDPROC(v6_dma_map_area)
-
-/*
- *	dma_unmap_area(start, size, dir)
- *	- start	- kernel virtual start address
- *	- size	- size of region
- *	- dir	- DMA direction
- */
-ENTRY(v6_dma_unmap_area)
-#ifndef CONFIG_DMA_CACHE_RWFO
-	add	r1, r1, r0
-	teq	r2, #DMA_TO_DEVICE
-	bne	v6_dma_inv_range
-#endif
+	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
 	mov	pc, lr
-ENDPROC(v6_dma_unmap_area)
+#endif
 
 	__INITDATA
 
@@ -317,8 +239,8 @@ ENTRY(v6_cache_fns)
 	.long	v6_flush_user_cache_range
 	.long	v6_coherent_kern_range
 	.long	v6_coherent_user_range
-	.long	v6_flush_kern_dcache_area
-	.long	v6_dma_map_area
-	.long	v6_dma_unmap_area
+	.long	v6_flush_kern_dcache_page
+	.long	v6_dma_inv_range
+	.long	v6_dma_clean_range
 	.long	v6_dma_flush_range
 	.size	v6_cache_fns, . - v6_cache_fns

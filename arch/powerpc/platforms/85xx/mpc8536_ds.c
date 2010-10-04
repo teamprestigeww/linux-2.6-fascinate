@@ -17,7 +17,6 @@
 #include <linux/seq_file.h>
 #include <linux/interrupt.h>
 #include <linux/of_platform.h>
-#include <linux/memblock.h>
 
 #include <asm/system.h>
 #include <asm/time.h>
@@ -27,7 +26,6 @@
 #include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/mpic.h>
-#include <asm/swiotlb.h>
 
 #include <sysdev/fsl_soc.h>
 #include <sysdev/fsl_pci.h>
@@ -67,9 +65,7 @@ static void __init mpc8536_ds_setup_arch(void)
 {
 #ifdef CONFIG_PCI
 	struct device_node *np;
-	struct pci_controller *hose;
 #endif
-	dma_addr_t max = 0xffffffff;
 
 	if (ppc_md.progress)
 		ppc_md.progress("mpc8536_ds_setup_arch()", 0);
@@ -84,21 +80,9 @@ static void __init mpc8536_ds_setup_arch(void)
 				fsl_add_bridge(np, 1);
 			else
 				fsl_add_bridge(np, 0);
-
-			hose = pci_find_hose_for_OF_device(np);
-			max = min(max, hose->dma_window_base_cur +
-					hose->dma_window_size);
 		}
 	}
 
-#endif
-
-#ifdef CONFIG_SWIOTLB
-	if (memblock_end_of_DRAM() > max) {
-		ppc_swiotlb_enable = 1;
-		set_pci_dma_ops(&swiotlb_dma_ops);
-		ppc_md.pci_dma_dev_setup = pci_dma_dev_setup_swiotlb;
-	}
 #endif
 
 	printk("MPC8536 DS board from Freescale Semiconductor\n");
@@ -108,7 +92,6 @@ static struct of_device_id __initdata mpc8536_ds_ids[] = {
 	{ .type = "soc", },
 	{ .compatible = "soc", },
 	{ .compatible = "simple-bus", },
-	{ .compatible = "gianfar", },
 	{},
 };
 
@@ -117,8 +100,6 @@ static int __init mpc8536_ds_publish_devices(void)
 	return of_platform_bus_probe(NULL, mpc8536_ds_ids, NULL);
 }
 machine_device_initcall(mpc8536_ds, mpc8536_ds_publish_devices);
-
-machine_arch_initcall(mpc8536_ds, swiotlb_setup_bus_notifier);
 
 /*
  * Called very early, device-tree isn't unflattened

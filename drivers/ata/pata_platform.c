@@ -53,6 +53,7 @@ static struct ata_port_operations pata_platform_port_ops = {
 	.sff_data_xfer		= ata_sff_data_xfer_noirq,
 	.cable_detect		= ata_cable_unknown,
 	.set_mode		= pata_platform_set_mode,
+	.port_start		= ATA_OP_NULL,
 };
 
 static void pata_platform_setup_port(struct ata_ioports *ioaddr,
@@ -150,14 +151,14 @@ int __devinit __pata_platform_probe(struct device *dev,
 	 */
 	if (mmio) {
 		ap->ioaddr.cmd_addr = devm_ioremap(dev, io_res->start,
-				resource_size(io_res));
+				io_res->end - io_res->start + 1);
 		ap->ioaddr.ctl_addr = devm_ioremap(dev, ctl_res->start,
-				resource_size(ctl_res));
+				ctl_res->end - ctl_res->start + 1);
 	} else {
 		ap->ioaddr.cmd_addr = devm_ioport_map(dev, io_res->start,
-				resource_size(io_res));
+				io_res->end - io_res->start + 1);
 		ap->ioaddr.ctl_addr = devm_ioport_map(dev, ctl_res->start,
-				resource_size(ctl_res));
+				ctl_res->end - ctl_res->start + 1);
 	}
 	if (!ap->ioaddr.cmd_addr || !ap->ioaddr.ctl_addr) {
 		dev_err(dev, "failed to map IO/CTL base\n");

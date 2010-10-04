@@ -4,16 +4,14 @@
  * Userspace interface for accessing the
  * Access Control Lists / Control File Data Channel
  *
- * Copyright IBM Corporation 2008, 2009
+ * Copyright IBM Corporation 2008
  */
 
 #define KMSG_COMPONENT "zfcp"
 #define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/miscdevice.h>
-#include <asm/compat.h>
 #include <asm/ccwdev.h>
 #include "zfcp_def.h"
 #include "zfcp_ext.h"
@@ -88,18 +86,8 @@ static int zfcp_cfdc_copy_to_user(void __user  *user_buffer,
 static struct zfcp_adapter *zfcp_cfdc_get_adapter(u32 devno)
 {
 	char busid[9];
-	struct ccw_device *cdev;
-	struct zfcp_adapter *adapter;
-
 	snprintf(busid, sizeof(busid), "0.0.%04x", devno);
-	cdev = get_ccwdev_by_busid(&zfcp_ccw_driver, busid);
-	if (!cdev)
-		return NULL;
-
-	adapter = zfcp_ccw_adapter_by_cdev(cdev);
-
-	put_device(&cdev->dev);
-	return adapter;
+	return zfcp_get_adapter_by_busid(busid);
 }
 
 static int zfcp_cfdc_set_fsf(struct zfcp_fsf_cfdc *fsf_cfdc, int command)
@@ -165,7 +153,7 @@ static void zfcp_cfdc_req_to_sense(struct zfcp_cfdc_data *data,
 }
 
 static long zfcp_cfdc_dev_ioctl(struct file *file, unsigned int command,
-				unsigned long arg)
+				unsigned long buffer)
 {
 	struct zfcp_cfdc_data *data;
 	struct zfcp_cfdc_data __user *data_user;
@@ -177,11 +165,7 @@ static long zfcp_cfdc_dev_ioctl(struct file *file, unsigned int command,
 	if (command != ZFCP_CFDC_IOC)
 		return -ENOTTY;
 
-	if (is_compat_task())
-		data_user = compat_ptr(arg);
-	else
-		data_user = (void __user *)arg;
-
+	data_user = (void __user *) buffer;
 	if (!data_user)
 		return -EINVAL;
 
@@ -189,10 +173,16 @@ static long zfcp_cfdc_dev_ioctl(struct file *file, unsigned int command,
 	if (!fsf_cfdc)
 		return -ENOMEM;
 
-	data = memdup_user(data_user, sizeof(*data_user));
-	if (IS_ERR(data)) {
-		retval = PTR_ERR(data);
+	data = kmalloc(sizeof(struct zfcp_cfdc_data), GFP_KERNEL);
+	if (!data) {
+		retval = -ENOMEM;
 		goto no_mem_sense;
+	}
+
+	retval = copy_from_user(data, data_user, sizeof(*data));
+	if (retval) {
+		retval = -EFAULT;
+		goto free_buffer;
 	}
 
 	if (data->signature != 0xCFDCACDF) {
@@ -239,7 +229,7 @@ static long zfcp_cfdc_dev_ioctl(struct file *file, unsigned int command,
  free_sg:
 	zfcp_sg_free_table(fsf_cfdc->sg, ZFCP_CFDC_PAGES);
  adapter_put:
-	zfcp_ccw_adapter_put(adapter);
+	zfcp_adapter_put(adapter);
  free_buffer:
 	kfree(data);
  no_mem_sense:
@@ -248,7 +238,6 @@ static long zfcp_cfdc_dev_ioctl(struct file *file, unsigned int command,
 }
 
 static const struct file_operations zfcp_cfdc_fops = {
-	.open = nonseekable_open,
 	.unlocked_ioctl = zfcp_cfdc_dev_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = zfcp_cfdc_dev_ioctl

@@ -40,7 +40,6 @@
 #define CRYPTO_ALG_TYPE_SHASH		0x00000009
 #define CRYPTO_ALG_TYPE_AHASH		0x0000000a
 #define CRYPTO_ALG_TYPE_RNG		0x0000000c
-#define CRYPTO_ALG_TYPE_PCOMPRESS	0x0000000f
 
 #define CRYPTO_ALG_TYPE_HASH_MASK	0x0000000e
 #define CRYPTO_ALG_TYPE_AHASH_MASK	0x0000000c
@@ -99,7 +98,13 @@
  * as arm where pointers are 32-bit aligned but there are data types such as
  * u64 which require 64-bit alignment.
  */
+#if defined(ARCH_KMALLOC_MINALIGN)
 #define CRYPTO_MINALIGN ARCH_KMALLOC_MINALIGN
+#elif defined(ARCH_SLAB_MINALIGN)
+#define CRYPTO_MINALIGN ARCH_SLAB_MINALIGN
+#else
+#define CRYPTO_MINALIGN __alignof__(unsigned long long)
+#endif
 
 #define CRYPTO_MINALIGN_ATTR __attribute__ ((__aligned__(CRYPTO_MINALIGN)))
 
@@ -109,6 +114,7 @@ struct crypto_async_request;
 struct crypto_aead;
 struct crypto_blkcipher;
 struct crypto_hash;
+struct crypto_ahash;
 struct crypto_rng;
 struct crypto_tfm;
 struct crypto_type;
@@ -135,6 +141,16 @@ struct ablkcipher_request {
 
 	struct scatterlist *src;
 	struct scatterlist *dst;
+
+	void *__ctx[] CRYPTO_MINALIGN_ATTR;
+};
+
+struct ahash_request {
+	struct crypto_async_request base;
+
+	unsigned int nbytes;
+	struct scatterlist *src;
+	u8		   *result;
 
 	void *__ctx[] CRYPTO_MINALIGN_ATTR;
 };
@@ -203,6 +219,18 @@ struct ablkcipher_alg {
 	unsigned int ivsize;
 };
 
+struct ahash_alg {
+	int (*init)(struct ahash_request *req);
+	int (*reinit)(struct ahash_request *req);
+	int (*update)(struct ahash_request *req);
+	int (*final)(struct ahash_request *req);
+	int (*digest)(struct ahash_request *req);
+	int (*setkey)(struct crypto_ahash *tfm, const u8 *key,
+			unsigned int keylen);
+
+	unsigned int digestsize;
+};
+
 struct aead_alg {
 	int (*setkey)(struct crypto_aead *tfm, const u8 *key,
 	              unsigned int keylen);
@@ -244,6 +272,29 @@ struct cipher_alg {
 	void (*cia_decrypt)(struct crypto_tfm *tfm, u8 *dst, const u8 *src);
 };
 
+struct digest_alg {
+	unsigned int dia_digestsize;
+	void (*dia_init)(struct crypto_tfm *tfm);
+	void (*dia_update)(struct crypto_tfm *tfm, const u8 *data,
+			   unsigned int len);
+	void (*dia_final)(struct crypto_tfm *tfm, u8 *out);
+	int (*dia_setkey)(struct crypto_tfm *tfm, const u8 *key,
+	                  unsigned int keylen);
+};
+
+struct hash_alg {
+	int (*init)(struct hash_desc *desc);
+	int (*update)(struct hash_desc *desc, struct scatterlist *sg,
+		      unsigned int nbytes);
+	int (*final)(struct hash_desc *desc, u8 *out);
+	int (*digest)(struct hash_desc *desc, struct scatterlist *sg,
+		      unsigned int nbytes, u8 *out);
+	int (*setkey)(struct crypto_hash *tfm, const u8 *key,
+		      unsigned int keylen);
+
+	unsigned int digestsize;
+};
+
 struct compress_alg {
 	int (*coa_compress)(struct crypto_tfm *tfm, const u8 *src,
 			    unsigned int slen, u8 *dst, unsigned int *dlen);
@@ -264,6 +315,9 @@ struct rng_alg {
 #define cra_aead	cra_u.aead
 #define cra_blkcipher	cra_u.blkcipher
 #define cra_cipher	cra_u.cipher
+#define cra_digest	cra_u.digest
+#define cra_hash	cra_u.hash
+#define cra_ahash	cra_u.ahash
 #define cra_compress	cra_u.compress
 #define cra_rng		cra_u.rng
 
@@ -289,6 +343,9 @@ struct crypto_alg {
 		struct aead_alg aead;
 		struct blkcipher_alg blkcipher;
 		struct cipher_alg cipher;
+		struct digest_alg digest;
+		struct hash_alg hash;
+		struct ahash_alg ahash;
 		struct compress_alg compress;
 		struct rng_alg rng;
 	} cra_u;
@@ -375,6 +432,18 @@ struct hash_tfm {
 	unsigned int digestsize;
 };
 
+struct ahash_tfm {
+	int (*init)(struct ahash_request *req);
+	int (*update)(struct ahash_request *req);
+	int (*final)(struct ahash_request *req);
+	int (*digest)(struct ahash_request *req);
+	int (*setkey)(struct crypto_ahash *tfm, const u8 *key,
+			unsigned int keylen);
+
+	unsigned int digestsize;
+	unsigned int reqsize;
+};
+
 struct compress_tfm {
 	int (*cot_compress)(struct crypto_tfm *tfm,
 	                    const u8 *src, unsigned int slen,
@@ -395,6 +464,7 @@ struct rng_tfm {
 #define crt_blkcipher	crt_u.blkcipher
 #define crt_cipher	crt_u.cipher
 #define crt_hash	crt_u.hash
+#define crt_ahash	crt_u.ahash
 #define crt_compress	crt_u.compress
 #define crt_rng		crt_u.rng
 
@@ -408,6 +478,7 @@ struct crypto_tfm {
 		struct blkcipher_tfm blkcipher;
 		struct cipher_tfm cipher;
 		struct hash_tfm hash;
+		struct ahash_tfm ahash;
 		struct compress_tfm compress;
 		struct rng_tfm rng;
 	} crt_u;
@@ -477,6 +548,9 @@ struct crypto_attr_u32 {
  * Transform user interface.
  */
  
+struct crypto_tfm *crypto_alloc_tfm(const char *alg_name,
+				    const struct crypto_type *frontend,
+				    u32 type, u32 mask);
 struct crypto_tfm *crypto_alloc_base(const char *alg_name, u32 type, u32 mask);
 void crypto_destroy_tfm(void *mem, struct crypto_tfm *tfm);
 
@@ -698,7 +772,7 @@ static inline struct ablkcipher_request *ablkcipher_request_alloc(
 
 static inline void ablkcipher_request_free(struct ablkcipher_request *req)
 {
-	kzfree(req);
+	kfree(req);
 }
 
 static inline void ablkcipher_request_set_callback(
@@ -829,7 +903,7 @@ static inline struct aead_request *aead_request_alloc(struct crypto_aead *tfm,
 
 static inline void aead_request_free(struct aead_request *req)
 {
-	kzfree(req);
+	kfree(req);
 }
 
 static inline void aead_request_set_callback(struct aead_request *req,

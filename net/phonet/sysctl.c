@@ -56,7 +56,7 @@ void phonet_get_local_port_range(int *min, int *max)
 	} while (read_seqretry(&local_port_range_lock, seq));
 }
 
-static int proc_local_port_range(ctl_table *table, int write,
+static int proc_local_port_range(ctl_table *table, int write, struct file *filp,
 				void __user *buffer,
 				size_t *lenp, loff_t *ppos)
 {
@@ -70,7 +70,7 @@ static int proc_local_port_range(ctl_table *table, int write,
 		.extra2 = &local_port_range_max,
 	};
 
-	ret = proc_dointvec_minmax(&tmp, write, buffer, lenp, ppos);
+	ret = proc_dointvec_minmax(&tmp, write, filp, buffer, lenp, ppos);
 
 	if (write && ret == 0) {
 		if (range[1] < range[0])
@@ -84,18 +84,20 @@ static int proc_local_port_range(ctl_table *table, int write,
 
 static struct ctl_table phonet_table[] = {
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "local_port_range",
 		.data		= &local_port_range,
 		.maxlen		= sizeof(local_port_range),
 		.mode		= 0644,
 		.proc_handler	= proc_local_port_range,
+		.strategy	= NULL,
 	},
-	{ }
+	{ .ctl_name = 0 }
 };
 
 static struct ctl_path phonet_ctl_path[] = {
-	{ .procname = "net", },
-	{ .procname = "phonet", },
+	{ .procname = "net", .ctl_name = CTL_NET, },
+	{ .procname = "phonet", .ctl_name = CTL_UNNUMBERED, },
 	{ },
 };
 

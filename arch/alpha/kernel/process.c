@@ -17,7 +17,9 @@
 #include <linux/stddef.h>
 #include <linux/unistd.h>
 #include <linux/ptrace.h>
+#include <linux/slab.h>
 #include <linux/user.h>
+#include <linux/utsname.h>
 #include <linux/time.h>
 #include <linux/major.h>
 #include <linux/stat.h>
@@ -27,7 +29,6 @@
 #include <linux/reboot.h>
 #include <linux/tty.h>
 #include <linux/console.h>
-#include <linux/slab.h>
 
 #include <asm/reg.h>
 #include <asm/uaccess.h>
@@ -271,7 +272,7 @@ alpha_vfork(struct pt_regs *regs)
  */
 
 int
-copy_thread(unsigned long clone_flags, unsigned long usp,
+copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	    unsigned long unused,
 	    struct task_struct * p, struct pt_regs * regs)
 {
@@ -356,7 +357,7 @@ dump_elf_thread(elf_greg_t *dest, struct pt_regs *pt, struct thread_info *ti)
 	dest[27] = pt->r27;
 	dest[28] = pt->r28;
 	dest[29] = pt->gp;
-	dest[30] = ti == current_thread_info() ? rdusp() : ti->pcb.usp;
+	dest[30] = rdusp();
 	dest[31] = pt->pc;
 
 	/* Once upon a time this was the PS value.  Which is stupid
@@ -387,9 +388,8 @@ EXPORT_SYMBOL(dump_elf_task_fp);
  * sys_execve() executes a new program.
  */
 asmlinkage int
-do_sys_execve(const char __user *ufilename,
-	      const char __user *const __user *argv,
-	      const char __user *const __user *envp, struct pt_regs *regs)
+do_sys_execve(char __user *ufilename, char __user * __user *argv,
+	      char __user * __user *envp, struct pt_regs *regs)
 {
 	int error;
 	char *filename;

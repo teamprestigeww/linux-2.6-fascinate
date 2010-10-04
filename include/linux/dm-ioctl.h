@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001 - 2003 Sistina Software (UK) Limited.
- * Copyright (C) 2004 - 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004 - 2005 Red Hat, Inc. All rights reserved.
  *
  * This file is released under the LGPL.
  */
@@ -11,7 +11,6 @@
 #include <linux/types.h>
 
 #define DM_DIR "mapper"		/* Slashes not supported */
-#define DM_CONTROL_NODE "control"
 #define DM_MAX_TYPE_NAME 16
 #define DM_NAME_LEN 128
 #define DM_UUID_LEN 129
@@ -114,30 +113,20 @@ struct dm_ioctl {
 	 * return -ENOTTY) fill out this field, even if the
 	 * command failed.
 	 */
-	__u32 version[3];	/* in/out */
-	__u32 data_size;	/* total size of data passed in
+	uint32_t version[3];	/* in/out */
+	uint32_t data_size;	/* total size of data passed in
 				 * including this struct */
 
-	__u32 data_start;	/* offset to start of data
+	uint32_t data_start;	/* offset to start of data
 				 * relative to start of this struct */
 
-	__u32 target_count;	/* in/out */
-	__s32 open_count;	/* out */
-	__u32 flags;		/* in/out */
+	uint32_t target_count;	/* in/out */
+	int32_t open_count;	/* out */
+	uint32_t flags;		/* in/out */
+	uint32_t event_nr;      	/* in/out */
+	uint32_t padding;
 
-	/*
-	 * event_nr holds either the event number (input and output) or the
-	 * udev cookie value (input only).
-	 * The DM_DEV_WAIT ioctl takes an event number as input.
-	 * The DM_SUSPEND, DM_DEV_REMOVE and DM_DEV_RENAME ioctls
-	 * use the field as a cookie to return in the DM_COOKIE
-	 * variable with the uevents they issue.
-	 * For output, the ioctls return the event number, not the cookie.
-	 */
-	__u32 event_nr;      	/* in/out */
-	__u32 padding;
-
-	__u64 dev;		/* in/out */
+	uint64_t dev;		/* in/out */
 
 	char name[DM_NAME_LEN];	/* device name */
 	char uuid[DM_UUID_LEN];	/* unique identifier for
@@ -150,9 +139,9 @@ struct dm_ioctl {
  * dm_ioctl.
  */
 struct dm_target_spec {
-	__u64 sector_start;
-	__u64 length;
-	__s32 status;		/* used when reading from kernel only */
+	uint64_t sector_start;
+	uint64_t length;
+	int32_t status;		/* used when reading from kernel only */
 
 	/*
 	 * Location of the next dm_target_spec.
@@ -164,7 +153,7 @@ struct dm_target_spec {
 	 *   (that follows the dm_ioctl struct) to the start of the "next"
 	 *   dm_target_spec.
 	 */
-	__u32 next;
+	uint32_t next;
 
 	char target_type[DM_MAX_TYPE_NAME];
 
@@ -179,17 +168,17 @@ struct dm_target_spec {
  * Used to retrieve the target dependencies.
  */
 struct dm_target_deps {
-	__u32 count;	/* Array size */
-	__u32 padding;	/* unused */
-	__u64 dev[0];	/* out */
+	uint32_t count;	/* Array size */
+	uint32_t padding;	/* unused */
+	uint64_t dev[0];	/* out */
 };
 
 /*
  * Used to get a list of all dm devices.
  */
 struct dm_name_list {
-	__u64 dev;
-	__u32 next;		/* offset to the next record from
+	uint64_t dev;
+	uint32_t next;		/* offset to the next record from
 				   the _start_ of this */
 	char name[0];
 };
@@ -198,8 +187,8 @@ struct dm_name_list {
  * Used to retrieve the target versions
  */
 struct dm_target_versions {
-        __u32 next;
-        __u32 version[3];
+        uint32_t next;
+        uint32_t version[3];
 
         char name[0];
 };
@@ -208,7 +197,7 @@ struct dm_target_versions {
  * Used to pass message to a target
  */
 struct dm_target_msg {
-	__u64 sector;	/* Device sector */
+	uint64_t sector;	/* Device sector */
 
 	char message[0];
 };
@@ -267,9 +256,9 @@ enum {
 #define DM_DEV_SET_GEOMETRY	_IOWR(DM_IOCTL, DM_DEV_SET_GEOMETRY_CMD, struct dm_ioctl)
 
 #define DM_VERSION_MAJOR	4
-#define DM_VERSION_MINOR	18
+#define DM_VERSION_MINOR	14
 #define DM_VERSION_PATCHLEVEL	0
-#define DM_VERSION_EXTRA	"-ioctl (2010-06-29)"
+#define DM_VERSION_EXTRA	"-ioctl (2008-04-23)"
 
 /* Status bits */
 #define DM_READONLY_FLAG	(1 << 0) /* In/Out */
@@ -309,17 +298,5 @@ enum {
  * Set this to suspend without flushing queued ios.
  */
 #define DM_NOFLUSH_FLAG		(1 << 11) /* In */
-
-/*
- * If set, any table information returned will relate to the inactive
- * table instead of the live one.  Always check DM_INACTIVE_PRESENT_FLAG
- * is set before using the data returned.
- */
-#define DM_QUERY_INACTIVE_TABLE_FLAG	(1 << 12) /* In */
-
-/*
- * If set, a uevent was generated for which the caller may need to wait.
- */
-#define DM_UEVENT_GENERATED_FLAG	(1 << 13) /* Out */
 
 #endif				/* _LINUX_DM_IOCTL_H */

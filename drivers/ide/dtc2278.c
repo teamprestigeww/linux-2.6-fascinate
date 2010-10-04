@@ -68,11 +68,11 @@ static void sub22 (char b, char c)
 
 static DEFINE_SPINLOCK(dtc2278_lock);
 
-static void dtc2278_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void dtc2278_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
 	unsigned long flags;
 
-	if (drive->pio_mode >= XFER_PIO_3) {
+	if (pio >= 3) {
 		spin_lock_irqsave(&dtc2278_lock, flags);
 		/*
 		 * This enables PIO mode4 (3?) on the first interface
@@ -100,8 +100,7 @@ static const struct ide_port_info dtc2278_port_info __initdata = {
 				  IDE_HFLAG_IO_32BIT |
 				  /* disallow ->io_32bit changes */
 				  IDE_HFLAG_NO_IO_32BIT |
-				  IDE_HFLAG_NO_DMA |
-				  IDE_HFLAG_DTC2278,
+				  IDE_HFLAG_NO_DMA,
 	.pio_mask		= ATA_PIO4,
 };
 

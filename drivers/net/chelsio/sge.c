@@ -53,7 +53,6 @@
 #include <linux/ip.h>
 #include <linux/in.h>
 #include <linux/if_arp.h>
-#include <linux/slab.h>
 
 #include "cpl5_cmd.h"
 #include "sge.h"
@@ -162,14 +161,14 @@ struct respQ_e {
  */
 struct cmdQ_ce {
 	struct sk_buff *skb;
-	DEFINE_DMA_UNMAP_ADDR(dma_addr);
-	DEFINE_DMA_UNMAP_LEN(dma_len);
+	DECLARE_PCI_UNMAP_ADDR(dma_addr);
+	DECLARE_PCI_UNMAP_LEN(dma_len);
 };
 
 struct freelQ_ce {
 	struct sk_buff *skb;
-	DEFINE_DMA_UNMAP_ADDR(dma_addr);
-	DEFINE_DMA_UNMAP_LEN(dma_len);
+	DECLARE_PCI_UNMAP_ADDR(dma_addr);
+	DECLARE_PCI_UNMAP_LEN(dma_len);
 };
 
 /*
@@ -249,7 +248,7 @@ static void restart_sched(unsigned long);
  *
  * Interrupts are handled by a single CPU and it is likely that on a MP system
  * the application is migrated to another CPU. In that scenario, we try to
- * separate the RX(in irq context) and TX state in order to decrease memory
+ * seperate the RX(in irq context) and TX state in order to decrease memory
  * contention.
  */
 struct sge {
@@ -268,7 +267,7 @@ struct sge {
 	struct sk_buff	*espibug_skb[MAX_NPORTS];
 	u32		sge_control;	/* shadow value of sge control reg */
 	struct sge_intr_counts stats;
-	struct sge_port_stats __percpu *port_stats[MAX_NPORTS];
+	struct sge_port_stats *port_stats[MAX_NPORTS];
 	struct sched	*tx_sched;
 	struct cmdQ cmdQ[SGE_CMDQ_N] ____cacheline_aligned_in_smp;
 };
@@ -460,7 +459,7 @@ static struct sk_buff *sched_skb(struct sge *sge, struct sk_buff *skb,
 
 again:
 	for (i = 0; i < MAX_NPORTS; i++) {
-		s->port = (s->port + 1) & (MAX_NPORTS - 1);
+		s->port = ++s->port & (MAX_NPORTS - 1);
 		skbq = &s->p[s->port].skbq;
 
 		skb = skb_peek(skbq);
@@ -518,8 +517,8 @@ static void free_freelQ_buffers(struct pci_dev *pdev, struct freelQ *q)
 	while (q->credits--) {
 		struct freelQ_ce *ce = &q->centries[cidx];
 
-		pci_unmap_single(pdev, dma_unmap_addr(ce, dma_addr),
-				 dma_unmap_len(ce, dma_len),
+		pci_unmap_single(pdev, pci_unmap_addr(ce, dma_addr),
+				 pci_unmap_len(ce, dma_len),
 				 PCI_DMA_FROMDEVICE);
 		dev_kfree_skb(ce->skb);
 		ce->skb = NULL;
@@ -633,9 +632,9 @@ static void free_cmdQ_buffers(struct sge *sge, struct cmdQ *q, unsigned int n)
 	q->in_use -= n;
 	ce = &q->centries[cidx];
 	while (n--) {
-		if (likely(dma_unmap_len(ce, dma_len))) {
-			pci_unmap_single(pdev, dma_unmap_addr(ce, dma_addr),
-					 dma_unmap_len(ce, dma_len),
+		if (likely(pci_unmap_len(ce, dma_len))) {
+			pci_unmap_single(pdev, pci_unmap_addr(ce, dma_addr),
+					 pci_unmap_len(ce, dma_len),
 					 PCI_DMA_TODEVICE);
 			if (q->sop)
 				q->sop = 0;
@@ -851,8 +850,8 @@ static void refill_free_list(struct sge *sge, struct freelQ *q)
 		skb_reserve(skb, sge->rx_pkt_pad);
 
 		ce->skb = skb;
-		dma_unmap_addr_set(ce, dma_addr, mapping);
-		dma_unmap_len_set(ce, dma_len, dma_len);
+		pci_unmap_addr_set(ce, dma_addr, mapping);
+		pci_unmap_len_set(ce, dma_len, dma_len);
 		e->addr_lo = (u32)mapping;
 		e->addr_hi = (u64)mapping >> 32;
 		e->len_gen = V_CMD_LEN(dma_len) | V_CMD_GEN1(q->genbit);
@@ -954,7 +953,7 @@ int t1_sge_intr_error_handler(struct sge *sge)
 		sge->stats.respQ_empty++;
 	if (cause & F_RESPQ_OVERFLOW) {
 		sge->stats.respQ_overflow++;
-		pr_alert("%s: SGE response queue overflow\n",
+		CH_ALERT("%s: SGE response queue overflow\n",
 			 adapter->name);
 	}
 	if (cause & F_FL_EXHAUSTED) {
@@ -963,12 +962,12 @@ int t1_sge_intr_error_handler(struct sge *sge)
 	}
 	if (cause & F_PACKET_TOO_BIG) {
 		sge->stats.pkt_too_big++;
-		pr_alert("%s: SGE max packet size exceeded\n",
+		CH_ALERT("%s: SGE max packet size exceeded\n",
 			 adapter->name);
 	}
 	if (cause & F_PACKET_MISMATCH) {
 		sge->stats.pkt_mismatch++;
-		pr_alert("%s: SGE packet mismatch\n", adapter->name);
+		CH_ALERT("%s: SGE packet mismatch\n", adapter->name);
 	}
 	if (cause & SGE_INT_FATAL)
 		t1_fatal_err(adapter);
@@ -1059,13 +1058,13 @@ static inline struct sk_buff *get_packet(struct pci_dev *pdev,
 		skb_reserve(skb, 2);	/* align IP header */
 		skb_put(skb, len);
 		pci_dma_sync_single_for_cpu(pdev,
-					    dma_unmap_addr(ce, dma_addr),
-					    dma_unmap_len(ce, dma_len),
+					    pci_unmap_addr(ce, dma_addr),
+					    pci_unmap_len(ce, dma_len),
 					    PCI_DMA_FROMDEVICE);
 		skb_copy_from_linear_data(ce->skb, skb->data, len);
 		pci_dma_sync_single_for_device(pdev,
-					       dma_unmap_addr(ce, dma_addr),
-					       dma_unmap_len(ce, dma_len),
+					       pci_unmap_addr(ce, dma_addr),
+					       pci_unmap_len(ce, dma_len),
 					       PCI_DMA_FROMDEVICE);
 		recycle_fl_buf(fl, fl->cidx);
 		return skb;
@@ -1077,8 +1076,8 @@ use_orig_buf:
 		return NULL;
 	}
 
-	pci_unmap_single(pdev, dma_unmap_addr(ce, dma_addr),
-			 dma_unmap_len(ce, dma_len), PCI_DMA_FROMDEVICE);
+	pci_unmap_single(pdev, pci_unmap_addr(ce, dma_addr),
+			 pci_unmap_len(ce, dma_len), PCI_DMA_FROMDEVICE);
 	skb = ce->skb;
 	prefetch(skb->data);
 
@@ -1100,9 +1099,9 @@ static void unexpected_offload(struct adapter *adapter, struct freelQ *fl)
 	struct freelQ_ce *ce = &fl->centries[fl->cidx];
 	struct sk_buff *skb = ce->skb;
 
-	pci_dma_sync_single_for_cpu(adapter->pdev, dma_unmap_addr(ce, dma_addr),
-			    dma_unmap_len(ce, dma_len), PCI_DMA_FROMDEVICE);
-	pr_err("%s: unexpected offload packet, cmd %u\n",
+	pci_dma_sync_single_for_cpu(adapter->pdev, pci_unmap_addr(ce, dma_addr),
+			    pci_unmap_len(ce, dma_len), PCI_DMA_FROMDEVICE);
+	CH_ERR("%s: unexpected offload packet, cmd %u\n",
 	       adapter->name, *skb->data);
 	recycle_fl_buf(fl, fl->cidx);
 }
@@ -1123,7 +1122,7 @@ static inline unsigned int compute_large_page_tx_descs(struct sk_buff *skb)
 
 	if (PAGE_SIZE > SGE_TX_DESC_MAX_PLEN) {
 		unsigned int nfrags = skb_shinfo(skb)->nr_frags;
-		unsigned int i, len = skb_headlen(skb);
+		unsigned int i, len = skb->len - skb->data_len;
 		while (len > SGE_TX_DESC_MAX_PLEN) {
 			count++;
 			len -= SGE_TX_DESC_MAX_PLEN;
@@ -1150,8 +1149,8 @@ static inline void write_tx_desc(struct cmdQ_e *e, dma_addr_t mapping,
 				 unsigned int len, unsigned int gen,
 				 unsigned int eop)
 {
-	BUG_ON(len > SGE_TX_DESC_MAX_PLEN);
-
+	if (unlikely(len > SGE_TX_DESC_MAX_PLEN))
+		BUG();
 	e->addr_lo = (u32)mapping;
 	e->addr_hi = (u64)mapping >> 32;
 	e->len_gen = V_CMD_LEN(len) | V_CMD_GEN1(gen);
@@ -1182,7 +1181,7 @@ static inline unsigned int write_large_page_tx_descs(unsigned int pidx,
 			write_tx_desc(e1, *desc_mapping, SGE_TX_DESC_MAX_PLEN,
 				      *gen, nfrags == 0 && *desc_len == 0);
 			ce1->skb = NULL;
-			dma_unmap_len_set(ce1, dma_len, 0);
+			pci_unmap_len_set(ce1, dma_len, 0);
 			*desc_mapping += SGE_TX_DESC_MAX_PLEN;
 			if (*desc_len) {
 				ce1++;
@@ -1219,10 +1218,10 @@ static inline void write_tx_descs(struct adapter *adapter, struct sk_buff *skb,
 	ce = &q->centries[pidx];
 
 	mapping = pci_map_single(adapter->pdev, skb->data,
-				 skb_headlen(skb), PCI_DMA_TODEVICE);
+				skb->len - skb->data_len, PCI_DMA_TODEVICE);
 
 	desc_mapping = mapping;
-	desc_len = skb_headlen(skb);
+	desc_len = skb->len - skb->data_len;
 
 	flags = F_CMD_DATAVALID | F_CMD_SOP |
 	    V_CMD_EOP(nfrags == 0 && desc_len <= SGE_TX_DESC_MAX_PLEN) |
@@ -1233,7 +1232,7 @@ static inline void write_tx_descs(struct adapter *adapter, struct sk_buff *skb,
 	e->addr_hi = (u64)desc_mapping >> 32;
 	e->len_gen = V_CMD_LEN(first_desc_len) | V_CMD_GEN1(gen);
 	ce->skb = NULL;
-	dma_unmap_len_set(ce, dma_len, 0);
+	pci_unmap_len_set(ce, dma_len, 0);
 
 	if (PAGE_SIZE > SGE_TX_DESC_MAX_PLEN &&
 	    desc_len > SGE_TX_DESC_MAX_PLEN) {
@@ -1257,8 +1256,8 @@ static inline void write_tx_descs(struct adapter *adapter, struct sk_buff *skb,
 	}
 
 	ce->skb = NULL;
-	dma_unmap_addr_set(ce, dma_addr, mapping);
-	dma_unmap_len_set(ce, dma_len, skb_headlen(skb));
+	pci_unmap_addr_set(ce, dma_addr, mapping);
+	pci_unmap_len_set(ce, dma_len, skb->len - skb->data_len);
 
 	for (i = 0; nfrags--; i++) {
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
@@ -1284,8 +1283,8 @@ static inline void write_tx_descs(struct adapter *adapter, struct sk_buff *skb,
 			write_tx_desc(e1, desc_mapping, desc_len, gen,
 				      nfrags == 0);
 		ce->skb = NULL;
-		dma_unmap_addr_set(ce, dma_addr, mapping);
-		dma_unmap_len_set(ce, dma_len, frag->size);
+		pci_unmap_addr_set(ce, dma_addr, mapping);
+		pci_unmap_len_set(ce, dma_len, frag->size);
 	}
 	ce->skb = skb;
 	wmb();
@@ -1379,7 +1378,7 @@ static void sge_rx(struct sge *sge, struct freelQ *fl, unsigned int len)
 	}
 	__skb_pull(skb, sizeof(*p));
 
-	st = this_cpu_ptr(sge->port_stats[p->iff]);
+	st = per_cpu_ptr(sge->port_stats[p->iff], smp_processor_id());
 
 	skb->protocol = eth_type_trans(skb, adapter->port[p->iff].dev);
 	if ((adapter->flags & RX_CSUM_ENABLED) && p->csum == 0xffff &&
@@ -1613,7 +1612,7 @@ int t1_poll(struct napi_struct *napi, int budget)
 	int work_done = process_responses(adapter, budget);
 
 	if (likely(work_done < budget)) {
-		napi_complete(napi);
+		netif_rx_complete(napi);
 		writel(adapter->sge->respQ.cidx,
 		       adapter->regs + A_SG_SLEEPING);
 	}
@@ -1631,7 +1630,7 @@ irqreturn_t t1_interrupt(int irq, void *data)
 
 		if (napi_schedule_prep(&adapter->napi)) {
 			if (process_pure_responses(adapter))
-				__napi_schedule(&adapter->napi);
+				__netif_rx_schedule(&adapter->napi);
 			else {
 				/* no data, no NAPI needed */
 				writel(sge->respQ.cidx, adapter->regs + A_SG_SLEEPING);
@@ -1688,7 +1687,7 @@ static int t1_sge_tx(struct sk_buff *skb, struct adapter *adapter,
 			netif_stop_queue(dev);
 			set_bit(dev->if_port, &sge->stopped_tx_queues);
 			sge->stats.cmdQ_full[2]++;
-			pr_err("%s: Tx ring full while queue awake!\n",
+			CH_ERR("%s: Tx ring full while queue awake!\n",
 			       adapter->name);
 		}
 		spin_unlock(&q->lock);
@@ -1777,11 +1776,12 @@ static inline int eth_hdr_len(const void *data)
 /*
  * Adds the CPL header to the sk_buff and passes it to t1_sge_tx.
  */
-netdev_tx_t t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
+int t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct adapter *adapter = dev->ml_priv;
 	struct sge *sge = adapter->sge;
-	struct sge_port_stats *st = this_cpu_ptr(sge->port_stats[dev->if_port]);
+	struct sge_port_stats *st = per_cpu_ptr(sge->port_stats[dev->if_port],
+						smp_processor_id());
 	struct cpl_tx_pkt *cpl;
 	struct sk_buff *orig_skb = skb;
 	int ret;
@@ -1879,6 +1879,7 @@ netdev_tx_t t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		cpl->vlan_valid = 0;
 
 send:
+	dev->trans_start = jiffies;
 	ret = t1_sge_tx(skb, adapter, 0, dev);
 
 	/* If transmit busy, and we reallocated skb's due to headroom limit,
@@ -1966,7 +1967,8 @@ void t1_sge_stop(struct sge *sge)
 		tx_sched_stop(sge);
 
 	for (i = 0; i < MAX_NPORTS; i++)
-		kfree_skb(sge->espibug_skb[i]);
+		if (sge->espibug_skb[i])
+			kfree_skb(sge->espibug_skb[i]);
 }
 
 /*

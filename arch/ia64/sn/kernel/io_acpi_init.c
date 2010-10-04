@@ -13,7 +13,6 @@
 #include <asm/sn/sn_sal.h>
 #include "xtalk/hubdev.h"
 #include <linux/acpi.h>
-#include <linux/slab.h>
 
 
 /*
@@ -41,7 +40,7 @@ struct sn_pcidev_match {
 /*
  * Perform the early IO init in PROM.
  */
-static long
+static s64
 sal_ioif_init(u64 *result)
 {
 	struct ia64_sal_retval isrv = {0,0,0,0};
@@ -391,7 +390,7 @@ sn_acpi_get_pcidev_info(struct pci_dev *dev, struct pcidev_info **pcidev_info,
 	pcidev_match.handle = NULL;
 
 	acpi_walk_namespace(ACPI_TYPE_DEVICE, rootbus_handle, ACPI_UINT32_MAX,
-			    find_matching_device, NULL, &pcidev_match, NULL);
+			    find_matching_device, &pcidev_match, NULL);
 
 	if (!pcidev_match.handle) {
 		printk(KERN_ERR
@@ -493,7 +492,7 @@ void __init
 sn_io_acpi_init(void)
 {
 	u64 result;
-	long status;
+	s64 status;
 
 	/* SN Altix does not follow the IOSAPIC IRQ routing model */
 	acpi_irq_model = ACPI_IRQ_MODEL_PLATFORM;

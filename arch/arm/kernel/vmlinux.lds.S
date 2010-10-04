@@ -6,7 +6,6 @@
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/thread_info.h>
 #include <asm/memory.h>
-#include <asm/page.h>
 	
 OUTPUT_ARCH(arm)
 ENTRY(stext)
@@ -24,11 +23,13 @@ SECTIONS
 #else
 	. = PAGE_OFFSET + TEXT_OFFSET;
 #endif
-
-	.init : {			/* Init code and data		*/
+	.text.head : {
 		_stext = .;
 		_sinittext = .;
-			HEAD_TEXT
+		*(.text.head)
+	}
+
+	.init : {			/* Init code and data		*/
 			INIT_TEXT
 		_einittext = .;
 		__proc_info_begin = .;
@@ -40,42 +41,45 @@ SECTIONS
 		__tagtable_begin = .;
 			*(.taglist.init)
 		__tagtable_end = .;
-
-		INIT_SETUP(16)
-
-		INIT_CALLS
-		CON_INITCALL
-		SECURITY_INITCALL
-		INIT_RAM_FS
-
+		. = ALIGN(16);
+		__setup_start = .;
+			*(.init.setup)
+		__setup_end = .;
+		__early_begin = .;
+			*(.early_param.init)
+		__early_end = .;
+		__initcall_start = .;
+			INITCALLS
+		__initcall_end = .;
+		__con_initcall_start = .;
+			*(.con_initcall.init)
+		__con_initcall_end = .;
+		__security_initcall_start = .;
+			*(.security_initcall.init)
+		__security_initcall_end = .;
+#ifdef CONFIG_BLK_DEV_INITRD
+		. = ALIGN(32);
+		__initramfs_start = .;
+			usr/built-in.o(.init.ramfs)
+		__initramfs_end = .;
+#endif
+		. = ALIGN(4096);
+		__per_cpu_start = .;
+			*(.data.percpu)
+			*(.data.percpu.shared_aligned)
+		__per_cpu_end = .;
 #ifndef CONFIG_XIP_KERNEL
 		__init_begin = _stext;
 		INIT_DATA
+		. = ALIGN(4096);
+		__init_end = .;
 #endif
 	}
 
-	PERCPU(PAGE_SIZE)
-
-#ifndef CONFIG_XIP_KERNEL
-	. = ALIGN(PAGE_SIZE);
-	__init_end = .;
-#endif
-
-	/*
-	 * unwind exit sections must be discarded before the rest of the
-	 * unwind sections get included.
-	 */
-	/DISCARD/ : {
-		*(.ARM.exidx.exit.text)
-		*(.ARM.extab.exit.text)
-#ifndef CONFIG_HOTPLUG_CPU
-		*(.ARM.exidx.cpuexit.text)
-		*(.ARM.extab.cpuexit.text)
-#endif
-#ifndef CONFIG_HOTPLUG
-		*(.ARM.exidx.devexit.text)
-		*(.ARM.extab.devexit.text)
-#endif
+	/DISCARD/ : {			/* Exit code and data		*/
+		EXIT_TEXT
+		EXIT_DATA
+		*(.exitcall.exit)
 #ifndef CONFIG_MMU
 		*(.fixup)
 		*(__ex_table)
@@ -102,26 +106,9 @@ SECTIONS
 		*(.got)			/* Global offset table		*/
 	}
 
-	RO_DATA(PAGE_SIZE)
+	RODATA
 
 	_etext = .;			/* End of text and rodata section */
-
-#ifdef CONFIG_ARM_UNWIND
-	/*
-	 * Stack unwinding tables
-	 */
-	. = ALIGN(8);
-	.ARM.unwind_idx : {
-		__start_unwind_idx = .;
-		*(.ARM.exidx*)
-		__stop_unwind_idx = .;
-	}
-	.ARM.unwind_tab : {
-		__start_unwind_tab = .;
-		*(.ARM.extab*)
-		__stop_unwind_tab = .;
-	}
-#endif
 
 #ifdef CONFIG_XIP_KERNEL
 	__data_loc = ALIGN(4);		/* location in binary */
@@ -133,24 +120,32 @@ SECTIONS
 
 	.data : AT(__data_loc) {
 		_data = .;		/* address in memory */
-		_sdata = .;
 
 		/*
 		 * first, the init task union, aligned
 		 * to an 8192 byte boundary.
 		 */
-		INIT_TASK_DATA(THREAD_SIZE)
+		*(.data.init_task)
 
 #ifdef CONFIG_XIP_KERNEL
-		. = ALIGN(PAGE_SIZE);
+		. = ALIGN(4096);
 		__init_begin = .;
 		INIT_DATA
-		. = ALIGN(PAGE_SIZE);
+		. = ALIGN(4096);
 		__init_end = .;
 #endif
 
-		NOSAVE_DATA
-		CACHELINE_ALIGNED_DATA(32)
+		. = ALIGN(4096);
+		__nosave_begin = .;
+		*(.data.nosave)
+		. = ALIGN(4096);
+		__nosave_end = .;
+
+		/*
+		 * then the cacheline aligned data
+		 */
+		. = ALIGN(32);
+		*(.data.cacheline_aligned)
 
 		/*
 		 * The exception fixup table (might need resorting at runtime)
@@ -172,71 +167,20 @@ SECTIONS
 	}
 	_edata_loc = __data_loc + SIZEOF(.data);
 
-#ifdef CONFIG_HAVE_TCM
-        /*
-	 * We align everything to a page boundary so we can
-	 * free it after init has commenced and TCM contents have
-	 * been copied to its destination.
-	 */
-	.tcm_start : {
-		. = ALIGN(PAGE_SIZE);
-		__tcm_start = .;
-		__itcm_start = .;
+	.bss : {
+		__bss_start = .;	/* BSS				*/
+		*(.bss)
+		*(COMMON)
+		_end = .;
 	}
-
-	/*
-	 * Link these to the ITCM RAM
-	 * Put VMA to the TCM address and LMA to the common RAM
-	 * and we'll upload the contents from RAM to TCM and free
-	 * the used RAM after that.
-	 */
-	.text_itcm ITCM_OFFSET : AT(__itcm_start)
-	{
-		__sitcm_text = .;
-		*(.tcm.text)
-		*(.tcm.rodata)
-		. = ALIGN(4);
-		__eitcm_text = .;
-	}
-
-	/*
-	 * Reset the dot pointer, this is needed to create the
-	 * relative __dtcm_start below (to be used as extern in code).
-	 */
-	. = ADDR(.tcm_start) + SIZEOF(.tcm_start) + SIZEOF(.text_itcm);
-
-	.dtcm_start : {
-		__dtcm_start = .;
-	}
-
-	/* TODO: add remainder of ITCM as well, that can be used for data! */
-	.data_dtcm DTCM_OFFSET : AT(__dtcm_start)
-	{
-		. = ALIGN(4);
-		__sdtcm_data = .;
-		*(.tcm.data)
-		. = ALIGN(4);
-		__edtcm_data = .;
-	}
-
-	/* Reset the dot pointer or the linker gets confused */
-	. = ADDR(.dtcm_start) + SIZEOF(.data_dtcm);
-
-	/* End marker for freeing TCM copy in linked object */
-	.tcm_end : AT(ADDR(.dtcm_start) + SIZEOF(.data_dtcm)){
-		. = ALIGN(PAGE_SIZE);
-		__tcm_end = .;
-	}
-#endif
-
-	BSS_SECTION(0, 0, 0)
-	_end = .;
-
-	STABS_DEBUG
+					/* Stabs debugging sections.	*/
+	.stab 0 : { *(.stab) }
+	.stabstr 0 : { *(.stabstr) }
+	.stab.excl 0 : { *(.stab.excl) }
+	.stab.exclstr 0 : { *(.stab.exclstr) }
+	.stab.index 0 : { *(.stab.index) }
+	.stab.indexstr 0 : { *(.stab.indexstr) }
 	.comment 0 : { *(.comment) }
-
-	/* Default discards */
-	DISCARDS
 }
 
 /*

@@ -51,7 +51,6 @@
  *   wimax_rfkill_rm()
  */
 #include <linux/device.h>
-#include <linux/gfp.h>
 #include <net/genetlink.h>
 #include <linux/netdevice.h>
 #include <linux/wimax.h>
@@ -61,14 +60,6 @@
 #define D_SUBMODULE stack
 #include "debug-levels.h"
 
-static char wimax_debug_params[128];
-module_param_string(debug, wimax_debug_params, sizeof(wimax_debug_params),
-		    0644);
-MODULE_PARM_DESC(debug,
-		 "String of space-separated NAME:VALUE pairs, where NAMEs "
-		 "are the different debug submodules and VALUE are the "
-		 "initial debug value to set.");
-
 /*
  * Authoritative source for the RE_STATE_CHANGE attribute policy
  *
@@ -76,7 +67,8 @@ MODULE_PARM_DESC(debug,
  * close to where the data is generated.
  */
 /*
-static const struct nla_policy wimax_gnl_re_status_change[WIMAX_GNL_ATTR_MAX + 1] = {
+static const
+struct nla_policy wimax_gnl_re_status_change[WIMAX_GNL_ATTR_MAX + 1] = {
 	[WIMAX_GNL_STCH_STATE_OLD] = { .type = NLA_U8 },
 	[WIMAX_GNL_STCH_STATE_NEW] = { .type = NLA_U8 },
 };
@@ -171,12 +163,16 @@ int wimax_gnl_re_state_change_send(
 	struct device *dev = wimax_dev_to_dev(wimax_dev);
 	d_fnstart(3, dev, "(wimax_dev %p report_skb %p)\n",
 		  wimax_dev, report_skb);
-	if (report_skb == NULL) {
-		result = -ENOMEM;
+	if (report_skb == NULL)
 		goto out;
-	}
 	genlmsg_end(report_skb, header);
-	genlmsg_multicast(report_skb, 0, wimax_gnl_mcg.id, GFP_KERNEL);
+	result = genlmsg_multicast(report_skb, 0, wimax_gnl_mcg.id, GFP_KERNEL);
+	if (result == -ESRCH)	/* Nobody connected, ignore it */
+		result = 0;	/* btw, the skb is freed already */
+	if (result < 0) {
+		dev_err(dev, "RE_STCH: Error sending: %d\n", result);
+		nlmsg_free(report_skb);
+	}
 out:
 	d_fnend(3, dev, "(wimax_dev %p report_skb %p) = %d\n",
 		wimax_dev, report_skb, result);
@@ -315,11 +311,12 @@ void __wimax_state_change(struct wimax_dev *wimax_dev, enum wimax_st new_state)
 		BUG();
 	}
 	__wimax_state_set(wimax_dev, new_state);
-	if (!IS_ERR(stch_skb))
+	if (stch_skb)
 		wimax_gnl_re_state_change_send(wimax_dev, stch_skb, header);
 out:
 	d_fnend(3, dev, "(wimax_dev %p new_state %u [old %u]) = void\n",
 		wimax_dev, new_state, old_state);
+	return;
 }
 
 
@@ -345,22 +342,10 @@ out:
  */
 void wimax_state_change(struct wimax_dev *wimax_dev, enum wimax_st new_state)
 {
-	/*
-	 * A driver cannot take the wimax_dev out of the
-	 * __WIMAX_ST_NULL state unless by calling wimax_dev_add(). If
-	 * the wimax_dev's state is still NULL, we ignore any request
-	 * to change its state because it means it hasn't been yet
-	 * registered.
-	 *
-	 * There is no need to complain about it, as routines that
-	 * call this might be shared from different code paths that
-	 * are called before or after wimax_dev_add() has done its
-	 * job.
-	 */
 	mutex_lock(&wimax_dev->mutex);
-	if (wimax_dev->state > __WIMAX_ST_NULL)
-		__wimax_state_change(wimax_dev, new_state);
+	__wimax_state_change(wimax_dev, new_state);
 	mutex_unlock(&wimax_dev->mutex);
+	return;
 }
 EXPORT_SYMBOL_GPL(wimax_state_change);
 
@@ -395,7 +380,7 @@ EXPORT_SYMBOL_GPL(wimax_state_get);
 void wimax_dev_init(struct wimax_dev *wimax_dev)
 {
 	INIT_LIST_HEAD(&wimax_dev->id_table_node);
-	__wimax_state_set(wimax_dev, __WIMAX_ST_NULL);
+	__wimax_state_set(wimax_dev, WIMAX_ST_UNINITIALIZED);
 	mutex_init(&wimax_dev->mutex);
 	mutex_init(&wimax_dev->mutex_reset);
 }
@@ -408,15 +393,13 @@ EXPORT_SYMBOL_GPL(wimax_dev_init);
 extern struct genl_ops
 	wimax_gnl_msg_from_user,
 	wimax_gnl_reset,
-	wimax_gnl_rfkill,
-	wimax_gnl_state_get;
+	wimax_gnl_rfkill;
 
 static
 struct genl_ops *wimax_gnl_ops[] = {
 	&wimax_gnl_msg_from_user,
 	&wimax_gnl_reset,
 	&wimax_gnl_rfkill,
-	&wimax_gnl_state_get,
 };
 
 
@@ -541,7 +524,6 @@ struct d_level D_LEVEL[] = {
 	D_SUBMODULE_DEFINE(op_msg),
 	D_SUBMODULE_DEFINE(op_reset),
 	D_SUBMODULE_DEFINE(op_rfkill),
-	D_SUBMODULE_DEFINE(op_state_get),
 	D_SUBMODULE_DEFINE(stack),
 };
 size_t D_LEVEL_SIZE = ARRAY_SIZE(D_LEVEL);
@@ -568,9 +550,6 @@ int __init wimax_subsys_init(void)
 	int result, cnt;
 
 	d_fnstart(4, NULL, "()\n");
-	d_parse_params(D_LEVEL, D_LEVEL_SIZE, wimax_debug_params,
-		       "wimax.debug");
-
 	snprintf(wimax_gnl_family.name, sizeof(wimax_gnl_family.name),
 		 "WiMAX");
 	result = genl_register_family(&wimax_gnl_family);

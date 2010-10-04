@@ -1,2 +1,8 @@
+# $Id: Makefile
+
 obj-$(CONFIG_FCOE) += fcoe.o
-obj-$(CONFIG_LIBFCOE) += libfcoe.o
+
+fcoe-y := \
+	libfcoe.o \
+	fcoe_sw.o \
+	fc_transport_fcoe.o

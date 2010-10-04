@@ -15,19 +15,19 @@
 
 #include <linux/mutex.h>
 
-#if defined CONFIG_X86_UV || defined CONFIG_IA64_SGI_UV
-#include <asm/uv/uv.h>
-#define is_uv()		is_uv_system()
-#endif
-
-#ifndef is_uv
-#define is_uv()		0
-#endif
-
-#if defined CONFIG_IA64
+#ifdef CONFIG_IA64
 #include <asm/system.h>
 #include <asm/sn/arch.h>	/* defines is_shub1() and is_shub2() */
 #define is_shub()	ia64_platform_is("sn2")
+#ifdef CONFIG_IA64_SGI_UV
+#define is_uv()		ia64_platform_is("uv")
+#else
+#define is_uv()		0
+#endif
+#endif
+#ifdef CONFIG_X86_64
+#include <asm/genapic.h>
+#define is_uv()		is_uv_system()
 #endif
 
 #ifndef is_shub1
@@ -40,6 +40,10 @@
 
 #ifndef is_shub
 #define is_shub()	0
+#endif
+
+#ifndef is_uv
+#define is_uv()		0
 #endif
 
 #ifdef USE_DBUG_ON
@@ -339,7 +343,6 @@ extern short xp_partition_id;
 extern u8 xp_region_size;
 
 extern unsigned long (*xp_pa) (void *);
-extern unsigned long (*xp_socket_pa) (unsigned long);
 extern enum xp_retval (*xp_remote_memcpy) (unsigned long, const unsigned long,
 		       size_t);
 extern int (*xp_cpu_to_nasid) (int);

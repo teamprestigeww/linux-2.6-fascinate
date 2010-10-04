@@ -136,15 +136,15 @@ static int jmicron_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 	static const struct ata_port_info info = {
 		.flags	= ATA_FLAG_SLAVE_POSS,
 
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f,
+		.mwdma_mask	= 0x07,
 		.udma_mask 	= ATA_UDMA5,
 
 		.port_ops	= &jmicron_ops,
 	};
 	const struct ata_port_info *ppi[] = { &info, NULL };
 
-	return ata_pci_bmdma_init_one(pdev, ppi, &jmicron_sht, NULL, 0);
+	return ata_pci_sff_init_one(pdev, ppi, &jmicron_sht, NULL);
 }
 
 static const struct pci_device_id jmicron_pci_tbl[] = {

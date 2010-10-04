@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -51,10 +51,6 @@
 ACPI_MODULE_NAME("evregion")
 
 /* Local prototypes */
-static u8
-acpi_ev_has_default_handler(struct acpi_namespace_node *node,
-			    acpi_adr_space_type space_id);
-
 static acpi_status
 acpi_ev_reg_run(acpi_handle obj_handle,
 		u32 level, void *context, void **return_value);
@@ -146,50 +142,6 @@ acpi_status acpi_ev_install_region_handlers(void)
 
 /*******************************************************************************
  *
- * FUNCTION:    acpi_ev_has_default_handler
- *
- * PARAMETERS:  Node                - Namespace node for the device
- *              space_id            - The address space ID
- *
- * RETURN:      TRUE if default handler is installed, FALSE otherwise
- *
- * DESCRIPTION: Check if the default handler is installed for the requested
- *              space ID.
- *
- ******************************************************************************/
-
-static u8
-acpi_ev_has_default_handler(struct acpi_namespace_node *node,
-			    acpi_adr_space_type space_id)
-{
-	union acpi_operand_object *obj_desc;
-	union acpi_operand_object *handler_obj;
-
-	/* Must have an existing internal object */
-
-	obj_desc = acpi_ns_get_attached_object(node);
-	if (obj_desc) {
-		handler_obj = obj_desc->device.handler;
-
-		/* Walk the linked list of handlers for this object */
-
-		while (handler_obj) {
-			if (handler_obj->address_space.space_id == space_id) {
-				if (handler_obj->address_space.handler_flags &
-				    ACPI_ADDR_HANDLER_DEFAULT_INSTALLED) {
-					return (TRUE);
-				}
-			}
-
-			handler_obj = handler_obj->address_space.next;
-		}
-	}
-
-	return (FALSE);
-}
-
-/*******************************************************************************
- *
  * FUNCTION:    acpi_ev_initialize_op_regions
  *
  * PARAMETERS:  None
@@ -217,18 +169,12 @@ acpi_status acpi_ev_initialize_op_regions(void)
 
 	for (i = 0; i < ACPI_NUM_DEFAULT_SPACES; i++) {
 		/*
-		 * Make sure the installed handler is the DEFAULT handler. If not the
-		 * default, the _REG methods will have already been run (when the
-		 * handler was installed)
+		 * TBD: Make sure handler is the DEFAULT handler, otherwise
+		 * _REG will have already been run.
 		 */
-		if (acpi_ev_has_default_handler(acpi_gbl_root_node,
-						acpi_gbl_default_address_spaces
-						[i])) {
-			status =
-			    acpi_ev_execute_reg_methods(acpi_gbl_root_node,
-							acpi_gbl_default_address_spaces
-							[i]);
-		}
+		status = acpi_ev_execute_reg_methods(acpi_gbl_root_node,
+						     acpi_gbl_default_address_spaces
+						     [i]);
 	}
 
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
@@ -289,20 +235,23 @@ acpi_ev_execute_reg_method(union acpi_operand_object *region_obj, u32 function)
 	 *  connection status 1 for connecting the handler, 0 for disconnecting
 	 *  the handler (Passed as a parameter)
 	 */
-	args[0] =
-	    acpi_ut_create_integer_object((u64) region_obj->region.space_id);
+	args[0] = acpi_ut_create_internal_object(ACPI_TYPE_INTEGER);
 	if (!args[0]) {
 		status = AE_NO_MEMORY;
 		goto cleanup1;
 	}
 
-	args[1] = acpi_ut_create_integer_object((u64) function);
+	args[1] = acpi_ut_create_internal_object(ACPI_TYPE_INTEGER);
 	if (!args[1]) {
 		status = AE_NO_MEMORY;
 		goto cleanup2;
 	}
 
-	args[2] = NULL;		/* Terminate list */
+	/* Setup the parameter objects */
+
+	args[0]->integer.value = region_obj->region.space_id;
+	args[1]->integer.value = function;
+	args[2] = NULL;
 
 	/* Execute the method, no return value */
 
@@ -326,10 +275,10 @@ acpi_ev_execute_reg_method(union acpi_operand_object *region_obj, u32 function)
  *
  * PARAMETERS:  region_obj          - Internal region object
  *              Function            - Read or Write operation
- *              region_offset       - Where in the region to read or write
+ *              Address             - Where in the space to read or write
  *              bit_width           - Field width in bits (8, 16, 32, or 64)
  *              Value               - Pointer to in or out value, must be
- *                                    a full 64-bit integer
+ *                                    full 64-bit acpi_integer
  *
  * RETURN:      Status
  *
@@ -341,7 +290,8 @@ acpi_ev_execute_reg_method(union acpi_operand_object *region_obj, u32 function)
 acpi_status
 acpi_ev_address_space_dispatch(union acpi_operand_object *region_obj,
 			       u32 function,
-			       u32 region_offset, u32 bit_width, u64 *value)
+			       acpi_physical_address address,
+			       u32 bit_width, acpi_integer * value)
 {
 	acpi_status status;
 	acpi_adr_space_handler handler;
@@ -446,8 +396,7 @@ acpi_ev_address_space_dispatch(union acpi_operand_object *region_obj,
 	ACPI_DEBUG_PRINT((ACPI_DB_OPREGION,
 			  "Handler %p (@%p) Address %8.8X%8.8X [%s]\n",
 			  &region_obj->region.handler->address_space, handler,
-			  ACPI_FORMAT_NATIVE_UINT(region_obj->region.address +
-						  region_offset),
+			  ACPI_FORMAT_NATIVE_UINT(address),
 			  acpi_ut_get_region_name(region_obj->region.
 						  space_id)));
 
@@ -463,9 +412,8 @@ acpi_ev_address_space_dispatch(union acpi_operand_object *region_obj,
 
 	/* Call the handler */
 
-	status = handler(function,
-			 (region_obj->region.address + region_offset),
-			 bit_width, value, handler_desc->address_space.context,
+	status = handler(function, address, bit_width, value,
+			 handler_desc->address_space.context,
 			 region_obj2->extra.region_context);
 
 	if (ACPI_FAILURE(status)) {
@@ -717,7 +665,7 @@ acpi_ev_install_handler(acpi_handle obj_handle,
 
 	/* Convert and validate the device handle */
 
-	node = acpi_ns_validate_handle(obj_handle);
+	node = acpi_ns_map_handle_to_node(obj_handle);
 	if (!node) {
 		return (AE_BAD_PARAMETER);
 	}
@@ -743,7 +691,7 @@ acpi_ev_install_handler(acpi_handle obj_handle,
 
 	/* Devices are handled different than regions */
 
-	if (obj_desc->common.type == ACPI_TYPE_DEVICE) {
+	if (ACPI_GET_OBJECT_TYPE(obj_desc) == ACPI_TYPE_DEVICE) {
 
 		/* Check if this Device already has a handler for this address space */
 
@@ -755,8 +703,7 @@ acpi_ev_install_handler(acpi_handle obj_handle,
 			if (next_handler_obj->address_space.space_id ==
 			    handler_obj->address_space.space_id) {
 				ACPI_DEBUG_PRINT((ACPI_DB_OPREGION,
-						  "Found handler for region [%s] in device %p(%p) "
-						  "handler %p\n",
+						  "Found handler for region [%s] in device %p(%p) handler %p\n",
 						  acpi_ut_get_region_name
 						  (handler_obj->address_space.
 						   space_id), obj_desc,
@@ -1021,8 +968,8 @@ acpi_ev_install_space_handler(struct acpi_namespace_node * node,
 	 */
 	status = acpi_ns_walk_namespace(ACPI_TYPE_ANY, node, ACPI_UINT32_MAX,
 					ACPI_NS_WALK_UNLOCK,
-					acpi_ev_install_handler, NULL,
-					handler_obj, NULL);
+					acpi_ev_install_handler, handler_obj,
+					NULL);
 
       unlock_and_exit:
 	return_ACPI_STATUS(status);
@@ -1058,7 +1005,7 @@ acpi_ev_execute_reg_methods(struct acpi_namespace_node *node,
 	 */
 	status = acpi_ns_walk_namespace(ACPI_TYPE_ANY, node, ACPI_UINT32_MAX,
 					ACPI_NS_WALK_UNLOCK, acpi_ev_reg_run,
-					NULL, &space_id, NULL);
+					&space_id, NULL);
 
 	return_ACPI_STATUS(status);
 }
@@ -1086,7 +1033,7 @@ acpi_ev_reg_run(acpi_handle obj_handle,
 
 	/* Convert and validate the device handle */
 
-	node = acpi_ns_validate_handle(obj_handle);
+	node = acpi_ns_map_handle_to_node(obj_handle);
 	if (!node) {
 		return (AE_BAD_PARAMETER);
 	}

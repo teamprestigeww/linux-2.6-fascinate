@@ -125,11 +125,11 @@ static u8 cs5536_cable_detect(ide_hwif_t *hwif)
 
 /**
  *	cs5536_set_pio_mode		-	PIO timing setup
- *	@hwif: ATA port
  *	@drive: ATA device
+ *	@pio: PIO mode number
  */
 
-static void cs5536_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void cs5536_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
 	static const u8 drv_timings[5] = {
 		0x98, 0x55, 0x32, 0x21, 0x20,
@@ -143,20 +143,17 @@ static void cs5536_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 		0x99, 0x92, 0x90, 0x22, 0x20,
 	};
 
-	struct pci_dev *pdev = to_pci_dev(hwif->dev);
+	struct pci_dev *pdev = to_pci_dev(drive->hwif->dev);
 	ide_drive_t *pair = ide_get_pair_dev(drive);
 	int cshift = (drive->dn & 1) ? IDE_CAST_D1_SHIFT : IDE_CAST_D0_SHIFT;
-	unsigned long timings = (unsigned long)ide_get_drivedata(drive);
 	u32 cast;
-	const u8 pio = drive->pio_mode - XFER_PIO_0;
 	u8 cmd_pio = pio;
 
 	if (pair)
-		cmd_pio = min_t(u8, pio, pair->pio_mode - XFER_PIO_0);
+		cmd_pio = min(pio, ide_get_best_pio_mode(pair, 255, 4));
 
-	timings &= (IDE_DRV_MASK << 8);
-	timings |= drv_timings[pio];
-	ide_set_drivedata(drive, (void *)timings);
+	drive->drive_data &= (IDE_DRV_MASK << 8);
+	drive->drive_data |= drv_timings[pio];
 
 	cs5536_program_dtc(drive, drv_timings[pio]);
 
@@ -173,11 +170,11 @@ static void cs5536_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 
 /**
  *	cs5536_set_dma_mode		-	DMA timing setup
- *	@hwif: ATA port
  *	@drive: ATA device
+ *	@mode: DMA mode
  */
 
-static void cs5536_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void cs5536_set_dma_mode(ide_drive_t *drive, const u8 mode)
 {
 	static const u8 udma_timings[6] = {
 		0xc2, 0xc1, 0xc0, 0xc4, 0xc5, 0xc6,
@@ -187,11 +184,9 @@ static void cs5536_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 		0x67, 0x21, 0x20,
 	};
 
-	struct pci_dev *pdev = to_pci_dev(hwif->dev);
+	struct pci_dev *pdev = to_pci_dev(drive->hwif->dev);
 	int dshift = (drive->dn & 1) ? IDE_D1_SHIFT : IDE_D0_SHIFT;
-	unsigned long timings = (unsigned long)ide_get_drivedata(drive);
 	u32 etc;
-	const u8 mode = drive->dma_mode;
 
 	cs5536_read(pdev, ETC, &etc);
 
@@ -200,9 +195,8 @@ static void cs5536_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 		etc |= udma_timings[mode - XFER_UDMA_0] << dshift;
 	} else { /* MWDMA */
 		etc &= ~(IDE_ETC_UDMA_MASK << dshift);
-		timings &= IDE_DRV_MASK;
-		timings |= mwdma_timings[mode - XFER_MW_DMA_0] << 8;
-		ide_set_drivedata(drive, (void *)timings);
+		drive->drive_data &= IDE_DRV_MASK;
+		drive->drive_data |= mwdma_timings[mode - XFER_MW_DMA_0] << 8;
 	}
 
 	cs5536_write(pdev, ETC, etc);
@@ -210,11 +204,9 @@ static void cs5536_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 
 static void cs5536_dma_start(ide_drive_t *drive)
 {
-	unsigned long timings = (unsigned long)ide_get_drivedata(drive);
-
 	if (drive->current_speed < XFER_UDMA_0 &&
-	    (timings >> 8) != (timings & IDE_DRV_MASK))
-		cs5536_program_dtc(drive, timings >> 8);
+	    (drive->drive_data >> 8) != (drive->drive_data & IDE_DRV_MASK))
+		cs5536_program_dtc(drive, drive->drive_data >> 8);
 
 	ide_dma_start(drive);
 }
@@ -222,11 +214,10 @@ static void cs5536_dma_start(ide_drive_t *drive)
 static int cs5536_dma_end(ide_drive_t *drive)
 {
 	int ret = ide_dma_end(drive);
-	unsigned long timings = (unsigned long)ide_get_drivedata(drive);
 
 	if (drive->current_speed < XFER_UDMA_0 &&
-	    (timings >> 8) != (timings & IDE_DRV_MASK))
-		cs5536_program_dtc(drive, timings & IDE_DRV_MASK);
+	    (drive->drive_data >> 8) != (drive->drive_data & IDE_DRV_MASK))
+		cs5536_program_dtc(drive, drive->drive_data & IDE_DRV_MASK);
 
 	return ret;
 }
@@ -240,12 +231,12 @@ static const struct ide_port_ops cs5536_port_ops = {
 static const struct ide_dma_ops cs5536_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
+	.dma_exec_cmd		= ide_dma_exec_cmd,
 	.dma_start		= cs5536_dma_start,
 	.dma_end		= cs5536_dma_end,
 	.dma_test_irq		= ide_dma_test_irq,
 	.dma_lost_irq		= ide_dma_lost_irq,
-	.dma_timer_expiry	= ide_dma_sff_timer_expiry,
-	.dma_sff_read_status	= ide_dma_sff_read_status,
+	.dma_timeout		= ide_dma_timeout,
 };
 
 static const struct ide_port_info cs5536_info = {

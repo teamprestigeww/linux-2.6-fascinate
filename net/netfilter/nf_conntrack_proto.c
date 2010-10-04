@@ -12,12 +12,13 @@
 #include <linux/types.h>
 #include <linux/netfilter.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/mutex.h>
+#include <linux/skbuff.h>
 #include <linux/vmalloc.h>
 #include <linux/stddef.h>
 #include <linux/err.h>
 #include <linux/percpu.h>
+#include <linux/moduleparam.h>
 #include <linux/notifier.h>
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
@@ -73,6 +74,27 @@ EXPORT_SYMBOL_GPL(__nf_ct_l4proto_find);
 
 /* this is guaranteed to always return a valid protocol helper, since
  * it falls back to generic_protocol */
+struct nf_conntrack_l4proto *
+nf_ct_l4proto_find_get(u_int16_t l3proto, u_int8_t l4proto)
+{
+	struct nf_conntrack_l4proto *p;
+
+	rcu_read_lock();
+	p = __nf_ct_l4proto_find(l3proto, l4proto);
+	if (!try_module_get(p->me))
+		p = &nf_conntrack_l4proto_generic;
+	rcu_read_unlock();
+
+	return p;
+}
+EXPORT_SYMBOL_GPL(nf_ct_l4proto_find_get);
+
+void nf_ct_l4proto_put(struct nf_conntrack_l4proto *p)
+{
+	module_put(p->me);
+}
+EXPORT_SYMBOL_GPL(nf_ct_l4proto_put);
+
 struct nf_conntrack_l3proto *
 nf_ct_l3proto_find_get(u_int16_t l3proto)
 {
@@ -117,13 +139,9 @@ void nf_ct_l3proto_module_put(unsigned short l3proto)
 {
 	struct nf_conntrack_l3proto *p;
 
-	/* rcu_read_lock not necessary since the caller holds a reference, but
-	 * taken anyways to avoid lockdep warnings in __nf_ct_l3proto_find()
-	 */
-	rcu_read_lock();
+	/* rcu_read_lock not necessary since the caller holds a reference */
 	p = __nf_ct_l3proto_find(l3proto);
 	module_put(p->me);
-	rcu_read_unlock();
 }
 EXPORT_SYMBOL_GPL(nf_ct_l3proto_module_put);
 
@@ -170,9 +188,6 @@ int nf_conntrack_l3proto_register(struct nf_conntrack_l3proto *proto)
 	if (proto->l3proto >= AF_MAX)
 		return -EBUSY;
 
-	if (proto->tuple_to_nlattr && !proto->nlattr_tuple_size)
-		return -EINVAL;
-
 	mutex_lock(&nf_ct_proto_mutex);
 	if (nf_ct_l3protos[proto->l3proto] != &nf_conntrack_l3proto_generic) {
 		ret = -EBUSY;
@@ -182,9 +197,6 @@ int nf_conntrack_l3proto_register(struct nf_conntrack_l3proto *proto)
 	ret = nf_ct_l3proto_register_sysctl(proto);
 	if (ret < 0)
 		goto out_unlock;
-
-	if (proto->nlattr_tuple_size)
-		proto->nla_size = 3 * proto->nlattr_tuple_size();
 
 	rcu_assign_pointer(nf_ct_l3protos[proto->l3proto], proto);
 
@@ -272,10 +284,6 @@ int nf_conntrack_l4proto_register(struct nf_conntrack_l4proto *l4proto)
 	if (l4proto->l3proto >= PF_MAX)
 		return -EBUSY;
 
-	if ((l4proto->to_nlattr && !l4proto->nlattr_size)
-		|| (l4proto->tuple_to_nlattr && !l4proto->nlattr_tuple_size))
-		return -EINVAL;
-
 	mutex_lock(&nf_ct_proto_mutex);
 	if (!nf_ct_protos[l4proto->l3proto]) {
 		/* l3proto may be loaded latter. */
@@ -302,12 +310,6 @@ int nf_conntrack_l4proto_register(struct nf_conntrack_l4proto *l4proto)
 	ret = nf_ct_l4proto_register_sysctl(l4proto);
 	if (ret < 0)
 		goto out_unlock;
-
-	l4proto->nla_size = 0;
-	if (l4proto->nlattr_size)
-		l4proto->nla_size += l4proto->nlattr_size();
-	if (l4proto->nlattr_tuple_size)
-		l4proto->nla_size += 3 * l4proto->nlattr_tuple_size();
 
 	rcu_assign_pointer(nf_ct_protos[l4proto->l3proto][l4proto->l4proto],
 			   l4proto);

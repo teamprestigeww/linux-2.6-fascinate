@@ -132,7 +132,8 @@ good_area:
 	 * sure we exit gracefully rather than endlessly redo the
 	 * fault.
 	 */
-	fault = handle_mm_fault(mm, vma, address, writeaccess ? FAULT_FLAG_WRITE : 0);
+survive:
+	fault = handle_mm_fault(mm, vma, address, writeaccess);
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
@@ -210,10 +211,15 @@ no_context:
 	 */
 out_of_memory:
 	up_read(&mm->mmap_sem);
-	pagefault_out_of_memory();
-	if (!user_mode(regs))
-		goto no_context;
-	return;
+	if (is_global_init(current)) {
+		yield();
+		down_read(&mm->mmap_sem);
+		goto survive;
+	}
+	printk("VM: Killing process %s\n", tsk->comm);
+	if (user_mode(regs))
+		do_group_exit(SIGKILL);
+	goto no_context;
 
 do_sigbus:
 	up_read(&mm->mmap_sem);
@@ -244,3 +250,21 @@ asmlinkage void do_bus_error(unsigned long addr, int write_access,
 	dump_dtlb();
 	die("Bus Error", regs, SIGKILL);
 }
+
+/*
+ * This functionality is currently not possible to implement because
+ * we're using segmentation to ensure a fixed mapping of the kernel
+ * virtual address space.
+ *
+ * It would be possible to implement this, but it would require us to
+ * disable segmentation at startup and load the kernel mappings into
+ * the TLB like any other pages. There will be lots of trickery to
+ * avoid recursive invocation of the TLB miss handler, though...
+ */
+#ifdef CONFIG_DEBUG_PAGEALLOC
+void kernel_map_pages(struct page *page, int numpages, int enable)
+{
+
+}
+EXPORT_SYMBOL(kernel_map_pages);
+#endif

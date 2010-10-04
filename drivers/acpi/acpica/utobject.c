@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -190,35 +190,6 @@ union acpi_operand_object *acpi_ut_create_package_object(u32 count)
 
 /*******************************************************************************
  *
- * FUNCTION:    acpi_ut_create_integer_object
- *
- * PARAMETERS:  initial_value       - Initial value for the integer
- *
- * RETURN:      Pointer to a new Integer object, null on failure
- *
- * DESCRIPTION: Create an initialized integer object
- *
- ******************************************************************************/
-
-union acpi_operand_object *acpi_ut_create_integer_object(u64 initial_value)
-{
-	union acpi_operand_object *integer_desc;
-
-	ACPI_FUNCTION_TRACE(ut_create_integer_object);
-
-	/* Create and initialize a new integer object */
-
-	integer_desc = acpi_ut_create_internal_object(ACPI_TYPE_INTEGER);
-	if (!integer_desc) {
-		return_PTR(NULL);
-	}
-
-	integer_desc->integer.value = initial_value;
-	return_PTR(integer_desc);
-}
-
-/*******************************************************************************
- *
  * FUNCTION:    acpi_ut_create_buffer_object
  *
  * PARAMETERS:  buffer_size            - Size of buffer to be created
@@ -251,7 +222,7 @@ union acpi_operand_object *acpi_ut_create_buffer_object(acpi_size buffer_size)
 
 		buffer = ACPI_ALLOCATE_ZEROED(buffer_size);
 		if (!buffer) {
-			ACPI_ERROR((AE_INFO, "Could not allocate size %u",
+			ACPI_ERROR((AE_INFO, "Could not allocate size %X",
 				    (u32) buffer_size));
 			acpi_ut_remove_reference(buffer_desc);
 			return_PTR(NULL);
@@ -303,7 +274,7 @@ union acpi_operand_object *acpi_ut_create_string_object(acpi_size string_size)
 	 */
 	string = ACPI_ALLOCATE_ZEROED(string_size + 1);
 	if (!string) {
-		ACPI_ERROR((AE_INFO, "Could not allocate size %u",
+		ACPI_ERROR((AE_INFO, "Could not allocate size %X",
 			    (u32) string_size));
 		acpi_ut_remove_reference(string_desc);
 		return_PTR(NULL);
@@ -339,7 +310,7 @@ u8 acpi_ut_valid_internal_object(void *object)
 	/* Check for a null pointer */
 
 	if (!object) {
-		ACPI_DEBUG_PRINT((ACPI_DB_EXEC, "**** Null Object Ptr\n"));
+		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "**** Null Object Ptr\n"));
 		return (FALSE);
 	}
 
@@ -353,7 +324,7 @@ u8 acpi_ut_valid_internal_object(void *object)
 		return (TRUE);
 
 	default:
-		ACPI_DEBUG_PRINT((ACPI_DB_EXEC,
+		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
 				  "%p is not not an ACPI operand obj [%s]\n",
 				  object, acpi_ut_get_descriptor_name(object)));
 		break;
@@ -486,7 +457,7 @@ acpi_ut_get_simple_object_size(union acpi_operand_object *internal_object,
 	 * must be accessed bytewise or there may be alignment problems on
 	 * certain processors
 	 */
-	switch (internal_object->common.type) {
+	switch (ACPI_GET_OBJECT_TYPE(internal_object)) {
 	case ACPI_TYPE_STRING:
 
 		length += (acpi_size) internal_object->string.length + 1;
@@ -533,7 +504,7 @@ acpi_ut_get_simple_object_size(union acpi_operand_object *internal_object,
 			 */
 			ACPI_ERROR((AE_INFO,
 				    "Cannot convert to external object - "
-				    "unsupported Reference Class [%s] 0x%X in object %p",
+				    "unsupported Reference Class [%s] %X in object %p",
 				    acpi_ut_get_reference_name(internal_object),
 				    internal_object->reference.class,
 				    internal_object));
@@ -545,9 +516,10 @@ acpi_ut_get_simple_object_size(union acpi_operand_object *internal_object,
 	default:
 
 		ACPI_ERROR((AE_INFO, "Cannot convert to external object - "
-			    "unsupported type [%s] 0x%X in object %p",
+			    "unsupported type [%s] %X in object %p",
 			    acpi_ut_get_object_type_name(internal_object),
-			    internal_object->common.type, internal_object));
+			    ACPI_GET_OBJECT_TYPE(internal_object),
+			    internal_object));
 		status = AE_TYPE;
 		break;
 	}
@@ -692,7 +664,7 @@ acpi_ut_get_object_size(union acpi_operand_object *internal_object,
 
 	if ((ACPI_GET_DESCRIPTOR_TYPE(internal_object) ==
 	     ACPI_DESC_TYPE_OPERAND)
-	    && (internal_object->common.type == ACPI_TYPE_PACKAGE)) {
+	    && (ACPI_GET_OBJECT_TYPE(internal_object) == ACPI_TYPE_PACKAGE)) {
 		status =
 		    acpi_ut_get_package_object_size(internal_object,
 						    obj_length);

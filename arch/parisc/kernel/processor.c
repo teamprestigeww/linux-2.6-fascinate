@@ -1,4 +1,5 @@
-/*
+/*    $Id: processor.c,v 1.1 2002/07/20 16:27:06 rhirst Exp $
+ *
  *    Initial setup-routines for HP 9000 based hardware.
  *
  *    Copyright (C) 1991, 1992, 1995  Linus Torvalds
@@ -99,8 +100,8 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 	struct cpuinfo_parisc *p;
 
 #ifdef CONFIG_SMP
-	if (num_online_cpus() >= nr_cpu_ids) {
-		printk(KERN_INFO "num_online_cpus() >= nr_cpu_ids\n");
+	if (num_online_cpus() >= NR_CPUS) {
+		printk(KERN_INFO "num_online_cpus() >= NR_CPUS\n");
 		return 1;
 	}
 #else
@@ -120,28 +121,22 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 	if (is_pdc_pat()) {
 		ulong status;
 		unsigned long bytecnt;
-	        pdc_pat_cell_mod_maddr_block_t *pa_pdc_cell;
+	        pdc_pat_cell_mod_maddr_block_t pa_pdc_cell;
 #undef USE_PAT_CPUID
 #ifdef USE_PAT_CPUID
 		struct pdc_pat_cpu_num cpu_info;
 #endif
 
-		pa_pdc_cell = kmalloc(sizeof (*pa_pdc_cell), GFP_KERNEL);
-		if (!pa_pdc_cell)
-			panic("couldn't allocate memory for PDC_PAT_CELL!");
-
 		status = pdc_pat_cell_module(&bytecnt, dev->pcell_loc,
-			dev->mod_index, PA_VIEW, pa_pdc_cell);
+			dev->mod_index, PA_VIEW, &pa_pdc_cell);
 
 		BUG_ON(PDC_OK != status);
 
 		/* verify it's the same as what do_pat_inventory() found */
-		BUG_ON(dev->mod_info != pa_pdc_cell->mod_info);
-		BUG_ON(dev->pmod_loc != pa_pdc_cell->mod_location);
+		BUG_ON(dev->mod_info != pa_pdc_cell.mod_info);
+		BUG_ON(dev->pmod_loc != pa_pdc_cell.mod_location);
 
-		txn_addr = pa_pdc_cell->mod[0];   /* id_eid for IO sapic */
-
-		kfree(pa_pdc_cell);
+		txn_addr = pa_pdc_cell.mod[0];   /* id_eid for IO sapic */
 
 #ifdef USE_PAT_CPUID
 /* We need contiguous numbers for cpuid. Firmware's notion
@@ -219,7 +214,7 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 	 */
 #ifdef CONFIG_SMP
 	if (cpuid) {
-		set_cpu_present(cpuid, true);
+		cpu_set(cpuid, cpu_present_map);
 		cpu_up(cpuid);
 	}
 #endif
@@ -368,13 +363,6 @@ show_cpuinfo (struct seq_file *m, void *v)
 		seq_printf(m, "cpu MHz\t\t: %d.%06d\n",
 				 boot_cpu_data.cpu_hz / 1000000,
 				 boot_cpu_data.cpu_hz % 1000000  );
-
-		seq_printf(m, "capabilities\t:");
-		if (boot_cpu_data.pdc.capabilities & PDC_MODEL_OS32)
-			seq_printf(m, " os32");
-		if (boot_cpu_data.pdc.capabilities & PDC_MODEL_OS64)
-			seq_printf(m, " os64");
-		seq_printf(m, "\n");
 
 		seq_printf(m, "model\t\t: %s\n"
 				"model name\t: %s\n",

@@ -130,9 +130,9 @@ int jffs2_scan_medium(struct jffs2_sb_info *c)
 	if (jffs2_sum_active()) {
 		s = kzalloc(sizeof(struct jffs2_summary), GFP_KERNEL);
 		if (!s) {
+			kfree(flashbuf);
 			JFFS2_WARNING("Can't allocate memory for summary\n");
-			ret = -ENOMEM;
-			goto out;
+			return -ENOMEM;
 		}
 	}
 
@@ -196,7 +196,7 @@ int jffs2_scan_medium(struct jffs2_sb_info *c)
 				if (c->nextblock) {
 					ret = file_dirty(c, c->nextblock);
 					if (ret)
-						goto out;
+						return ret;
 					/* deleting summary information of the old nextblock */
 					jffs2_sum_reset_collected(c->summary);
 				}
@@ -207,7 +207,7 @@ int jffs2_scan_medium(struct jffs2_sb_info *c)
 			} else {
 				ret = file_dirty(c, jeb);
 				if (ret)
-					goto out;
+					return ret;
 			}
 			break;
 
@@ -260,9 +260,7 @@ int jffs2_scan_medium(struct jffs2_sb_info *c)
 			ret = -EIO;
 			goto out;
 		}
-		spin_lock(&c->erase_completion_lock);
-		jffs2_garbage_collect_trigger(c);
-		spin_unlock(&c->erase_completion_lock);
+		jffs2_erase_pending_trigger(c);
 	}
 	ret = 0;
  out:

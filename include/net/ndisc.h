@@ -55,6 +55,7 @@ enum {
 #include <net/neighbour.h>
 
 struct ctl_table;
+struct file;
 struct inet6_dev;
 struct net_device;
 struct net_proto_family;
@@ -82,7 +83,7 @@ struct ra_msg {
 struct nd_opt_hdr {
 	__u8		nd_opt_type;
 	__u8		nd_opt_len;
-} __packed;
+} __attribute__((__packed__));
 
 
 extern int			ndisc_init(void);
@@ -138,6 +139,7 @@ extern int			igmp6_event_report(struct sk_buff *skb);
 #ifdef CONFIG_SYSCTL
 extern int 			ndisc_ifinfo_sysctl_change(struct ctl_table *ctl,
 							   int write,
+							   struct file * filp,
 							   void __user *buffer,
 							   size_t *lenp,
 							   loff_t *ppos);

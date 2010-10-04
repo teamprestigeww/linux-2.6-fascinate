@@ -1,7 +1,7 @@
 /*
  * Generic heartbeat driver for regular LED banks
  *
- * Copyright (C) 2007 - 2010  Paul Mundt
+ * Copyright (C) 2007  Paul Mundt
  *
  * Most SH reference boards include a number of individual LEDs that can
  * be independently controlled (either via a pre-defined hardware
@@ -24,11 +24,10 @@
 #include <linux/sched.h>
 #include <linux/timer.h>
 #include <linux/io.h>
-#include <linux/slab.h>
 #include <asm/heartbeat.h>
 
 #define DRV_NAME "heartbeat"
-#define DRV_VERSION "0.1.2"
+#define DRV_VERSION "0.1.1"
 
 static unsigned char default_bit_pos[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 
@@ -41,19 +40,14 @@ static inline void heartbeat_toggle_bit(struct heartbeat_data *hd,
 	if (inverted)
 		new = ~new;
 
-	new &= hd->mask;
-
 	switch (hd->regsize) {
 	case 32:
-		new |= ioread32(hd->base) & ~hd->mask;
 		iowrite32(new, hd->base);
 		break;
 	case 16:
-		new |= ioread16(hd->base) & ~hd->mask;
 		iowrite16(new, hd->base);
 		break;
 	default:
-		new |= ioread8(hd->base) & ~hd->mask;
 		iowrite8(new, hd->base);
 		break;
 	}
@@ -78,7 +72,6 @@ static int heartbeat_drv_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	struct heartbeat_data *hd;
-	int i;
 
 	if (unlikely(pdev->num_resources != 1)) {
 		dev_err(&pdev->dev, "invalid number of resources\n");
@@ -99,7 +92,7 @@ static int heartbeat_drv_probe(struct platform_device *pdev)
 			return -ENOMEM;
 	}
 
-	hd->base = ioremap_nocache(res->start, resource_size(res));
+	hd->base = ioremap_nocache(res->start, res->end - res->start + 1);
 	if (unlikely(!hd->base)) {
 		dev_err(&pdev->dev, "ioremap failed\n");
 
@@ -114,24 +107,8 @@ static int heartbeat_drv_probe(struct platform_device *pdev)
 		hd->nr_bits = ARRAY_SIZE(default_bit_pos);
 	}
 
-	hd->mask = 0;
-	for (i = 0; i < hd->nr_bits; i++)
-		hd->mask |= (1 << hd->bit_pos[i]);
-
-	if (!hd->regsize) {
-		switch (res->flags & IORESOURCE_MEM_TYPE_MASK) {
-		case IORESOURCE_MEM_32BIT:
-			hd->regsize = 32;
-			break;
-		case IORESOURCE_MEM_16BIT:
-			hd->regsize = 16;
-			break;
-		case IORESOURCE_MEM_8BIT:
-		default:
-			hd->regsize = 8;
-			break;
-		}
-	}
+	if (!hd->regsize)
+		hd->regsize = 8;	/* default access size */
 
 	setup_timer(&hd->timer, heartbeat_timer, (unsigned long)hd);
 	platform_set_drvdata(pdev, hd);

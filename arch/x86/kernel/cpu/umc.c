@@ -8,7 +8,7 @@
  * so no special init takes place.
  */
 
-static const struct cpu_dev __cpuinitconst umc_cpu_dev = {
+static struct cpu_dev umc_cpu_dev __cpuinitdata = {
 	.c_vendor	= "UMC",
 	.c_ident	= { "UMC UMC UMC" },
 	.c_models = {

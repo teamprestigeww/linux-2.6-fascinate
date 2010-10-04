@@ -47,7 +47,6 @@
 #include <asm/processor.h>
 #include <asm/thread_info.h>
 #include <asm/unistd.h>
-#include <asm/ftrace.h>
 
 #include "minstate.h"
 
@@ -71,6 +70,15 @@ ENTRY(ia64_execve)
 	add out3=16,sp			// regs
 	br.call.sptk.many rp=sys_execve
 .ret0:
+#ifdef CONFIG_IA32_SUPPORT
+	/*
+	 * Check if we're returning to ia32 mode. If so, we need to restore ia32 registers
+	 * from pt_regs.
+	 */
+	adds r16=PT(CR_IPSR)+16,sp
+	;;
+	ld8 r16=[r16]
+#endif
 	cmp4.ge p6,p7=r8,r0
 	mov ar.pfs=loc1			// restore ar.pfs
 	sxt4 r8=r8			// return 64-bit result
@@ -99,6 +107,12 @@ ENTRY(ia64_execve)
 	ldf.fill f23=[sp];	ldf.fill f24=[sp];	mov f25=f0
 	ldf.fill f26=[sp];	ldf.fill f27=[sp];	mov f28=f0
 	ldf.fill f29=[sp];	ldf.fill f30=[sp];	mov f31=f0
+#ifdef CONFIG_IA32_SUPPORT
+	tbit.nz p6,p0=r16, IA64_PSR_IS_BIT
+	movl loc0=ia64_ret_from_ia32_execve
+	;;
+(p6)	mov rp=loc0
+#endif
 	br.ret.sptk.many rp
 END(ia64_execve)
 
@@ -721,7 +735,7 @@ GLOBAL_ENTRY(__paravirt_leave_syscall)
 __paravirt_work_processed_syscall:
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
 	adds r2=PT(LOADRS)+16,r12
-	MOV_FROM_ITC(pUStk, p9, r22, r19)	// fetch time at leave
+(pUStk)	mov.m r22=ar.itc			// fetch time at leave
 	adds r18=TI_FLAGS+IA64_TASK_SIZE,r13
 	;;
 (p6)	ld4 r31=[r18]				// load current_thread_info()->flags
@@ -832,6 +846,30 @@ __paravirt_work_processed_syscall:
 	mov f11=f0			// F    clear f11
 	br.cond.sptk.many rbs_switch	// B
 END(__paravirt_leave_syscall)
+
+#ifdef __IA64_ASM_PARAVIRTUALIZED_NATIVE
+#ifdef CONFIG_IA32_SUPPORT
+GLOBAL_ENTRY(ia64_ret_from_ia32_execve)
+	PT_REGS_UNWIND_INFO(0)
+	adds r2=PT(R8)+16,sp			// r2 = &pt_regs.r8
+	adds r3=PT(R10)+16,sp			// r3 = &pt_regs.r10
+	;;
+	.mem.offset 0,0
+	st8.spill [r2]=r8	// store return value in slot for r8 and set unat bit
+	.mem.offset 8,0
+	st8.spill [r3]=r0	// clear error indication in slot for r10 and set unat bit
+#ifdef CONFIG_PARAVIRT
+	;;
+	// don't fall through, ia64_leave_kernel may be #define'd
+	br.cond.sptk.few ia64_leave_kernel
+	;;
+#endif /* CONFIG_PARAVIRT */
+END(ia64_ret_from_ia32_execve)
+#ifndef CONFIG_PARAVIRT
+	// fall through
+#endif
+#endif /* CONFIG_IA32_SUPPORT */
+#endif /* __IA64_ASM_PARAVIRTUALIZED_NATIVE */
 
 GLOBAL_ENTRY(__paravirt_leave_kernel)
 	PT_REGS_UNWIND_INFO(0)
@@ -946,7 +984,7 @@ GLOBAL_ENTRY(__paravirt_leave_kernel)
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
 	.pred.rel.mutex pUStk,pKStk
 	MOV_FROM_PSR(pKStk, r22, r29)	// M2 read PSR now that interrupts are disabled
-	MOV_FROM_ITC(pUStk, p9, r22, r29)	// M  fetch time at leave
+(pUStk)	mov.m r22=ar.itc	// M  fetch time at leave
 	nop.i 0
 	;;
 #else
@@ -1366,105 +1404,6 @@ GLOBAL_ENTRY(unw_init_running)
 	br.ret.sptk.many rp
 END(unw_init_running)
 
-#ifdef CONFIG_FUNCTION_TRACER
-#ifdef CONFIG_DYNAMIC_FTRACE
-GLOBAL_ENTRY(_mcount)
-	br ftrace_stub
-END(_mcount)
-
-.here:
-	br.ret.sptk.many b0
-
-GLOBAL_ENTRY(ftrace_caller)
-	alloc out0 = ar.pfs, 8, 0, 4, 0
-	mov out3 = r0
-	;;
-	mov out2 = b0
-	add r3 = 0x20, r3
-	mov out1 = r1;
-	br.call.sptk.many b0 = ftrace_patch_gp
-	//this might be called from module, so we must patch gp
-ftrace_patch_gp:
-	movl gp=__gp
-	mov b0 = r3
-	;;
-.global ftrace_call;
-ftrace_call:
-{
-	.mlx
-	nop.m 0x0
-	movl r3 = .here;;
-}
-	alloc loc0 = ar.pfs, 4, 4, 2, 0
-	;;
-	mov loc1 = b0
-	mov out0 = b0
-	mov loc2 = r8
-	mov loc3 = r15
-	;;
-	adds out0 = -MCOUNT_INSN_SIZE, out0
-	mov out1 = in2
-	mov b6 = r3
-
-	br.call.sptk.many b0 = b6
-	;;
-	mov ar.pfs = loc0
-	mov b0 = loc1
-	mov r8 = loc2
-	mov r15 = loc3
-	br ftrace_stub
-	;;
-END(ftrace_caller)
-
-#else
-GLOBAL_ENTRY(_mcount)
-	movl r2 = ftrace_stub
-	movl r3 = ftrace_trace_function;;
-	ld8 r3 = [r3];;
-	ld8 r3 = [r3];;
-	cmp.eq p7,p0 = r2, r3
-(p7)	br.sptk.many ftrace_stub
-	;;
-
-	alloc loc0 = ar.pfs, 4, 4, 2, 0
-	;;
-	mov loc1 = b0
-	mov out0 = b0
-	mov loc2 = r8
-	mov loc3 = r15
-	;;
-	adds out0 = -MCOUNT_INSN_SIZE, out0
-	mov out1 = in2
-	mov b6 = r3
-
-	br.call.sptk.many b0 = b6
-	;;
-	mov ar.pfs = loc0
-	mov b0 = loc1
-	mov r8 = loc2
-	mov r15 = loc3
-	br ftrace_stub
-	;;
-END(_mcount)
-#endif
-
-GLOBAL_ENTRY(ftrace_stub)
-	mov r3 = b0
-	movl r2 = _mcount_ret_helper
-	;;
-	mov b6 = r2
-	mov b7 = r3
-	br.ret.sptk.many b6
-
-_mcount_ret_helper:
-	mov b0 = r42
-	mov r1 = r41
-	mov ar.pfs = r40
-	br b7
-END(ftrace_stub)
-
-#endif /* CONFIG_FUNCTION_TRACER */
-
 	.rodata
 	.align 8
 	.globl sys_call_table
@@ -1764,13 +1703,6 @@ sys_call_table:
 	data8 sys_dup3
 	data8 sys_pipe2
 	data8 sys_inotify_init1
-	data8 sys_preadv
-	data8 sys_pwritev			// 1320
-	data8 sys_rt_tgsigqueueinfo
-	data8 sys_recvmmsg
-	data8 sys_fanotify_init
-	data8 sys_fanotify_mark
-	data8 sys_prlimit64			// 1325
 
 	.org sys_call_table + 8*NR_syscalls	// guard against failures to increase NR_syscalls
 #endif /* __IA64_ASM_PARAVIRTUALIZED_NATIVE */

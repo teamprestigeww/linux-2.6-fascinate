@@ -6,7 +6,6 @@
 #include <linux/nls.h>
 #include <linux/fs.h>
 #include <linux/mutex.h>
-#include <linux/ratelimit.h>
 #include <linux/msdos_fs.h>
 
 /*
@@ -45,8 +44,7 @@ struct fat_mount_options {
 		 nocase:1,	  /* Does this need case conversion? 0=need case conversion*/
 		 usefree:1,	  /* Use free_clusters for FAT32 */
 		 tz_utc:1,	  /* Filesystem timestamps are in UTC */
-		 rodir:1,	  /* allow ATTR_RO for directory */
-		 discard:1;	  /* Issue discard requests on deletions */
+		 rodir:1;	  /* allow ATTR_RO for directory */
 };
 
 #define FAT_HASH_BITS	8
@@ -78,12 +76,10 @@ struct msdos_sb_info {
 	const void *dir_ops;		     /* Opaque; default directory operations */
 	int dir_per_block;	     /* dir entries per block */
 	int dir_per_block_bits;	     /* log2(dir_per_block) */
+	unsigned long vol_id;        /* volume ID */
 
 	int fatent_shift;
 	struct fatent_operations *fatent_ops;
-	struct inode *fat_inode;
-
-	struct ratelimit_state ratelimit;
 
 	spinlock_t inode_hash_lock;
 	struct hlist_head inode_hashtable[FAT_HASH_SIZE];
@@ -261,7 +257,6 @@ struct fat_entry {
 	} u;
 	int nr_bhs;
 	struct buffer_head *bhs[2];
-	struct inode *fat_inode;
 };
 
 static inline void fatent_init(struct fat_entry *fatent)
@@ -270,7 +265,6 @@ static inline void fatent_init(struct fat_entry *fatent)
 	fatent->entry = 0;
 	fatent->u.ent32_p = NULL;
 	fatent->bhs[0] = fatent->bhs[1] = NULL;
-	fatent->fat_inode = NULL;
 }
 
 static inline void fatent_set_entry(struct fat_entry *fatent, int entry)
@@ -287,7 +281,6 @@ static inline void fatent_brelse(struct fat_entry *fatent)
 		brelse(fatent->bhs[i]);
 	fatent->nr_bhs = 0;
 	fatent->bhs[0] = fatent->bhs[1] = NULL;
-	fatent->fat_inode = NULL;
 }
 
 extern void fat_ent_access_init(struct super_block *sb);
@@ -301,15 +294,14 @@ extern int fat_free_clusters(struct inode *inode, int cluster);
 extern int fat_count_free_clusters(struct super_block *sb);
 
 /* fat/file.c */
-extern long fat_generic_ioctl(struct file *filp, unsigned int cmd,
-			      unsigned long arg);
+extern int fat_generic_ioctl(struct inode *inode, struct file *filp,
+			     unsigned int cmd, unsigned long arg);
 extern const struct file_operations fat_file_operations;
 extern const struct inode_operations fat_file_inode_operations;
 extern int fat_setattr(struct dentry * dentry, struct iattr * attr);
-extern void fat_truncate_blocks(struct inode *inode, loff_t offset);
+extern void fat_truncate(struct inode *inode);
 extern int fat_getattr(struct vfsmount *mnt, struct dentry *dentry,
 		       struct kstat *stat);
-extern int fat_file_fsync(struct file *file, int datasync);
 
 /* fat/inode.c */
 extern void fat_attach(struct inode *inode, loff_t i_pos);
@@ -324,14 +316,9 @@ extern int fat_fill_super(struct super_block *sb, void *data, int silent,
 extern int fat_flush_inodes(struct super_block *sb, struct inode *i1,
 		            struct inode *i2);
 /* fat/misc.c */
-extern void
-__fat_fs_error(struct super_block *s, int report, const char *fmt, ...)
-	__attribute__ ((format (printf, 3, 4))) __cold;
-#define fat_fs_error(s, fmt, args...)		\
-	__fat_fs_error(s, 1, fmt , ## args)
-#define fat_fs_error_ratelimit(s, fmt, args...) \
-	__fat_fs_error(s, __ratelimit(&MSDOS_SB(s)->ratelimit), fmt , ## args)
-extern int fat_clusters_flush(struct super_block *sb);
+extern void fat_fs_error(struct super_block *s, const char *fmt, ...)
+	__attribute__ ((format (printf, 2, 3))) __cold;
+extern void fat_clusters_flush(struct super_block *sb);
 extern int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster);
 extern void fat_time_fat2unix(struct msdos_sb_info *sbi, struct timespec *ts,
 			      __le16 __time, __le16 __date, u8 time_cs);

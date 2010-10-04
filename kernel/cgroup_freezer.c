@@ -15,7 +15,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/cgroup.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
@@ -48,20 +47,17 @@ static inline struct freezer *task_freezer(struct task_struct *task)
 			    struct freezer, css);
 }
 
-int cgroup_freezing_or_frozen(struct task_struct *task)
+int cgroup_frozen(struct task_struct *task)
 {
 	struct freezer *freezer;
 	enum freezer_state state;
 
 	task_lock(task);
 	freezer = task_freezer(task);
-	if (!freezer->css.cgroup->parent)
-		state = CGROUP_THAWED; /* root cgroup can't be frozen */
-	else
-		state = freezer->state;
+	state = freezer->state;
 	task_unlock(task);
 
-	return (state == CGROUP_FREEZING) || (state == CGROUP_FROZEN);
+	return state == CGROUP_FROZEN;
 }
 
 /*
@@ -89,10 +85,10 @@ struct cgroup_subsys freezer_subsys;
 
 /* Locks taken and their ordering
  * ------------------------------
- * cgroup_mutex (AKA cgroup_lock)
- * freezer->lock
  * css_set_lock
+ * cgroup_mutex (AKA cgroup_lock)
  * task->alloc_lock (AKA task_lock)
+ * freezer->lock
  * task->sighand->siglock
  *
  * cgroup code forces css_set_lock to be taken before task->alloc_lock
@@ -100,38 +96,33 @@ struct cgroup_subsys freezer_subsys;
  * freezer_create(), freezer_destroy():
  * cgroup_mutex [ by cgroup core ]
  *
- * freezer_can_attach():
- * cgroup_mutex (held by caller of can_attach)
+ * can_attach():
+ * cgroup_mutex
  *
- * cgroup_freezing_or_frozen():
+ * cgroup_frozen():
  * task->alloc_lock (to get task's cgroup)
  *
  * freezer_fork() (preserving fork() performance means can't take cgroup_mutex):
+ * task->alloc_lock (to get task's cgroup)
  * freezer->lock
  *  sighand->siglock (if the cgroup is freezing)
  *
  * freezer_read():
  * cgroup_mutex
  *  freezer->lock
- *   write_lock css_set_lock (cgroup iterator start)
- *    task->alloc_lock
  *   read_lock css_set_lock (cgroup iterator start)
  *
  * freezer_write() (freeze):
  * cgroup_mutex
  *  freezer->lock
- *   write_lock css_set_lock (cgroup iterator start)
- *    task->alloc_lock
  *   read_lock css_set_lock (cgroup iterator start)
- *    sighand->siglock (fake signal delivery inside freeze_task())
+ *    sighand->siglock
  *
  * freezer_write() (unfreeze):
  * cgroup_mutex
  *  freezer->lock
- *   write_lock css_set_lock (cgroup iterator start)
- *    task->alloc_lock
  *   read_lock css_set_lock (cgroup iterator start)
- *    task->alloc_lock (inside thaw_process(), prevents race with refrigerator())
+ *    task->alloc_lock (to prevent races with freeze_task())
  *     sighand->siglock
  */
 static struct cgroup_subsys_state *freezer_create(struct cgroup_subsys *ss,
@@ -168,9 +159,17 @@ static bool is_task_frozen_enough(struct task_struct *task)
  */
 static int freezer_can_attach(struct cgroup_subsys *ss,
 			      struct cgroup *new_cgroup,
-			      struct task_struct *task, bool threadgroup)
+			      struct task_struct *task)
 {
 	struct freezer *freezer;
+
+	if ((current != task) && (!capable(CAP_SYS_ADMIN))) {
+		const struct cred *cred = current_cred(), *tcred;
+
+		tcred = __task_cred(task);
+		if (cred->euid != tcred->uid && cred->euid != tcred->suid)
+			return -EPERM;
+	}
 
 	/*
 	 * Anything frozen can't move or be moved to/from.
@@ -186,19 +185,6 @@ static int freezer_can_attach(struct cgroup_subsys *ss,
 	if (freezer->state == CGROUP_FROZEN)
 		return -EBUSY;
 
-	if (threadgroup) {
-		struct task_struct *c;
-
-		rcu_read_lock();
-		list_for_each_entry_rcu(c, &task->thread_group, thread_group) {
-			if (is_task_frozen_enough(c)) {
-				rcu_read_unlock();
-				return -EBUSY;
-			}
-		}
-		rcu_read_unlock();
-	}
-
 	return 0;
 }
 
@@ -210,12 +196,9 @@ static void freezer_fork(struct cgroup_subsys *ss, struct task_struct *task)
 	 * No lock is needed, since the task isn't on tasklist yet,
 	 * so it can't be moved to another cgroup, which means the
 	 * freezer won't be removed and will be valid during this
-	 * function call.  Nevertheless, apply RCU read-side critical
-	 * section to suppress RCU lockdep false positives.
+	 * function call.
 	 */
-	rcu_read_lock();
 	freezer = task_freezer(task);
-	rcu_read_unlock();
 
 	/*
 	 * The root cgroup is non-freezable, so we can skip the

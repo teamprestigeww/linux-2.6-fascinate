@@ -283,7 +283,7 @@ static void ubifs_destroy_inode(struct inode *inode)
 /*
  * Note, Linux write-back code calls this without 'i_mutex'.
  */
-static int ubifs_write_inode(struct inode *inode, struct writeback_control *wbc)
+static int ubifs_write_inode(struct inode *inode, int wait)
 {
 	int err = 0;
 	struct ubifs_info *c = inode->i_sb->s_fs_info;
@@ -317,8 +317,6 @@ static int ubifs_write_inode(struct inode *inode, struct writeback_control *wbc)
 		if (err)
 			ubifs_err("can't write inode %lu, error %d",
 				  inode->i_ino, err);
-		else
-			err = dbg_check_inode_size(c, inode, ui->ui_size);
 	}
 
 	ui->dirty = 0;
@@ -327,7 +325,7 @@ static int ubifs_write_inode(struct inode *inode, struct writeback_control *wbc)
 	return err;
 }
 
-static void ubifs_evict_inode(struct inode *inode)
+static void ubifs_delete_inode(struct inode *inode)
 {
 	int err;
 	struct ubifs_info *c = inode->i_sb->s_fs_info;
@@ -343,12 +341,9 @@ static void ubifs_evict_inode(struct inode *inode)
 
 	dbg_gen("inode %lu, mode %#x", inode->i_ino, (int)inode->i_mode);
 	ubifs_assert(!atomic_read(&inode->i_count));
+	ubifs_assert(inode->i_nlink == 0);
 
 	truncate_inode_pages(&inode->i_data, 0);
-
-	if (inode->i_nlink)
-		goto done;
-
 	if (is_bad_inode(inode))
 		goto out;
 
@@ -365,13 +360,7 @@ static void ubifs_evict_inode(struct inode *inode)
 out:
 	if (ui->dirty)
 		ubifs_release_dirty_inode_budget(c, ui);
-	else {
-		/* We've deleted something - clean the "no space" flags */
-		c->nospace = c->nospace_rp = 0;
-		smp_wmb();
-	}
-done:
-	end_writeback(inode);
+	clear_inode(inode);
 }
 
 static void ubifs_dirty_inode(struct inode *inode)
@@ -432,8 +421,8 @@ static int ubifs_show_options(struct seq_file *s, struct vfsmount *mnt)
 		seq_printf(s, ",no_chk_data_crc");
 
 	if (c->mount_opts.override_compr) {
-		seq_printf(s, ",compr=%s",
-			   ubifs_compr_name(c->mount_opts.compr_type));
+		seq_printf(s, ",compr=");
+		seq_printf(s, ubifs_compr_name(c->mount_opts.compr_type));
 	}
 
 	return 0;
@@ -443,6 +432,12 @@ static int ubifs_sync_fs(struct super_block *sb, int wait)
 {
 	int i, err;
 	struct ubifs_info *c = sb->s_fs_info;
+	struct writeback_control wbc = {
+		.sync_mode   = WB_SYNC_ALL,
+		.range_start = 0,
+		.range_end   = LLONG_MAX,
+		.nr_to_write = LONG_MAX,
+	};
 
 	/*
 	 * Zero @wait is just an advisory thing to help the file system shove
@@ -451,6 +446,20 @@ static int ubifs_sync_fs(struct super_block *sb, int wait)
 	 */
 	if (!wait)
 		return 0;
+
+	if (sb->s_flags & MS_RDONLY)
+		return 0;
+
+	/*
+	 * VFS calls '->sync_fs()' before synchronizing all dirty inodes and
+	 * pages, so synchronize them first, then commit the journal. Strictly
+	 * speaking, it is not necessary to commit the journal here,
+	 * synchronizing write-buffers would be enough. But committing makes
+	 * UBIFS free space predictions much more accurate, so we want to let
+	 * the user be able to get more accurate results of 'statfs()' after
+	 * they synchronize the file system.
+	 */
+	generic_sync_sb_inodes(sb, &wbc);
 
 	/*
 	 * Synchronize write buffers, because 'ubifs_run_commit()' does not
@@ -462,13 +471,6 @@ static int ubifs_sync_fs(struct super_block *sb, int wait)
 			return err;
 	}
 
-	/*
-	 * Strictly speaking, it is not necessary to commit the journal here,
-	 * synchronizing write-buffers would be enough. But committing makes
-	 * UBIFS free space predictions much more accurate, so we want to let
-	 * the user be able to get more accurate results of 'statfs()' after
-	 * they synchronize the file system.
-	 */
 	err = ubifs_run_commit(c);
 	if (err)
 		return err;
@@ -698,8 +700,6 @@ static int init_constants_sb(struct ubifs_info *c)
 	if (err)
 		return err;
 
-	/* Initialize effective LEB size used in budgeting calculations */
-	c->idx_leb_size = c->leb_size - c->max_idx_node_sz;
 	return 0;
 }
 
@@ -716,7 +716,6 @@ static void init_constants_master(struct ubifs_info *c)
 	long long tmp64;
 
 	c->min_idx_lebs = ubifs_calc_min_idx_lebs(c);
-	c->report_rp_size = ubifs_reported_space(c, c->rp_size);
 
 	/*
 	 * Calculate total amount of FS blocks. This number is not used
@@ -792,7 +791,7 @@ static int alloc_wbufs(struct ubifs_info *c)
 	 * does not need to be synchronized by timer.
 	 */
 	c->jheads[GCHD].wbuf.dtype = UBI_LONGTERM;
-	c->jheads[GCHD].wbuf.no_timer = 1;
+	c->jheads[GCHD].wbuf.timeout = 0;
 
 	return 0;
 }
@@ -933,27 +932,6 @@ static const match_table_t tokens = {
 };
 
 /**
- * parse_standard_option - parse a standard mount option.
- * @option: the option to parse
- *
- * Normally, standard mount options like "sync" are passed to file-systems as
- * flags. However, when a "rootflags=" kernel boot parameter is used, they may
- * be present in the options string. This function tries to deal with this
- * situation and parse standard options. Returns 0 if the option was not
- * recognized, and the corresponding integer flag if it was.
- *
- * UBIFS is only interested in the "sync" option, so do not check for anything
- * else.
- */
-static int parse_standard_option(const char *option)
-{
-	ubifs_msg("parse %s", option);
-	if (!strcmp(option, "sync"))
-		return MS_SYNCHRONOUS;
-	return 0;
-}
-
-/**
  * ubifs_parse_options - parse mount parameters.
  * @c: UBIFS file-system description object
  * @options: parameters to parse
@@ -981,7 +959,7 @@ static int ubifs_parse_options(struct ubifs_info *c, char *options,
 		switch (token) {
 		/*
 		 * %Opt_fast_unmount and %Opt_norm_unmount options are ignored.
-		 * We accept them in order to be backward-compatible. But this
+		 * We accepte them in order to be backware-compatible. But this
 		 * should be removed at some point.
 		 */
 		case Opt_fast_unmount:
@@ -1029,19 +1007,9 @@ static int ubifs_parse_options(struct ubifs_info *c, char *options,
 			break;
 		}
 		default:
-		{
-			unsigned long flag;
-			struct super_block *sb = c->vfs_sb;
-
-			flag = parse_standard_option(p);
-			if (!flag) {
-				ubifs_err("unrecognized mount option \"%s\" "
-					  "or missing value", p);
-				return -EINVAL;
-			}
-			sb->s_flags |= flag;
-			break;
-		}
+			ubifs_err("unrecognized mount option \"%s\" "
+				  "or missing value", p);
+			return -EINVAL;
 		}
 	}
 
@@ -1211,7 +1179,6 @@ static int mount_ubifs(struct ubifs_info *c)
 	if (!ubifs_compr_present(c->default_compr)) {
 		ubifs_err("'compressor \"%s\" is not compiled in",
 			  ubifs_compr_name(c->default_compr));
-		err = -ENOTSUPP;
 		goto out_free;
 	}
 
@@ -1234,7 +1201,7 @@ static int mount_ubifs(struct ubifs_info *c)
 			goto out_cbuf;
 
 		/* Create background thread */
-		c->bgt = kthread_create(ubifs_bg_thread, c, "%s", c->bgt_name);
+		c->bgt = kthread_create(ubifs_bg_thread, c, c->bgt_name);
 		if (IS_ERR(c->bgt)) {
 			err = PTR_ERR(c->bgt);
 			c->bgt = NULL;
@@ -1282,9 +1249,6 @@ static int mount_ubifs(struct ubifs_info *c)
 	if (err)
 		goto out_journal;
 
-	/* Calculate 'min_idx_lebs' after journal replay */
-	c->min_idx_lebs = ubifs_calc_min_idx_lebs(c);
-
 	err = ubifs_mount_orphans(c, c->need_recovery, mounted_read_only);
 	if (err)
 		goto out_orphans;
@@ -1311,8 +1275,6 @@ static int mount_ubifs(struct ubifs_info *c)
 			if (err)
 				goto out_orphans;
 			err = ubifs_rcvry_gc_commit(c);
-			if (err)
-				goto out_orphans;
 		} else {
 			err = take_gc_lnum(c);
 			if (err)
@@ -1324,7 +1286,7 @@ static int mount_ubifs(struct ubifs_info *c)
 			 */
 			err = ubifs_leb_unmap(c, c->gc_lnum);
 			if (err)
-				goto out_orphans;
+				return err;
 		}
 
 		err = dbg_check_lprops(c);
@@ -1356,15 +1318,11 @@ static int mount_ubifs(struct ubifs_info *c)
 		else {
 			c->need_recovery = 0;
 			ubifs_msg("recovery completed");
-			/*
-			 * GC LEB has to be empty and taken at this point. But
-			 * the journal head LEBs may also be accounted as
-			 * "empty taken" if they are empty.
-			 */
-			ubifs_assert(c->lst.taken_empty_lebs > 0);
+			/* GC LEB has to be empty and taken at this point */
+			ubifs_assert(c->lst.taken_empty_lebs == 1);
 		}
 	} else
-		ubifs_assert(c->lst.taken_empty_lebs > 0);
+		ubifs_assert(c->lst.taken_empty_lebs == 1);
 
 	err = dbg_check_filesystem(c);
 	if (err)
@@ -1386,9 +1344,8 @@ static int mount_ubifs(struct ubifs_info *c)
 	x = (long long)c->log_lebs * c->leb_size + c->max_bud_bytes;
 	ubifs_msg("journal size:       %lld bytes (%lld KiB, %lld MiB, %d "
 		  "LEBs)", x, x >> 10, x >> 20, c->log_lebs + c->max_bud_cnt);
-	ubifs_msg("media format:       w%d/r%d (latest is w%d/r%d)",
-		  c->fmt_version, c->ro_compat_version,
-		  UBIFS_FORMAT_VERSION, UBIFS_RO_COMPAT_VERSION);
+	ubifs_msg("media format:       %d (latest is %d)",
+		  c->fmt_version, UBIFS_FORMAT_VERSION);
 	ubifs_msg("default compressor: %s", ubifs_compr_name(c->default_compr));
 	ubifs_msg("reserved for root:  %llu bytes (%llu KiB)",
 		c->report_rp_size, c->report_rp_size >> 10);
@@ -1399,7 +1356,12 @@ static int mount_ubifs(struct ubifs_info *c)
 		c->leb_size, c->leb_size >> 10);
 	dbg_msg("data journal heads:  %d",
 		c->jhead_cnt - NONDATA_JHEADS_CNT);
-	dbg_msg("UUID:                %pUB", c->uuid);
+	dbg_msg("UUID:                %02X%02X%02X%02X-%02X%02X"
+	       "-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+	       c->uuid[0], c->uuid[1], c->uuid[2], c->uuid[3],
+	       c->uuid[4], c->uuid[5], c->uuid[6], c->uuid[7],
+	       c->uuid[8], c->uuid[9], c->uuid[10], c->uuid[11],
+	       c->uuid[12], c->uuid[13], c->uuid[14], c->uuid[15]);
 	dbg_msg("big_lpt              %d", c->big_lpt);
 	dbg_msg("log LEBs:            %d (%d - %d)",
 		c->log_lebs, UBIFS_LOG_LNUM, c->log_last);
@@ -1523,15 +1485,6 @@ static int ubifs_remount_rw(struct ubifs_info *c)
 {
 	int err, lnum;
 
-	if (c->rw_incompat) {
-		ubifs_err("the file-system is not R/W-compatible");
-		ubifs_msg("on-flash format version is w%d/r%d, but software "
-			  "only supports up to version w%d/r%d", c->fmt_version,
-			  c->ro_compat_version, UBIFS_FORMAT_VERSION,
-			  UBIFS_RO_COMPAT_VERSION);
-		return -EROFS;
-	}
-
 	mutex_lock(&c->umount_mutex);
 	dbg_save_space_info(c);
 	c->remounting_rw = 1;
@@ -1601,7 +1554,7 @@ static int ubifs_remount_rw(struct ubifs_info *c)
 	ubifs_create_buds_lists(c);
 
 	/* Create background thread */
-	c->bgt = kthread_create(ubifs_bg_thread, c, "%s", c->bgt_name);
+	c->bgt = kthread_create(ubifs_bg_thread, c, c->bgt_name);
 	if (IS_ERR(c->bgt)) {
 		err = PTR_ERR(c->bgt);
 		c->bgt = NULL;
@@ -1688,7 +1641,7 @@ static void ubifs_remount_ro(struct ubifs_info *c)
 
 	for (i = 0; i < c->jhead_cnt; i++) {
 		ubifs_wbuf_sync(&c->jheads[i].wbuf);
-		hrtimer_cancel(&c->jheads[i].wbuf.timer);
+		del_timer_sync(&c->jheads[i].wbuf.timer);
 	}
 
 	c->mst_node->flags &= ~cpu_to_le32(UBIFS_MST_DIRTY);
@@ -1717,7 +1670,6 @@ static void ubifs_put_super(struct super_block *sb)
 
 	ubifs_msg("un-mount UBI device %d, volume %d", c->vi.ubi_num,
 		  c->vi.vol_id);
-
 	/*
 	 * The following asserts are only valid if there has not been a failure
 	 * of the media. For example, there will be dirty inodes if we failed
@@ -1747,8 +1699,10 @@ static void ubifs_put_super(struct super_block *sb)
 
 		/* Synchronize write-buffers */
 		if (c->jheads)
-			for (i = 0; i < c->jhead_cnt; i++)
+			for (i = 0; i < c->jhead_cnt; i++) {
 				ubifs_wbuf_sync(&c->jheads[i].wbuf);
+				del_timer_sync(&c->jheads[i].wbuf.timer);
+			}
 
 		/*
 		 * On fatal errors c->ro_media is set to 1, in which case we do
@@ -1821,7 +1775,7 @@ static int ubifs_remount_fs(struct super_block *sb, int *flags, char *data)
 		c->bu.buf = NULL;
 	}
 
-	ubifs_assert(c->lst.taken_empty_lebs > 0);
+	ubifs_assert(c->lst.taken_empty_lebs == 1);
 	return 0;
 }
 
@@ -1830,7 +1784,7 @@ const struct super_operations ubifs_super_operations = {
 	.destroy_inode = ubifs_destroy_inode,
 	.put_super     = ubifs_put_super,
 	.write_inode   = ubifs_write_inode,
-	.evict_inode   = ubifs_evict_inode,
+	.delete_inode  = ubifs_delete_inode,
 	.statfs        = ubifs_statfs,
 	.dirty_inode   = ubifs_dirty_inode,
 	.remount_fs    = ubifs_remount_fs,
@@ -1843,32 +1797,22 @@ const struct super_operations ubifs_super_operations = {
  * @name: UBI volume name
  * @mode: UBI volume open mode
  *
- * The primary method of mounting UBIFS is by specifying the UBI volume
- * character device node path. However, UBIFS may also be mounted withoug any
- * character device node using one of the following methods:
- *
- * o ubiX_Y    - mount UBI device number X, volume Y;
- * o ubiY      - mount UBI device number 0, volume Y;
+ * There are several ways to specify UBI volumes when mounting UBIFS:
+ * o ubiX_Y    - UBI device number X, volume Y;
+ * o ubiY      - UBI device number 0, volume Y;
  * o ubiX:NAME - mount UBI device X, volume with name NAME;
  * o ubi:NAME  - mount UBI device 0, volume with name NAME.
  *
  * Alternative '!' separator may be used instead of ':' (because some shells
  * like busybox may interpret ':' as an NFS host name separator). This function
- * returns UBI volume description object in case of success and a negative
- * error code in case of failure.
+ * returns ubi volume object in case of success and a negative error code in
+ * case of failure.
  */
 static struct ubi_volume_desc *open_ubi(const char *name, int mode)
 {
-	struct ubi_volume_desc *ubi;
 	int dev, vol;
 	char *endptr;
 
-	/* First, try to open using the device node path method */
-	ubi = ubi_open_volume_path(name, mode);
-	if (!IS_ERR(ubi))
-		return ubi;
-
-	/* Try the "nodev" method */
 	if (name[0] != 'u' || name[1] != 'b' || name[2] != 'i')
 		return ERR_PTR(-EINVAL);
 
@@ -1941,7 +1885,6 @@ static int ubifs_fill_super(struct super_block *sb, void *data, int silent)
 	INIT_LIST_HEAD(&c->orph_list);
 	INIT_LIST_HEAD(&c->orph_new);
 
-	c->vfs_sb = sb;
 	c->highest_inum = UBIFS_FIRST_INO;
 	c->lhead_lnum = c->ltail_lnum = UBIFS_LOG_LNUM;
 
@@ -1963,26 +1906,23 @@ static int ubifs_fill_super(struct super_block *sb, void *data, int silent)
 	 *
 	 * Read-ahead will be disabled because @c->bdi.ra_pages is 0.
 	 */
-	c->bdi.name = "ubifs",
 	c->bdi.capabilities = BDI_CAP_MAP_COPY;
 	c->bdi.unplug_io_fn = default_unplug_io_fn;
 	err  = bdi_init(&c->bdi);
 	if (err)
 		goto out_close;
-	err = bdi_register(&c->bdi, NULL, "ubifs_%d_%d",
-			   c->vi.ubi_num, c->vi.vol_id);
-	if (err)
-		goto out_bdi;
 
 	err = ubifs_parse_options(c, data, 0);
 	if (err)
 		goto out_bdi;
 
-	sb->s_bdi = &c->bdi;
+	c->vfs_sb = sb;
+
 	sb->s_fs_info = c;
 	sb->s_magic = UBIFS_SUPER_MAGIC;
 	sb->s_blocksize = UBIFS_BLOCK_SIZE;
 	sb->s_blocksize_bits = UBIFS_BLOCK_SHIFT;
+	sb->s_dev = c->vi.cdev;
 	sb->s_maxbytes = c->max_inode_sz = key_max_inode_size(c);
 	if (c->max_inode_sz > MAX_LFS_FILESIZE)
 		sb->s_maxbytes = c->max_inode_sz = MAX_LFS_FILESIZE;
@@ -2027,9 +1967,16 @@ out_free:
 static int sb_test(struct super_block *sb, void *data)
 {
 	dev_t *dev = data;
-	struct ubifs_info *c = sb->s_fs_info;
 
-	return c->vi.cdev == *dev;
+	return sb->s_dev == *dev;
+}
+
+static int sb_set(struct super_block *sb, void *data)
+{
+	dev_t *dev = data;
+
+	sb->s_dev = *dev;
+	return 0;
 }
 
 static int ubifs_get_sb(struct file_system_type *fs_type, int flags,
@@ -2057,7 +2004,7 @@ static int ubifs_get_sb(struct file_system_type *fs_type, int flags,
 
 	dbg_gen("opened ubi%d_%d", vi.ubi_num, vi.vol_id);
 
-	sb = sget(fs_type, &sb_test, &set_anon_super, &vi.cdev);
+	sb = sget(fs_type, &sb_test, &sb_set, &vi.cdev);
 	if (IS_ERR(sb)) {
 		err = PTR_ERR(sb);
 		goto out_close;
@@ -2087,21 +2034,26 @@ static int ubifs_get_sb(struct file_system_type *fs_type, int flags,
 	/* 'fill_super()' opens ubi again so we must close it here */
 	ubi_close_volume(ubi);
 
-	simple_set_mnt(mnt, sb);
-	return 0;
+	return simple_set_mnt(mnt, sb);
 
 out_deact:
-	deactivate_locked_super(sb);
+	up_write(&sb->s_umount);
+	deactivate_super(sb);
 out_close:
 	ubi_close_volume(ubi);
 	return err;
+}
+
+static void ubifs_kill_sb(struct super_block *sb)
+{
+	generic_shutdown_super(sb);
 }
 
 static struct file_system_type ubifs_fs_type = {
 	.name    = "ubifs",
 	.owner   = THIS_MODULE,
 	.get_sb  = ubifs_get_sb,
-	.kill_sb = kill_anon_super,
+	.kill_sb = ubifs_kill_sb
 };
 
 /*

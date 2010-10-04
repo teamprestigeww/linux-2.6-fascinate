@@ -16,7 +16,6 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
  */
-
 #include <linux/err.h>
 #include <linux/hw_random.h>
 #include <linux/scatterlist.h>
@@ -24,64 +23,70 @@
 #include <linux/virtio.h>
 #include <linux/virtio_rng.h>
 
+/* The host will fill any buffer we give it with sweet, sweet randomness.  We
+ * give it 64 bytes at a time, and the hwrng framework takes it 4 bytes at a
+ * time. */
+#define RANDOM_DATA_SIZE 64
+
 static struct virtqueue *vq;
-static unsigned int data_avail;
+static u32 *random_data;
+static unsigned int data_left;
 static DECLARE_COMPLETION(have_data);
-static bool busy;
 
 static void random_recv_done(struct virtqueue *vq)
 {
-	/* We can get spurious callbacks, e.g. shared IRQs + virtio_pci. */
-	if (!virtqueue_get_buf(vq, &data_avail))
-		return;
+	int len;
 
+	/* We never get spurious callbacks. */
+	if (!vq->vq_ops->get_buf(vq, &len))
+		BUG();
+
+	data_left = len / sizeof(random_data[0]);
 	complete(&have_data);
 }
 
-/* The host will fill any buffer we give it with sweet, sweet randomness. */
-static void register_buffer(u8 *buf, size_t size)
+static void register_buffer(void)
 {
 	struct scatterlist sg;
 
-	sg_init_one(&sg, buf, size);
-
+	sg_init_one(&sg, random_data, RANDOM_DATA_SIZE);
 	/* There should always be room for one buffer. */
-	if (virtqueue_add_buf(vq, &sg, 0, 1, buf) < 0)
+	if (vq->vq_ops->add_buf(vq, &sg, 0, 1, random_data) != 0)
 		BUG();
-
-	virtqueue_kick(vq);
+	vq->vq_ops->kick(vq);
 }
 
-static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
+/* At least we don't udelay() in a loop like some other drivers. */
+static int virtio_data_present(struct hwrng *rng, int wait)
 {
-
-	if (!busy) {
-		busy = true;
-		init_completion(&have_data);
-		register_buffer(buf, size);
-	}
+	if (data_left)
+		return 1;
 
 	if (!wait)
 		return 0;
 
 	wait_for_completion(&have_data);
-
-	busy = false;
-
-	return data_avail;
+	return 1;
 }
 
-static void virtio_cleanup(struct hwrng *rng)
+/* virtio_data_present() must have succeeded before this is called. */
+static int virtio_data_read(struct hwrng *rng, u32 *data)
 {
-	if (busy)
-		wait_for_completion(&have_data);
-}
+	BUG_ON(!data_left);
 
+	*data = random_data[--data_left];
+
+	if (!data_left) {
+		init_completion(&have_data);
+		register_buffer();
+	}
+	return sizeof(*data);
+}
 
 static struct hwrng virtio_hwrng = {
-	.name		= "virtio",
-	.cleanup	= virtio_cleanup,
-	.read		= virtio_read,
+	.name = "virtio",
+	.data_present = virtio_data_present,
+	.data_read = virtio_data_read,
 };
 
 static int virtrng_probe(struct virtio_device *vdev)
@@ -89,24 +94,25 @@ static int virtrng_probe(struct virtio_device *vdev)
 	int err;
 
 	/* We expect a single virtqueue. */
-	vq = virtio_find_single_vq(vdev, random_recv_done, "input");
+	vq = vdev->config->find_vq(vdev, 0, random_recv_done);
 	if (IS_ERR(vq))
 		return PTR_ERR(vq);
 
 	err = hwrng_register(&virtio_hwrng);
 	if (err) {
-		vdev->config->del_vqs(vdev);
+		vdev->config->del_vq(vq);
 		return err;
 	}
 
+	register_buffer();
 	return 0;
 }
 
-static void __devexit virtrng_remove(struct virtio_device *vdev)
+static void virtrng_remove(struct virtio_device *vdev)
 {
 	vdev->config->reset(vdev);
 	hwrng_unregister(&virtio_hwrng);
-	vdev->config->del_vqs(vdev);
+	vdev->config->del_vq(vq);
 }
 
 static struct virtio_device_id id_table[] = {
@@ -114,7 +120,7 @@ static struct virtio_device_id id_table[] = {
 	{ 0 },
 };
 
-static struct virtio_driver virtio_rng_driver = {
+static struct virtio_driver virtio_rng = {
 	.driver.name =	KBUILD_MODNAME,
 	.driver.owner =	THIS_MODULE,
 	.id_table =	id_table,
@@ -124,12 +130,22 @@ static struct virtio_driver virtio_rng_driver = {
 
 static int __init init(void)
 {
-	return register_virtio_driver(&virtio_rng_driver);
+	int err;
+
+	random_data = kmalloc(RANDOM_DATA_SIZE, GFP_KERNEL);
+	if (!random_data)
+		return -ENOMEM;
+
+	err = register_virtio_driver(&virtio_rng);
+	if (err)
+		kfree(random_data);
+	return err;
 }
 
 static void __exit fini(void)
 {
-	unregister_virtio_driver(&virtio_rng_driver);
+	kfree(random_data);
+	unregister_virtio_driver(&virtio_rng);
 }
 module_init(init);
 module_exit(fini);

@@ -38,7 +38,7 @@ int smp_call_function_single(int cpuid, void (*func) (void *info), void *info,
 /*
  * main cross-CPU interfaces, handles INIT, TLB flush, STOP, etc.
  * (defined in asm header):
- */
+ */ 
 
 /*
  * stops all CPUs but the current one:
@@ -73,11 +73,16 @@ int smp_call_function(void(*func)(void *info), void *info, int wait);
 void smp_call_function_many(const struct cpumask *mask,
 			    void (*func)(void *info), void *info, bool wait);
 
-void __smp_call_function_single(int cpuid, struct call_single_data *data,
-				int wait);
+/* Deprecated: Use smp_call_function_many which takes a pointer to the mask. */
+static inline int
+smp_call_function_mask(cpumask_t mask, void(*func)(void *info), void *info,
+		       int wait)
+{
+	smp_call_function_many(&mask, func, info, wait);
+	return 0;
+}
 
-int smp_call_function_any(const struct cpumask *mask,
-			  void (*func)(void *info), void *info, int wait);
+void __smp_call_function_single(int cpuid, struct call_single_data *data);
 
 /*
  * Generic and arch helpers
@@ -116,8 +121,6 @@ extern unsigned int setup_max_cpus;
 
 #else /* !SMP */
 
-static inline void smp_send_stop(void) { }
-
 /*
  *	These macros fold the SMP functionality into a single CPU system
  */
@@ -138,23 +141,19 @@ static inline int up_smp_call_function(void (*func)(void *), void *info)
 static inline void smp_send_reschedule(int cpu) { }
 #define num_booting_cpus()			1
 #define smp_prepare_boot_cpu()			do {} while (0)
+#define smp_call_function_mask(mask, func, info, wait) \
+			(up_smp_call_function(func, info))
 #define smp_call_function_many(mask, func, info, wait) \
 			(up_smp_call_function(func, info))
-static inline void init_call_single_data(void) { }
-
-static inline int
-smp_call_function_any(const struct cpumask *mask, void (*func)(void *info),
-		      void *info, int wait)
+static inline void init_call_single_data(void)
 {
-	return smp_call_function_single(0, func, info, wait);
 }
-
 #endif /* !SMP */
 
 /*
  * smp_processor_id(): get the current CPU ID.
  *
- * if DEBUG_PREEMPT is enabled then we check whether it is
+ * if DEBUG_PREEMPT is enabled the we check whether it is
  * used in a preemption-safe way. (smp_processor_id() is safe
  * if it's used in a preemption-off critical section, or in
  * a thread that is bound to the current CPU.)
@@ -175,12 +174,7 @@ smp_call_function_any(const struct cpumask *mask, void (*func)(void *info),
 
 #define get_cpu()		({ preempt_disable(); smp_processor_id(); })
 #define put_cpu()		preempt_enable()
-
-/*
- * Callback to arch code if there's nosmp or maxcpus=0 on the
- * boot command line:
- */
-extern void arch_disable_smp_support(void);
+#define put_cpu_no_resched()	preempt_enable_no_resched()
 
 void smp_setup_processor_id(void);
 

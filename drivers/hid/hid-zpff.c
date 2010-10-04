@@ -23,12 +23,10 @@
 
 #include <linux/hid.h>
 #include <linux/input.h>
-#include <linux/slab.h>
 #include <linux/usb.h>
 
 #include "hid-ids.h"
 
-#ifdef CONFIG_ZEROPLUS_FF
 #include "usbhid/usbhid.h"
 
 struct zpff_device {
@@ -110,12 +108,6 @@ static int zpff_init(struct hid_device *hid)
 
 	return 0;
 }
-#else
-static inline int zpff_init(struct hid_device *hid)
-{
-	return 0;
-}
-#endif
 
 static int zp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
@@ -153,12 +145,12 @@ static struct hid_driver zp_driver = {
 	.probe = zp_probe,
 };
 
-static int __init zp_init(void)
+static int zp_init(void)
 {
 	return hid_register_driver(&zp_driver);
 }
 
-static void __exit zp_exit(void)
+static void zp_exit(void)
 {
 	hid_unregister_driver(&zp_driver);
 }
@@ -166,3 +158,5 @@ static void __exit zp_exit(void)
 module_init(zp_init);
 module_exit(zp_exit);
 MODULE_LICENSE("GPL");
+
+HID_COMPAT_LOAD_DRIVER(zeroplus);

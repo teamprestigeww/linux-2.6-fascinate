@@ -15,13 +15,11 @@
 #include <linux/kref.h>
 #include <linux/notifier.h>
 #include <linux/proc_fs.h>
-#include <linux/slab.h>
 
 #include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/uaccess.h>
 #include <asm/pSeries_reconfig.h>
-#include <asm/mmu.h>
 
 
 
@@ -97,7 +95,7 @@ static struct device_node *derive_parent(const char *path)
 	return parent;
 }
 
-BLOCKING_NOTIFIER_HEAD(pSeries_reconfig_chain);
+static BLOCKING_NOTIFIER_HEAD(pSeries_reconfig_chain);
 
 int pSeries_reconfig_notifier_register(struct notifier_block *nb)
 {
@@ -118,9 +116,11 @@ static int pSeries_reconfig_add_node(const char *path, struct property *proplist
 	if (!np)
 		goto out_err;
 
-	np->full_name = kstrdup(path, GFP_KERNEL);
+	np->full_name = kmalloc(strlen(path) + 1, GFP_KERNEL);
 	if (!np->full_name)
 		goto out_err;
+
+	strcpy(np->full_name, path);
 
 	np->properties = proplist;
 	of_node_set_flag(np, OF_DYNAMIC);
@@ -183,7 +183,7 @@ static int pSeries_reconfig_remove_node(struct device_node *np)
 }
 
 /*
- * /proc/powerpc/ofdt - yucky binary interface for adding and removing
+ * /proc/ppc64/ofdt - yucky binary interface for adding and removing
  * OF device nodes.  Should be deprecated as soon as we get an
  * in-kernel wrapper for the RTAS ibm,configure-connector call.
  */
@@ -439,15 +439,9 @@ static int do_update_property(char *buf, size_t bufsize)
 	if (!newprop)
 		return -ENOMEM;
 
-	if (!strcmp(name, "slb-size") || !strcmp(name, "ibm,slb-size"))
-		slb_set_size(*(int *)value);
-
 	oldprop = of_find_property(np, name,NULL);
-	if (!oldprop) {
-		if (strlen(name))
-			return prom_add_property(np, newprop);
+	if (!oldprop)
 		return -ENODEV;
-	}
 
 	rc = prom_update_property(np, newprop, oldprop);
 	if (rc)
@@ -474,13 +468,9 @@ static int do_update_property(char *buf, size_t bufsize)
 
 		rc = blocking_notifier_call_chain(&pSeries_reconfig_chain,
 						  action, value);
-		if (rc == NOTIFY_BAD) {
-			rc = prom_update_property(np, oldprop, newprop);
-			return -ENOMEM;
-		}
 	}
 
-	return 0;
+	return rc;
 }
 
 /**
@@ -542,7 +532,7 @@ static const struct file_operations ofdt_fops = {
 	.write = ofdt_write
 };
 
-/* create /proc/powerpc/ofdt write-only by root */
+/* create /proc/ppc64/ofdt write-only by root */
 static int proc_ppc64_create_ofdt(void)
 {
 	struct proc_dir_entry *ent;
@@ -550,7 +540,7 @@ static int proc_ppc64_create_ofdt(void)
 	if (!machine_is(pseries))
 		return 0;
 
-	ent = proc_create("powerpc/ofdt", S_IWUSR, NULL, &ofdt_fops);
+	ent = proc_create("ppc64/ofdt", S_IWUSR, NULL, &ofdt_fops);
 	if (ent)
 		ent->size = 0;
 

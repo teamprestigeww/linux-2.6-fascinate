@@ -1,9 +1,8 @@
 /*
- * uClinux flat-format executables
+ * include/asm-blackfin/flat.h -- uClinux flat-format executables
  *
- * Copyright 2003-2009 Analog Devices Inc.
+ * Copyright (C) 2003,
  *
- * Licensed under the GPL-2
  */
 
 #ifndef __BLACKFIN_FLAT_H__
@@ -11,6 +10,7 @@
 
 #include <asm/unaligned.h>
 
+#define	flat_stack_align(sp)	/* nothing needed */
 #define	flat_argvp_envp_on_stack()		0
 #define	flat_old_ram_flag(flags)		(flags)
 

@@ -283,13 +283,13 @@ static int sl82c105_init_one(struct pci_dev *dev, const struct pci_device_id *id
 {
 	static const struct ata_port_info info_dma = {
 		.flags = ATA_FLAG_SLAVE_POSS,
-		.pio_mask = ATA_PIO4,
-		.mwdma_mask = ATA_MWDMA2,
+		.pio_mask = 0x1f,
+		.mwdma_mask = 0x07,
 		.port_ops = &sl82c105_port_ops
 	};
 	static const struct ata_port_info info_early = {
 		.flags = ATA_FLAG_SLAVE_POSS,
-		.pio_mask = ATA_PIO4,
+		.pio_mask = 0x1f,
 		.port_ops = &sl82c105_port_ops
 	};
 	/* for now use only the first port */
@@ -316,7 +316,7 @@ static int sl82c105_init_one(struct pci_dev *dev, const struct pci_device_id *id
 	val |= CTRL_P0EN | CTRL_P0F16 | CTRL_P1F16;
 	pci_write_config_dword(dev, 0x40, val);
 
-	return ata_pci_bmdma_init_one(dev, ppi, &sl82c105_sht, NULL, 0);
+	return ata_pci_sff_init_one(dev, ppi, &sl82c105_sht, NULL);
 }
 
 static const struct pci_device_id sl82c105[] = {

@@ -85,8 +85,19 @@ asmlinkage long sys_ioperm(unsigned long from, unsigned long num, int turn_on)
 
 	t->io_bitmap_max = bytes;
 
+#ifdef CONFIG_X86_32
+	/*
+	 * Sets the lazy trigger so that the next I/O operation will
+	 * reload the correct bitmap.
+	 * Reset the owner so that a process switch will not set
+	 * tss->io_bitmap_base to IO_BITMAP_OFFSET.
+	 */
+	tss->x86_tss.io_bitmap_base = INVALID_IO_BITMAP_OFFSET_LAZY;
+	tss->io_bitmap_owner = NULL;
+#else
 	/* Update the TSS: */
 	memcpy(tss->io_bitmap, t->io_bitmap_ptr, bytes_updated);
+#endif
 
 	put_cpu();
 
@@ -103,10 +114,9 @@ asmlinkage long sys_ioperm(unsigned long from, unsigned long num, int turn_on)
  * on system-call entry - see also fork() and the signal handling
  * code.
  */
-long sys_iopl(unsigned int level, struct pt_regs *regs)
+static int do_iopl(unsigned int level, struct pt_regs *regs)
 {
 	unsigned int old = (regs->flags >> 12) & 3;
-	struct thread_struct *t = &current->thread;
 
 	if (level > 3)
 		return -EINVAL;
@@ -116,8 +126,30 @@ long sys_iopl(unsigned int level, struct pt_regs *regs)
 			return -EPERM;
 	}
 	regs->flags = (regs->flags & ~X86_EFLAGS_IOPL) | (level << 12);
-	t->iopl = level << 12;
-	set_iopl_mask(t->iopl);
 
 	return 0;
 }
+
+#ifdef CONFIG_X86_32
+asmlinkage long sys_iopl(unsigned long regsp)
+{
+	struct pt_regs *regs = (struct pt_regs *)&regsp;
+	unsigned int level = regs->bx;
+	struct thread_struct *t = &current->thread;
+	int rc;
+
+	rc = do_iopl(level, regs);
+	if (rc < 0)
+		goto out;
+
+	t->iopl = level << 12;
+	set_iopl_mask(t->iopl);
+out:
+	return rc;
+}
+#else
+asmlinkage long sys_iopl(unsigned int level, struct pt_regs *regs)
+{
+	return do_iopl(level, regs);
+}
+#endif

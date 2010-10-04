@@ -18,6 +18,7 @@
 #include <linux/ptrace.h>
 #include <linux/ioport.h>
 #include <linux/in.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/errno.h>
@@ -256,23 +257,6 @@ struct transceiver_ops transceivers[] =
 
 struct transceiver_ops* transceiver = &transceivers[0];
 
-static const struct net_device_ops e100_netdev_ops = {
-	.ndo_open		= e100_open,
-	.ndo_stop		= e100_close,
-	.ndo_start_xmit		= e100_send_packet,
-	.ndo_tx_timeout		= e100_tx_timeout,
-	.ndo_get_stats		= e100_get_stats,
-	.ndo_set_multicast_list	= set_multicast_list,
-	.ndo_do_ioctl		= e100_ioctl,
-	.ndo_set_mac_address	= e100_set_mac_address,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_config		= e100_set_config,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= e100_netpoll,
-#endif
-};
-
 #define tx_done(dev) (*R_DMA_CH0_CMD == 0)
 
 /*
@@ -316,8 +300,19 @@ etrax_ethernet_init(void)
 
 	/* fill in our handlers so the network layer can talk to us in the future */
 
+	dev->open               = e100_open;
+	dev->hard_start_xmit    = e100_send_packet;
+	dev->stop               = e100_close;
+	dev->get_stats          = e100_get_stats;
+	dev->set_multicast_list = set_multicast_list;
+	dev->set_mac_address    = e100_set_mac_address;
 	dev->ethtool_ops	= &e100_ethtool_ops;
-	dev->netdev_ops		= &e100_netdev_ops;
+	dev->do_ioctl           = e100_ioctl;
+	dev->set_config		= e100_set_config;
+	dev->tx_timeout         = e100_tx_timeout;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = e100_netpoll;
+#endif
 
 	spin_lock_init(&np->lock);
 	spin_lock_init(&np->led_lock);
@@ -767,24 +762,10 @@ e100_negotiate(struct net_device* dev)
 
 	e100_set_mdio_reg(dev, np->mii_if.phy_id, MII_ADVERTISE, data);
 
-	data = e100_get_mdio_reg(dev, np->mii_if.phy_id, MII_BMCR);
+	/* Renegotiate with link partner */
 	if (autoneg_normal) {
-		/* Renegotiate with link partner */
-		data |= BMCR_ANENABLE | BMCR_ANRESTART;
-	} else {
-		/* Don't negotiate speed or duplex */
-		data &= ~(BMCR_ANENABLE | BMCR_ANRESTART);
-
-		/* Set speed and duplex static */
-		if (current_speed_selection == 10)
-			data &= ~BMCR_SPEED100;
-		else
-			data |= BMCR_SPEED100;
-
-		if (current_duplex != full)
-			data &= ~BMCR_FULLDPLX;
-		else
-			data |= BMCR_FULLDPLX;
+	  data = e100_get_mdio_reg(dev, np->mii_if.phy_id, MII_BMCR);
+	data |= BMCR_ANENABLE | BMCR_ANRESTART;
 	}
 	e100_set_mdio_reg(dev, np->mii_if.phy_id, MII_BMCR, data);
 }
@@ -1108,7 +1089,7 @@ e100_send_packet(struct sk_buff *skb, struct net_device *dev)
 
 	myNextTxDesc->skb = skb;
 
-	dev->trans_start = jiffies; /* NETIF_F_LLTX driver :( */
+	dev->trans_start = jiffies;
 
 	e100_hardware_send_packet(np, buf, skb->len);
 
@@ -1121,7 +1102,7 @@ e100_send_packet(struct sk_buff *skb, struct net_device *dev)
 
 	spin_unlock_irqrestore(&np->lock, flags);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -1563,7 +1544,7 @@ static void
 set_multicast_list(struct net_device *dev)
 {
 	struct net_local *lp = netdev_priv(dev);
-	int num_addr = netdev_mc_count(dev);
+	int num_addr = dev->mc_count;
 	unsigned long int lo_bits;
 	unsigned long int hi_bits;
 
@@ -1595,16 +1576,17 @@ set_multicast_list(struct net_device *dev)
 	} else {
 		/* MC mode, receive normal and MC packets */
 		char hash_ix;
-		struct netdev_hw_addr *ha;
+		struct dev_mc_list *dmi = dev->mc_list;
+		int i;
 		char *baddr;
 
 		lo_bits = 0x00000000ul;
 		hi_bits = 0x00000000ul;
-		netdev_for_each_mc_addr(ha, dev) {
+		for (i = 0; i < num_addr; i++) {
 			/* Calculate the hash index for the GA registers */
 
 			hash_ix = 0;
-			baddr = ha->addr;
+			baddr = dmi->dmi_addr;
 			hash_ix ^= (*baddr) & 0x3f;
 			hash_ix ^= ((*baddr) >> 6) & 0x03;
 			++baddr;
@@ -1630,6 +1612,7 @@ set_multicast_list(struct net_device *dev)
 			} else {
 				lo_bits |= (1 << hash_ix);
 			}
+			dmi = dmi->next;
 		}
 		/* Disable individual receive */
 		SETS(network_rec_config_shadow, R_NETWORK_REC_CONFIG, individual, discard);
@@ -1702,7 +1685,11 @@ e100_set_network_leds(int active)
 
 	if (!current_speed) {
 		/* Make LED red, link is down */
+#if defined(CONFIG_ETRAX_NETWORK_RED_ON_NO_CONNECTION)
+		CRIS_LED_NETWORK_SET(CRIS_LED_RED);
+#else
 		CRIS_LED_NETWORK_SET(CRIS_LED_OFF);
+#endif
 	} else if (light_leds) {
 		if (current_speed == 10) {
 			CRIS_LED_NETWORK_SET(CRIS_LED_ORANGE);

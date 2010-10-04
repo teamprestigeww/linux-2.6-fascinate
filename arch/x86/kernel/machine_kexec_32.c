@@ -14,18 +14,17 @@
 #include <linux/ftrace.h>
 #include <linux/suspend.h>
 #include <linux/gfp.h>
-#include <linux/io.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
+#include <asm/io.h>
 #include <asm/apic.h>
 #include <asm/cpufeature.h>
 #include <asm/desc.h>
 #include <asm/system.h>
 #include <asm/cacheflush.h>
-#include <asm/debugreg.h>
 
 static void set_idt(void *newidt, __u16 limit)
 {
@@ -64,7 +63,7 @@ static void load_segments(void)
 		"\tmovl %%eax,%%fs\n"
 		"\tmovl %%eax,%%gs\n"
 		"\tmovl %%eax,%%ss\n"
-		: : : "eax", "memory");
+		::: "eax", "memory");
 #undef STR
 #undef __STR
 }
@@ -122,7 +121,7 @@ static void machine_kexec_page_table_set_one(
 static void machine_kexec_prepare_page_tables(struct kimage *image)
 {
 	void *control_page;
-	pmd_t *pmd = NULL;
+	pmd_t *pmd = 0;
 
 	control_page = page_address(image->control_code_page);
 #ifdef CONFIG_X86_PAE
@@ -158,7 +157,8 @@ int machine_kexec_prepare(struct kimage *image)
 {
 	int error;
 
-	set_pages_x(image->control_code_page, 1);
+	if (nx_enabled)
+		set_pages_x(image->control_code_page, 1);
 	error = machine_kexec_alloc_page_tables(image);
 	if (error)
 		return error;
@@ -172,7 +172,8 @@ int machine_kexec_prepare(struct kimage *image)
  */
 void machine_kexec_cleanup(struct kimage *image)
 {
-	set_pages_nx(image->control_code_page, 1);
+	if (nx_enabled)
+		set_pages_nx(image->control_code_page, 1);
 	machine_kexec_free_page_tables(image);
 }
 
@@ -193,7 +194,7 @@ void machine_kexec(struct kimage *image)
 				       unsigned int preserve_context);
 
 #ifdef CONFIG_KEXEC_JUMP
-	if (image->preserve_context)
+	if (kexec_image->preserve_context)
 		save_processor_state();
 #endif
 
@@ -201,12 +202,10 @@ void machine_kexec(struct kimage *image)
 
 	/* Interrupts aren't acceptable while we reboot */
 	local_irq_disable();
-	hw_breakpoint_disable();
 
 	if (image->preserve_context) {
 #ifdef CONFIG_X86_IO_APIC
-		/*
-		 * We need to put APICs in legacy mode so that we can
+		/* We need to put APICs in legacy mode so that we can
 		 * get timer interrupts in second kernel. kexec/kdump
 		 * paths already have calls to disable_IO_APIC() in
 		 * one form or other. kexec jump path also need
@@ -228,8 +227,7 @@ void machine_kexec(struct kimage *image)
 		page_list[PA_SWAP_PAGE] = (page_to_pfn(image->swap_page)
 						<< PAGE_SHIFT);
 
-	/*
-	 * The segment registers are funny things, they have both a
+	/* The segment registers are funny things, they have both a
 	 * visible and an invisible part.  Whenever the visible part is
 	 * set to a specific selector, the invisible part is loaded
 	 * with from a table in memory.  At no other time is the
@@ -239,12 +237,11 @@ void machine_kexec(struct kimage *image)
 	 * segments, before I zap the gdt with an invalid value.
 	 */
 	load_segments();
-	/*
-	 * The gdt & idt are now invalid.
+	/* The gdt & idt are now invalid.
 	 * If you want to load them you must set up your own idt & gdt.
 	 */
-	set_gdt(phys_to_virt(0), 0);
-	set_idt(phys_to_virt(0), 0);
+	set_gdt(phys_to_virt(0),0);
+	set_idt(phys_to_virt(0),0);
 
 	/* now call it */
 	image->start = relocate_kernel_ptr((unsigned long)image->head,
@@ -253,7 +250,7 @@ void machine_kexec(struct kimage *image)
 					   image->preserve_context);
 
 #ifdef CONFIG_KEXEC_JUMP
-	if (image->preserve_context)
+	if (kexec_image->preserve_context)
 		restore_processor_state();
 #endif
 

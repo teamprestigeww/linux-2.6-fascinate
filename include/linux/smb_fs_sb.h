@@ -10,7 +10,6 @@
 #define _SMB_FS_SB
 
 #include <linux/types.h>
-#include <linux/backing-dev.h>
 #include <linux/smb.h>
 
 /*
@@ -75,8 +74,6 @@ struct smb_sb_info {
 	struct smb_ops *ops;
 
 	struct super_block *super_block;
-
-	struct backing_dev_info bdi;
 };
 
 static inline int

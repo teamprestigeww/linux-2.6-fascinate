@@ -81,7 +81,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/sched.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/list.h>
@@ -89,7 +88,6 @@
 #include <linux/pci.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/slab.h>
 
 #include <asm/system.h>
 #include <asm/cache.h>
@@ -361,8 +359,7 @@ static void dscc4_tx_irq(struct dscc4_pci_priv *, struct dscc4_dev_priv *);
 static int dscc4_found1(struct pci_dev *, void __iomem *ioaddr);
 static int dscc4_init_one(struct pci_dev *, const struct pci_device_id *ent);
 static int dscc4_open(struct net_device *);
-static netdev_tx_t dscc4_start_xmit(struct sk_buff *,
-					  struct net_device *);
+static int dscc4_start_xmit(struct sk_buff *, struct net_device *);
 static int dscc4_close(struct net_device *);
 static int dscc4_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
 static int dscc4_init_ring(struct net_device *);
@@ -666,12 +663,12 @@ static inline void dscc4_rx_skb(struct dscc4_dev_priv *dpriv,
 	} else {
 		if (skb->data[pkt_len] & FrameRdo)
 			dev->stats.rx_fifo_errors++;
-		else if (!(skb->data[pkt_len] & FrameCrc))
+		else if (!(skb->data[pkt_len] | ~FrameCrc))
 			dev->stats.rx_crc_errors++;
-		else if ((skb->data[pkt_len] & (FrameVfr | FrameRab)) !=
-			 (FrameVfr | FrameRab))
+		else if (!(skb->data[pkt_len] | ~(FrameVfr | FrameRab)))
 			dev->stats.rx_length_errors++;
-		dev->stats.rx_errors++;
+		else
+			dev->stats.rx_errors++;
 		dev_kfree_skb_irq(skb);
 	}
 refill:
@@ -886,15 +883,6 @@ static inline int dscc4_set_quartz(struct dscc4_dev_priv *dpriv, int hz)
 	return ret;
 }
 
-static const struct net_device_ops dscc4_ops = {
-	.ndo_open       = dscc4_open,
-	.ndo_stop       = dscc4_close,
-	.ndo_change_mtu = hdlc_change_mtu,
-	.ndo_start_xmit = hdlc_start_xmit,
-	.ndo_do_ioctl   = dscc4_ioctl,
-	.ndo_tx_timeout = dscc4_tx_timeout,
-};
-
 static int dscc4_found1(struct pci_dev *pdev, void __iomem *ioaddr)
 {
 	struct dscc4_pci_priv *ppriv;
@@ -928,8 +916,13 @@ static int dscc4_found1(struct pci_dev *pdev, void __iomem *ioaddr)
 		hdlc_device *hdlc = dev_to_hdlc(d);
 
 	        d->base_addr = (unsigned long)ioaddr;
+		d->init = NULL;
 	        d->irq = pdev->irq;
-		d->netdev_ops = &dscc4_ops;
+	        d->open = dscc4_open;
+	        d->stop = dscc4_close;
+		d->set_multicast_list = NULL;
+	        d->do_ioctl = dscc4_ioctl;
+		d->tx_timeout = dscc4_tx_timeout;
 		d->watchdog_timeo = TX_TIMEOUT;
 		SET_NETDEV_DEV(d, &pdev->dev);
 
@@ -1055,7 +1048,7 @@ static int dscc4_open(struct net_device *dev)
 	struct dscc4_pci_priv *ppriv;
 	int ret = -EAGAIN;
 
-	if ((dscc4_loopback_check(dpriv) < 0))
+	if ((dscc4_loopback_check(dpriv) < 0) || !dev->hard_start_xmit)
 		goto err;
 
 	if ((ret = hdlc_open(dev)))
@@ -1129,7 +1122,7 @@ done:
         init_timer(&dpriv->timer);
         dpriv->timer.expires = jiffies + 10*HZ;
         dpriv->timer.data = (unsigned long)dev;
-	dpriv->timer.function = dscc4_timer;
+        dpriv->timer.function = &dscc4_timer;
         add_timer(&dpriv->timer);
 	netif_carrier_on(dev);
 
@@ -1151,8 +1144,7 @@ static int dscc4_tx_poll(struct dscc4_dev_priv *dpriv, struct net_device *dev)
 }
 #endif /* DSCC4_POLLING */
 
-static netdev_tx_t dscc4_start_xmit(struct sk_buff *skb,
-					  struct net_device *dev)
+static int dscc4_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct dscc4_dev_priv *dpriv = dscc4_priv(dev);
 	struct dscc4_pci_priv *ppriv = dpriv->pci_priv;
@@ -1175,6 +1167,8 @@ static netdev_tx_t dscc4_start_xmit(struct sk_buff *skb,
 	spin_unlock(&dpriv->lock);
 #endif
 
+	dev->trans_start = jiffies;
+
 	if (debug > 2)
 		dscc4_tx_print(dev, dpriv, "Xmit");
 	/* To be cleaned(unsigned int)/optimized. Later, ok ? */
@@ -1184,7 +1178,7 @@ static netdev_tx_t dscc4_start_xmit(struct sk_buff *skb,
 	if (dscc4_tx_quiescent(dpriv, dev))
 		dscc4_do_tx(dpriv, dev);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 static int dscc4_close(struct net_device *dev)
@@ -2049,7 +2043,7 @@ static int __init dscc4_setup(char *str)
 __setup("dscc4.setup=", dscc4_setup);
 #endif
 
-static DEFINE_PCI_DEVICE_TABLE(dscc4_pci_tbl) = {
+static struct pci_device_id dscc4_pci_tbl[] = {
 	{ PCI_VENDOR_ID_SIEMENS, PCI_DEVICE_ID_SIEMENS_DSCC4,
 	        PCI_ANY_ID, PCI_ANY_ID, },
 	{ 0,}

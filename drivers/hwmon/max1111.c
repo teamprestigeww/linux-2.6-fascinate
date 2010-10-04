@@ -20,7 +20,6 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/spi/spi.h>
-#include <linux/slab.h>
 
 #define MAX1111_TX_BUF_SIZE	1
 #define MAX1111_RX_BUF_SIZE	2
@@ -243,4 +242,3 @@ module_exit(max1111_exit);
 MODULE_AUTHOR("Eric Miao <eric.miao@marvell.com>");
 MODULE_DESCRIPTION("MAX1111 ADC Driver");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("spi:max1111");

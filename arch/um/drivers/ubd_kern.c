@@ -17,23 +17,20 @@
  * James McMechan
  */
 
+#define MAJOR_NR UBD_MAJOR
 #define UBD_SHIFT 4
 
 #include "linux/kernel.h"
 #include "linux/module.h"
 #include "linux/blkdev.h"
-#include "linux/ata.h"
 #include "linux/hdreg.h"
 #include "linux/init.h"
 #include "linux/cdrom.h"
 #include "linux/proc_fs.h"
-#include "linux/seq_file.h"
 #include "linux/ctype.h"
 #include "linux/capability.h"
 #include "linux/mm.h"
-#include "linux/slab.h"
 #include "linux/vmalloc.h"
-#include "linux/smp_lock.h"
 #include "linux/blkpg.h"
 #include "linux/genhd.h"
 #include "linux/spinlock.h"
@@ -109,7 +106,7 @@ static int ubd_getgeo(struct block_device *bdev, struct hd_geometry *geo);
 
 #define MAX_DEV (16)
 
-static const struct block_device_operations ubd_blops = {
+static struct block_device_operations ubd_blops = {
         .owner		= THIS_MODULE,
         .open		= ubd_open,
         .release	= ubd_release,
@@ -118,7 +115,7 @@ static const struct block_device_operations ubd_blops = {
 };
 
 /* Protected by ubd_lock */
-static int fake_major = UBD_MAJOR;
+static int fake_major = MAJOR_NR;
 static struct gendisk *ubd_gendisk[MAX_DEV];
 static struct gendisk *fake_gendisk[MAX_DEV];
 
@@ -203,24 +200,22 @@ static void make_proc_ide(void)
 	proc_ide = proc_mkdir("ide0", proc_ide_root);
 }
 
-static int fake_ide_media_proc_show(struct seq_file *m, void *v)
+static int proc_ide_read_media(char *page, char **start, off_t off, int count,
+			       int *eof, void *data)
 {
-	seq_puts(m, "disk\n");
-	return 0;
-}
+	int len;
 
-static int fake_ide_media_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, fake_ide_media_proc_show, NULL);
+	strcpy(page, "disk\n");
+	len = strlen("disk\n");
+	len -= off;
+	if (len < count){
+		*eof = 1;
+		if (len <= 0) return 0;
+	}
+	else len = count;
+	*start = page + off;
+	return len;
 }
-
-static const struct file_operations fake_ide_media_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= fake_ide_media_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 
 static void make_ide_entries(const char *dev_name)
 {
@@ -232,8 +227,11 @@ static void make_ide_entries(const char *dev_name)
 	dir = proc_mkdir(dev_name, proc_ide);
 	if(!dir) return;
 
-	ent = proc_create("media", S_IRUGO, dir, &fake_ide_media_proc_fops);
+	ent = create_proc_entry("media", S_IFREG|S_IRUGO, dir);
 	if(!ent) return;
+	ent->data = NULL;
+	ent->read_proc = proc_ide_read_media;
+	ent->write_proc = NULL;
 	snprintf(name, sizeof(name), "ide0/%s", dev_name);
 	proc_symlink(dev_name, proc_ide_root, name);
 }
@@ -301,7 +299,7 @@ static int ubd_setup_common(char *str, int *index_out, char **error_out)
 		}
 
 		mutex_lock(&ubd_lock);
-		if (fake_major != UBD_MAJOR) {
+		if(fake_major != MAJOR_NR){
 			*error_out = "Can't assign a fake major twice";
 			goto out1;
 		}
@@ -453,6 +451,23 @@ static void do_ubd_request(struct request_queue * q);
 
 /* Only changed by ubd_init, which is an initcall. */
 static int thread_fd = -1;
+
+static void ubd_end_request(struct request *req, int bytes, int error)
+{
+	blk_end_request(req, error, bytes);
+}
+
+/* Callable only from interrupt context - otherwise you need to do
+ * spin_lock_irq()/spin_lock_irqsave() */
+static inline void ubd_finish(struct request *req, int bytes)
+{
+	if(bytes < 0){
+		ubd_end_request(req, 0, -EIO);
+		return;
+	}
+	ubd_end_request(req, bytes, 0);
+}
+
 static LIST_HEAD(restart);
 
 /* XXX - move this inside ubd_intr. */
@@ -460,6 +475,7 @@ static LIST_HEAD(restart);
 static void ubd_handler(void)
 {
 	struct io_thread_req *req;
+	struct request *rq;
 	struct ubd *ubd;
 	struct list_head *list, *next_ele;
 	unsigned long flags;
@@ -476,7 +492,10 @@ static void ubd_handler(void)
 			return;
 		}
 
-		blk_end_request(req->req, 0, req->length);
+		rq = req->req;
+		rq->nr_sectors -= req->length >> 9;
+		if(rq->nr_sectors == 0)
+			ubd_finish(rq, rq->hard_nr_sectors << 9);
 		kfree(req);
 	}
 	reactivate_fd(thread_fd, UBD_IRQ);
@@ -749,7 +768,7 @@ static int ubd_open_dev(struct ubd *ubd_dev)
 	ubd_dev->fd = fd;
 
 	if(ubd_dev->cow.file != NULL){
-		blk_queue_max_hw_sectors(ubd_dev->queue, 8 * sizeof(long));
+		blk_queue_max_sectors(ubd_dev->queue, 8 * sizeof(long));
 
 		err = -ENOMEM;
 		ubd_dev->cow.bitmap = vmalloc(ubd_dev->cow.bitmap_len);
@@ -780,7 +799,7 @@ static int ubd_open_dev(struct ubd *ubd_dev)
 
 static void ubd_device_release(struct device *dev)
 {
-	struct ubd *ubd_dev = dev_get_drvdata(dev);
+	struct ubd *ubd_dev = dev->driver_data;
 
 	blk_cleanup_queue(ubd_dev->queue);
 	*ubd_dev = ((struct ubd) DEFAULT_UBD);
@@ -799,17 +818,17 @@ static int ubd_disk_register(int major, u64 size, int unit,
 	disk->first_minor = unit << UBD_SHIFT;
 	disk->fops = &ubd_blops;
 	set_capacity(disk, size / 512);
-	if (major == UBD_MAJOR)
+	if(major == MAJOR_NR)
 		sprintf(disk->disk_name, "ubd%c", 'a' + unit);
 	else
 		sprintf(disk->disk_name, "ubd_fake%d", unit);
 
 	/* sysfs register (not for ide fake devices) */
-	if (major == UBD_MAJOR) {
+	if (major == MAJOR_NR) {
 		ubd_devs[unit].pdev.id   = unit;
 		ubd_devs[unit].pdev.name = DRIVER_NAME;
 		ubd_devs[unit].pdev.dev.release = ubd_device_release;
-		dev_set_drvdata(&ubd_devs[unit].pdev.dev, &ubd_devs[unit]);
+		ubd_devs[unit].pdev.dev.driver_data = &ubd_devs[unit];
 		platform_device_register(&ubd_devs[unit].pdev);
 		disk->driverfs_dev = &ubd_devs[unit].pdev.dev;
 	}
@@ -851,14 +870,14 @@ static int ubd_add(int n, char **error_out)
 	}
 	ubd_dev->queue->queuedata = ubd_dev;
 
-	blk_queue_max_segments(ubd_dev->queue, MAX_SG);
-	err = ubd_disk_register(UBD_MAJOR, ubd_dev->size, n, &ubd_gendisk[n]);
+	blk_queue_max_hw_segments(ubd_dev->queue, MAX_SG);
+	err = ubd_disk_register(MAJOR_NR, ubd_dev->size, n, &ubd_gendisk[n]);
 	if(err){
 		*error_out = "Failed to register device";
 		goto out_cleanup;
 	}
 
-	if (fake_major != UBD_MAJOR)
+	if(fake_major != MAJOR_NR)
 		ubd_disk_register(fake_major, ubd_dev->size, n,
 				  &fake_gendisk[n]);
 
@@ -1040,10 +1059,10 @@ static int __init ubd_init(void)
 	char *error;
 	int i, err;
 
-	if (register_blkdev(UBD_MAJOR, "ubd"))
+	if (register_blkdev(MAJOR_NR, "ubd"))
 		return -1;
 
-	if (fake_major != UBD_MAJOR) {
+	if (fake_major != MAJOR_NR) {
 		char name[sizeof("ubd_nnn\0")];
 
 		snprintf(name, sizeof(name), "ubd_%d", fake_major);
@@ -1099,7 +1118,6 @@ static int ubd_open(struct block_device *bdev, fmode_t mode)
 	struct ubd *ubd_dev = disk->private_data;
 	int err = 0;
 
-	lock_kernel();
 	if(ubd_dev->count == 0){
 		err = ubd_open_dev(ubd_dev);
 		if(err){
@@ -1117,8 +1135,7 @@ static int ubd_open(struct block_device *bdev, fmode_t mode)
 	        if(--ubd_dev->count == 0) ubd_close_dev(ubd_dev);
 	        err = -EROFS;
 	}*/
-out:
-	unlock_kernel();
+ out:
 	return err;
 }
 
@@ -1126,10 +1143,8 @@ static int ubd_release(struct gendisk *disk, fmode_t mode)
 {
 	struct ubd *ubd_dev = disk->private_data;
 
-	lock_kernel();
 	if(--ubd_dev->count == 0)
 		ubd_close_dev(ubd_dev);
-	unlock_kernel();
 	return 0;
 }
 
@@ -1228,26 +1243,27 @@ static void do_ubd_request(struct request_queue *q)
 {
 	struct io_thread_req *io_req;
 	struct request *req;
-	sector_t sector;
-	int n;
+	int n, last_sectors;
 
 	while(1){
 		struct ubd *dev = q->queuedata;
 		if(dev->end_sg == 0){
-			struct request *req = blk_fetch_request(q);
+			struct request *req = elv_next_request(q);
 			if(req == NULL)
 				return;
 
 			dev->request = req;
+			blkdev_dequeue_request(req);
 			dev->start_sg = 0;
 			dev->end_sg = blk_rq_map_sg(q, req, dev->sg);
 		}
 
 		req = dev->request;
-		sector = blk_rq_pos(req);
+		last_sectors = 0;
 		while(dev->start_sg < dev->end_sg){
 			struct scatterlist *sg = &dev->sg[dev->start_sg];
 
+			req->sector += last_sectors;
 			io_req = kmalloc(sizeof(struct io_thread_req),
 					 GFP_ATOMIC);
 			if(io_req == NULL){
@@ -1256,10 +1272,10 @@ static void do_ubd_request(struct request_queue *q)
 				return;
 			}
 			prepare_request(req, io_req,
-					(unsigned long long)sector << 9,
+					(unsigned long long) req->sector << 9,
 					sg->offset, sg->length, sg_page(sg));
 
-			sector += sg->length >> 9;
+			last_sectors = sg->length >> 9;
 			n = os_write_file(thread_fd, &io_req,
 					  sizeof(struct io_thread_req *));
 			if(n != sizeof(struct io_thread_req *)){
@@ -1293,15 +1309,16 @@ static int ubd_ioctl(struct block_device *bdev, fmode_t mode,
 		     unsigned int cmd, unsigned long arg)
 {
 	struct ubd *ubd_dev = bdev->bd_disk->private_data;
-	u16 ubd_id[ATA_ID_WORDS];
+	struct hd_driveid ubd_id = {
+		.cyls		= 0,
+		.heads		= 128,
+		.sectors	= 32,
+	};
 
 	switch (cmd) {
 		struct cdrom_volctrl volume;
 	case HDIO_GET_IDENTITY:
-		memset(&ubd_id, 0, ATA_ID_WORDS * 2);
-		ubd_id[ATA_ID_CYLS]	= ubd_dev->size / (128 * 32 * 512);
-		ubd_id[ATA_ID_HEADS]	= 128;
-		ubd_id[ATA_ID_SECTORS]	= 32;
+		ubd_id.cyls = ubd_dev->size / (128 * 32 * 512);
 		if(copy_to_user((char __user *) arg, (char *) &ubd_id,
 				 sizeof(ubd_id)))
 			return -EFAULT;

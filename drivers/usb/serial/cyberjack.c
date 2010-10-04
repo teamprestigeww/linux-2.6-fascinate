@@ -58,11 +58,11 @@ static int debug;
 
 /* Function prototypes */
 static int cyberjack_startup(struct usb_serial *serial);
-static void cyberjack_disconnect(struct usb_serial *serial);
-static void cyberjack_release(struct usb_serial *serial);
+static void cyberjack_shutdown(struct usb_serial *serial);
 static int  cyberjack_open(struct tty_struct *tty,
-	struct usb_serial_port *port);
-static void cyberjack_close(struct usb_serial_port *port);
+			struct usb_serial_port *port, struct file *filp);
+static void cyberjack_close(struct tty_struct *tty,
+			struct usb_serial_port *port, struct file *filp);
 static int cyberjack_write(struct tty_struct *tty,
 	struct usb_serial_port *port, const unsigned char *buf, int count);
 static int cyberjack_write_room(struct tty_struct *tty);
@@ -70,7 +70,7 @@ static void cyberjack_read_int_callback(struct urb *urb);
 static void cyberjack_read_bulk_callback(struct urb *urb);
 static void cyberjack_write_bulk_callback(struct urb *urb);
 
-static const struct usb_device_id id_table[] = {
+static struct usb_device_id id_table [] = {
 	{ USB_DEVICE(CYBERJACK_VENDOR_ID, CYBERJACK_PRODUCT_ID) },
 	{ }			/* Terminating entry */
 };
@@ -95,8 +95,7 @@ static struct usb_serial_driver cyberjack_device = {
 	.id_table =		id_table,
 	.num_ports =		1,
 	.attach =		cyberjack_startup,
-	.disconnect =		cyberjack_disconnect,
-	.release =		cyberjack_release,
+	.shutdown =		cyberjack_shutdown,
 	.open =			cyberjack_open,
 	.close =		cyberjack_close,
 	.write =		cyberjack_write,
@@ -150,30 +149,22 @@ static int cyberjack_startup(struct usb_serial *serial)
 	return 0;
 }
 
-static void cyberjack_disconnect(struct usb_serial *serial)
-{
-	int i;
-
-	dbg("%s", __func__);
-
-	for (i = 0; i < serial->num_ports; ++i)
-		usb_kill_urb(serial->port[i]->interrupt_in_urb);
-}
-
-static void cyberjack_release(struct usb_serial *serial)
+static void cyberjack_shutdown(struct usb_serial *serial)
 {
 	int i;
 
 	dbg("%s", __func__);
 
 	for (i = 0; i < serial->num_ports; ++i) {
+		usb_kill_urb(serial->port[i]->interrupt_in_urb);
 		/* My special items, the standard routines free my urbs */
 		kfree(usb_get_serial_port_data(serial->port[i]));
+		usb_set_serial_port_data(serial->port[i], NULL);
 	}
 }
 
 static int  cyberjack_open(struct tty_struct *tty,
-					struct usb_serial_port *port)
+			struct usb_serial_port *port, struct file *filp)
 {
 	struct cyberjack_private *priv;
 	unsigned long flags;
@@ -183,6 +174,13 @@ static int  cyberjack_open(struct tty_struct *tty,
 
 	dbg("%s - usb_clear_halt", __func__);
 	usb_clear_halt(port->serial->dev, port->write_urb->pipe);
+
+	/* force low_latency on so that our tty_push actually forces
+	 * the data through, otherwise it is scheduled, and with high
+	 * data rates (like with OHCI) data can get lost.
+	 */
+	if (tty)
+		tty->low_latency = 1;
 
 	priv = usb_get_serial_port_data(port);
 	spin_lock_irqsave(&priv->lock, flags);
@@ -194,7 +192,8 @@ static int  cyberjack_open(struct tty_struct *tty,
 	return result;
 }
 
-static void cyberjack_close(struct usb_serial_port *port)
+static void cyberjack_close(struct tty_struct *tty,
+			struct usb_serial_port *port, struct file *filp)
 {
 	dbg("%s - port %d", __func__, port->number);
 
@@ -391,10 +390,11 @@ static void cyberjack_read_bulk_callback(struct urb *urb)
 
 	tty = tty_port_tty_get(&port->port);
 	if (!tty) {
-		dbg("%s - ignoring since device not open", __func__);
+		dbg("%s - ignoring since device not open\n", __func__);
 		return;
 	}
 	if (urb->actual_length) {
+		tty_buffer_request_room(tty, urb->actual_length);
 		tty_insert_flip_string(tty, data, urb->actual_length);
 		tty_flip_buffer_push(tty);
 	}

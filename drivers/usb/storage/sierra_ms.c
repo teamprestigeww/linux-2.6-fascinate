@@ -3,7 +3,6 @@
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
 #include <linux/usb.h>
-#include <linux/slab.h>
 
 #include "usb.h"
 #include "transport.h"
@@ -203,6 +202,6 @@ int sierra_ms_init(struct us_data *us)
 complete:
 	result = device_create_file(&us->pusb_intf->dev, &dev_attr_truinst);
 
-	return 0;
+	return USB_STOR_TRANSPORT_GOOD;
 }
 

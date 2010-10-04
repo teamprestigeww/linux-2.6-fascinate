@@ -108,12 +108,16 @@ struct saa7146_fh {
 
 struct saa7146_vv
 {
+	int vbi_minor;
+
 	/* vbi capture */
 	struct saa7146_dmaqueue		vbi_q;
 	/* vbi workaround interrupt queue */
 	wait_queue_head_t		vbi_wq;
 	int				vbi_fieldcount;
 	struct saa7146_fh		*vbi_streaming;
+
+	int video_minor;
 
 	int				video_status;
 	struct saa7146_fh		*video_fh;
@@ -146,6 +150,16 @@ struct saa7146_vv
 	unsigned int resources;	/* resource management for device */
 };
 
+#define SAA7146_EXCLUSIVE	0x1
+#define SAA7146_BEFORE		0x2
+#define SAA7146_AFTER		0x4
+
+struct saa7146_extension_ioctls
+{
+	unsigned int	cmd;
+	int		flags;
+};
+
 /* flags */
 #define SAA7146_USE_PORT_B_FOR_VBI	0x2     /* use input port b for vbi hardware bug workaround */
 
@@ -162,10 +176,8 @@ struct saa7146_ext_vv
 	int num_stds;
 	int (*std_callback)(struct saa7146_dev*, struct saa7146_standard *);
 
-	/* the extension can override this */
-	struct v4l2_ioctl_ops ops;
-	/* pointer to the saa7146 core ops */
-	const struct v4l2_ioctl_ops *core_ops;
+	struct saa7146_extension_ioctls *ioctls;
+	long (*ioctl)(struct saa7146_fh *, unsigned int cmd, void *arg);
 
 	struct v4l2_file_operations vbi_fops;
 };
@@ -201,7 +213,6 @@ void saa7146_set_hps_source_and_sync(struct saa7146_dev *saa, int source, int sy
 void saa7146_set_gpio(struct saa7146_dev *saa, u8 pin, u8 data);
 
 /* from saa7146_video.c */
-extern const struct v4l2_ioctl_ops saa7146_video_ioctl_ops;
 extern struct saa7146_use_ops saa7146_video_uops;
 int saa7146_start_preview(struct saa7146_fh *fh);
 int saa7146_stop_preview(struct saa7146_fh *fh);

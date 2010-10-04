@@ -26,7 +26,6 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/types.h>
-#include <linux/slab.h>
 #include <linux/time.h>
 #include <linux/efi.h>
 #include <linux/kexec.h>
@@ -47,7 +46,7 @@ extern efi_status_t efi_call_phys (void *, ...);
 struct efi efi;
 EXPORT_SYMBOL(efi);
 static efi_runtime_services_t *runtime;
-static u64 mem_limit = ~0UL, max_addr = ~0UL, min_addr = 0UL;
+static unsigned long mem_limit = ~0UL, max_addr = ~0UL, min_addr = 0UL;
 
 #define efi_call_virt(f, args...)	(*(f))(args)
 
@@ -357,7 +356,7 @@ efi_get_pal_addr (void)
 
 		if (++pal_code_count > 1) {
 			printk(KERN_ERR "Too many EFI Pal Code memory ranges, "
-			       "dropped @ %llx\n", md->phys_addr);
+			       "dropped @ %lx\n", md->phys_addr);
 			continue;
 		}
 		/*
@@ -457,7 +456,6 @@ efi_map_pal_code (void)
 		 GRANULEROUNDDOWN((unsigned long) pal_vaddr),
 		 pte_val(pfn_pte(__pa(pal_vaddr) >> PAGE_SHIFT, PAGE_KERNEL)),
 		 IA64_GRANULE_SHIFT);
-	paravirt_dv_serialize_data();
 	ia64_set_psr(psr);		/* restore psr */
 }
 
@@ -491,10 +489,10 @@ efi_init (void)
 		}
 	}
 	if (min_addr != 0UL)
-		printk(KERN_INFO "Ignoring memory below %lluMB\n",
+		printk(KERN_INFO "Ignoring memory below %luMB\n",
 		       min_addr >> 20);
 	if (max_addr != ~0UL)
-		printk(KERN_INFO "Ignoring memory above %lluMB\n",
+		printk(KERN_INFO "Ignoring memory above %luMB\n",
 		       max_addr >> 20);
 
 	efi.systab = __va(ia64_boot_param->efi_systab);
@@ -1067,7 +1065,7 @@ find_memmap_space (void)
  * parts exist, and are WB.
  */
 unsigned long
-efi_memmap_init(u64 *s, u64 *e)
+efi_memmap_init(unsigned long *s, unsigned long *e)
 {
 	struct kern_memdesc *k, *prev = NULL;
 	u64	contig_low=0, contig_high=0;

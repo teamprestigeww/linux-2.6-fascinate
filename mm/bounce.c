@@ -6,7 +6,6 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/swap.h>
-#include <linux/gfp.h>
 #include <linux/bio.h>
 #include <linux/pagemap.h>
 #include <linux/mempool.h>
@@ -14,14 +13,16 @@
 #include <linux/init.h>
 #include <linux/hash.h>
 #include <linux/highmem.h>
+#include <linux/blktrace_api.h>
+#include <trace/block.h>
 #include <asm/tlbflush.h>
-
-#include <trace/events/block.h>
 
 #define POOL_SIZE	64
 #define ISA_POOL_SIZE	16
 
 static mempool_t *page_pool, *isa_page_pool;
+
+DEFINE_TRACE(block_bio_bounce);
 
 #ifdef CONFIG_HIGHMEM
 static __init int init_emergency_pool(void)
@@ -116,8 +117,8 @@ static void copy_to_high_bio_irq(struct bio *to, struct bio *from)
 		 */
 		vfrom = page_address(fromvec->bv_page) + tovec->bv_offset;
 
-		bounce_copy_vec(tovec, vfrom);
 		flush_dcache_page(tovec->bv_page);
+		bounce_copy_vec(tovec, vfrom);
 	}
 }
 
@@ -191,7 +192,7 @@ static void __blk_queue_bounce(struct request_queue *q, struct bio **bio_orig,
 		/*
 		 * is destination page below bounce pfn?
 		 */
-		if (page_to_pfn(page) <= queue_bounce_pfn(q))
+		if (page_to_pfn(page) <= q->bounce_pfn)
 			continue;
 
 		/*
@@ -283,7 +284,7 @@ void blk_queue_bounce(struct request_queue *q, struct bio **bio_orig)
 	 * don't waste time iterating over bio segments
 	 */
 	if (!(q->bounce_gfp & GFP_DMA)) {
-		if (queue_bounce_pfn(q) >= blk_max_pfn)
+		if (q->bounce_pfn >= blk_max_pfn)
 			return;
 		pool = page_pool;
 	} else {

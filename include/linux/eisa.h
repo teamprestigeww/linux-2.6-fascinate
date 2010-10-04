@@ -78,12 +78,12 @@ static inline void eisa_driver_unregister (struct eisa_driver *edrv) { }
 /* Mimics pci.h... */
 static inline void *eisa_get_drvdata (struct eisa_device *edev)
 {
-        return dev_get_drvdata(&edev->dev);
+        return edev->dev.driver_data;
 }
 
 static inline void eisa_set_drvdata (struct eisa_device *edev, void *data)
 {
-        dev_set_drvdata(&edev->dev, data);
+        edev->dev.driver_data = data;
 }
 
 /* The EISA root device. There's rumours about machines with multiple

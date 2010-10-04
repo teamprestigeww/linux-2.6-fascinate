@@ -1,4 +1,6 @@
 /*
+ * linux/fs/nfsd/nfscache.c
+ *
  * Request reply cache. This is currently a global cache, but this may
  * change in the future and be a per-client cache.
  *
@@ -8,10 +10,16 @@
  * Copyright (C) 1995, 1996 Olaf Kirch <okir@monad.swb.de>
  */
 
+#include <linux/kernel.h>
+#include <linux/time.h>
 #include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/spinlock.h>
+#include <linux/list.h>
 
-#include "nfsd.h"
-#include "cache.h"
+#include <linux/sunrpc/svc.h>
+#include <linux/nfsd/nfsd.h>
+#include <linux/nfsd/cache.h>
 
 /* Size of reply cache. Common values are:
  * 4.3BSD:	128
@@ -21,24 +29,15 @@
  */
 #define CACHESIZE		1024
 #define HASHSIZE		64
+#define REQHASH(xid)		(((((__force __u32)xid) >> 24) ^ ((__force __u32)xid)) & (HASHSIZE-1))
 
-static struct hlist_head *	cache_hash;
+static struct hlist_head *	hash_list;
 static struct list_head 	lru_head;
 static int			cache_disabled = 1;
 
-/*
- * Calculate the hash index from an XID.
- */
-static inline u32 request_hash(u32 xid)
-{
-	u32 h = xid;
-	h ^= (xid >> 24);
-	return h & (HASHSIZE-1);
-}
-
 static int	nfsd_cache_append(struct svc_rqst *rqstp, struct kvec *vec);
 
-/*
+/* 
  * locking for the reply cache:
  * A cache entry is "single use" if c_state == RC_INPROG
  * Otherwise, it when accessing _prev or _next, the lock must be held.
@@ -63,8 +62,8 @@ int nfsd_reply_cache_init(void)
 		i--;
 	}
 
-	cache_hash = kcalloc (HASHSIZE, sizeof(struct hlist_head), GFP_KERNEL);
-	if (!cache_hash)
+	hash_list = kcalloc (HASHSIZE, sizeof(struct hlist_head), GFP_KERNEL);
+	if (!hash_list)
 		goto out_nomem;
 
 	cache_disabled = 0;
@@ -89,8 +88,8 @@ void nfsd_reply_cache_shutdown(void)
 
 	cache_disabled = 1;
 
-	kfree (cache_hash);
-	cache_hash = NULL;
+	kfree (hash_list);
+	hash_list = NULL;
 }
 
 /*
@@ -109,7 +108,7 @@ static void
 hash_refile(struct svc_cacherep *rp)
 {
 	hlist_del_init(&rp->c_hash);
-	hlist_add_head(&rp->c_hash, cache_hash + request_hash(rp->c_xid));
+	hlist_add_head(&rp->c_hash, hash_list + REQHASH(rp->c_xid));
 }
 
 /*
@@ -139,7 +138,7 @@ nfsd_cache_lookup(struct svc_rqst *rqstp, int type)
 	spin_lock(&cache_lock);
 	rtn = RC_DOIT;
 
-	rh = &cache_hash[request_hash(xid)];
+	rh = &hash_list[REQHASH(xid)];
 	hlist_for_each_entry(rp, hn, rh, c_hash) {
 		if (rp->c_state != RC_UNUSED &&
 		    xid == rp->c_xid && proc == rp->c_proc &&
@@ -166,8 +165,8 @@ nfsd_cache_lookup(struct svc_rqst *rqstp, int type)
 	}
 	}
 
-	/* All entries on the LRU are in-progress. This should not happen */
-	if (&rp->c_lru == &lru_head) {
+	/* This should not happen */
+	if (rp == NULL) {
 		static int	complaints;
 
 		printk(KERN_WARNING "nfsd: all repcache entries locked!\n");
@@ -265,7 +264,7 @@ nfsd_cache_update(struct svc_rqst *rqstp, int cachetype, __be32 *statp)
 
 	len = resv->iov_len - ((char*)statp - (char*)resv->iov_base);
 	len >>= 2;
-
+	
 	/* Don't cache excessive amounts of data and XDR failures */
 	if (!statp || len > (256 >> 2)) {
 		rp->c_state = RC_UNUSED;

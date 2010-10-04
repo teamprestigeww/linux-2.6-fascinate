@@ -330,7 +330,7 @@ struct _dlci_stat
 {
 	short dlci;
 	char  flags;
-} __packed;
+} __attribute__((packed));
 
 struct _frad_stat 
 {
@@ -651,8 +651,7 @@ static int sdla_dlci_conf(struct net_device *slave, struct net_device *master, i
  **************************/
 
 /* NOTE: the DLCI driver deals with freeing the SKB!! */
-static netdev_tx_t sdla_transmit(struct sk_buff *skb,
-				 struct net_device *dev)
+static int sdla_transmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct frad_local *flp;
 	int               ret, addr, accept, i;
@@ -712,21 +711,23 @@ static netdev_tx_t sdla_transmit(struct sk_buff *skb,
 				}
 				break;
 		}
-
 		switch (ret)
 		{
 			case SDLA_RET_OK:
-				dev->stats.tx_packets++;
+				flp->stats.tx_packets++;
+				ret = DLCI_RET_OK;
 				break;
 
 			case SDLA_RET_CIR_OVERFLOW:
 			case SDLA_RET_BUF_OVERSIZE:
 			case SDLA_RET_NO_BUFS:
-				dev->stats.tx_dropped++;
+				flp->stats.tx_dropped++;
+				ret = DLCI_RET_DROP;
 				break;
 
 			default:
-				dev->stats.tx_errors++;
+				flp->stats.tx_errors++;
+				ret = DLCI_RET_ERR;
 				break;
 		}
 	}
@@ -736,9 +737,7 @@ static netdev_tx_t sdla_transmit(struct sk_buff *skb,
 		if(flp->master[i]!=NULL)
 			netif_wake_queue(flp->master[i]);
 	}		
-
-	dev_kfree_skb(skb);
-	return NETDEV_TX_OK;
+	return(ret);
 }
 
 static void sdla_receive(struct net_device *dev)
@@ -808,7 +807,7 @@ static void sdla_receive(struct net_device *dev)
 		if (i == CONFIG_DLCI_MAX)
 		{
 			printk(KERN_NOTICE "%s: Received packet from invalid DLCI %i, ignoring.", dev->name, dlci);
-			dev->stats.rx_errors++;
+			flp->stats.rx_errors++;
 			success = 0;
 		}
 	}
@@ -820,7 +819,7 @@ static void sdla_receive(struct net_device *dev)
 		if (skb == NULL) 
 		{
 			printk(KERN_NOTICE "%s: Memory squeeze, dropping packet.\n", dev->name);
-			dev->stats.rx_dropped++;
+			flp->stats.rx_dropped++; 
 			success = 0;
 		}
 		else
@@ -860,7 +859,7 @@ static void sdla_receive(struct net_device *dev)
 
 	if (success)
 	{
-		dev->stats.rx_packets++;
+		flp->stats.rx_packets++;
 		dlp = netdev_priv(master);
 		(*dlp->receive)(skb, master);
 	}
@@ -1211,9 +1210,14 @@ static int sdla_xfer(struct net_device *dev, struct sdla_mem __user *info, int r
 	}
 	else
 	{
-		temp = memdup_user(mem.data, mem.len);
-		if (IS_ERR(temp))
-			return PTR_ERR(temp);
+		temp = kmalloc(mem.len, GFP_KERNEL);
+		if (!temp)
+			return(-ENOMEM);
+		if(copy_from_user(temp, mem.data, mem.len))
+		{
+			kfree(temp);
+			return -EFAULT;
+		}
 		sdla_write(dev, mem.addr, temp, mem.len);
 		kfree(temp);
 	}
@@ -1347,7 +1351,7 @@ static int sdla_set_config(struct net_device *dev, struct ifmap *map)
 		return(-EINVAL);
 
 	if (!request_region(map->base_addr, SDLA_IO_EXTENTS, dev->name)){
-		printk(KERN_WARNING "SDLA: io-port 0x%04lx in use\n", dev->base_addr);
+		printk(KERN_WARNING "SDLA: io-port 0x%04lx in use \n", dev->base_addr);
 		return(-EINVAL);
 	}
 	base = map->base_addr;
@@ -1452,7 +1456,7 @@ got_type:
 	}
 
 	err = -EAGAIN;
-	if (request_irq(dev->irq, sdla_isr, 0, dev->name, dev)) 
+	if (request_irq(dev->irq, &sdla_isr, 0, dev->name, dev)) 
 		goto fail;
 
 	if (flp->type == SDLA_S507) {
@@ -1586,14 +1590,13 @@ fail:
 	return err;
 }
  
-static const struct net_device_ops sdla_netdev_ops = {
-	.ndo_open	= sdla_open,
-	.ndo_stop	= sdla_close,
-	.ndo_do_ioctl	= sdla_ioctl,
-	.ndo_set_config	= sdla_set_config,
-	.ndo_start_xmit	= sdla_transmit,
-	.ndo_change_mtu	= sdla_change_mtu,
-};
+static struct net_device_stats *sdla_stats(struct net_device *dev)
+{
+	struct frad_local *flp;
+	flp = netdev_priv(dev);
+
+	return(&flp->stats);
+}
 
 static void setup_sdla(struct net_device *dev)
 {
@@ -1601,12 +1604,19 @@ static void setup_sdla(struct net_device *dev)
 
 	netdev_boot_setup_check(dev);
 
-	dev->netdev_ops		= &sdla_netdev_ops;
 	dev->flags		= 0;
 	dev->type		= 0xFFFF;
 	dev->hard_header_len	= 0;
 	dev->addr_len		= 0;
 	dev->mtu		= SDLA_MAX_MTU;
+
+	dev->open		= sdla_open;
+	dev->stop		= sdla_close;
+	dev->do_ioctl		= sdla_ioctl;
+	dev->set_config		= sdla_set_config;
+	dev->get_stats		= sdla_stats;
+	dev->hard_start_xmit	= sdla_transmit;
+	dev->change_mtu		= sdla_change_mtu;
 
 	flp->activate		= sdla_activate;
 	flp->deactivate		= sdla_deactivate;

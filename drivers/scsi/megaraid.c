@@ -47,7 +47,6 @@
 #include <linux/init.h>
 #include <linux/dma-mapping.h>
 #include <linux/smp_lock.h>
-#include <linux/slab.h>
 #include <scsi/scsicam.h>
 
 #include "scsi.h"
@@ -91,15 +90,12 @@ static struct proc_dir_entry *mega_proc_dir_entry;
 /* For controller re-ordering */
 static struct mega_hbas mega_hbas[MAX_CONTROLLERS];
 
-static long
-megadev_unlocked_ioctl(struct file *filep, unsigned int cmd, unsigned long arg);
-
 /*
  * The File Operations structure for the serial/ioctl interface of the driver
  */
 static const struct file_operations megadev_fops = {
 	.owner		= THIS_MODULE,
-	.unlocked_ioctl	= megadev_unlocked_ioctl,
+	.ioctl		= megadev_ioctl,
 	.open		= megadev_open,
 };
 
@@ -2025,7 +2021,7 @@ make_local_pdev(adapter_t *adapter, struct pci_dev **pdev)
 
 	memcpy(*pdev, adapter->dev, sizeof(struct pci_dev));
 
-	if( pci_set_dma_mask(*pdev, DMA_BIT_MASK(32)) != 0 ) {
+	if( pci_set_dma_mask(*pdev, DMA_32BIT_MASK) != 0 ) {
 		kfree(*pdev);
 		return -1;
 	}
@@ -3305,7 +3301,8 @@ megadev_open (struct inode *inode, struct file *filep)
  * controller.
  */
 static int
-megadev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
+megadev_ioctl(struct inode *inode, struct file *filep, unsigned int cmd,
+		unsigned long arg)
 {
 	adapter_t	*adapter;
 	nitioctl_t	uioc;
@@ -3694,18 +3691,6 @@ freemem_and_return:
 	}
 
 	return 0;
-}
-
-static long
-megadev_unlocked_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
-{
-	int ret;
-
-	lock_kernel();
-	ret = megadev_ioctl(filep, cmd, arg);
-	unlock_kernel();
-
-	return ret;
 }
 
 /**
@@ -4808,10 +4793,10 @@ megaraid_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* Set the Mode of addressing to 64 bit if we can */
 	if ((adapter->flag & BOARD_64BIT) && (sizeof(dma_addr_t) == 8)) {
-		pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
+		pci_set_dma_mask(pdev, DMA_64BIT_MASK);
 		adapter->has_64bit_addr = 1;
 	} else  {
-		pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+		pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 		adapter->has_64bit_addr = 0;
 	}
 		

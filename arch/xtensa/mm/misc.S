@@ -84,7 +84,6 @@ ENTRY(copy_page)
 
 	retw
 
-#ifdef CONFIG_MMU
 /*
  * If we have to deal with cache aliasing, we use temporary memory mappings
  * to ensure that the source and destination pages have the same color as
@@ -312,7 +311,6 @@ ENTRY(__invalidate_icache_page_alias)
 /* End of special treatment in tlb miss exception */
 
 ENTRY(__tlbtemp_mapping_end)
-#endif /* CONFIG_MMU
 
 /*
  * void __invalidate_icache_page(ulong start)

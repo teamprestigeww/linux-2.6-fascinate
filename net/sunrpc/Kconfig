@@ -17,12 +17,33 @@ config SUNRPC_XPRT_RDMA
 
 	  If unsure, say N.
 
+config SUNRPC_REGISTER_V4
+	bool "Register local RPC services via rpcbind v4 (EXPERIMENTAL)"
+	depends on SUNRPC && EXPERIMENTAL
+	default n
+	help
+	  Sun added support for registering RPC services at an IPv6
+	  address by creating two new versions of the rpcbind protocol
+	  (RFC 1833).
+
+	  This option enables support in the kernel RPC server for
+	  registering kernel RPC services via version 4 of the rpcbind
+	  protocol.  If you enable this option, you must run a portmapper
+	  daemon that supports rpcbind protocol version 4.
+
+	  Serving NFS over IPv6 from knfsd (the kernel's NFS server)
+	  requires that you enable this option and use a portmapper that
+	  supports rpcbind version 4.
+
+	  If unsure, say N to get traditional behavior (register kernel
+	  RPC services using only rpcbind version 2).  Distributions
+	  using the legacy Linux portmapper daemon must say N here.
+
 config RPCSEC_GSS_KRB5
-	tristate
-	depends on SUNRPC && CRYPTO
-	prompt "Secure RPC: Kerberos V mechanism" if !(NFS_V4 || NFSD_V4)
-	default y
+	tristate "Secure RPC: Kerberos V mechanism (EXPERIMENTAL)"
+	depends on SUNRPC && EXPERIMENTAL
 	select SUNRPC_GSS
+	select CRYPTO
 	select CRYPTO_MD5
 	select CRYPTO_DES
 	select CRYPTO_CBC
@@ -35,7 +56,7 @@ config RPCSEC_GSS_KRB5
 	  available from http://linux-nfs.org/.  In addition, user-space
 	  Kerberos support should be installed.
 
-	  If unsure, say Y.
+	  If unsure, say N.
 
 config RPCSEC_GSS_SPKM3
 	tristate "Secure RPC: SPKM3 mechanism (EXPERIMENTAL)"
@@ -48,7 +69,7 @@ config RPCSEC_GSS_SPKM3
 	select CRYPTO_CBC
 	help
 	  Choose Y here to enable Secure RPC using the SPKM3 public key
-	  GSS-API mechanism (RFC 2025).
+	  GSS-API mechansim (RFC 2025).
 
 	  Secure RPC calls with SPKM3 require an auxiliary userspace
 	  daemon which may be found in the Linux nfs-utils package

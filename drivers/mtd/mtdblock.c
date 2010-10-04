@@ -1,23 +1,8 @@
 /*
  * Direct MTD block device access
  *
- * Copyright © 1999-2010 David Woodhouse <dwmw2@infradead.org>
- * Copyright © 2000-2003 Nicolas Pitre <nico@fluxnic.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
+ * (C) 2000-2003 Nicolas Pitre <nico@cam.org>
+ * (C) 1999-2003 David Woodhouse <dwmw2@infradead.org>
  */
 
 #include <linux/fs.h>
@@ -34,17 +19,15 @@
 #include <linux/mutex.h>
 
 
-struct mtdblk_dev {
-	struct mtd_blktrans_dev mbd;
+static struct mtdblk_dev {
+	struct mtd_info *mtd;
 	int count;
 	struct mutex cache_mutex;
 	unsigned char *cache_data;
 	unsigned long cache_offset;
 	unsigned int cache_size;
 	enum { STATE_EMPTY, STATE_CLEAN, STATE_DIRTY } cache_state;
-};
-
-static struct mutex mtdblks_lock;
+} *mtdblks[MAX_MTD_DEVICES];
 
 /*
  * Cache stuff...
@@ -99,7 +82,7 @@ static int erase_write (struct mtd_info *mtd, unsigned long pos,
 	remove_wait_queue(&wait_q, &wait);
 
 	/*
-	 * Next, write the data to flash.
+	 * Next, writhe data to flash.
 	 */
 
 	ret = mtd->write(mtd, pos, len, &retlen, buf);
@@ -113,7 +96,7 @@ static int erase_write (struct mtd_info *mtd, unsigned long pos,
 
 static int write_cached_data (struct mtdblk_dev *mtdblk)
 {
-	struct mtd_info *mtd = mtdblk->mbd.mtd;
+	struct mtd_info *mtd = mtdblk->mtd;
 	int ret;
 
 	if (mtdblk->cache_state != STATE_DIRTY)
@@ -143,7 +126,7 @@ static int write_cached_data (struct mtdblk_dev *mtdblk)
 static int do_cached_write (struct mtdblk_dev *mtdblk, unsigned long pos,
 			    int len, const char *buf)
 {
-	struct mtd_info *mtd = mtdblk->mbd.mtd;
+	struct mtd_info *mtd = mtdblk->mtd;
 	unsigned int sect_size = mtdblk->cache_size;
 	size_t retlen;
 	int ret;
@@ -213,7 +196,7 @@ static int do_cached_write (struct mtdblk_dev *mtdblk, unsigned long pos,
 static int do_cached_read (struct mtdblk_dev *mtdblk, unsigned long pos,
 			   int len, char *buf)
 {
-	struct mtd_info *mtd = mtdblk->mbd.mtd;
+	struct mtd_info *mtd = mtdblk->mtd;
 	unsigned int sect_size = mtdblk->cache_size;
 	size_t retlen;
 	int ret;
@@ -259,16 +242,16 @@ static int do_cached_read (struct mtdblk_dev *mtdblk, unsigned long pos,
 static int mtdblock_readsect(struct mtd_blktrans_dev *dev,
 			      unsigned long block, char *buf)
 {
-	struct mtdblk_dev *mtdblk = container_of(dev, struct mtdblk_dev, mbd);
+	struct mtdblk_dev *mtdblk = mtdblks[dev->devnum];
 	return do_cached_read(mtdblk, block<<9, 512, buf);
 }
 
 static int mtdblock_writesect(struct mtd_blktrans_dev *dev,
 			      unsigned long block, char *buf)
 {
-	struct mtdblk_dev *mtdblk = container_of(dev, struct mtdblk_dev, mbd);
+	struct mtdblk_dev *mtdblk = mtdblks[dev->devnum];
 	if (unlikely(!mtdblk->cache_data && mtdblk->cache_size)) {
-		mtdblk->cache_data = vmalloc(mtdblk->mbd.mtd->erasesize);
+		mtdblk->cache_data = vmalloc(mtdblk->mtd->erasesize);
 		if (!mtdblk->cache_data)
 			return -EINTR;
 		/* -EINTR is not really correct, but it is the best match
@@ -281,27 +264,33 @@ static int mtdblock_writesect(struct mtd_blktrans_dev *dev,
 
 static int mtdblock_open(struct mtd_blktrans_dev *mbd)
 {
-	struct mtdblk_dev *mtdblk = container_of(mbd, struct mtdblk_dev, mbd);
+	struct mtdblk_dev *mtdblk;
+	struct mtd_info *mtd = mbd->mtd;
+	int dev = mbd->devnum;
 
 	DEBUG(MTD_DEBUG_LEVEL1,"mtdblock_open\n");
 
-	mutex_lock(&mtdblks_lock);
-	if (mtdblk->count) {
-		mtdblk->count++;
-		mutex_unlock(&mtdblks_lock);
+	if (mtdblks[dev]) {
+		mtdblks[dev]->count++;
 		return 0;
 	}
 
 	/* OK, it's not open. Create cache info for it */
+	mtdblk = kzalloc(sizeof(struct mtdblk_dev), GFP_KERNEL);
+	if (!mtdblk)
+		return -ENOMEM;
+
 	mtdblk->count = 1;
+	mtdblk->mtd = mtd;
+
 	mutex_init(&mtdblk->cache_mutex);
 	mtdblk->cache_state = STATE_EMPTY;
-	if (!(mbd->mtd->flags & MTD_NO_ERASE) && mbd->mtd->erasesize) {
-		mtdblk->cache_size = mbd->mtd->erasesize;
+	if ( !(mtdblk->mtd->flags & MTD_NO_ERASE) && mtdblk->mtd->erasesize) {
+		mtdblk->cache_size = mtdblk->mtd->erasesize;
 		mtdblk->cache_data = NULL;
 	}
 
-	mutex_unlock(&mtdblks_lock);
+	mtdblks[dev] = mtdblk;
 
 	DEBUG(MTD_DEBUG_LEVEL1, "ok\n");
 
@@ -310,25 +299,23 @@ static int mtdblock_open(struct mtd_blktrans_dev *mbd)
 
 static int mtdblock_release(struct mtd_blktrans_dev *mbd)
 {
-	struct mtdblk_dev *mtdblk = container_of(mbd, struct mtdblk_dev, mbd);
+	int dev = mbd->devnum;
+	struct mtdblk_dev *mtdblk = mtdblks[dev];
 
    	DEBUG(MTD_DEBUG_LEVEL1, "mtdblock_release\n");
-
-	mutex_lock(&mtdblks_lock);
 
 	mutex_lock(&mtdblk->cache_mutex);
 	write_cached_data(mtdblk);
 	mutex_unlock(&mtdblk->cache_mutex);
 
 	if (!--mtdblk->count) {
-		/* It was the last usage. Free the cache */
-		if (mbd->mtd->sync)
-			mbd->mtd->sync(mbd->mtd);
+		/* It was the last usage. Free the device */
+		mtdblks[dev] = NULL;
+		if (mtdblk->mtd->sync)
+			mtdblk->mtd->sync(mtdblk->mtd);
 		vfree(mtdblk->cache_data);
+		kfree(mtdblk);
 	}
-
-	mutex_unlock(&mtdblks_lock);
-
 	DEBUG(MTD_DEBUG_LEVEL1, "ok\n");
 
 	return 0;
@@ -336,40 +323,40 @@ static int mtdblock_release(struct mtd_blktrans_dev *mbd)
 
 static int mtdblock_flush(struct mtd_blktrans_dev *dev)
 {
-	struct mtdblk_dev *mtdblk = container_of(dev, struct mtdblk_dev, mbd);
+	struct mtdblk_dev *mtdblk = mtdblks[dev->devnum];
 
 	mutex_lock(&mtdblk->cache_mutex);
 	write_cached_data(mtdblk);
 	mutex_unlock(&mtdblk->cache_mutex);
 
-	if (dev->mtd->sync)
-		dev->mtd->sync(dev->mtd);
+	if (mtdblk->mtd->sync)
+		mtdblk->mtd->sync(mtdblk->mtd);
 	return 0;
 }
 
 static void mtdblock_add_mtd(struct mtd_blktrans_ops *tr, struct mtd_info *mtd)
 {
-	struct mtdblk_dev *dev = kzalloc(sizeof(*dev), GFP_KERNEL);
+	struct mtd_blktrans_dev *dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 
 	if (!dev)
 		return;
 
-	dev->mbd.mtd = mtd;
-	dev->mbd.devnum = mtd->index;
+	dev->mtd = mtd;
+	dev->devnum = mtd->index;
 
-	dev->mbd.size = mtd->size >> 9;
-	dev->mbd.tr = tr;
+	dev->size = mtd->size >> 9;
+	dev->tr = tr;
 
 	if (!(mtd->flags & MTD_WRITEABLE))
-		dev->mbd.readonly = 1;
+		dev->readonly = 1;
 
-	if (add_mtd_blktrans_dev(&dev->mbd))
-		kfree(dev);
+	add_mtd_blktrans_dev(dev);
 }
 
 static void mtdblock_remove_dev(struct mtd_blktrans_dev *dev)
 {
 	del_mtd_blktrans_dev(dev);
+	kfree(dev);
 }
 
 static struct mtd_blktrans_ops mtdblock_tr = {
@@ -389,8 +376,6 @@ static struct mtd_blktrans_ops mtdblock_tr = {
 
 static int __init init_mtdblock(void)
 {
-	mutex_init(&mtdblks_lock);
-
 	return register_mtd_blktrans(&mtdblock_tr);
 }
 
@@ -404,5 +389,5 @@ module_exit(cleanup_mtdblock);
 
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Nicolas Pitre <nico@fluxnic.net> et al.");
+MODULE_AUTHOR("Nicolas Pitre <nico@cam.org> et al.");
 MODULE_DESCRIPTION("Caching read/erase/writeback block device emulation access to MTD devices");

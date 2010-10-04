@@ -1,29 +1,29 @@
 #ifndef _ASM_POWERPC_HARDIRQ_H
 #define _ASM_POWERPC_HARDIRQ_H
+#ifdef __KERNEL__
 
-#include <linux/threads.h>
-#include <linux/irq.h>
+#include <asm/irq.h>
+#include <asm/bug.h>
 
+/* The __last_jiffy_stamp field is needed to ensure that no decrementer
+ * interrupt is lost on SMP machines. Since on most CPUs it is in the same
+ * cache line as local_irq_count, it is cheap to access and is also used on UP
+ * for uniformity.
+ */
 typedef struct {
-	unsigned int __softirq_pending;
-	unsigned int timer_irqs;
-	unsigned int pmu_irqs;
-	unsigned int mce_exceptions;
-	unsigned int spurious_irqs;
+	unsigned int __softirq_pending;	/* set_bit is used on this */
+	unsigned int __last_jiffy_stamp;
 } ____cacheline_aligned irq_cpustat_t;
 
-DECLARE_PER_CPU_SHARED_ALIGNED(irq_cpustat_t, irq_stat);
+#include <linux/irq_cpustat.h>	/* Standard mappings for irq_cpustat_t above */
 
-#define __ARCH_IRQ_STAT
+#define last_jiffy_stamp(cpu) __IRQ_STAT((cpu), __last_jiffy_stamp)
 
-#define local_softirq_pending()	__get_cpu_var(irq_stat).__softirq_pending
-
-static inline void ack_bad_irq(unsigned int irq)
+static inline void ack_bad_irq(int irq)
 {
-	printk(KERN_CRIT "unexpected IRQ trap at vector %02x\n", irq);
+	printk(KERN_CRIT "illegal vector %d received!\n", irq);
+	BUG();
 }
 
-extern u64 arch_irq_stat_cpu(unsigned int cpu);
-#define arch_irq_stat_cpu	arch_irq_stat_cpu
-
+#endif /* __KERNEL__ */
 #endif /* _ASM_POWERPC_HARDIRQ_H */

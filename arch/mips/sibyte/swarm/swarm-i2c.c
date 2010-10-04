@@ -1,4 +1,6 @@
 /*
+ *	arch/mips/sibyte/swarm/swarm-i2c.c
+ *
  *	Broadcom BCM91250A (SWARM), etc. I2C platform setup.
  *
  *	Copyright (c) 2008  Maciej W. Rozycki

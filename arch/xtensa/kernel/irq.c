@@ -27,6 +27,15 @@ static unsigned int cached_irq_mask;
 atomic_t irq_err_count;
 
 /*
+ * 'what should we do if we get a hw irq event on an illegal vector'.
+ * each architecture has to answer this themselves.
+ */
+void ack_bad_irq(unsigned int irq)
+{
+          printk("unexpected IRQ trap at vector %02x\n", irq);
+}
+
+/*
  * do_IRQ handles all normal device IRQ's (the special
  * SMP cross-CPU interrupts have their own specific
  * handlers).
@@ -81,7 +90,7 @@ int show_interrupts(struct seq_file *p, void *v)
 	}
 
 	if (i < NR_IRQS) {
-		raw_spin_lock_irqsave(&irq_desc[i].lock, flags);
+		spin_lock_irqsave(&irq_desc[i].lock, flags);
 		action = irq_desc[i].action;
 		if (!action)
 			goto skip;
@@ -90,7 +99,7 @@ int show_interrupts(struct seq_file *p, void *v)
 		seq_printf(p, "%10u ", kstat_irqs(i));
 #else
 		for_each_online_cpu(j)
-			seq_printf(p, "%10u ", kstat_irqs_cpu(i, j));
+			seq_printf(p, "%10u ", kstat_cpu(j).irqs[i]);
 #endif
 		seq_printf(p, " %14s", irq_desc[i].chip->typename);
 		seq_printf(p, "  %s", action->name);
@@ -100,7 +109,7 @@ int show_interrupts(struct seq_file *p, void *v)
 
 		seq_putc(p, '\n');
 skip:
-		raw_spin_unlock_irqrestore(&irq_desc[i].lock, flags);
+		spin_unlock_irqrestore(&irq_desc[i].lock, flags);
 	} else if (i == NR_IRQS) {
 		seq_printf(p, "NMI: ");
 		for_each_online_cpu(j)
@@ -123,18 +132,6 @@ static void xtensa_irq_unmask(unsigned int irq)
 	set_sr (cached_irq_mask, INTENABLE);
 }
 
-static void xtensa_irq_enable(unsigned int irq)
-{
-	variant_irq_enable(irq);
-	xtensa_irq_unmask(irq);
-}
-
-static void xtensa_irq_disable(unsigned int irq)
-{
-	xtensa_irq_mask(irq);
-	variant_irq_disable(irq);
-}
-
 static void xtensa_irq_ack(unsigned int irq)
 {
 	set_sr(1 << irq, INTCLEAR);
@@ -149,8 +146,6 @@ static int xtensa_irq_retrigger(unsigned int irq)
 
 static struct irq_chip xtensa_irq_chip = {
 	.name		= "xtensa",
-	.enable		= xtensa_irq_enable,
-	.disable	= xtensa_irq_disable,
 	.mask		= xtensa_irq_mask,
 	.unmask		= xtensa_irq_unmask,
 	.ack		= xtensa_irq_ack,
@@ -188,6 +183,4 @@ void __init init_IRQ(void)
 	}
 
 	cached_irq_mask = 0;
-
-	variant_init_irq();
 }

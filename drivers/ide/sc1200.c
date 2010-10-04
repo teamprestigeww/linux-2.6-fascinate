@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/ide.h>
@@ -116,20 +115,21 @@ static u8 sc1200_udma_filter(ide_drive_t *drive)
 		if ((mateid[ATA_ID_FIELD_VALID] & 4) &&
 		    (mateid[ATA_ID_UDMA_MODES] & 7))
 			goto out;
-		if (mateid[ATA_ID_MWDMA_MODES] & 7)
+		if ((mateid[ATA_ID_FIELD_VALID] & 2) &&
+		    (mateid[ATA_ID_MWDMA_MODES] & 7))
 			mask = 0;
 	}
 out:
 	return mask;
 }
 
-static void sc1200_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void sc1200_set_dma_mode(ide_drive_t *drive, const u8 mode)
 {
+	ide_hwif_t		*hwif = drive->hwif;
 	struct pci_dev		*dev = to_pci_dev(hwif->dev);
 	unsigned int		reg, timings;
 	unsigned short		pci_clock;
 	unsigned int		basereg = hwif->channel ? 0x50 : 0x40;
-	const u8		mode = drive->dma_mode;
 
 	static const u32 udma_timing[3][3] = {
 		{ 0x00921250, 0x00911140, 0x00911030 },
@@ -183,6 +183,9 @@ static int sc1200_dma_end(ide_drive_t *drive)
 	outb(dma_stat|0x1b, dma_base+2);	/* clear the INTR & ERROR bits */
 	outb(inb(dma_base)&~1, dma_base);	/* !! DO THIS HERE !! stop DMA */
 
+	drive->waiting_for_dma = 0;
+	ide_destroy_dmatable(drive);		/* purge DMA mappings */
+
 	return (dma_stat & 7) != 4;		/* verify good DMA status */
 }
 
@@ -194,10 +197,10 @@ static int sc1200_dma_end(ide_drive_t *drive)
  * will have valid default PIO timings set up before we get here.
  */
 
-static void sc1200_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void sc1200_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
+	ide_hwif_t	*hwif = drive->hwif;
 	int		mode = -1;
-	const u8	pio = drive->pio_mode - XFER_PIO_0;
 
 	/*
 	 * bad abuse of ->set_pio_mode interface
@@ -283,11 +286,12 @@ static const struct ide_port_ops sc1200_port_ops = {
 static const struct ide_dma_ops sc1200_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
+	.dma_exec_cmd		= ide_dma_exec_cmd,
 	.dma_start		= ide_dma_start,
 	.dma_end		= sc1200_dma_end,
 	.dma_test_irq		= ide_dma_test_irq,
 	.dma_lost_irq		= ide_dma_lost_irq,
-	.dma_timer_expiry	= ide_dma_sff_timer_expiry,
+	.dma_timeout		= ide_dma_timeout,
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 

@@ -26,7 +26,6 @@
 #include <linux/types.h>
 #include <linux/spinlock.h>
 #include <linux/io.h>
-#include <linux/usb/otg.h>
 
 /*
  * Register definitions
@@ -130,8 +129,6 @@
 #define UP2OCR_HXOE	(1 << 17)	/* Transceiver Output Enable */
 #define UP2OCR_SEOS	(1 << 24)	/* Single-Ended Output Select */
 
-#define UDCCSR0_ACM	(1 << 9)	/* Ack Control Mode */
-#define UDCCSR0_AREN	(1 << 8)	/* Ack Response Enable */
 #define UDCCSR0_SA	(1 << 7)	/* Setup Active */
 #define UDCCSR0_RNE	(1 << 6)	/* Receive FIFO Not Empty */
 #define UDCCSR0_FST	(1 << 5)	/* Force Stall */
@@ -318,11 +315,6 @@ struct udc_usb_ep {
  * @queue: requests queue
  * @lock: lock to pxa_ep data (queues and stats)
  * @enabled: true when endpoint enabled (not stopped by gadget layer)
- * @in_handle_ep: number of recursions of handle_ep() function
- * 	Prevents deadlocks or infinite recursions of types :
- *	  irq->handle_ep()->req_done()->req.complete()->pxa_ep_queue()->handle_ep()
- *      or
- *        pxa_ep_queue()->handle_ep()->req_done()->req.complete()->pxa_ep_queue()
  * @idx: endpoint index (1 => epA, 2 => epB, ..., 24 => epX)
  * @name: endpoint name (for trace/debug purpose)
  * @dir_in: 1 if IN endpoint, 0 if OUT endpoint
@@ -351,7 +343,6 @@ struct pxa_ep {
 	spinlock_t		lock;		/* Protects this structure */
 						/* (queues, stats) */
 	unsigned		enabled:1;
-	unsigned		in_handle_ep:1;
 
 	unsigned		idx:5;
 	char			*name;
@@ -360,7 +351,7 @@ struct pxa_ep {
 	 * Specific pxa endpoint data, needed for hardware initialization
 	 */
 	unsigned		dir_in:1;
-	unsigned		addr:4;
+	unsigned		addr:3;
 	unsigned		config:2;
 	unsigned		interface:3;
 	unsigned		alternate:3;
@@ -430,14 +421,10 @@ struct udc_stats {
  * @driver: bound gadget (zero, g_ether, g_file_storage, ...)
  * @dev: device
  * @mach: machine info, used to activate specific GPIO
- * @transceiver: external transceiver to handle vbus sense and D+ pullup
  * @ep0state: control endpoint state machine state
  * @stats: statistics on udc usage
  * @udc_usb_ep: array of usb endpoints offered by the gadget
  * @pxa_ep: array of pxa available endpoints
- * @enabled: UDC was enabled by a previous udc_enable()
- * @pullup_on: if pullup resistor connected to D+ pin
- * @pullup_resume: if pullup resistor should be connected to D+ pin on resume
  * @config: UDC active configuration
  * @last_interface: UDC interface of the last SET_INTERFACE host request
  * @last_alternate: UDC altsetting of the last SET_INTERFACE host request
@@ -456,7 +443,6 @@ struct pxa_udc {
 	struct usb_gadget_driver		*driver;
 	struct device				*dev;
 	struct pxa2xx_udc_mach_info		*mach;
-	struct otg_transceiver			*transceiver;
 
 	enum ep0_state				ep0state;
 	struct udc_stats			stats;
@@ -464,10 +450,6 @@ struct pxa_udc {
 	struct udc_usb_ep			udc_usb_ep[NR_USB_ENDPOINTS];
 	struct pxa_ep				pxa_ep[NR_PXA_ENDPOINTS];
 
-	unsigned				enabled:1;
-	unsigned				pullup_on:1;
-	unsigned				pullup_resume:1;
-	unsigned				vbus_sensed:1;
 	unsigned				config:2;
 	unsigned				last_interface:3;
 	unsigned				last_alternate:3;

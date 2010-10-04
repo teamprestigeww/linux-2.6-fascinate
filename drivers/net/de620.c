@@ -48,6 +48,7 @@ static const char version[] =
  * Compile-time options: (see below for descriptions)
  * -DDE620_IO=0x378	(lpt1)
  * -DDE620_IRQ=7	(lpt1)
+ * -DDE602_DEBUG=...
  * -DSHUTDOWN_WHEN_LOST
  * -DCOUNT_LOOPS
  * -DLOWSPEED
@@ -95,6 +96,15 @@ static const char version[] =
  * This should be used for debugging purposes only.
  *
 #define SHUTDOWN_WHEN_LOST
+ */
+
+/*
+ * Enable debugging by "-DDE620_DEBUG=3" when compiling,
+ * OR by enabling the following #define
+ *
+ * use 0 for production, 1 for verification, >2 for debug
+ *
+#define DE620_DEBUG 3
  */
 
 #ifdef LOWSPEED
@@ -150,6 +160,14 @@ typedef unsigned char byte;
 #define RUNT 60		/* Too small Ethernet packet */
 #define GIANT 1514	/* largest legal size packet, no fcs */
 
+#ifdef DE620_DEBUG /* Compile-time configurable */
+#define PRINTK(x) if (de620_debug >= 2) printk x
+#else
+#define DE620_DEBUG 0
+#define PRINTK(x) /**/
+#endif
+
+
 /*
  * Force media with insmod:
  *	insmod de620.o bnc=1
@@ -168,6 +186,8 @@ static int io  = DE620_IO;
 static int irq = DE620_IRQ;
 static int clone = DE620_CLONE;
 
+static unsigned int de620_debug = DE620_DEBUG;
+
 static spinlock_t de620_lock;
 
 module_param(bnc, int, 0);
@@ -175,11 +195,13 @@ module_param(utp, int, 0);
 module_param(io, int, 0);
 module_param(irq, int, 0);
 module_param(clone, int, 0);
+module_param(de620_debug, int, 0);
 MODULE_PARM_DESC(bnc, "DE-620 set BNC medium (0-1)");
 MODULE_PARM_DESC(utp, "DE-620 set UTP medium (0-1)");
 MODULE_PARM_DESC(io, "DE-620 I/O base address,required");
 MODULE_PARM_DESC(irq, "DE-620 IRQ number,required");
 MODULE_PARM_DESC(clone, "Check also for non-D-Link DE-620 clones (0-1)");
+MODULE_PARM_DESC(de620_debug, "DE-620 debug level (0-2)");
 
 /***********************************************
  *                                             *
@@ -464,7 +486,7 @@ static int de620_close(struct net_device *dev)
 
 static void de620_set_multicast_list(struct net_device *dev)
 {
-	if (!netdev_mc_empty(dev) || dev->flags&(IFF_ALLMULTI|IFF_PROMISC))
+	if (dev->mc_count || dev->flags&(IFF_ALLMULTI|IFF_PROMISC))
 	{ /* Enable promiscuous mode */
 		de620_set_register(dev, W_TCR, (TCR_DEF & ~RXPBM) | RXALL);
 	}
@@ -511,9 +533,9 @@ static int de620_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	/* Start real output */
 
-	spin_lock_irqsave(&de620_lock, flags);
-	pr_debug("de620_start_xmit: len=%d, bufs 0x%02x\n",
-		(int)skb->len, using_txbuf);
+	spin_lock_irqsave(&de620_lock, flags)
+	PRINTK(("de620_start_xmit: len=%d, bufs 0x%02x\n",
+		(int)skb->len, using_txbuf));
 
 	/* select a free tx buffer. if there is one... */
 	switch (using_txbuf) {
@@ -531,17 +553,18 @@ static int de620_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	case (TXBF0 | TXBF1): /* NONE!!! */
 		printk(KERN_WARNING "%s: No tx-buffer available!\n", dev->name);
 		spin_unlock_irqrestore(&de620_lock, flags);
-		return NETDEV_TX_BUSY;
+		return 1;
 	}
 	de620_write_block(dev, buffer, skb->len, len-skb->len);
 
+	dev->trans_start = jiffies;
 	if(!(using_txbuf == (TXBF0 | TXBF1)))
 		netif_wake_queue(dev);
 
 	dev->stats.tx_packets++;
 	spin_unlock_irqrestore(&de620_lock, flags);
 	dev_kfree_skb (skb);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*****************************************************
@@ -562,12 +585,12 @@ de620_interrupt(int irq_in, void *dev_id)
 	/* Read the status register (_not_ the status port) */
 	irq_status = de620_get_register(dev, R_STS);
 
-	pr_debug("de620_interrupt (%2.2X)\n", irq_status);
+	PRINTK(("de620_interrupt (%2.2X)\n", irq_status));
 
 	if (irq_status & RXGOOD) {
 		do {
 			again = de620_rx_intr(dev);
-			pr_debug("again=%d\n", again);
+			PRINTK(("again=%d\n", again));
 		}
 		while (again && (++bogus_count < 100));
 	}
@@ -599,7 +622,7 @@ static int de620_rx_intr(struct net_device *dev)
 	byte pagelink;
 	byte curr_page;
 
-	pr_debug("de620_rx_intr: next_rx_page = %d\n", next_rx_page);
+	PRINTK(("de620_rx_intr: next_rx_page = %d\n", next_rx_page));
 
 	/* Tell the adapter that we are going to read data, and from where */
 	de620_send_command(dev, W_CR | RRN);
@@ -608,9 +631,8 @@ static int de620_rx_intr(struct net_device *dev)
 
 	/* Deep breath, and away we goooooo */
 	de620_read_block(dev, (byte *)&header_buf, sizeof(struct header_buf));
-	pr_debug("page status=0x%02x, nextpage=%d, packetsize=%d\n",
-		header_buf.status, header_buf.Rx_NextPage,
-		header_buf.Rx_ByteCount);
+	PRINTK(("page status=0x%02x, nextpage=%d, packetsize=%d\n",
+	header_buf.status, header_buf.Rx_NextPage, header_buf.Rx_ByteCount));
 
 	/* Plausible page header? */
 	pagelink = header_buf.Rx_NextPage;
@@ -661,7 +683,7 @@ static int de620_rx_intr(struct net_device *dev)
 			buffer = skb_put(skb,size);
 			/* copy the packet into the buffer */
 			de620_read_block(dev, buffer, size);
-			pr_debug("Read %d bytes\n", size);
+			PRINTK(("Read %d bytes\n", size));
 			skb->protocol=eth_type_trans(skb,dev);
 			netif_rx(skb); /* deliver it "upstairs" */
 			/* count all receives */
@@ -674,7 +696,7 @@ static int de620_rx_intr(struct net_device *dev)
 	/* NOTE! We're _not_ checking the 'EMPTY'-flag! This seems better... */
 	curr_page = de620_get_register(dev, R_CPR);
 	de620_set_register(dev, W_NPRF, next_rx_page);
-	pr_debug("next_rx_page=%d CPR=%d\n", next_rx_page, curr_page);
+	PRINTK(("next_rx_page=%d CPR=%d\n", next_rx_page, curr_page));
 
 	return (next_rx_page != curr_page); /* That was slightly tricky... */
 }
@@ -808,7 +830,8 @@ struct net_device * __init de620_probe(int unit)
 		netdev_boot_setup_check(dev);
 	}
 
-	pr_debug("%s", version);
+	if (de620_debug)
+		printk(version);
 
 	printk(KERN_INFO "D-Link DE-620 pocket adapter");
 
@@ -855,13 +878,14 @@ struct net_device * __init de620_probe(int unit)
 	/* base_addr and irq are already set, see above! */
 
 	/* dump eeprom */
-	pr_debug("\nEEPROM contents:\n"
-		"RAM_Size = 0x%02X\n"
-		"NodeID = %pM\n"
-		"Model = %d\n"
-		"Media = %d\n"
-		"SCR = 0x%02x\n", nic_data.RAM_Size, nic_data.NodeID,
-		nic_data.Model, nic_data.Media, nic_data.SCR);
+	if (de620_debug) {
+		printk("\nEEPROM contents:\n");
+		printk("RAM_Size = 0x%02X\n", nic_data.RAM_Size);
+		printk("NodeID = %pM\n", nic_data.NodeID);
+		printk("Model = %d\n", nic_data.Model);
+		printk("Media = %d\n", nic_data.Media);
+		printk("SCR = 0x%02x\n", nic_data.SCR);
+	}
 
 	err = register_netdev(dev);
 	if (err)

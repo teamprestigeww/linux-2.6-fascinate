@@ -7,7 +7,6 @@
  */
 
 /* Everything about the rules for NAT. */
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/types.h>
 #include <linux/ip.h>
 #include <linux/netfilter.h>
@@ -16,7 +15,6 @@
 #include <linux/kmod.h>
 #include <linux/skbuff.h>
 #include <linux/proc_fs.h>
-#include <linux/slab.h>
 #include <net/checksum.h>
 #include <net/route.h>
 #include <linux/bitops.h>
@@ -28,26 +26,55 @@
 
 #define NAT_VALID_HOOKS ((1 << NF_INET_PRE_ROUTING) | \
 			 (1 << NF_INET_POST_ROUTING) | \
-			 (1 << NF_INET_LOCAL_OUT) | \
-			 (1 << NF_INET_LOCAL_IN))
+			 (1 << NF_INET_LOCAL_OUT))
 
-static const struct xt_table nat_table = {
+static struct
+{
+	struct ipt_replace repl;
+	struct ipt_standard entries[3];
+	struct ipt_error term;
+} nat_initial_table __net_initdata = {
+	.repl = {
+		.name = "nat",
+		.valid_hooks = NAT_VALID_HOOKS,
+		.num_entries = 4,
+		.size = sizeof(struct ipt_standard) * 3 + sizeof(struct ipt_error),
+		.hook_entry = {
+			[NF_INET_PRE_ROUTING] = 0,
+			[NF_INET_POST_ROUTING] = sizeof(struct ipt_standard),
+			[NF_INET_LOCAL_OUT] = sizeof(struct ipt_standard) * 2
+		},
+		.underflow = {
+			[NF_INET_PRE_ROUTING] = 0,
+			[NF_INET_POST_ROUTING] = sizeof(struct ipt_standard),
+			[NF_INET_LOCAL_OUT] = sizeof(struct ipt_standard) * 2
+		},
+	},
+	.entries = {
+		IPT_STANDARD_INIT(NF_ACCEPT),	/* PRE_ROUTING */
+		IPT_STANDARD_INIT(NF_ACCEPT),	/* POST_ROUTING */
+		IPT_STANDARD_INIT(NF_ACCEPT),	/* LOCAL_OUT */
+	},
+	.term = IPT_ERROR_INIT,			/* ERROR */
+};
+
+static struct xt_table nat_table = {
 	.name		= "nat",
 	.valid_hooks	= NAT_VALID_HOOKS,
+	.lock		= __RW_LOCK_UNLOCKED(nat_table.lock),
 	.me		= THIS_MODULE,
-	.af		= NFPROTO_IPV4,
+	.af		= AF_INET,
 };
 
 /* Source NAT */
 static unsigned int
-ipt_snat_target(struct sk_buff *skb, const struct xt_action_param *par)
+ipt_snat_target(struct sk_buff *skb, const struct xt_target_param *par)
 {
 	struct nf_conn *ct;
 	enum ip_conntrack_info ctinfo;
 	const struct nf_nat_multi_range_compat *mr = par->targinfo;
 
-	NF_CT_ASSERT(par->hooknum == NF_INET_POST_ROUTING ||
-		     par->hooknum == NF_INET_LOCAL_IN);
+	NF_CT_ASSERT(par->hooknum == NF_INET_POST_ROUTING);
 
 	ct = nf_ct_get(skb, &ctinfo);
 
@@ -60,7 +87,7 @@ ipt_snat_target(struct sk_buff *skb, const struct xt_action_param *par)
 }
 
 static unsigned int
-ipt_dnat_target(struct sk_buff *skb, const struct xt_action_param *par)
+ipt_dnat_target(struct sk_buff *skb, const struct xt_target_param *par)
 {
 	struct nf_conn *ct;
 	enum ip_conntrack_info ctinfo;
@@ -77,31 +104,31 @@ ipt_dnat_target(struct sk_buff *skb, const struct xt_action_param *par)
 	return nf_nat_setup_info(ct, &mr->range[0], IP_NAT_MANIP_DST);
 }
 
-static int ipt_snat_checkentry(const struct xt_tgchk_param *par)
+static bool ipt_snat_checkentry(const struct xt_tgchk_param *par)
 {
 	const struct nf_nat_multi_range_compat *mr = par->targinfo;
 
 	/* Must be a valid range */
 	if (mr->rangesize != 1) {
-		pr_info("SNAT: multiple ranges no longer supported\n");
-		return -EINVAL;
+		printk("SNAT: multiple ranges no longer supported\n");
+		return false;
 	}
-	return 0;
+	return true;
 }
 
-static int ipt_dnat_checkentry(const struct xt_tgchk_param *par)
+static bool ipt_dnat_checkentry(const struct xt_tgchk_param *par)
 {
 	const struct nf_nat_multi_range_compat *mr = par->targinfo;
 
 	/* Must be a valid range */
 	if (mr->rangesize != 1) {
-		pr_info("DNAT: multiple ranges no longer supported\n");
-		return -EINVAL;
+		printk("DNAT: multiple ranges no longer supported\n");
+		return false;
 	}
-	return 0;
+	return true;
 }
 
-static unsigned int
+unsigned int
 alloc_null_binding(struct nf_conn *ct, unsigned int hooknum)
 {
 	/* Force range to this IP; let proto decide mapping for
@@ -143,7 +170,7 @@ static struct xt_target ipt_snat_reg __read_mostly = {
 	.target		= ipt_snat_target,
 	.targetsize	= sizeof(struct nf_nat_multi_range_compat),
 	.table		= "nat",
-	.hooks		= (1 << NF_INET_POST_ROUTING) | (1 << NF_INET_LOCAL_IN),
+	.hooks		= 1 << NF_INET_POST_ROUTING,
 	.checkentry	= ipt_snat_checkentry,
 	.family		= AF_INET,
 };
@@ -160,13 +187,8 @@ static struct xt_target ipt_dnat_reg __read_mostly = {
 
 static int __net_init nf_nat_rule_net_init(struct net *net)
 {
-	struct ipt_replace *repl;
-
-	repl = ipt_alloc_initial_table(&nat_table);
-	if (repl == NULL)
-		return -ENOMEM;
-	net->ipv4.nat_table = ipt_register_table(net, &nat_table, repl);
-	kfree(repl);
+	net->ipv4.nat_table = ipt_register_table(net, &nat_table,
+						 &nat_initial_table.repl);
 	if (IS_ERR(net->ipv4.nat_table))
 		return PTR_ERR(net->ipv4.nat_table);
 	return 0;
@@ -174,7 +196,7 @@ static int __net_init nf_nat_rule_net_init(struct net *net)
 
 static void __net_exit nf_nat_rule_net_exit(struct net *net)
 {
-	ipt_unregister_table(net, net->ipv4.nat_table);
+	ipt_unregister_table(net->ipv4.nat_table);
 }
 
 static struct pernet_operations nf_nat_rule_net_ops = {

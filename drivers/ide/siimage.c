@@ -32,6 +32,7 @@
  *  smarter code in libata.
  *
  * TODO:
+ * - IORDY fixes
  * - VDMA support
  */
 
@@ -229,18 +230,20 @@ static u8 sil_sata_udma_filter(ide_drive_t *drive)
 
 /**
  *	sil_set_pio_mode	-	set host controller for PIO mode
- *	@hwif: port
  *	@drive: drive
+ *	@pio: PIO mode number
  *
  *	Load the timing settings for this device mode into the
- *	controller.
+ *	controller. If we are in PIO mode 3 or 4 turn on IORDY
+ *	monitoring (bit 9). The TF timing is bits 31:16
  */
 
-static void sil_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void sil_set_pio_mode(ide_drive_t *drive, u8 pio)
 {
 	static const u16 tf_speed[]   = { 0x328a, 0x2283, 0x1281, 0x10c3, 0x10c1 };
 	static const u16 data_speed[] = { 0x328a, 0x2283, 0x1104, 0x10c3, 0x10c1 };
 
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	ide_drive_t *pair	= ide_get_pair_dev(drive);
 	u32 speedt		= 0;
@@ -248,7 +251,6 @@ static void sil_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	unsigned long addr	= siimage_seldev(drive, 0x04);
 	unsigned long tfaddr	= siimage_selreg(hwif,	0x02);
 	unsigned long base	= (unsigned long)hwif->hwif_data;
-	const u8 pio		= drive->pio_mode - XFER_PIO_0;
 	u8 tf_pio		= pio;
 	u8 mmio			= (hwif->host_flags & IDE_HFLAG_MMIO) ? 1 : 0;
 	u8 addr_mask		= hwif->channel ? (mmio ? 0xF4 : 0x84)
@@ -258,7 +260,7 @@ static void sil_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 
 	/* trim *taskfile* PIO to the slowest of the master/slave */
 	if (pair) {
-		u8 pair_pio = pair->pio_mode - XFER_PIO_0;
+		u8 pair_pio = ide_get_best_pio_mode(pair, 255, 4);
 
 		if (pair_pio < tf_pio)
 			tf_pio = pair_pio;
@@ -274,33 +276,31 @@ static void sil_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	/* now set up IORDY */
 	speedp = sil_ioread16(dev, tfaddr - 2);
 	speedp &= ~0x200;
+	if (pio > 2)
+		speedp |= 0x200;
+	sil_iowrite16(dev, speedp, tfaddr - 2);
 
 	mode = sil_ioread8(dev, base + addr_mask);
 	mode &= ~(unit ? 0x30 : 0x03);
-
-	if (ide_pio_need_iordy(drive, pio)) {
-		speedp |= 0x200;
-		mode |= unit ? 0x10 : 0x01;
-	}
-
-	sil_iowrite16(dev, speedp, tfaddr - 2);
+	mode |= unit ? 0x10 : 0x01;
 	sil_iowrite8(dev, mode, base + addr_mask);
 }
 
 /**
  *	sil_set_dma_mode	-	set host controller for DMA mode
- *	@hwif: port
  *	@drive: drive
+ *	@speed: DMA mode
  *
  *	Tune the SiI chipset for the desired DMA mode.
  */
 
-static void sil_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static void sil_set_dma_mode(ide_drive_t *drive, const u8 speed)
 {
 	static const u8 ultra6[] = { 0x0F, 0x0B, 0x07, 0x05, 0x03, 0x02, 0x01 };
 	static const u8 ultra5[] = { 0x0C, 0x07, 0x05, 0x04, 0x02, 0x01 };
 	static const u16 dma[]	 = { 0x2208, 0x10C2, 0x10C1 };
 
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	unsigned long base	= (unsigned long)hwif->hwif_data;
 	u16 ultra = 0, multi	= 0;
@@ -310,7 +310,6 @@ static void sil_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 						: (mmio ? 0xB4 : 0x80);
 	unsigned long ma	= siimage_seldev(drive, 0x08);
 	unsigned long ua	= siimage_seldev(drive, 0x0C);
-	const u8 speed		= drive->dma_mode;
 
 	scsc  = sil_ioread8 (dev, base + (mmio ? 0x4A : 0x8A));
 	mode  = sil_ioread8 (dev, base + addr_mask);
@@ -338,14 +337,24 @@ static void sil_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 	sil_iowrite16(dev, ultra, ua);
 }
 
-static int sil_test_irq(ide_hwif_t *hwif)
+/* returns 1 if dma irq issued, 0 otherwise */
+static int siimage_io_dma_test_irq(ide_drive_t *drive)
 {
+	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
+	u8 dma_altstat		= 0;
 	unsigned long addr	= siimage_selreg(hwif, 1);
-	u8 val			= sil_ioread8(dev, addr);
 
-	/* Return 1 if INTRQ asserted */
-	return (val & 8) ? 1 : 0;
+	/* return 1 if INTR asserted */
+	if (inb(hwif->dma_base + ATA_DMA_STATUS) & 4)
+		return 1;
+
+	/* return 1 if Device INTR asserted */
+	pci_read_config_byte(dev, addr, &dma_altstat);
+	if (dma_altstat & 8)
+		return 0;	/* return 1; */
+
+	return 0;
 }
 
 /**
@@ -359,6 +368,7 @@ static int sil_test_irq(ide_hwif_t *hwif)
 static int siimage_mmio_dma_test_irq(ide_drive_t *drive)
 {
 	ide_hwif_t *hwif	= drive->hwif;
+	unsigned long addr	= siimage_selreg(hwif, 0x1);
 	void __iomem *sata_error_addr
 		= (void __iomem *)hwif->sata_scr[SATA_ERROR_OFFSET];
 
@@ -387,6 +397,10 @@ static int siimage_mmio_dma_test_irq(ide_drive_t *drive)
 	if (readb((void __iomem *)(hwif->dma_base + ATA_DMA_STATUS)) & 4)
 		return 1;
 
+	/* return 1 if Device INTR asserted */
+	if (readb((void __iomem *)addr) & 8)
+		return 0;	/* return 1; */
+
 	return 0;
 }
 
@@ -395,7 +409,7 @@ static int siimage_dma_test_irq(ide_drive_t *drive)
 	if (drive->hwif->host_flags & IDE_HFLAG_MMIO)
 		return siimage_mmio_dma_test_irq(drive);
 	else
-		return ide_dma_test_irq(drive);
+		return siimage_io_dma_test_irq(drive);
 }
 
 /**
@@ -437,8 +451,8 @@ static int sil_sata_reset_poll(ide_drive_t *drive)
 static void sil_sata_pre_reset(ide_drive_t *drive)
 {
 	if (drive->media == ide_disk) {
-		drive->special_flags &=
-			~(IDE_SFLAG_SET_GEOMETRY | IDE_SFLAG_RECALIBRATE);
+		drive->special.b.set_geometry = 0;
+		drive->special.b.recalibrate = 0;
 	}
 }
 
@@ -450,7 +464,7 @@ static void sil_sata_pre_reset(ide_drive_t *drive)
  *	to 133 MHz clocking if the system isn't already set up to do it.
  */
 
-static int init_chipset_siimage(struct pci_dev *dev)
+static unsigned int init_chipset_siimage(struct pci_dev *dev)
 {
 	struct ide_host *host = pci_get_drvdata(dev);
 	void __iomem *ioaddr = host->host_priv;
@@ -680,7 +694,6 @@ static const struct ide_port_ops sil_pata_port_ops = {
 	.set_pio_mode		= sil_set_pio_mode,
 	.set_dma_mode		= sil_set_dma_mode,
 	.quirkproc		= sil_quirkproc,
-	.test_irq		= sil_test_irq,
 	.udma_filter		= sil_pata_udma_filter,
 	.cable_detect		= sil_cable_detect,
 };
@@ -691,7 +704,6 @@ static const struct ide_port_ops sil_sata_port_ops = {
 	.reset_poll		= sil_sata_reset_poll,
 	.pre_reset		= sil_sata_pre_reset,
 	.quirkproc		= sil_quirkproc,
-	.test_irq		= sil_test_irq,
 	.udma_filter		= sil_sata_udma_filter,
 	.cable_detect		= sil_cable_detect,
 };
@@ -699,10 +711,11 @@ static const struct ide_port_ops sil_sata_port_ops = {
 static const struct ide_dma_ops sil_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
+	.dma_exec_cmd		= ide_dma_exec_cmd,
 	.dma_start		= ide_dma_start,
 	.dma_end		= ide_dma_end,
 	.dma_test_irq		= siimage_dma_test_irq,
-	.dma_timer_expiry	= ide_dma_sff_timer_expiry,
+	.dma_timeout		= ide_dma_timeout,
 	.dma_lost_irq		= ide_dma_lost_irq,
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };

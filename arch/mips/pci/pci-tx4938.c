@@ -1,4 +1,6 @@
 /*
+ * linux/arch/mips/pci/pci-tx4938.c
+ *
  * Based on linux/arch/mips/txx9/rbtx4938/setup.c,
  *	    and RBTX49xx patch from CELF patch archive.
  *

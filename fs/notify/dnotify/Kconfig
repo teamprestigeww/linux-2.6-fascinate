@@ -1,6 +1,5 @@
 config DNOTIFY
 	bool "Dnotify support"
-	select FSNOTIFY
 	default y
 	help
 	  Dnotify is a directory-based per-fd file change notification system

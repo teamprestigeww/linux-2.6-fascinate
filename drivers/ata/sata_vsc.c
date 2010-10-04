@@ -245,7 +245,7 @@ static void vsc_port_intr(u8 port_status, struct ata_port *ap)
 
 	qc = ata_qc_from_tag(ap, ap->link.active_tag);
 	if (qc && likely(!(qc->tf.flags & ATA_TFLAG_POLLING)))
-		handled = ata_bmdma_port_intr(ap, qc);
+		handled = ata_sff_host_intr(ap, qc);
 
 	/* We received an interrupt during a polled command,
 	 * or some other spurious condition.  Interrupt reporting
@@ -284,8 +284,14 @@ static irqreturn_t vsc_sata_interrupt(int irq, void *dev_instance)
 	for (i = 0; i < host->n_ports; i++) {
 		u8 port_status = (status >> (8 * i)) & 0xff;
 		if (port_status) {
-			vsc_port_intr(port_status, host->ports[i]);
-			handled++;
+			struct ata_port *ap = host->ports[i];
+
+			if (ap && !(ap->flags & ATA_FLAG_DISABLED)) {
+				vsc_port_intr(port_status, ap);
+				handled++;
+			} else
+				dev_printk(KERN_ERR, host->dev,
+					"interrupt from disabled port %d\n", i);
 		}
 	}
 
@@ -302,9 +308,6 @@ static struct scsi_host_template vsc_sata_sht = {
 
 static struct ata_port_operations vsc_sata_ops = {
 	.inherits		= &ata_bmdma_port_ops,
-	/* The IRQ handling is not quite standard SFF behaviour so we
-	   cannot use the default lost interrupt handler */
-	.lost_interrupt		= ATA_OP_NULL,
 	.sff_tf_load		= vsc_sata_tf_load,
 	.sff_tf_read		= vsc_sata_tf_read,
 	.freeze			= vsc_freeze,
@@ -342,8 +345,8 @@ static int __devinit vsc_sata_init_one(struct pci_dev *pdev,
 	static const struct ata_port_info pi = {
 		.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY |
 				  ATA_FLAG_MMIO,
-		.pio_mask	= ATA_PIO4,
-		.mwdma_mask	= ATA_MWDMA2,
+		.pio_mask	= 0x1f,
+		.mwdma_mask	= 0x07,
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &vsc_sata_ops,
 	};
@@ -393,10 +396,10 @@ static int __devinit vsc_sata_init_one(struct pci_dev *pdev,
 	/*
 	 * Use 32 bit DMA mask, because 64 bit address support is poor.
 	 */
-	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	rc = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 	if (rc)
 		return rc;
-	rc = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	rc = pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK);
 	if (rc)
 		return rc;
 

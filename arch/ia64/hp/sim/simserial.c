@@ -24,7 +24,6 @@
 #include <linux/major.h>
 #include <linux/fcntl.h>
 #include <linux/mm.h>
-#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/capability.h>
 #include <linux/console.h>
@@ -149,7 +148,7 @@ static  void receive_chars(struct tty_struct *tty)
 						ch = ia64_ssc(0, 0, 0, 0,
 							      SSC_GETCHAR);
 					while (!ch);
-					handle_sysrq(ch);
+					handle_sysrq(ch, NULL);
 				}
 #endif
 				seen_esc = 0;
@@ -849,35 +848,37 @@ static int rs_open(struct tty_struct *tty, struct file * filp)
  * /proc fs routines....
  */
 
-static inline void line_info(struct seq_file *m, struct serial_state *state)
+static inline int line_info(char *buf, struct serial_state *state)
 {
-	seq_printf(m, "%d: uart:%s port:%lX irq:%d\n",
+	return sprintf(buf, "%d: uart:%s port:%lX irq:%d\n",
 		       state->line, uart_config[state->type].name,
 		       state->port, state->irq);
 }
 
-static int rs_proc_show(struct seq_file *m, void *v)
+static int rs_read_proc(char *page, char **start, off_t off, int count,
+		 int *eof, void *data)
 {
-	int i;
+	int i, len = 0, l;
+	off_t	begin = 0;
 
-	seq_printf(m, "simserinfo:1.0 driver:%s\n", serial_version);
-	for (i = 0; i < NR_PORTS; i++)
-		line_info(m, &rs_table[i]);
-	return 0;
+	len += sprintf(page, "simserinfo:1.0 driver:%s\n", serial_version);
+	for (i = 0; i < NR_PORTS && len < 4000; i++) {
+		l = line_info(page + len, &rs_table[i]);
+		len += l;
+		if (len+begin > off+count)
+			goto done;
+		if (len+begin < off) {
+			begin += len;
+			len = 0;
+		}
+	}
+	*eof = 1;
+done:
+	if (off >= len+begin)
+		return 0;
+	*start = page + (begin-off);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
-
-static int rs_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, rs_proc_show, NULL);
-}
-
-static const struct file_operations rs_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= rs_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 
 /*
  * ---------------------------------------------------------------------
@@ -916,7 +917,7 @@ static const struct tty_operations hp_ops = {
 	.start = rs_start,
 	.hangup = rs_hangup,
 	.wait_until_sent = rs_wait_until_sent,
-	.proc_fops = &rs_proc_fops,
+	.read_proc = rs_read_proc,
 };
 
 /*

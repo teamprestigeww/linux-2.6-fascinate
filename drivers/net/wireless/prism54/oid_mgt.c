@@ -17,7 +17,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/slab.h>
 
 #include "prismcompat.h"
 #include "islpci_dev.h"
@@ -699,7 +698,7 @@ int
 mgt_commit(islpci_private *priv)
 {
 	int rvalue;
-	enum oid_num_t u;
+	u32 u;
 
 	if (islpci_get_state(priv) < PRV_STATE_INIT)
 		return 0;
@@ -820,7 +819,7 @@ mgt_response_to_str(enum oid_num_t n, union oid_res_t *r, char *str)
 			k = snprintf(str, PRIV_STR_SIZE, "nr=%u\n", list->nr);
 			for (i = 0; i < list->nr; i++)
 				k += snprintf(str + k, PRIV_STR_SIZE - k,
-					      "bss[%u] :\nage=%u\nchannel=%u\n"
+					      "bss[%u] : \nage=%u\nchannel=%u\n"
 					      "capinfo=0x%X\nrates=0x%X\n"
 					      "basic_rates=0x%X\n",
 					      i, list->bsslist[i].age,

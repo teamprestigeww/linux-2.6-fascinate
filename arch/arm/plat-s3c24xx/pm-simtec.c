@@ -1,6 +1,6 @@
 /* linux/arch/arm/plat-s3c24xx/pm-simtec.c
  *
- * Copyright 2004 Simtec Electronics
+ * Copyright (c) 2004 Simtec Electronics
  *	Ben Dooks <ben@simtec.co.uk>
  *
  * http://armlinux.simtec.co.uk/
@@ -35,7 +35,7 @@
 
 #include <plat/pm.h>
 
-#define COPYRIGHT ", Copyright 2005 Simtec Electronics"
+#define COPYRIGHT ", (c) 2005 Simtec Electronics"
 
 /* pm_simtec_init
  *
@@ -61,7 +61,7 @@ static __init int pm_simtec_init(void)
 
 	__raw_writel(gstatus4, S3C2410_GSTATUS4);
 
-	return s3c_pm_init();
+	return s3c2410_pm_init();
 }
 
 arch_initcall(pm_simtec_init);

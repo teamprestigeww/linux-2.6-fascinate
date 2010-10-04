@@ -12,10 +12,8 @@
 
 /* We have 8k stacks on ppc32 and 16k on ppc64 */
 
-#if defined(CONFIG_PPC64)
+#ifdef CONFIG_PPC64
 #define THREAD_SHIFT		14
-#elif defined(CONFIG_PPC_256K_PAGES)
-#define THREAD_SHIFT		15
 #else
 #define THREAD_SHIFT		13
 #endif
@@ -46,13 +44,15 @@ struct thread_info {
 
 /*
  * macros/functions for gaining access to the thread information structure
+ *
+ * preempt_count needs to be 1 initially, until the scheduler is functional.
  */
 #define INIT_THREAD_INFO(tsk)			\
 {						\
 	.task =		&tsk,			\
 	.exec_domain =	&default_exec_domain,	\
 	.cpu =		0,			\
-	.preempt_count = INIT_PREEMPT_COUNT,	\
+	.preempt_count = 1,			\
 	.restart_block = {			\
 		.fn = do_no_restart_syscall,	\
 	},					\
@@ -104,13 +104,14 @@ static inline struct thread_info *current_thread_info(void)
 #define TIF_PERFMON_CTXSW	6	/* perfmon needs ctxsw calls */
 #define TIF_SYSCALL_AUDIT	7	/* syscall auditing active */
 #define TIF_SINGLESTEP		8	/* singlestepping active */
-#define TIF_MEMDIE		9	/* is terminating due to OOM killer */
+#define TIF_MEMDIE		9
 #define TIF_SECCOMP		10	/* secure computing */
 #define TIF_RESTOREALL		11	/* Restore all regs (implies NOERROR) */
 #define TIF_NOERROR		12	/* Force successful syscall return */
 #define TIF_NOTIFY_RESUME	13	/* callback before returning to user */
 #define TIF_FREEZE		14	/* Freezing for suspend */
 #define TIF_RUNLATCH		15	/* Is the runlatch enabled? */
+#define TIF_ABI_PENDING		16	/* 32/64 bit switch needed */
 
 /* as above, but as bit values */
 #define _TIF_SYSCALL_TRACE	(1<<TIF_SYSCALL_TRACE)
@@ -128,6 +129,7 @@ static inline struct thread_info *current_thread_info(void)
 #define _TIF_NOTIFY_RESUME	(1<<TIF_NOTIFY_RESUME)
 #define _TIF_FREEZE		(1<<TIF_FREEZE)
 #define _TIF_RUNLATCH		(1<<TIF_RUNLATCH)
+#define _TIF_ABI_PENDING	(1<<TIF_ABI_PENDING)
 #define _TIF_SYSCALL_T_OR_A	(_TIF_SYSCALL_TRACE|_TIF_SYSCALL_AUDIT|_TIF_SECCOMP)
 
 #define _TIF_USER_WORK_MASK	(_TIF_SIGPENDING | _TIF_NEED_RESCHED | \
@@ -152,13 +154,6 @@ static inline void set_restore_sigmask(void)
 	ti->local_flags |= _TLF_RESTORE_SIGMASK;
 	set_bit(TIF_SIGPENDING, &ti->flags);
 }
-
-#ifdef CONFIG_PPC64
-#define is_32bit_task()	(test_thread_flag(TIF_32BIT))
-#else
-#define is_32bit_task()	(1)
-#endif
-
 #endif	/* !__ASSEMBLY__ */
 
 #endif /* __KERNEL__ */

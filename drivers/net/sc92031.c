@@ -13,9 +13,6 @@
  *  Both are almost identical and seem to be based on pci-skeleton.c
  *
  *  Rewritten for 2.6 by Cesar Eduardo Barros
- *
- *  A datasheet for this chip can be found at
- *  http://www.silan.com.cn/english/products/pdf/SC92031AY.pdf
  */
 
 /* Note about set_mac_address: I don't know how to change the hardware
@@ -34,7 +31,13 @@
 
 #include <asm/irq.h>
 
+#define PCI_VENDOR_ID_SILAN		0x1904
+#define PCI_DEVICE_ID_SILAN_SC92031	0x2031
+#define PCI_DEVICE_ID_SILAN_8139D	0x8139
+
 #define SC92031_NAME "sc92031"
+#define SC92031_DESCRIPTION "Silan SC92031 PCI Fast Ethernet Adapter driver"
+#define SC92031_VERSION "2.0c"
 
 /* BAR 0 is MMIO, BAR 1 is PIO */
 #ifndef SC92031_USE_BAR
@@ -428,18 +431,18 @@ static void _sc92031_set_mar(struct net_device *dev)
 	void __iomem *port_base = priv->port_base;
 	u32 mar0 = 0, mar1 = 0;
 
-	if ((dev->flags & IFF_PROMISC) ||
-	    netdev_mc_count(dev) > multicast_filter_limit ||
-	    (dev->flags & IFF_ALLMULTI))
+	if ((dev->flags & IFF_PROMISC)
+			|| dev->mc_count > multicast_filter_limit
+			|| (dev->flags & IFF_ALLMULTI))
 		mar0 = mar1 = 0xffffffff;
 	else if (dev->flags & IFF_MULTICAST) {
-		struct netdev_hw_addr *ha;
+		struct dev_mc_list *mc_list;
 
-		netdev_for_each_mc_addr(ha, dev) {
+		for (mc_list = dev->mc_list; mc_list; mc_list = mc_list->next) {
 			u32 crc;
 			unsigned bit = 0;
 
-			crc = ~ether_crc(ETH_ALEN, ha->addr);
+			crc = ~ether_crc(ETH_ALEN, mc_list->dmi_addr);
 			crc >>= 24;
 
 			if (crc & 0x01)	bit |= 0x02;
@@ -777,10 +780,10 @@ static void _sc92031_rx_tasklet(struct net_device *dev)
 
 		rx_ring_offset = (rx_ring_offset + 4) % RX_BUF_LEN;
 
-		if (unlikely(rx_status == 0 ||
-			     rx_size > (MAX_ETH_FRAME_SIZE + 4) ||
-			     rx_size < 16 ||
-			     !(rx_status & RxStatesOK))) {
+		if (unlikely(rx_status == 0
+				|| rx_size > (MAX_ETH_FRAME_SIZE + 4)
+				|| rx_size < 16
+				|| !(rx_status & RxStatesOK))) {
 			_sc92031_rx_tasklet_error(dev, rx_status, rx_size);
 			break;
 		}
@@ -793,13 +796,15 @@ static void _sc92031_rx_tasklet(struct net_device *dev)
 
 		rx_len -= rx_size_align + 4;
 
-		skb = netdev_alloc_skb_ip_align(dev, pkt_size);
+		skb = netdev_alloc_skb(dev, pkt_size + NET_IP_ALIGN);
 		if (unlikely(!skb)) {
 			if (printk_ratelimit())
 				printk(KERN_ERR "%s: Couldn't allocate a skb_buff for a packet of size %u\n",
 						dev->name, pkt_size);
 			goto next;
 		}
+
+		skb_reserve(skb, NET_IP_ALIGN);
 
 		if ((rx_ring_offset + pkt_size) > RX_BUF_LEN) {
 			memcpy(skb_put(skb, RX_BUF_LEN - rx_ring_offset),
@@ -939,8 +944,7 @@ static struct net_device_stats *sc92031_get_stats(struct net_device *dev)
 	return &dev->stats;
 }
 
-static netdev_tx_t sc92031_start_xmit(struct sk_buff *skb,
-				      struct net_device *dev)
+static int sc92031_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct sc92031_priv *priv = netdev_priv(dev);
 	void __iomem *port_base = priv->port_base;
@@ -986,6 +990,8 @@ static netdev_tx_t sc92031_start_xmit(struct sk_buff *skb,
 			port_base + TxAddr0 + entry * 4);
 	iowrite32(tx_status, port_base + TxStatus0 + entry * 4);
 	mmiowb();
+
+	dev->trans_start = jiffies;
 
 	if (priv->tx_head - priv->tx_tail >= NUM_TX_DESC)
 		netif_stop_queue(dev);
@@ -1258,6 +1264,7 @@ static void sc92031_ethtool_get_drvinfo(struct net_device *dev,
 	struct pci_dev *pdev = priv->pdev;
 
 	strcpy(drvinfo->driver, SC92031_NAME);
+	strcpy(drvinfo->version, SC92031_VERSION);
 	strcpy(drvinfo->bus_info, pci_name(pdev));
 }
 
@@ -1416,7 +1423,6 @@ static int __devinit sc92031_probe(struct pci_dev *pdev,
 	struct net_device *dev;
 	struct sc92031_priv *priv;
 	u32 mac0, mac1;
-	unsigned long base_addr;
 
 	err = pci_enable_device(pdev);
 	if (unlikely(err < 0))
@@ -1424,11 +1430,11 @@ static int __devinit sc92031_probe(struct pci_dev *pdev,
 
 	pci_set_master(pdev);
 
-	err = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	err = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 	if (unlikely(err < 0))
 		goto out_set_dma_mask;
 
-	err = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	err = pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK);
 	if (unlikely(err < 0))
 		goto out_set_dma_mask;
 
@@ -1490,14 +1496,6 @@ static int __devinit sc92031_probe(struct pci_dev *pdev,
 	err = register_netdev(dev);
 	if (err < 0)
 		goto out_register_netdev;
-
-#if SC92031_USE_BAR == 0
-	base_addr = dev->mem_start;
-#elif SC92031_USE_BAR == 1
-	base_addr = dev->base_addr;
-#endif
-	printk(KERN_INFO "%s: SC92031 at 0x%lx, %pM, IRQ %d\n", dev->name,
-			base_addr, dev->dev_addr, dev->irq);
 
 	return 0;
 
@@ -1587,10 +1585,9 @@ out:
 	return 0;
 }
 
-static DEFINE_PCI_DEVICE_TABLE(sc92031_pci_device_id_table) = {
-	{ PCI_DEVICE(PCI_VENDOR_ID_SILAN, 0x2031) },
-	{ PCI_DEVICE(PCI_VENDOR_ID_SILAN, 0x8139) },
-	{ PCI_DEVICE(0x1088, 0x2031) },
+static struct pci_device_id sc92031_pci_device_id_table[] __devinitdata = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_SILAN, PCI_DEVICE_ID_SILAN_SC92031) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_SILAN, PCI_DEVICE_ID_SILAN_8139D) },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, sc92031_pci_device_id_table);
@@ -1606,6 +1603,7 @@ static struct pci_driver sc92031_pci_driver = {
 
 static int __init sc92031_init(void)
 {
+	printk(KERN_INFO SC92031_DESCRIPTION " " SC92031_VERSION "\n");
 	return pci_register_driver(&sc92031_pci_driver);
 }
 
@@ -1619,4 +1617,5 @@ module_exit(sc92031_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Cesar Eduardo Barros <cesarb@cesarb.net>");
-MODULE_DESCRIPTION("Silan SC92031 PCI Fast Ethernet Adapter driver");
+MODULE_DESCRIPTION(SC92031_DESCRIPTION);
+MODULE_VERSION(SC92031_VERSION);

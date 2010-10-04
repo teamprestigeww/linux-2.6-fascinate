@@ -36,7 +36,6 @@
 #include <linux/pci.h>
 #include <linux/interrupt.h>
 #include <linux/time.h>
-#include <linux/slab.h>
 
 #include "../pci.h"
 #include "pciehp.h"
@@ -45,26 +44,26 @@ static atomic_t pciehp_num_controllers = ATOMIC_INIT(0);
 
 static inline int pciehp_readw(struct controller *ctrl, int reg, u16 *value)
 {
-	struct pci_dev *dev = ctrl->pcie->port;
-	return pci_read_config_word(dev, pci_pcie_cap(dev) + reg, value);
+	struct pci_dev *dev = ctrl->pci_dev;
+	return pci_read_config_word(dev, ctrl->cap_base + reg, value);
 }
 
 static inline int pciehp_readl(struct controller *ctrl, int reg, u32 *value)
 {
-	struct pci_dev *dev = ctrl->pcie->port;
-	return pci_read_config_dword(dev, pci_pcie_cap(dev) + reg, value);
+	struct pci_dev *dev = ctrl->pci_dev;
+	return pci_read_config_dword(dev, ctrl->cap_base + reg, value);
 }
 
 static inline int pciehp_writew(struct controller *ctrl, int reg, u16 value)
 {
-	struct pci_dev *dev = ctrl->pcie->port;
-	return pci_write_config_word(dev, pci_pcie_cap(dev) + reg, value);
+	struct pci_dev *dev = ctrl->pci_dev;
+	return pci_write_config_word(dev, ctrl->cap_base + reg, value);
 }
 
 static inline int pciehp_writel(struct controller *ctrl, int reg, u32 value)
 {
-	struct pci_dev *dev = ctrl->pcie->port;
-	return pci_write_config_dword(dev, pci_pcie_cap(dev) + reg, value);
+	struct pci_dev *dev = ctrl->pci_dev;
+	return pci_write_config_dword(dev, ctrl->cap_base + reg, value);
 }
 
 /* Power Control Command */
@@ -267,7 +266,7 @@ static void pcie_wait_link_active(struct controller *ctrl)
 	ctrl_dbg(ctrl, "Data Link Layer Link Active not set in 1000 msec\n");
 }
 
-int pciehp_check_link_status(struct controller *ctrl)
+static int hpc_check_lnk_status(struct controller *ctrl)
 {
 	u16 lnk_status;
 	int retval = 0;
@@ -306,7 +305,7 @@ int pciehp_check_link_status(struct controller *ctrl)
 	return retval;
 }
 
-int pciehp_get_attention_status(struct slot *slot, u8 *status)
+static int hpc_get_attention_status(struct slot *slot, u8 *status)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_ctrl;
@@ -319,8 +318,8 @@ int pciehp_get_attention_status(struct slot *slot, u8 *status)
 		return retval;
 	}
 
-	ctrl_dbg(ctrl, "%s: SLOTCTRL %x, value read %x\n", __func__,
-		 pci_pcie_cap(ctrl->pcie->port) + PCI_EXP_SLTCTL, slot_ctrl);
+	ctrl_dbg(ctrl, "%s: SLOTCTRL %x, value read %x\n",
+		 __func__, ctrl->cap_base + PCI_EXP_SLTCTL, slot_ctrl);
 
 	atten_led_state = (slot_ctrl & PCI_EXP_SLTCTL_AIC) >> 6;
 
@@ -345,7 +344,7 @@ int pciehp_get_attention_status(struct slot *slot, u8 *status)
 	return 0;
 }
 
-int pciehp_get_power_status(struct slot *slot, u8 *status)
+static int hpc_get_power_status(struct slot *slot, u8 *status)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_ctrl;
@@ -357,8 +356,8 @@ int pciehp_get_power_status(struct slot *slot, u8 *status)
 		ctrl_err(ctrl, "%s: Cannot read SLOTCTRL register\n", __func__);
 		return retval;
 	}
-	ctrl_dbg(ctrl, "%s: SLOTCTRL %x value read %x\n", __func__,
-		 pci_pcie_cap(ctrl->pcie->port) + PCI_EXP_SLTCTL, slot_ctrl);
+	ctrl_dbg(ctrl, "%s: SLOTCTRL %x value read %x\n",
+		 __func__, ctrl->cap_base + PCI_EXP_SLTCTL, slot_ctrl);
 
 	pwr_state = (slot_ctrl & PCI_EXP_SLTCTL_PCC) >> 10;
 
@@ -377,7 +376,7 @@ int pciehp_get_power_status(struct slot *slot, u8 *status)
 	return retval;
 }
 
-int pciehp_get_latch_status(struct slot *slot, u8 *status)
+static int hpc_get_latch_status(struct slot *slot, u8 *status)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_status;
@@ -393,7 +392,7 @@ int pciehp_get_latch_status(struct slot *slot, u8 *status)
 	return 0;
 }
 
-int pciehp_get_adapter_status(struct slot *slot, u8 *status)
+static int hpc_get_adapter_status(struct slot *slot, u8 *status)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_status;
@@ -409,7 +408,7 @@ int pciehp_get_adapter_status(struct slot *slot, u8 *status)
 	return 0;
 }
 
-int pciehp_query_power_fault(struct slot *slot)
+static int hpc_query_power_fault(struct slot *slot)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_status;
@@ -423,32 +422,64 @@ int pciehp_query_power_fault(struct slot *slot)
 	return !!(slot_status & PCI_EXP_SLTSTA_PFD);
 }
 
-int pciehp_set_attention_status(struct slot *slot, u8 value)
+static int hpc_get_emi_status(struct slot *slot, u8 *status)
+{
+	struct controller *ctrl = slot->ctrl;
+	u16 slot_status;
+	int retval;
+
+	retval = pciehp_readw(ctrl, PCI_EXP_SLTSTA, &slot_status);
+	if (retval) {
+		ctrl_err(ctrl, "Cannot check EMI status\n");
+		return retval;
+	}
+	*status = !!(slot_status & PCI_EXP_SLTSTA_EIS);
+	return retval;
+}
+
+static int hpc_toggle_emi(struct slot *slot)
+{
+	u16 slot_cmd;
+	u16 cmd_mask;
+	int rc;
+
+	slot_cmd = PCI_EXP_SLTCTL_EIC;
+	cmd_mask = PCI_EXP_SLTCTL_EIC;
+	rc = pcie_write_cmd(slot->ctrl, slot_cmd, cmd_mask);
+	slot->last_emi_toggle = get_seconds();
+
+	return rc;
+}
+
+static int hpc_set_attention_status(struct slot *slot, u8 value)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_cmd;
 	u16 cmd_mask;
+	int rc;
 
 	cmd_mask = PCI_EXP_SLTCTL_AIC;
 	switch (value) {
-	case 0 :	/* turn off */
-		slot_cmd = 0x00C0;
-		break;
-	case 1:		/* turn on */
-		slot_cmd = 0x0040;
-		break;
-	case 2:		/* turn blink */
-		slot_cmd = 0x0080;
-		break;
-	default:
-		return -EINVAL;
+		case 0 :	/* turn off */
+			slot_cmd = 0x00C0;
+			break;
+		case 1:		/* turn on */
+			slot_cmd = 0x0040;
+			break;
+		case 2:		/* turn blink */
+			slot_cmd = 0x0080;
+			break;
+		default:
+			return -1;
 	}
-	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n", __func__,
-		 pci_pcie_cap(ctrl->pcie->port) + PCI_EXP_SLTCTL, slot_cmd);
-	return pcie_write_cmd(ctrl, slot_cmd, cmd_mask);
+	rc = pcie_write_cmd(ctrl, slot_cmd, cmd_mask);
+	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n",
+		 __func__, ctrl->cap_base + PCI_EXP_SLTCTL, slot_cmd);
+
+	return rc;
 }
 
-void pciehp_green_led_on(struct slot *slot)
+static void hpc_set_green_led_on(struct slot *slot)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_cmd;
@@ -457,11 +488,11 @@ void pciehp_green_led_on(struct slot *slot)
 	slot_cmd = 0x0100;
 	cmd_mask = PCI_EXP_SLTCTL_PIC;
 	pcie_write_cmd(ctrl, slot_cmd, cmd_mask);
-	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n", __func__,
-		 pci_pcie_cap(ctrl->pcie->port) + PCI_EXP_SLTCTL, slot_cmd);
+	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n",
+		 __func__, ctrl->cap_base + PCI_EXP_SLTCTL, slot_cmd);
 }
 
-void pciehp_green_led_off(struct slot *slot)
+static void hpc_set_green_led_off(struct slot *slot)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_cmd;
@@ -470,11 +501,11 @@ void pciehp_green_led_off(struct slot *slot)
 	slot_cmd = 0x0300;
 	cmd_mask = PCI_EXP_SLTCTL_PIC;
 	pcie_write_cmd(ctrl, slot_cmd, cmd_mask);
-	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n", __func__,
-		 pci_pcie_cap(ctrl->pcie->port) + PCI_EXP_SLTCTL, slot_cmd);
+	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n",
+		 __func__, ctrl->cap_base + PCI_EXP_SLTCTL, slot_cmd);
 }
 
-void pciehp_green_led_blink(struct slot *slot)
+static void hpc_set_green_led_blink(struct slot *slot)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_cmd;
@@ -483,18 +514,19 @@ void pciehp_green_led_blink(struct slot *slot)
 	slot_cmd = 0x0200;
 	cmd_mask = PCI_EXP_SLTCTL_PIC;
 	pcie_write_cmd(ctrl, slot_cmd, cmd_mask);
-	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n", __func__,
-		 pci_pcie_cap(ctrl->pcie->port) + PCI_EXP_SLTCTL, slot_cmd);
+	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n",
+		 __func__, ctrl->cap_base + PCI_EXP_SLTCTL, slot_cmd);
 }
 
-int pciehp_power_on_slot(struct slot * slot)
+static int hpc_power_on_slot(struct slot * slot)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_cmd;
 	u16 cmd_mask;
 	u16 slot_status;
-	u16 lnk_status;
 	int retval = 0;
+
+	ctrl_dbg(ctrl, "%s: slot->hp_slot %x\n", __func__, slot->hp_slot);
 
 	/* Clear sticky power-fault bit from previous power failures */
 	retval = pciehp_readw(ctrl, PCI_EXP_SLTSTA, &slot_status);
@@ -513,53 +545,116 @@ int pciehp_power_on_slot(struct slot * slot)
 			return retval;
 		}
 	}
-	ctrl->power_fault_detected = 0;
 
 	slot_cmd = POWER_ON;
 	cmd_mask = PCI_EXP_SLTCTL_PCC;
+	/* Enable detection that we turned off at slot power-off time */
+	if (!pciehp_poll_mode) {
+		slot_cmd |= (PCI_EXP_SLTCTL_PFDE | PCI_EXP_SLTCTL_MRLSCE |
+			     PCI_EXP_SLTCTL_PDCE);
+		cmd_mask |= (PCI_EXP_SLTCTL_PFDE | PCI_EXP_SLTCTL_MRLSCE |
+			     PCI_EXP_SLTCTL_PDCE);
+	}
+
 	retval = pcie_write_cmd(ctrl, slot_cmd, cmd_mask);
+
 	if (retval) {
 		ctrl_err(ctrl, "Write %x command failed!\n", slot_cmd);
-		return retval;
+		return -1;
 	}
-	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n", __func__,
-		 pci_pcie_cap(ctrl->pcie->port) + PCI_EXP_SLTCTL, slot_cmd);
-
-	retval = pciehp_readw(ctrl, PCI_EXP_LNKSTA, &lnk_status);
-	if (retval) {
-		ctrl_err(ctrl, "%s: Cannot read LNKSTA register\n",
-				__func__);
-		return retval;
-	}
-	pcie_update_link_speed(ctrl->pcie->port->subordinate, lnk_status);
+	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n",
+		 __func__, ctrl->cap_base + PCI_EXP_SLTCTL, slot_cmd);
 
 	return retval;
 }
 
-int pciehp_power_off_slot(struct slot * slot)
+static inline int pcie_mask_bad_dllp(struct controller *ctrl)
+{
+	struct pci_dev *dev = ctrl->pci_dev;
+	int pos;
+	u32 reg;
+
+	pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ERR);
+	if (!pos)
+		return 0;
+	pci_read_config_dword(dev, pos + PCI_ERR_COR_MASK, &reg);
+	if (reg & PCI_ERR_COR_BAD_DLLP)
+		return 0;
+	reg |= PCI_ERR_COR_BAD_DLLP;
+	pci_write_config_dword(dev, pos + PCI_ERR_COR_MASK, reg);
+	return 1;
+}
+
+static inline void pcie_unmask_bad_dllp(struct controller *ctrl)
+{
+	struct pci_dev *dev = ctrl->pci_dev;
+	u32 reg;
+	int pos;
+
+	pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ERR);
+	if (!pos)
+		return;
+	pci_read_config_dword(dev, pos + PCI_ERR_COR_MASK, &reg);
+	if (!(reg & PCI_ERR_COR_BAD_DLLP))
+		return;
+	reg &= ~PCI_ERR_COR_BAD_DLLP;
+	pci_write_config_dword(dev, pos + PCI_ERR_COR_MASK, reg);
+}
+
+static int hpc_power_off_slot(struct slot * slot)
 {
 	struct controller *ctrl = slot->ctrl;
 	u16 slot_cmd;
 	u16 cmd_mask;
-	int retval;
+	int retval = 0;
+	int changed;
+
+	ctrl_dbg(ctrl, "%s: slot->hp_slot %x\n", __func__, slot->hp_slot);
+
+	/*
+	 * Set Bad DLLP Mask bit in Correctable Error Mask
+	 * Register. This is the workaround against Bad DLLP error
+	 * that sometimes happens during turning power off the slot
+	 * which conforms to PCI Express 1.0a spec.
+	 */
+	changed = pcie_mask_bad_dllp(ctrl);
 
 	slot_cmd = POWER_OFF;
 	cmd_mask = PCI_EXP_SLTCTL_PCC;
+	/*
+	 * If we get MRL or presence detect interrupts now, the isr
+	 * will notice the sticky power-fault bit too and issue power
+	 * indicator change commands. This will lead to an endless loop
+	 * of command completions, since the power-fault bit remains on
+	 * till the slot is powered on again.
+	 */
+	if (!pciehp_poll_mode) {
+		slot_cmd &= ~(PCI_EXP_SLTCTL_PFDE | PCI_EXP_SLTCTL_MRLSCE |
+			      PCI_EXP_SLTCTL_PDCE);
+		cmd_mask |= (PCI_EXP_SLTCTL_PFDE | PCI_EXP_SLTCTL_MRLSCE |
+			     PCI_EXP_SLTCTL_PDCE);
+	}
+
 	retval = pcie_write_cmd(ctrl, slot_cmd, cmd_mask);
 	if (retval) {
 		ctrl_err(ctrl, "Write command failed!\n");
-		return retval;
+		retval = -1;
+		goto out;
 	}
-	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n", __func__,
-		 pci_pcie_cap(ctrl->pcie->port) + PCI_EXP_SLTCTL, slot_cmd);
-	return 0;
+	ctrl_dbg(ctrl, "%s: SLOTCTRL %x write cmd %x\n",
+		 __func__, ctrl->cap_base + PCI_EXP_SLTCTL, slot_cmd);
+ out:
+	if (changed)
+		pcie_unmask_bad_dllp(ctrl);
+
+	return retval;
 }
 
 static irqreturn_t pcie_isr(int irq, void *dev_id)
 {
 	struct controller *ctrl = (struct controller *)dev_id;
-	struct slot *slot = ctrl->slot;
 	u16 detected, intr_loc;
+	struct slot *p_slot;
 
 	/*
 	 * In order to guarantee that all interrupt events are
@@ -577,11 +672,10 @@ static irqreturn_t pcie_isr(int irq, void *dev_id)
 		detected &= (PCI_EXP_SLTSTA_ABP | PCI_EXP_SLTSTA_PFD |
 			     PCI_EXP_SLTSTA_MRLSC | PCI_EXP_SLTSTA_PDC |
 			     PCI_EXP_SLTSTA_CC);
-		detected &= ~intr_loc;
 		intr_loc |= detected;
 		if (!intr_loc)
 			return IRQ_NONE;
-		if (detected && pciehp_writew(ctrl, PCI_EXP_SLTSTA, intr_loc)) {
+		if (detected && pciehp_writew(ctrl, PCI_EXP_SLTSTA, detected)) {
 			ctrl_err(ctrl, "%s: Cannot write to SLOTSTATUS\n",
 				 __func__);
 			return IRQ_NONE;
@@ -600,27 +694,56 @@ static irqreturn_t pcie_isr(int irq, void *dev_id)
 	if (!(intr_loc & ~PCI_EXP_SLTSTA_CC))
 		return IRQ_HANDLED;
 
+	p_slot = pciehp_find_slot(ctrl, ctrl->slot_device_offset);
+
 	/* Check MRL Sensor Changed */
 	if (intr_loc & PCI_EXP_SLTSTA_MRLSC)
-		pciehp_handle_switch_change(slot);
+		pciehp_handle_switch_change(p_slot);
 
 	/* Check Attention Button Pressed */
 	if (intr_loc & PCI_EXP_SLTSTA_ABP)
-		pciehp_handle_attention_button(slot);
+		pciehp_handle_attention_button(p_slot);
 
 	/* Check Presence Detect Changed */
 	if (intr_loc & PCI_EXP_SLTSTA_PDC)
-		pciehp_handle_presence_change(slot);
+		pciehp_handle_presence_change(p_slot);
 
 	/* Check Power Fault Detected */
-	if ((intr_loc & PCI_EXP_SLTSTA_PFD) && !ctrl->power_fault_detected) {
-		ctrl->power_fault_detected = 1;
-		pciehp_handle_power_fault(slot);
-	}
+	if (intr_loc & PCI_EXP_SLTSTA_PFD)
+		pciehp_handle_power_fault(p_slot);
+
 	return IRQ_HANDLED;
 }
 
-int pciehp_get_max_lnk_width(struct slot *slot,
+static int hpc_get_max_lnk_speed(struct slot *slot, enum pci_bus_speed *value)
+{
+	struct controller *ctrl = slot->ctrl;
+	enum pcie_link_speed lnk_speed;
+	u32	lnk_cap;
+	int retval = 0;
+
+	retval = pciehp_readl(ctrl, PCI_EXP_LNKCAP, &lnk_cap);
+	if (retval) {
+		ctrl_err(ctrl, "%s: Cannot read LNKCAP register\n", __func__);
+		return retval;
+	}
+
+	switch (lnk_cap & 0x000F) {
+	case 1:
+		lnk_speed = PCIE_2PT5GB;
+		break;
+	default:
+		lnk_speed = PCIE_LNK_SPEED_UNKNOWN;
+		break;
+	}
+
+	*value = lnk_speed;
+	ctrl_dbg(ctrl, "Max link speed = %d\n", lnk_speed);
+
+	return retval;
+}
+
+static int hpc_get_max_lnk_width(struct slot *slot,
 				 enum pcie_link_width *value)
 {
 	struct controller *ctrl = slot->ctrl;
@@ -670,7 +793,36 @@ int pciehp_get_max_lnk_width(struct slot *slot,
 	return retval;
 }
 
-int pciehp_get_cur_lnk_width(struct slot *slot,
+static int hpc_get_cur_lnk_speed(struct slot *slot, enum pci_bus_speed *value)
+{
+	struct controller *ctrl = slot->ctrl;
+	enum pcie_link_speed lnk_speed = PCI_SPEED_UNKNOWN;
+	int retval = 0;
+	u16 lnk_status;
+
+	retval = pciehp_readw(ctrl, PCI_EXP_LNKSTA, &lnk_status);
+	if (retval) {
+		ctrl_err(ctrl, "%s: Cannot read LNKSTATUS register\n",
+			 __func__);
+		return retval;
+	}
+
+	switch (lnk_status & PCI_EXP_LNKSTA_CLS) {
+	case 1:
+		lnk_speed = PCIE_2PT5GB;
+		break;
+	default:
+		lnk_speed = PCIE_LNK_SPEED_UNKNOWN;
+		break;
+	}
+
+	*value = lnk_speed;
+	ctrl_dbg(ctrl, "Current link speed = %d\n", lnk_speed);
+
+	return retval;
+}
+
+static int hpc_get_cur_lnk_width(struct slot *slot,
 				 enum pcie_link_width *value)
 {
 	struct controller *ctrl = slot->ctrl;
@@ -721,23 +873,41 @@ int pciehp_get_cur_lnk_width(struct slot *slot,
 	return retval;
 }
 
+static void pcie_release_ctrl(struct controller *ctrl);
+static struct hpc_ops pciehp_hpc_ops = {
+	.power_on_slot			= hpc_power_on_slot,
+	.power_off_slot			= hpc_power_off_slot,
+	.set_attention_status		= hpc_set_attention_status,
+	.get_power_status		= hpc_get_power_status,
+	.get_attention_status		= hpc_get_attention_status,
+	.get_latch_status		= hpc_get_latch_status,
+	.get_adapter_status		= hpc_get_adapter_status,
+	.get_emi_status			= hpc_get_emi_status,
+	.toggle_emi			= hpc_toggle_emi,
+
+	.get_max_bus_speed		= hpc_get_max_lnk_speed,
+	.get_cur_bus_speed		= hpc_get_cur_lnk_speed,
+	.get_max_lnk_width		= hpc_get_max_lnk_width,
+	.get_cur_lnk_width		= hpc_get_cur_lnk_width,
+
+	.query_power_fault		= hpc_query_power_fault,
+	.green_led_on			= hpc_set_green_led_on,
+	.green_led_off			= hpc_set_green_led_off,
+	.green_led_blink		= hpc_set_green_led_blink,
+
+	.release_ctlr			= pcie_release_ctrl,
+	.check_lnk_status		= hpc_check_lnk_status,
+};
+
 int pcie_enable_notification(struct controller *ctrl)
 {
 	u16 cmd, mask;
 
-	/*
-	 * TBD: Power fault detected software notification support.
-	 *
-	 * Power fault detected software notification is not enabled
-	 * now, because it caused power fault detected interrupt storm
-	 * on some machines. On those machines, power fault detected
-	 * bit in the slot status register was set again immediately
-	 * when it is cleared in the interrupt service routine, and
-	 * next power fault detected interrupt was notified again.
-	 */
 	cmd = PCI_EXP_SLTCTL_PDCE;
 	if (ATTN_BUTTN(ctrl))
 		cmd |= PCI_EXP_SLTCTL_ABPE;
+	if (POWER_CTRL(ctrl))
+		cmd |= PCI_EXP_SLTCTL_PFDE;
 	if (MRL_SENS(ctrl))
 		cmd |= PCI_EXP_SLTCTL_MRLSCE;
 	if (!pciehp_poll_mode)
@@ -759,8 +929,7 @@ static void pcie_disable_notification(struct controller *ctrl)
 	u16 mask;
 	mask = (PCI_EXP_SLTCTL_PDCE | PCI_EXP_SLTCTL_ABPE |
 		PCI_EXP_SLTCTL_MRLSCE | PCI_EXP_SLTCTL_PFDE |
-		PCI_EXP_SLTCTL_HPIE | PCI_EXP_SLTCTL_CCIE |
-		PCI_EXP_SLTCTL_DLLSCE);
+		PCI_EXP_SLTCTL_HPIE | PCI_EXP_SLTCTL_CCIE);
 	if (pcie_write_cmd(ctrl, 0, mask))
 		ctrl_warn(ctrl, "Cannot disable software notification\n");
 }
@@ -794,16 +963,23 @@ static int pcie_init_slot(struct controller *ctrl)
 	if (!slot)
 		return -ENOMEM;
 
+	slot->hp_slot = 0;
 	slot->ctrl = ctrl;
+	slot->bus = ctrl->pci_dev->subordinate->number;
+	slot->device = ctrl->slot_device_offset + slot->hp_slot;
+	slot->hpc_ops = ctrl->hpc_ops;
+	slot->number = ctrl->first_slot;
 	mutex_init(&slot->lock);
 	INIT_DELAYED_WORK(&slot->work, pciehp_queue_pushbutton_work);
-	ctrl->slot = slot;
+	list_add(&slot->slot_list, &ctrl->slot_list);
 	return 0;
 }
 
 static void pcie_cleanup_slot(struct controller *ctrl)
 {
-	struct slot *slot = ctrl->slot;
+	struct slot *slot;
+	slot = list_first_entry(&ctrl->slot_list, struct slot, slot_list);
+	list_del(&slot->slot_list);
 	cancel_delayed_work(&slot->work);
 	flush_scheduled_work();
 	flush_workqueue(pciehp_wq);
@@ -814,7 +990,7 @@ static inline void dbg_ctrl(struct controller *ctrl)
 {
 	int i;
 	u16 reg16;
-	struct pci_dev *pdev = ctrl->pcie->port;
+	struct pci_dev *pdev = ctrl->pci_dev;
 
 	if (!pciehp_debug)
 		return;
@@ -828,16 +1004,16 @@ static inline void dbg_ctrl(struct controller *ctrl)
 		  pdev->subsystem_device);
 	ctrl_info(ctrl, "  Subsystem Vendor ID  : 0x%04x\n",
 		  pdev->subsystem_vendor);
-	ctrl_info(ctrl, "  PCIe Cap offset      : 0x%02x\n",
-		  pci_pcie_cap(pdev));
+	ctrl_info(ctrl, "  PCIe Cap offset      : 0x%02x\n", ctrl->cap_base);
 	for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
 		if (!pci_resource_len(pdev, i))
 			continue;
-		ctrl_info(ctrl, "  PCI resource [%d]     : %pR\n",
-			  i, &pdev->resource[i]);
+		ctrl_info(ctrl, "  PCI resource [%d]     : 0x%llx@0x%llx\n",
+			  i, (unsigned long long)pci_resource_len(pdev, i),
+			  (unsigned long long)pci_resource_start(pdev, i));
 	}
 	ctrl_info(ctrl, "Slot Capabilities      : 0x%08x\n", ctrl->slot_cap);
-	ctrl_info(ctrl, "  Physical Slot Number : %d\n", PSN(ctrl));
+	ctrl_info(ctrl, "  Physical Slot Number : %d\n", ctrl->first_slot);
 	ctrl_info(ctrl, "  Attention Button     : %3s\n",
 		  ATTN_BUTTN(ctrl) ? "yes" : "no");
 	ctrl_info(ctrl, "  Power Controller     : %3s\n",
@@ -871,8 +1047,12 @@ struct controller *pcie_init(struct pcie_device *dev)
 		dev_err(&dev->device, "%s: Out of memory\n", __func__);
 		goto abort;
 	}
+	INIT_LIST_HEAD(&ctrl->slot_list);
+
 	ctrl->pcie = dev;
-	if (!pci_pcie_cap(pdev)) {
+	ctrl->pci_dev = pdev;
+	ctrl->cap_base = pci_find_capability(pdev, PCI_CAP_ID_EXP);
+	if (!ctrl->cap_base) {
 		ctrl_err(ctrl, "Cannot find PCI Express capability\n");
 		goto abort_ctrl;
 	}
@@ -882,6 +1062,11 @@ struct controller *pcie_init(struct pcie_device *dev)
 	}
 
 	ctrl->slot_cap = slot_cap;
+	ctrl->first_slot = slot_cap >> 19;
+	ctrl->slot_device_offset = 0;
+	ctrl->num_slots = 1;
+	ctrl->hpc_ops = &pciehp_hpc_ops;
+	mutex_init(&ctrl->crit_sect);
 	mutex_init(&ctrl->ctrl_lock);
 	init_waitqueue_head(&ctrl->queue);
 	dbg_ctrl(ctrl);
@@ -937,7 +1122,7 @@ abort:
 	return NULL;
 }
 
-void pciehp_release_ctrl(struct controller *ctrl)
+void pcie_release_ctrl(struct controller *ctrl)
 {
 	pcie_shutdown_notification(ctrl);
 	pcie_cleanup_slot(ctrl);

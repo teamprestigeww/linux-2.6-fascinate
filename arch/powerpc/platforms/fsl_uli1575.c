@@ -51,20 +51,13 @@ u8 uli_pirq_to_irq[8] = {
 	ULI_8259_NONE,		/* PIRQH */
 };
 
-static inline bool is_quirk_valid(void)
-{
-	return (machine_is(mpc86xx_hpcn) ||
-		machine_is(mpc8544_ds) ||
-		machine_is(p2020_ds) ||
-		machine_is(mpc8572_ds));
-}
-
 /* Bridge */
 static void __devinit early_uli5249(struct pci_dev *dev)
 {
 	unsigned char temp;
 
-	if (!is_quirk_valid())
+	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
+			!machine_is(mpc8572_ds))
 		return;
 
 	pci_write_config_word(dev, PCI_COMMAND, PCI_COMMAND_IO |
@@ -87,7 +80,8 @@ static void __devinit quirk_uli1575(struct pci_dev *dev)
 {
 	int i;
 
-	if (!is_quirk_valid())
+	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
+			!machine_is(mpc8572_ds))
 		return;
 
 	/*
@@ -155,7 +149,8 @@ static void __devinit quirk_final_uli1575(struct pci_dev *dev)
 	 * IRQ 14: Edge
 	 * IRQ 15: Edge
 	 */
-	if (!is_quirk_valid())
+	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
+			!machine_is(mpc8572_ds))
 		return;
 
 	outb(0xfa, 0x4d0);
@@ -181,7 +176,8 @@ static void __devinit quirk_uli5288(struct pci_dev *dev)
 	unsigned char c;
 	unsigned int d;
 
-	if (!is_quirk_valid())
+	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
+			!machine_is(mpc8572_ds))
 		return;
 
 	/* read/write lock */
@@ -205,7 +201,8 @@ static void __devinit quirk_uli5229(struct pci_dev *dev)
 {
 	unsigned short temp;
 
-	if (!is_quirk_valid())
+	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
+			!machine_is(mpc8572_ds))
 		return;
 
 	pci_write_config_word(dev, PCI_COMMAND, PCI_COMMAND_INTX_DISABLE |
@@ -222,7 +219,6 @@ static void __devinit quirk_final_uli5249(struct pci_dev *dev)
 	int i;
 	u8 *dummy;
 	struct pci_bus *bus = dev->bus;
-	struct resource *res;
 	resource_size_t end = 0;
 
 	for (i = PCI_BRIDGE_RESOURCES; i < PCI_BRIDGE_RESOURCES+3; i++) {
@@ -231,12 +227,13 @@ static void __devinit quirk_final_uli5249(struct pci_dev *dev)
 			end = pci_resource_end(dev, i);
 	}
 
-	pci_bus_for_each_resource(bus, res, i) {
-		if (res && res->flags & IORESOURCE_MEM) {
-			if (res->end == end)
-				dummy = ioremap(res->start, 0x4);
+	for (i = 0; i < PCI_BUS_NUM_RESOURCES; i++) {
+		if ((bus->resource[i]) &&
+			(bus->resource[i]->flags & IORESOURCE_MEM)) {
+			if (bus->resource[i]->end == end)
+				dummy = ioremap(bus->resource[i]->start, 0x4);
 			else
-				dummy = ioremap(res->end - 3, 0x4);
+				dummy = ioremap(bus->resource[i]->end - 3, 0x4);
 			if (dummy) {
 				in_8(dummy);
 				iounmap(dummy);
@@ -273,9 +270,15 @@ static void __devinit hpcd_quirk_uli1575(struct pci_dev *dev)
 static void __devinit hpcd_quirk_uli5288(struct pci_dev *dev)
 {
 	unsigned char c;
+	unsigned short temp;
 
 	if (!machine_is(mpc86xx_hpcd))
 		return;
+
+	/* Interrupt Disable, Needed when SATA disabled */
+	pci_read_config_word(dev, PCI_COMMAND, &temp);
+	temp |= 1<<10;
+	pci_write_config_word(dev, PCI_COMMAND, temp);
 
 	pci_read_config_byte(dev, 0x83, &c);
 	c |= 0x80;

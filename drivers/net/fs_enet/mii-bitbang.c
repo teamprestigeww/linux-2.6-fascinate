@@ -22,7 +22,6 @@
 #include <linux/mii.h>
 #include <linux/platform_device.h>
 #include <linux/mdio-bitbang.h>
-#include <linux/of_mdio.h>
 #include <linux/of_platform.h>
 
 #include "fs_enet.h"
@@ -150,12 +149,31 @@ static int __devinit fs_mii_bitbang_init(struct mii_bus *bus,
 	return 0;
 }
 
-static int __devinit fs_enet_mdio_probe(struct platform_device *ofdev,
+static void __devinit add_phy(struct mii_bus *bus, struct device_node *np)
+{
+	const u32 *data;
+	int len, id, irq;
+
+	data = of_get_property(np, "reg", &len);
+	if (!data || len != 4)
+		return;
+
+	id = *data;
+	bus->phy_mask &= ~(1 << id);
+
+	irq = of_irq_to_resource(np, 0, NULL);
+	if (irq != NO_IRQ)
+		bus->irq[id] = irq;
+}
+
+static int __devinit fs_enet_mdio_probe(struct of_device *ofdev,
                                         const struct of_device_id *match)
 {
+	struct device_node *np = NULL;
 	struct mii_bus *new_bus;
 	struct bb_info *bitbang;
 	int ret = -ENOMEM;
+	int i;
 
 	bitbang = kzalloc(sizeof(struct bb_info), GFP_KERNEL);
 	if (!bitbang)
@@ -169,7 +187,7 @@ static int __devinit fs_enet_mdio_probe(struct platform_device *ofdev,
 
 	new_bus->name = "CPM2 Bitbanged MII",
 
-	ret = fs_mii_bitbang_init(new_bus, ofdev->dev.of_node);
+	ret = fs_mii_bitbang_init(new_bus, ofdev->node);
 	if (ret)
 		goto out_free_bus;
 
@@ -178,10 +196,17 @@ static int __devinit fs_enet_mdio_probe(struct platform_device *ofdev,
 	if (!new_bus->irq)
 		goto out_unmap_regs;
 
+	for (i = 0; i < PHY_MAX_ADDR; i++)
+		new_bus->irq[i] = -1;
+
+	while ((np = of_get_next_child(ofdev->node, np)))
+		if (!strcmp(np->type, "ethernet-phy"))
+			add_phy(new_bus, np);
+
 	new_bus->parent = &ofdev->dev;
 	dev_set_drvdata(&ofdev->dev, new_bus);
 
-	ret = of_mdiobus_register(new_bus, ofdev->dev.of_node);
+	ret = mdiobus_register(new_bus);
 	if (ret)
 		goto out_free_irqs;
 
@@ -200,7 +225,7 @@ out:
 	return ret;
 }
 
-static int fs_enet_mdio_remove(struct platform_device *ofdev)
+static int fs_enet_mdio_remove(struct of_device *ofdev)
 {
 	struct mii_bus *bus = dev_get_drvdata(&ofdev->dev);
 	struct bb_info *bitbang = bus->priv;
@@ -221,14 +246,10 @@ static struct of_device_id fs_enet_mdio_bb_match[] = {
 	},
 	{},
 };
-MODULE_DEVICE_TABLE(of, fs_enet_mdio_bb_match);
 
 static struct of_platform_driver fs_enet_bb_mdio_driver = {
-	.driver = {
-		.name = "fsl-bb-mdio",
-		.owner = THIS_MODULE,
-		.of_match_table = fs_enet_mdio_bb_match,
-	},
+	.name = "fsl-bb-mdio",
+	.match_table = fs_enet_mdio_bb_match,
 	.probe = fs_enet_mdio_probe,
 	.remove = fs_enet_mdio_remove,
 };

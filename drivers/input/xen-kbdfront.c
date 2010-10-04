@@ -21,11 +21,7 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/input.h>
-#include <linux/slab.h>
-
 #include <asm/xen/hypervisor.h>
-
-#include <xen/xen.h>
 #include <xen/events.h>
 #include <xen/page.h>
 #include <xen/interface/io/fbif.h>
@@ -118,7 +114,7 @@ static int __devinit xenkbd_probe(struct xenbus_device *dev,
 		xenbus_dev_fatal(dev, -ENOMEM, "allocating info structure");
 		return -ENOMEM;
 	}
-	dev_set_drvdata(&dev->dev, info);
+	dev->dev.driver_data = info;
 	info->xbdev = dev;
 	info->irq = -1;
 	snprintf(info->phys, sizeof(info->phys), "xenbus/%s", dev->nodename);
@@ -190,7 +186,7 @@ static int __devinit xenkbd_probe(struct xenbus_device *dev,
 
 static int xenkbd_resume(struct xenbus_device *dev)
 {
-	struct xenkbd_info *info = dev_get_drvdata(&dev->dev);
+	struct xenkbd_info *info = dev->dev.driver_data;
 
 	xenkbd_disconnect_backend(info);
 	memset(info->page, 0, PAGE_SIZE);
@@ -199,7 +195,7 @@ static int xenkbd_resume(struct xenbus_device *dev)
 
 static int xenkbd_remove(struct xenbus_device *dev)
 {
-	struct xenkbd_info *info = dev_get_drvdata(&dev->dev);
+	struct xenkbd_info *info = dev->dev.driver_data;
 
 	xenkbd_disconnect_backend(info);
 	if (info->kbd)
@@ -270,7 +266,7 @@ static void xenkbd_disconnect_backend(struct xenkbd_info *info)
 static void xenkbd_backend_changed(struct xenbus_device *dev,
 				   enum xenbus_state backend_state)
 {
-	struct xenkbd_info *info = dev_get_drvdata(&dev->dev);
+	struct xenkbd_info *info = dev->dev.driver_data;
 	int ret, val;
 
 	switch (backend_state) {
@@ -322,7 +318,7 @@ InitWait:
 	}
 }
 
-static const struct xenbus_device_id xenkbd_ids[] = {
+static struct xenbus_device_id xenkbd_ids[] = {
 	{ "vkbd" },
 	{ "" }
 };
@@ -339,7 +335,7 @@ static struct xenbus_driver xenkbd_driver = {
 
 static int __init xenkbd_init(void)
 {
-	if (!xen_pv_domain())
+	if (!xen_domain())
 		return -ENODEV;
 
 	/* Nothing to do if running in dom0. */

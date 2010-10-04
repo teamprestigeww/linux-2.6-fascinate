@@ -105,20 +105,10 @@
 #define __access_mask get_fs().seg
 
 #define __access_ok(addr, size, mask)					\
-({									\
-	unsigned long __addr = (unsigned long) (addr);			\
-	unsigned long __size = size;					\
-	unsigned long __mask = mask;					\
-	unsigned long __ok;						\
-									\
-	__chk_user_ptr(addr);						\
-	__ok = (signed long)(__mask & (__addr | (__addr + __size) |	\
-		__ua_size(__size)));					\
-	__ok == 0;							\
-})
+	(((signed long)((mask) & ((addr) | ((addr) + (size)) | __ua_size(size)))) == 0)
 
 #define access_ok(type, addr, size)					\
-	likely(__access_ok((addr), (size), __access_mask))
+	likely(__access_ok((unsigned long)(addr), (size), __access_mask))
 
 /*
  * put_user: - Write a simple value into user space.
@@ -235,7 +225,6 @@ do {									\
 ({									\
 	int __gu_err;							\
 									\
-	__chk_user_ptr(ptr);						\
 	__get_user_common((x), size, ptr);				\
 	__gu_err;							\
 })
@@ -245,7 +234,6 @@ do {									\
 	int __gu_err = -EFAULT;						\
 	const __typeof__(*(ptr)) __user * __gu_ptr = (ptr);		\
 									\
-	might_fault();							\
 	if (likely(access_ok(VERIFY_READ,  __gu_ptr, size)))		\
 		__get_user_common((x), size, __gu_ptr);			\
 									\
@@ -317,7 +305,6 @@ do {									\
 	__typeof__(*(ptr)) __pu_val;					\
 	int __pu_err = 0;						\
 									\
-	__chk_user_ptr(ptr);						\
 	__pu_val = (x);							\
 	switch (size) {							\
 	case 1: __put_user_asm("sb", ptr); break;			\
@@ -335,7 +322,6 @@ do {									\
 	__typeof__(*(ptr)) __pu_val = (x);				\
 	int __pu_err = -EFAULT;						\
 									\
-	might_fault();							\
 	if (likely(access_ok(VERIFY_WRITE,  __pu_addr, size))) {	\
 		switch (size) {						\
 		case 1: __put_user_asm("sb", __pu_addr); break;		\
@@ -710,10 +696,10 @@ extern size_t __copy_user(void *__to, const void *__from, size_t __n);
 	const void *__cu_from;						\
 	long __cu_len;							\
 									\
+	might_sleep();							\
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
-	might_fault();							\
 	__cu_len = __invoke_copy_to_user(__cu_to, __cu_from, __cu_len);	\
 	__cu_len;							\
 })
@@ -766,14 +752,13 @@ extern size_t __copy_user_inatomic(void *__to, const void *__from, size_t __n);
 	const void *__cu_from;						\
 	long __cu_len;							\
 									\
+	might_sleep();							\
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
-	if (access_ok(VERIFY_WRITE, __cu_to, __cu_len)) {		\
-		might_fault();						\
+	if (access_ok(VERIFY_WRITE, __cu_to, __cu_len))			\
 		__cu_len = __invoke_copy_to_user(__cu_to, __cu_from,	\
 		                                 __cu_len);		\
-	}								\
 	__cu_len;							\
 })
 
@@ -846,10 +831,10 @@ extern size_t __copy_user_inatomic(void *__to, const void *__from, size_t __n);
 	const void __user *__cu_from;					\
 	long __cu_len;							\
 									\
+	might_sleep();							\
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
-	might_fault();							\
 	__cu_len = __invoke_copy_from_user(__cu_to, __cu_from,		\
 	                                   __cu_len);			\
 	__cu_len;							\
@@ -877,31 +862,17 @@ extern size_t __copy_user_inatomic(void *__to, const void *__from, size_t __n);
 	const void __user *__cu_from;					\
 	long __cu_len;							\
 									\
+	might_sleep();							\
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
-	if (access_ok(VERIFY_READ, __cu_from, __cu_len)) {		\
-		might_fault();						\
+	if (access_ok(VERIFY_READ, __cu_from, __cu_len))		\
 		__cu_len = __invoke_copy_from_user(__cu_to, __cu_from,	\
 		                                   __cu_len);		\
-	}								\
 	__cu_len;							\
 })
 
-#define __copy_in_user(to, from, n)					\
-({									\
-	void __user *__cu_to;						\
-	const void __user *__cu_from;					\
-	long __cu_len;							\
-									\
-	__cu_to = (to);							\
-	__cu_from = (from);						\
-	__cu_len = (n);							\
-	might_fault();							\
-	__cu_len = __invoke_copy_from_user(__cu_to, __cu_from,		\
-	                                   __cu_len);			\
-	__cu_len;							\
-})
+#define __copy_in_user(to, from, n)	__copy_from_user(to, from, n)
 
 #define copy_in_user(to, from, n)					\
 ({									\
@@ -909,15 +880,14 @@ extern size_t __copy_user_inatomic(void *__to, const void *__from, size_t __n);
 	const void __user *__cu_from;					\
 	long __cu_len;							\
 									\
+	might_sleep();							\
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
 	if (likely(access_ok(VERIFY_READ, __cu_from, __cu_len) &&	\
-	           access_ok(VERIFY_WRITE, __cu_to, __cu_len))) {	\
-		might_fault();						\
+	           access_ok(VERIFY_WRITE, __cu_to, __cu_len)))		\
 		__cu_len = __invoke_copy_from_user(__cu_to, __cu_from,	\
 		                                   __cu_len);		\
-	}								\
 	__cu_len;							\
 })
 
@@ -937,7 +907,7 @@ __clear_user(void __user *addr, __kernel_size_t size)
 {
 	__kernel_size_t res;
 
-	might_fault();
+	might_sleep();
 	__asm__ __volatile__(
 		"move\t$4, %1\n\t"
 		"move\t$5, $0\n\t"
@@ -956,7 +926,7 @@ __clear_user(void __user *addr, __kernel_size_t size)
 	void __user * __cl_addr = (addr);				\
 	unsigned long __cl_size = (n);					\
 	if (__cl_size && access_ok(VERIFY_WRITE,			\
-					__cl_addr, __cl_size))		\
+		((unsigned long)(__cl_addr)), __cl_size))		\
 		__cl_size = __clear_user(__cl_addr, __cl_size);		\
 	__cl_size;							\
 })
@@ -986,7 +956,7 @@ __strncpy_from_user(char *__to, const char __user *__from, long __len)
 {
 	long res;
 
-	might_fault();
+	might_sleep();
 	__asm__ __volatile__(
 		"move\t$4, %1\n\t"
 		"move\t$5, %2\n\t"
@@ -1023,7 +993,7 @@ strncpy_from_user(char *__to, const char __user *__from, long __len)
 {
 	long res;
 
-	might_fault();
+	might_sleep();
 	__asm__ __volatile__(
 		"move\t$4, %1\n\t"
 		"move\t$5, %2\n\t"
@@ -1042,7 +1012,7 @@ static inline long __strlen_user(const char __user *s)
 {
 	long res;
 
-	might_fault();
+	might_sleep();
 	__asm__ __volatile__(
 		"move\t$4, %1\n\t"
 		__MODULE_JAL(__strlen_user_nocheck_asm)
@@ -1072,7 +1042,7 @@ static inline long strlen_user(const char __user *s)
 {
 	long res;
 
-	might_fault();
+	might_sleep();
 	__asm__ __volatile__(
 		"move\t$4, %1\n\t"
 		__MODULE_JAL(__strlen_user_asm)
@@ -1089,7 +1059,7 @@ static inline long __strnlen_user(const char __user *s, long n)
 {
 	long res;
 
-	might_fault();
+	might_sleep();
 	__asm__ __volatile__(
 		"move\t$4, %1\n\t"
 		"move\t$5, %2\n\t"
@@ -1120,7 +1090,7 @@ static inline long strnlen_user(const char __user *s, long n)
 {
 	long res;
 
-	might_fault();
+	might_sleep();
 	__asm__ __volatile__(
 		"move\t$4, %1\n\t"
 		"move\t$5, %2\n\t"

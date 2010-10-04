@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2010, Intel Corp.
+ * Copyright (C) 2000 - 2008, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -51,7 +51,8 @@ ACPI_MODULE_NAME("exconvrt")
 
 /* Local prototypes */
 static u32
-acpi_ex_convert_to_ascii(u64 integer, u16 base, u8 *string, u8 max_length);
+acpi_ex_convert_to_ascii(acpi_integer integer,
+			 u16 base, u8 * string, u8 max_length);
 
 /*******************************************************************************
  *
@@ -74,14 +75,14 @@ acpi_ex_convert_to_integer(union acpi_operand_object *obj_desc,
 {
 	union acpi_operand_object *return_desc;
 	u8 *pointer;
-	u64 result;
+	acpi_integer result;
 	u32 i;
 	u32 count;
 	acpi_status status;
 
 	ACPI_FUNCTION_TRACE_PTR(ex_convert_to_integer, obj_desc);
 
-	switch (obj_desc->common.type) {
+	switch (ACPI_GET_OBJECT_TYPE(obj_desc)) {
 	case ACPI_TYPE_INTEGER:
 
 		/* No conversion necessary */
@@ -115,7 +116,7 @@ acpi_ex_convert_to_integer(union acpi_operand_object *obj_desc,
 
 	/* String conversion is different than Buffer conversion */
 
-	switch (obj_desc->common.type) {
+	switch (ACPI_GET_OBJECT_TYPE(obj_desc)) {
 	case ACPI_TYPE_STRING:
 
 		/*
@@ -154,7 +155,7 @@ acpi_ex_convert_to_integer(union acpi_operand_object *obj_desc,
 			 * Little endian is used, meaning that the first byte of the buffer
 			 * is the LSB of the integer
 			 */
-			result |= (((u64) pointer[i]) << (i * 8));
+			result |= (((acpi_integer) pointer[i]) << (i * 8));
 		}
 		break;
 
@@ -166,7 +167,7 @@ acpi_ex_convert_to_integer(union acpi_operand_object *obj_desc,
 
 	/* Create a new integer */
 
-	return_desc = acpi_ut_create_integer_object(result);
+	return_desc = acpi_ut_create_internal_object(ACPI_TYPE_INTEGER);
 	if (!return_desc) {
 		return_ACPI_STATUS(AE_NO_MEMORY);
 	}
@@ -176,6 +177,7 @@ acpi_ex_convert_to_integer(union acpi_operand_object *obj_desc,
 
 	/* Save the Result */
 
+	return_desc->integer.value = result;
 	acpi_ex_truncate_for32bit_table(return_desc);
 	*result_desc = return_desc;
 	return_ACPI_STATUS(AE_OK);
@@ -204,7 +206,7 @@ acpi_ex_convert_to_buffer(union acpi_operand_object *obj_desc,
 
 	ACPI_FUNCTION_TRACE_PTR(ex_convert_to_buffer, obj_desc);
 
-	switch (obj_desc->common.type) {
+	switch (ACPI_GET_OBJECT_TYPE(obj_desc)) {
 	case ACPI_TYPE_BUFFER:
 
 		/* No conversion necessary */
@@ -284,9 +286,10 @@ acpi_ex_convert_to_buffer(union acpi_operand_object *obj_desc,
  ******************************************************************************/
 
 static u32
-acpi_ex_convert_to_ascii(u64 integer, u16 base, u8 *string, u8 data_width)
+acpi_ex_convert_to_ascii(acpi_integer integer,
+			 u16 base, u8 * string, u8 data_width)
 {
-	u64 digit;
+	acpi_integer digit;
 	u32 i;
 	u32 j;
 	u32 k = 0;
@@ -406,7 +409,7 @@ acpi_ex_convert_to_string(union acpi_operand_object * obj_desc,
 
 	ACPI_FUNCTION_TRACE_PTR(ex_convert_to_string, obj_desc);
 
-	switch (obj_desc->common.type) {
+	switch (ACPI_GET_OBJECT_TYPE(obj_desc)) {
 	case ACPI_TYPE_STRING:
 
 		/* No conversion necessary */
@@ -529,9 +532,10 @@ acpi_ex_convert_to_string(union acpi_operand_object * obj_desc,
 		 * (separated by commas or spaces)
 		 */
 		for (i = 0; i < obj_desc->buffer.length; i++) {
-			new_buf += acpi_ex_convert_to_ascii((u64) obj_desc->
-							    buffer.pointer[i],
-							    base, new_buf, 1);
+			new_buf += acpi_ex_convert_to_ascii((acpi_integer)
+							    obj_desc->buffer.
+							    pointer[i], base,
+							    new_buf, 1);
 			*new_buf++ = separator;	/* each separated by a comma or space */
 		}
 
@@ -601,7 +605,8 @@ acpi_ex_convert_to_target_type(acpi_object_type destination_type,
 		default:
 			/* No conversion allowed for these types */
 
-			if (destination_type != source_desc->common.type) {
+			if (destination_type !=
+			    ACPI_GET_OBJECT_TYPE(source_desc)) {
 				ACPI_DEBUG_PRINT((ACPI_DB_INFO,
 						  "Explicit operator, will store (%s) over existing type (%s)\n",
 						  acpi_ut_get_object_type_name
@@ -650,7 +655,7 @@ acpi_ex_convert_to_target_type(acpi_object_type destination_type,
 
 		default:
 			ACPI_ERROR((AE_INFO,
-				    "Bad destination type during conversion: 0x%X",
+				    "Bad destination type during conversion: %X",
 				    destination_type));
 			status = AE_AML_INTERNAL;
 			break;
@@ -665,7 +670,7 @@ acpi_ex_convert_to_target_type(acpi_object_type destination_type,
 
 	default:
 		ACPI_ERROR((AE_INFO,
-			    "Unknown Target type ID 0x%X AmlOpcode 0x%X DestType %s",
+			    "Unknown Target type ID 0x%X AmlOpcode %X DestType %s",
 			    GET_CURRENT_ARG_TYPE(walk_state->op_info->
 						 runtime_args),
 			    walk_state->opcode,

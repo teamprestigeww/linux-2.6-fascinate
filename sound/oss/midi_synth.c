@@ -426,7 +426,7 @@ midi_synth_open(int dev, int mode)
 	int             err;
 	struct midi_input_info *inc;
 
-	if (orig_dev < 0 || orig_dev >= num_midis || midi_devs[orig_dev] == NULL)
+	if (orig_dev < 0 || orig_dev > num_midis || midi_devs[orig_dev] == NULL)
 		return -ENXIO;
 
 	midi2synth[orig_dev] = dev;
@@ -523,9 +523,7 @@ midi_synth_load_patch(int dev, int format, const char __user *addr,
 	{
 		unsigned char   data;
 
-		if (get_user(data,
-		    (unsigned char __user *)(addr + hdr_size + i)))
-			return -EFAULT;
+		get_user(*(unsigned char *) &data, (unsigned char __user *) &((addr)[hdr_size + i]));
 
 		eox_seen = (i > 0 && data & 0x80);	/* End of sysex */
 

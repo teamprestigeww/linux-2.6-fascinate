@@ -36,6 +36,7 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/timex.h>
+#include <linux/slab.h>
 #include <linux/random.h>
 #include <linux/delay.h>
 
@@ -150,8 +151,7 @@ static void rb532_disable_irq(unsigned int irq_nr)
 		mask |= intr_bit;
 		WRITE_MASK(addr, mask);
 
-		/* There is a maximum of 14 GPIO interrupts */
-		if (group == GPIO_MAPPED_IRQ_GROUP && irq_nr <= (GROUP4_IRQ_BASE + 13))
+		if (group == GPIO_MAPPED_IRQ_GROUP)
 			rb532_gpio_set_istat(0, irq_nr - GPIO_MAPPED_IRQ_BASE);
 
 		/*
@@ -174,7 +174,7 @@ static int rb532_set_type(unsigned int irq_nr, unsigned type)
 	int gpio = irq_nr - GPIO_MAPPED_IRQ_BASE;
 	int group = irq_to_group(irq_nr);
 
-	if (group != GPIO_MAPPED_IRQ_GROUP || irq_nr > (GROUP4_IRQ_BASE + 13))
+	if (group != GPIO_MAPPED_IRQ_GROUP)
 		return (type == IRQ_TYPE_LEVEL_HIGH) ? 0 : -EINVAL;
 
 	switch (type) {

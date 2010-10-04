@@ -270,12 +270,21 @@ out:
 }
 
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,20)
 void ieee80211_wx_sync_scan_wq(struct work_struct *work)
 {
 	struct ieee80211_device *ieee = container_of(work, struct ieee80211_device, wx_sync_scan_wq);
+#else
+void ieee80211_wx_sync_scan_wq(struct ieee80211_device *ieee)
+{
+#endif
+//void ieee80211_wx_sync_scan_wq(struct ieee80211_device *ieee)
+//{
 	short chan;
 
 	chan = ieee->current_network.channel;
+
+	netif_carrier_off(ieee->dev);
 
 	if (ieee->data_hard_stop)
 		ieee->data_hard_stop(ieee->dev);
@@ -297,6 +306,8 @@ void ieee80211_wx_sync_scan_wq(struct work_struct *work)
 
 	if(ieee->iw_mode == IW_MODE_ADHOC || ieee->iw_mode == IW_MODE_MASTER)
 		ieee80211_start_send_beacons(ieee);
+
+	netif_carrier_on(ieee->dev);
 
 	//YJ,add,080828, In prevent of lossing ping packet during scanning
 	//ieee80211_sta_ps_send_null_frame(ieee, false);
@@ -368,7 +379,11 @@ int ieee80211_wx_set_essid(struct ieee80211_device *ieee,
 
 	if (wrqu->essid.flags && wrqu->essid.length) {
 //YJ,modified,080819
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,20)
+		len = ((wrqu->essid.length-1) < IW_ESSID_MAX_SIZE) ? (wrqu->essid.length-1) : IW_ESSID_MAX_SIZE;
+#else
 		len = (wrqu->essid.length < IW_ESSID_MAX_SIZE) ? (wrqu->essid.length) : IW_ESSID_MAX_SIZE;
+#endif
 		memset(ieee->current_network.ssid, 0, ieee->current_network.ssid_len); //YJ,add,080819
 		strncpy(ieee->current_network.ssid, extra, len);
 		ieee->current_network.ssid_len = len;
@@ -446,19 +461,19 @@ int ieee80211_wx_get_name(struct ieee80211_device *ieee,
 			     struct iw_request_info *info,
 			     union iwreq_data *wrqu, char *extra)
 {
-	strlcpy(wrqu->name, "802.11", IFNAMSIZ);
+	strcpy(wrqu->name, "802.11");
 	if(ieee->modulation & IEEE80211_CCK_MODULATION){
-		strlcat(wrqu->name, "b", IFNAMSIZ);
+		strcat(wrqu->name, "b");
 		if(ieee->modulation & IEEE80211_OFDM_MODULATION)
-			strlcat(wrqu->name, "/g", IFNAMSIZ);
+			strcat(wrqu->name, "/g");
 	}else if(ieee->modulation & IEEE80211_OFDM_MODULATION)
-		strlcat(wrqu->name, "g", IFNAMSIZ);
+		strcat(wrqu->name, "g");
 
 	if((ieee->state == IEEE80211_LINKED) ||
 		(ieee->state == IEEE80211_LINKED_SCANNING))
-		strlcat(wrqu->name,"  link", IFNAMSIZ);
+		strcat(wrqu->name," linked");
 	else if(ieee->state != IEEE80211_NOLINK)
-		strlcat(wrqu->name," .....", IFNAMSIZ);
+		strcat(wrqu->name," link..");
 
 
 	return 0;
@@ -478,7 +493,8 @@ int ieee80211_wx_set_power(struct ieee80211_device *ieee,
 		(!ieee->enter_sleep_state) ||
 		(!ieee->ps_is_queue_empty)){
 
-		printk("ERROR. PS mode tried to be use but driver missed a callback\n\n");
+		printk("ERROR. PS mode is tryied to be use but\
+driver missed a callback\n\n");
 
 		return -1;
 	}
@@ -565,3 +581,22 @@ exit:
 	return ret;
 
 }
+
+#if 0
+EXPORT_SYMBOL(ieee80211_wx_get_essid);
+EXPORT_SYMBOL(ieee80211_wx_set_essid);
+EXPORT_SYMBOL(ieee80211_wx_set_rate);
+EXPORT_SYMBOL(ieee80211_wx_get_rate);
+EXPORT_SYMBOL(ieee80211_wx_set_wap);
+EXPORT_SYMBOL(ieee80211_wx_get_wap);
+EXPORT_SYMBOL(ieee80211_wx_set_mode);
+EXPORT_SYMBOL(ieee80211_wx_get_mode);
+EXPORT_SYMBOL(ieee80211_wx_set_scan);
+EXPORT_SYMBOL(ieee80211_wx_get_freq);
+EXPORT_SYMBOL(ieee80211_wx_set_freq);
+EXPORT_SYMBOL(ieee80211_wx_set_rawtx);
+EXPORT_SYMBOL(ieee80211_wx_get_name);
+EXPORT_SYMBOL(ieee80211_wx_set_power);
+EXPORT_SYMBOL(ieee80211_wx_get_power);
+EXPORT_SYMBOL(ieee80211_wlan_frequencies);
+#endif

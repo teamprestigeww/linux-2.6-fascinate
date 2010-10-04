@@ -48,7 +48,6 @@
 #include <linux/audit.h>
 #include <linux/file.h>
 #include <linux/uaccess.h>
-#include <linux/module.h>
 
 #include <asm/system.h>
 
@@ -73,6 +72,24 @@
 #define ECHO_OP_MOVE_BACK_COL 0x80
 #define ECHO_OP_SET_CANON_COL 0x81
 #define ECHO_OP_ERASE_TAB 0x82
+
+static inline unsigned char *alloc_buf(void)
+{
+	gfp_t prio = in_interrupt() ? GFP_ATOMIC : GFP_KERNEL;
+
+	if (PAGE_SIZE != N_TTY_BUF_SIZE)
+		return kmalloc(N_TTY_BUF_SIZE, prio);
+	else
+		return (unsigned char *)__get_free_page(prio);
+}
+
+static inline void free_buf(unsigned char *buf)
+{
+	if (PAGE_SIZE != N_TTY_BUF_SIZE)
+		kfree(buf);
+	else
+		free_page((unsigned long) buf);
+}
 
 static inline int tty_put_user(struct tty_struct *tty, unsigned char x,
 			       unsigned char __user *ptr)
@@ -273,8 +290,7 @@ static inline int is_continuation(unsigned char c, struct tty_struct *tty)
  *
  *	This is a helper function that handles one output character
  *	(including special characters like TAB, CR, LF, etc.),
- *	doing OPOST processing and putting the results in the
- *	tty driver's write buffer.
+ *	putting the results in the tty driver's write buffer.
  *
  *	Note that Linux currently ignores TABDLY, CRDLY, VTDLY, FFDLY
  *	and NLDLY.  They simply aren't relevant in the world today.
@@ -302,7 +318,8 @@ static int do_output_char(unsigned char c, struct tty_struct *tty, int space)
 			if (space < 2)
 				return -1;
 			tty->canon_column = tty->column = 0;
-			tty->ops->write(tty, "\r\n", 2);
+			tty_put_char(tty, '\r');
+			tty_put_char(tty, c);
 			return 2;
 		}
 		tty->canon_column = tty->column;
@@ -352,9 +369,8 @@ static int do_output_char(unsigned char c, struct tty_struct *tty, int space)
  *	@c: character (or partial unicode symbol)
  *	@tty: terminal device
  *
- *	Output one character with OPOST processing.
- *	Returns -1 when the output device is full and the character
- *	must be retried.
+ *	Perform OPOST processing.  Returns -1 when the output device is
+ *	full and the character must be retried.
  *
  *	Locking: output_lock to protect column state and space left
  *		 (also, this is called from n_tty_write under the
@@ -380,11 +396,8 @@ static int process_output(unsigned char c, struct tty_struct *tty)
 /**
  *	process_output_block		-	block post processor
  *	@tty: terminal device
- *	@buf: character buffer
- *	@nr: number of bytes to output
- *
- *	Output a block of characters with OPOST processing.
- *	Returns the number of characters output.
+ *	@inbuf: user buffer
+ *	@nr: number of bytes
  *
  *	This path is used to speed up block console writes, among other
  *	things when processing blocks of output data. It handles only
@@ -577,23 +590,33 @@ static void process_echoes(struct tty_struct *tty)
 				break;
 
 			default:
-				/*
-				 * If the op is not a special byte code,
-				 * it is a ctrl char tagged to be echoed
-				 * as "^X" (where X is the letter
-				 * representing the control char).
-				 * Note that we must ensure there is
-				 * enough space for the whole ctrl pair.
-				 *
-				 */
-				if (space < 2) {
-					no_space_left = 1;
-					break;
+				if (iscntrl(op)) {
+					if (L_ECHOCTL(tty)) {
+						/*
+						 * Ensure there is enough space
+						 * for the whole ctrl pair.
+						 */
+						if (space < 2) {
+							no_space_left = 1;
+							break;
+						}
+						tty_put_char(tty, '^');
+						tty_put_char(tty, op ^ 0100);
+						tty->column += 2;
+						space -= 2;
+					} else {
+						if (!space) {
+							no_space_left = 1;
+							break;
+						}
+						tty_put_char(tty, op);
+						space--;
+					}
 				}
-				tty_put_char(tty, '^');
-				tty_put_char(tty, op ^ 0100);
-				tty->column += 2;
-				space -= 2;
+				/*
+				 * If above falls through, this was an
+				 * undefined op.
+				 */
 				cp += 2;
 				nr -= 2;
 			}
@@ -601,18 +624,12 @@ static void process_echoes(struct tty_struct *tty)
 			if (no_space_left)
 				break;
 		} else {
-			if (O_OPOST(tty) &&
-			    !(test_bit(TTY_HW_COOK_OUT, &tty->flags))) {
-				int retval = do_output_char(c, tty, space);
-				if (retval < 0)
-					break;
-				space -= retval;
-			} else {
-				if (!space)
-					break;
-				tty_put_char(tty, c);
-				space -= 1;
-			}
+			int retval;
+
+			retval = do_output_char(c, tty, space);
+			if (retval < 0)
+				break;
+			space -= retval;
 			cp += 1;
 			nr -= 1;
 		}
@@ -800,8 +817,8 @@ static void echo_char_raw(unsigned char c, struct tty_struct *tty)
  *	Echo user input back onto the screen. This must be called only when
  *	L_ECHO(tty) is true. Called from the driver receive_buf path.
  *
- *	This variant tags control characters to be echoed as "^X"
- *	(where X is the letter representing the control char).
+ *	This variant tags control characters to be possibly echoed as
+ *	as "^X" (where X is the letter representing the control char).
  *
  *	Locking: echo_lock to protect the echo buffer
  */
@@ -814,7 +831,7 @@ static void echo_char(unsigned char c, struct tty_struct *tty)
 		add_echo_byte(ECHO_OP_START, tty);
 		add_echo_byte(ECHO_OP_START, tty);
 	} else {
-		if (L_ECHOCTL(tty) && iscntrl(c) && c != '\t')
+		if (iscntrl(c) && c != '\t')
 			add_echo_byte(ECHO_OP_START, tty);
 		add_echo_byte(c, tty);
 	}
@@ -1102,11 +1119,6 @@ static inline void n_tty_receive_char(struct tty_struct *tty, unsigned char c)
 	if (I_IUCLC(tty) && L_IEXTEN(tty))
 		c = tolower(c);
 
-	if (L_EXTPROC(tty)) {
-		put_tty_queue(c, tty);
-		return;
-	}
-
 	if (tty->stopped && !tty->flow_stopped && I_IXON(tty) &&
 	    I_IXANY(tty) && c != START_CHAR(tty) && c != STOP_CHAR(tty) &&
 	    c != INTR_CHAR(tty) && c != QUIT_CHAR(tty) && c != SUSP_CHAR(tty)) {
@@ -1337,6 +1349,9 @@ handle_newline:
 
 static void n_tty_write_wakeup(struct tty_struct *tty)
 {
+	/* Write out any echoed characters that are still pending */
+	process_echoes(tty);
+
 	if (tty->fasync && test_and_clear_bit(TTY_DO_WRITE_WAKEUP, &tty->flags))
 		kill_fasync(&tty->fasync, SIGIO, POLL_OUT);
 }
@@ -1414,8 +1429,7 @@ static void n_tty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 
 	n_tty_set_room(tty);
 
-	if ((!tty->icanon && (tty->read_cnt >= tty->minimum_to_wake)) ||
-		L_EXTPROC(tty)) {
+	if (!tty->icanon && (tty->read_cnt >= tty->minimum_to_wake)) {
 		kill_fasync(&tty->fasync, SIGIO, POLL_IN);
 		if (waitqueue_active(&tty->read_wait))
 			wake_up_interruptible(&tty->read_wait);
@@ -1544,11 +1558,11 @@ static void n_tty_close(struct tty_struct *tty)
 {
 	n_tty_flush_buffer(tty);
 	if (tty->read_buf) {
-		kfree(tty->read_buf);
+		free_buf(tty->read_buf);
 		tty->read_buf = NULL;
 	}
 	if (tty->echo_buf) {
-		kfree(tty->echo_buf);
+		free_buf(tty->echo_buf);
 		tty->echo_buf = NULL;
 	}
 }
@@ -1570,16 +1584,17 @@ static int n_tty_open(struct tty_struct *tty)
 
 	/* These are ugly. Currently a malloc failure here can panic */
 	if (!tty->read_buf) {
-		tty->read_buf = kzalloc(N_TTY_BUF_SIZE, GFP_KERNEL);
+		tty->read_buf = alloc_buf();
 		if (!tty->read_buf)
 			return -ENOMEM;
 	}
 	if (!tty->echo_buf) {
-		tty->echo_buf = kzalloc(N_TTY_BUF_SIZE, GFP_KERNEL);
-
+		tty->echo_buf = alloc_buf();
 		if (!tty->echo_buf)
 			return -ENOMEM;
 	}
+	memset(tty->read_buf, 0, N_TTY_BUF_SIZE);
+	memset(tty->echo_buf, 0, N_TTY_BUF_SIZE);
 	reset_buffer_flags(tty);
 	tty->column = 0;
 	n_tty_set_termios(tty, NULL);
@@ -1590,8 +1605,7 @@ static int n_tty_open(struct tty_struct *tty)
 
 static inline int input_available_p(struct tty_struct *tty, int amt)
 {
-	tty_flush_to_ldisc(tty);
-	if (tty->icanon && !L_EXTPROC(tty)) {
+	if (tty->icanon) {
 		if (tty->canon_data)
 			return 1;
 	} else if (tty->read_cnt >= (amt ? amt : 1))
@@ -1638,11 +1652,6 @@ static int copy_from_read_buf(struct tty_struct *tty,
 		spin_lock_irqsave(&tty->read_lock, flags);
 		tty->read_tail = (tty->read_tail + n) & (N_TTY_BUF_SIZE-1);
 		tty->read_cnt -= n;
-		/* Turn single EOF into zero-length read */
-		if (L_EXTPROC(tty) && tty->icanon && n == 1) {
-			if (!tty->read_cnt && (*b)[n-1] == EOF_CHAR(tty))
-				n--;
-		}
 		spin_unlock_irqrestore(&tty->read_lock, flags);
 		*b += n;
 		*nr -= n;
@@ -1823,7 +1832,7 @@ do_it_again:
 			nr--;
 		}
 
-		if (tty->icanon && !L_EXTPROC(tty)) {
+		if (tty->icanon) {
 			/* N.B. avoid overrun if nr == 0 */
 			while (nr && tty->read_cnt) {
 				int eol;
@@ -2103,19 +2112,3 @@ struct tty_ldisc_ops tty_ldisc_N_TTY = {
 	.receive_buf     = n_tty_receive_buf,
 	.write_wakeup    = n_tty_write_wakeup
 };
-
-/**
- *	n_tty_inherit_ops	-	inherit N_TTY methods
- *	@ops: struct tty_ldisc_ops where to save N_TTY methods
- *
- *	Used by a generic struct tty_ldisc_ops to easily inherit N_TTY
- *	methods.
- */
-
-void n_tty_inherit_ops(struct tty_ldisc_ops *ops)
-{
-	*ops = tty_ldisc_N_TTY;
-	ops->owner = NULL;
-	ops->refcount = ops->flags = 0;
-}
-EXPORT_SYMBOL_GPL(n_tty_inherit_ops);

@@ -18,21 +18,19 @@
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/fcntl.h>
-#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/major.h>
 #include <linux/mm.h>
 #include <linux/init.h>
-#include <linux/smp_lock.h>
 #include <linux/sysctl.h>
 #include <linux/device.h>
 #include <linux/uaccess.h>
 #include <linux/bitops.h>
 #include <linux/devpts_fs.h>
-#include <linux/slab.h>
 
 #include <asm/system.h>
 
+/* These are global because they are accessed in tty_io.c */
 #ifdef CONFIG_UNIX98_PTYS
 static struct tty_driver *ptm_driver;
 static struct tty_driver *pts_driver;
@@ -62,9 +60,7 @@ static void pty_close(struct tty_struct *tty, struct file *filp)
 		if (tty->driver == ptm_driver)
 			devpts_pty_kill(tty->link);
 #endif
-		tty_unlock();
 		tty_vhangup(tty->link);
-		tty_lock();
 	}
 }
 
@@ -80,84 +76,94 @@ static void pty_close(struct tty_struct *tty, struct file *filp)
  */
 static void pty_unthrottle(struct tty_struct *tty)
 {
-	tty_wakeup(tty->link);
+	struct tty_struct *o_tty = tty->link;
+
+	if (!o_tty)
+		return;
+
+	tty_wakeup(o_tty);
 	set_bit(TTY_THROTTLED, &tty->flags);
 }
 
-/**
- *	pty_space	-	report space left for writing
- *	@to: tty we are writing into
+/*
+ * WSH 05/24/97: modified to
+ *   (1) use space in tty->flip instead of a shared temp buffer
+ *	 The flip buffers aren't being used for a pty, so there's lots
+ *	 of space available.  The buffer is protected by a per-pty
+ *	 semaphore that should almost never come under contention.
+ *   (2) avoid redundant copying for cases where count >> receive_room
+ * N.B. Calls from user space may now return an error code instead of
+ * a count.
  *
- *	The tty buffers allow 64K but we sneak a peak and clip at 8K this
- *	allows a lot of overspill room for echo and other fun messes to
- *	be handled properly
+ * FIXME: Our pty_write method is called with our ldisc lock held but
+ * not our partners. We can't just take the other one blindly without
+ * risking deadlocks.
  */
-
-static int pty_space(struct tty_struct *to)
-{
-	int n = 8192 - to->buf.memory_used;
-	if (n < 0)
-		return 0;
-	return n;
-}
-
-/**
- *	pty_write		-	write to a pty
- *	@tty: the tty we write from
- *	@buf: kernel buffer of data
- *	@count: bytes to write
- *
- *	Our "hardware" write method. Data is coming from the ldisc which
- *	may be in a non sleeping state. We simply throw this at the other
- *	end of the link as if we were an IRQ handler receiving stuff for
- *	the other side of the pty/tty pair.
- */
-
-static int pty_write(struct tty_struct *tty, const unsigned char *buf, int c)
+static int pty_write(struct tty_struct *tty, const unsigned char *buf,
+								int count)
 {
 	struct tty_struct *to = tty->link;
+	int	c;
 
-	if (tty->stopped)
+	if (!to || tty->stopped)
 		return 0;
 
-	if (c > 0) {
-		/* Stuff the data into the input queue of the other end */
-		c = tty_insert_flip_string(to, buf, c);
-		/* And shovel */
-		if (c) {
-			tty_flip_buffer_push(to);
-			tty_wakeup(tty);
-		}
-	}
+	c = to->receive_room;
+	if (c > count)
+		c = count;
+	to->ldisc.ops->receive_buf(to, buf, NULL, c);
+
 	return c;
 }
 
-/**
- *	pty_write_room	-	write space
- *	@tty: tty we are writing from
- *
- *	Report how many bytes the ldisc can send into the queue for
- *	the other device.
- */
-
 static int pty_write_room(struct tty_struct *tty)
 {
-	if (tty->stopped)
+	struct tty_struct *to = tty->link;
+
+	if (!to || tty->stopped)
 		return 0;
-	return pty_space(tty->link);
+
+	return to->receive_room;
 }
 
-/**
- *	pty_chars_in_buffer	-	characters currently in our tx queue
- *	@tty: our tty
+/*
+ *	WSH 05/24/97:  Modified for asymmetric MASTER/SLAVE behavior
+ *	The chars_in_buffer() value is used by the ldisc select() function
+ *	to hold off writing when chars_in_buffer > WAKEUP_CHARS (== 256).
+ *	The pty driver chars_in_buffer() Master/Slave must behave differently:
  *
- *	Report how much we have in the transmit queue. As everything is
- *	instantly at the other end this is easy to implement.
+ *      The Master side needs to allow typed-ahead commands to accumulate
+ *      while being canonicalized, so we report "our buffer" as empty until
+ *	some threshold is reached, and then report the count. (Any count >
+ *	WAKEUP_CHARS is regarded by select() as "full".)  To avoid deadlock
+ *	the count returned must be 0 if no canonical data is available to be
+ *	read. (The N_TTY ldisc.chars_in_buffer now knows this.)
+ *
+ *	The Slave side passes all characters in raw mode to the Master side's
+ *	buffer where they can be read immediately, so in this case we can
+ *	return the true count in the buffer.
  */
-
 static int pty_chars_in_buffer(struct tty_struct *tty)
 {
-	return 0;
+	struct tty_struct *to = tty->link;
+	int count;
+
+	/* We should get the line discipline lock for "tty->link" */
+	if (!to || !to->ldisc.ops->chars_in_buffer)
+		return 0;
+
+	/* The ldisc must report 0 if no characters available to be read */
+	count = to->ldisc.ops->chars_in_buffer(to);
+
+	if (tty->driver->subtype == PTY_TYPE_SLAVE)
+		return count;
+
+	/* Master side driver ... if the other side's read buffer is less than
+	 * half full, return 0 to allow writers to proceed; otherwise return
+	 * the count.  This leaves a comfortable margin to avoid overflow,
+	 * and still allows half a buffer's worth of typed-ahead commands.
+	 */
+	return (count < N_TTY_BUF_SIZE/2) ? 0 : count;
 }
 
 /* Set the lock flag on a pty */
@@ -173,23 +179,6 @@ static int pty_set_lock(struct tty_struct *tty, int __user *arg)
 	return 0;
 }
 
-/* Send a signal to the slave */
-static int pty_signal(struct tty_struct *tty, int sig)
-{
-	unsigned long flags;
-	struct pid *pgrp;
-
-	if (tty->link) {
-		spin_lock_irqsave(&tty->link->ctrl_lock, flags);
-		pgrp = get_pid(tty->link->pgrp);
-		spin_unlock_irqrestore(&tty->link->ctrl_lock, flags);
-
-		kill_pgrp(pgrp, sig, 1);
-		put_pid(pgrp);
-	}
-	return 0;
-}
-
 static void pty_flush_buffer(struct tty_struct *tty)
 {
 	struct tty_struct *to = tty->link;
@@ -197,7 +186,10 @@ static void pty_flush_buffer(struct tty_struct *tty)
 
 	if (!to)
 		return;
-	/* tty_buffer_flush(to); FIXME */
+
+	if (to->ldisc.ops->flush_buffer)
+		to->ldisc.ops->flush_buffer(to);
+
 	if (to->packet) {
 		spin_lock_irqsave(&tty->ctrl_lock, flags);
 		tty->ctrl_status |= TIOCPKT_FLUSHWRITE;
@@ -240,7 +232,7 @@ static void pty_set_termios(struct tty_struct *tty,
  *	@tty: tty being resized
  *	@ws: window size being set.
  *
- *	Update the termios variables and send the necessary signals to
+ *	Update the termios variables and send the neccessary signals to
  *	peform a terminal resize correctly
  */
 
@@ -281,9 +273,6 @@ done:
 	mutex_unlock(&tty->termios_mutex);
 	return 0;
 }
-
-/* Traditional BSD devices */
-#ifdef CONFIG_LEGACY_PTYS
 
 static int pty_install(struct tty_driver *driver, struct tty_struct *tty)
 {
@@ -334,14 +323,30 @@ free_mem_out:
 	return -ENOMEM;
 }
 
+
+static const struct tty_operations pty_ops = {
+	.install = pty_install,
+	.open = pty_open,
+	.close = pty_close,
+	.write = pty_write,
+	.write_room = pty_write_room,
+	.flush_buffer = pty_flush_buffer,
+	.chars_in_buffer = pty_chars_in_buffer,
+	.unthrottle = pty_unthrottle,
+	.set_termios = pty_set_termios,
+	.resize = pty_resize
+};
+
+/* Traditional BSD devices */
+#ifdef CONFIG_LEGACY_PTYS
+static struct tty_driver *pty_driver, *pty_slave_driver;
+
 static int pty_bsd_ioctl(struct tty_struct *tty, struct file *file,
 			 unsigned int cmd, unsigned long arg)
 {
 	switch (cmd) {
 	case TIOCSPTLCK: /* Set PT Lock (disallow slave open) */
 		return pty_set_lock(tty, (int __user *) arg);
-	case TIOCSIG:    /* Send signal to other side of pty */
-		return pty_signal(tty, (int) arg);
 	}
 	return -ENOIOCTLCMD;
 }
@@ -349,12 +354,7 @@ static int pty_bsd_ioctl(struct tty_struct *tty, struct file *file,
 static int legacy_count = CONFIG_LEGACY_PTY_COUNT;
 module_param(legacy_count, int, 0);
 
-/*
- * The master side of a pty can do TIOCSPTLCK and thus
- * has pty_bsd_ioctl.
- */
-static const struct tty_operations master_pty_ops_bsd = {
-	.install = pty_install,
+static const struct tty_operations pty_ops_bsd = {
 	.open = pty_open,
 	.close = pty_close,
 	.write = pty_write,
@@ -367,23 +367,8 @@ static const struct tty_operations master_pty_ops_bsd = {
 	.resize = pty_resize
 };
 
-static const struct tty_operations slave_pty_ops_bsd = {
-	.install = pty_install,
-	.open = pty_open,
-	.close = pty_close,
-	.write = pty_write,
-	.write_room = pty_write_room,
-	.flush_buffer = pty_flush_buffer,
-	.chars_in_buffer = pty_chars_in_buffer,
-	.unthrottle = pty_unthrottle,
-	.set_termios = pty_set_termios,
-	.resize = pty_resize
-};
-
 static void __init legacy_pty_init(void)
 {
-	struct tty_driver *pty_driver, *pty_slave_driver;
-
 	if (legacy_count <= 0)
 		return;
 
@@ -411,7 +396,7 @@ static void __init legacy_pty_init(void)
 	pty_driver->init_termios.c_ospeed = 38400;
 	pty_driver->flags = TTY_DRIVER_RESET_TERMIOS | TTY_DRIVER_REAL_RAW;
 	pty_driver->other = pty_slave_driver;
-	tty_set_operations(pty_driver, &master_pty_ops_bsd);
+	tty_set_operations(pty_driver, &pty_ops);
 
 	pty_slave_driver->owner = THIS_MODULE;
 	pty_slave_driver->driver_name = "pty_slave";
@@ -427,7 +412,7 @@ static void __init legacy_pty_init(void)
 	pty_slave_driver->flags = TTY_DRIVER_RESET_TERMIOS |
 					TTY_DRIVER_REAL_RAW;
 	pty_slave_driver->other = pty_driver;
-	tty_set_operations(pty_slave_driver, &slave_pty_ops_bsd);
+	tty_set_operations(pty_slave_driver, &pty_ops);
 
 	if (tty_register_driver(pty_driver))
 		panic("Couldn't register pty driver");
@@ -453,25 +438,30 @@ static struct cdev ptmx_cdev;
 
 static struct ctl_table pty_table[] = {
 	{
+		.ctl_name	= PTY_MAX,
 		.procname	= "max",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.data		= &pty_limit,
-		.proc_handler	= proc_dointvec_minmax,
+		.proc_handler	= &proc_dointvec_minmax,
+		.strategy	= &sysctl_intvec,
 		.extra1		= &pty_limit_min,
 		.extra2		= &pty_limit_max,
 	}, {
+		.ctl_name	= PTY_NR,
 		.procname	= "nr",
 		.maxlen		= sizeof(int),
 		.mode		= 0444,
 		.data		= &pty_count,
-		.proc_handler	= proc_dointvec,
-	}, 
-	{}
+		.proc_handler	= &proc_dointvec,
+	}, {
+		.ctl_name	= 0
+	}
 };
 
 static struct ctl_table pty_kern_table[] = {
 	{
+		.ctl_name	= KERN_PTY,
 		.procname	= "pty",
 		.mode		= 0555,
 		.child		= pty_table,
@@ -481,6 +471,7 @@ static struct ctl_table pty_kern_table[] = {
 
 static struct ctl_table pty_root_table[] = {
 	{
+		.ctl_name	= CTL_KERN,
 		.procname	= "kernel",
 		.mode		= 0555,
 		.child		= pty_kern_table,
@@ -497,8 +488,6 @@ static int pty_unix98_ioctl(struct tty_struct *tty, struct file *file,
 		return pty_set_lock(tty, (int __user *)arg);
 	case TIOCGPTN: /* Get PT Number */
 		return put_user(tty->index, (unsigned int __user *)arg);
-	case TIOCSIG:    /* Send signal to other side of pty */
-		return pty_signal(tty, (int) arg);
 	}
 
 	return -ENOIOCTLCMD;
@@ -649,7 +638,7 @@ static const struct tty_operations pty_unix98_ops = {
  *		allocated_ptys_lock handles the list of free pty numbers
  */
 
-static int ptmx_open(struct inode *inode, struct file *filp)
+static int __ptmx_open(struct inode *inode, struct file *filp)
 {
 	struct tty_struct *tty;
 	int retval;
@@ -658,14 +647,11 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 	nonseekable_open(inode, filp);
 
 	/* find a device that is not in use. */
-	tty_lock();
 	index = devpts_new_index(inode);
-	tty_unlock();
 	if (index < 0)
 		return index;
 
 	mutex_lock(&tty_mutex);
-	tty_lock();
 	tty = tty_init_dev(ptm_driver, index, 1);
 	mutex_unlock(&tty_mutex);
 
@@ -675,27 +661,32 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 	}
 
 	set_bit(TTY_PTY_LOCK, &tty->flags); /* LOCK THE SLAVE */
-
-	tty_add_file(tty, filp);
+	filp->private_data = tty;
+	file_move(filp, &tty->tty_files);
 
 	retval = devpts_pty_new(inode, tty->link);
 	if (retval)
 		goto out1;
 
 	retval = ptm_driver->ops->open(tty, filp);
-	if (retval)
-		goto out2;
+	if (!retval)
+		return 0;
 out1:
-	tty_unlock();
-	return retval;
-out2:
-	tty_unlock();
-	tty_release(inode, filp);
+	tty_release_dev(filp);
 	return retval;
 out:
 	devpts_kill_index(inode, index);
-	tty_unlock();
 	return retval;
+}
+
+static int ptmx_open(struct inode *inode, struct file *filp)
+{
+	int ret;
+
+	lock_kernel();
+	ret = __ptmx_open(inode, filp);
+	unlock_kernel();
+	return ret;
 }
 
 static struct file_operations ptmx_fops;

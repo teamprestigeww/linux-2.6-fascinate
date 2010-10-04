@@ -1,7 +1,30 @@
 /*
- * Copyright 2004-2009 Analog Devices Inc.
+ * File:         arch/blackfin/kernel/entry.S
+ * Based on:
+ * Author:
  *
- * Licensed under the GPL-2 or later
+ * Created:
+ * Description:
+ *
+ * Modified:
+ *               Copyright 2004-2006 Analog Devices Inc.
+ *
+ * Bugs:         Enter bugs at http://blackfin.uclinux.org/
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see the file COPYING, or write
+ * to the Free Software Foundation, Inc.,
+ * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <linux/linkage.h>
@@ -20,31 +43,11 @@
 
 ENTRY(_ret_from_fork)
 #ifdef CONFIG_IPIPE
-	/*
-	 * Hw IRQs are off on entry, and we don't want the scheduling tail
-	 * code to starve high priority domains from interrupts while it
-	 * runs. Therefore we first stall the root stage to have the
-	 * virtual interrupt state reflect IMASK.
-	 */
-	p0.l = ___ipipe_root_status;
-	p0.h = ___ipipe_root_status;
-	r4 = [p0];
-	bitset(r4, 0);
-	[p0] = r4;
-	/*
-	 * Then we may enable hw IRQs, allowing preemption from high
-	 * priority domains. schedule_tail() will do local_irq_enable()
-	 * since Blackfin does not define __ARCH_WANT_UNLOCKED_CTXSW, so
-	 * there is no need to unstall the root domain by ourselves
-	 * afterwards.
-	 */
-	p0.l = _bfin_irq_flags;
-	p0.h = _bfin_irq_flags;
-	r4 = [p0];
-	sti r4;
+	[--sp] = reti; 		/* IRQs on. */
+	SP += 4;
 #endif /* CONFIG_IPIPE */
 	SP += -12;
-	pseudo_long_call _schedule_tail, p5;
+	call _schedule_tail;
 	SP += 12;
 	r0 = [sp + PT_IPEND];
 	cc = bittst(r0,1);
@@ -79,7 +82,7 @@ ENTRY(_sys_vfork)
 	r0 += 24;
 	[--sp] = rets;
 	SP += -12;
-	pseudo_long_call _bfin_vfork, p2;
+	call _bfin_vfork;
 	SP += 12;
 	rets = [sp++];
 	rts;
@@ -90,7 +93,7 @@ ENTRY(_sys_clone)
 	r0 += 24;
 	[--sp] = rets;
 	SP += -12;
-	pseudo_long_call _bfin_clone, p2;
+	call _bfin_clone;
 	SP += 12;
 	rets = [sp++];
 	rts;
@@ -101,7 +104,7 @@ ENTRY(_sys_rt_sigreturn)
 	r0 += 24;
 	[--sp] = rets;
 	SP += -12;
-	pseudo_long_call _do_rt_sigreturn, p2;
+	call _do_rt_sigreturn;
 	SP += 12;
 	rets = [sp++];
 	rts;

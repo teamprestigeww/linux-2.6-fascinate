@@ -143,22 +143,6 @@ out:
 }
 #endif
 
-static const struct net_device_ops ac_netdev_ops = {
-	.ndo_open		= ac_open,
-	.ndo_stop 		= ac_close_card,
-
-	.ndo_start_xmit		= ei_start_xmit,
-	.ndo_tx_timeout		= ei_tx_timeout,
-	.ndo_get_stats		= ei_get_stats,
-	.ndo_set_multicast_list = ei_set_multicast_list,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_set_mac_address 	= eth_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= ei_poll,
-#endif
-};
-
 static int __init ac_probe1(int ioaddr, struct net_device *dev)
 {
 	int i, retval;
@@ -211,7 +195,7 @@ static int __init ac_probe1(int ioaddr, struct net_device *dev)
 	retval = request_irq(dev->irq, ei_interrupt, 0, DRV_NAME, dev);
 	if (retval) {
 		printk (" nothing! Unable to get IRQ %d.\n", dev->irq);
-		goto out;
+		goto out1;
 	}
 
 	printk(" IRQ %d, %s port\n", dev->irq, port_name[dev->if_port]);
@@ -269,7 +253,11 @@ static int __init ac_probe1(int ioaddr, struct net_device *dev)
 	ei_status.block_output = &ac_block_output;
 	ei_status.get_8390_hdr = &ac_get_8390_hdr;
 
-	dev->netdev_ops = &ac_netdev_ops;
+	dev->open = &ac_open;
+	dev->stop = &ac_close_card;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = ei_poll;
+#endif
 	NS8390_init(dev, 0);
 
 	retval = register_netdev(dev);
@@ -307,6 +295,8 @@ static void ac_reset_8390(struct net_device *dev)
 	ei_status.txing = 0;
 	outb(AC_ENABLE, ioaddr + AC_RESET_PORT);
 	if (ei_debug > 1) printk("reset done\n");
+
+	return;
 }
 
 /* Grab the 8390 specific header. Similar to the block_input routine, but

@@ -50,54 +50,76 @@ static int write_regs(struct i2c_client *client, u8 *regs)
 	return 0;
 }
 
-static int wis_ov7640_probe(struct i2c_client *client,
-			    const struct i2c_device_id *id)
+static struct i2c_driver wis_ov7640_driver;
+
+static struct i2c_client wis_ov7640_client_templ = {
+	.name		= "OV7640 (WIS)",
+	.driver		= &wis_ov7640_driver,
+};
+
+static int wis_ov7640_detect(struct i2c_adapter *adapter, int addr, int kind)
 {
-	struct i2c_adapter *adapter = client->adapter;
+	struct i2c_client *client;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -ENODEV;
+		return 0;
 
+	client = kmalloc(sizeof(struct i2c_client), GFP_KERNEL);
+	if (client == NULL)
+		return -ENOMEM;
+	memcpy(client, &wis_ov7640_client_templ,
+			sizeof(wis_ov7640_client_templ));
+	client->adapter = adapter;
+	client->addr = addr;
 	client->flags = I2C_CLIENT_SCCB;
 
 	printk(KERN_DEBUG
 		"wis-ov7640: initializing OV7640 at address %d on %s\n",
-		client->addr, adapter->name);
+		addr, adapter->name);
 
 	if (write_regs(client, initial_registers) < 0) {
 		printk(KERN_ERR "wis-ov7640: error initializing OV7640\n");
-		return -ENODEV;
+		kfree(client);
+		return 0;
 	}
 
+	i2c_attach_client(client);
 	return 0;
 }
 
-static int wis_ov7640_remove(struct i2c_client *client)
+static int wis_ov7640_detach(struct i2c_client *client)
 {
+	int r;
+
+	r = i2c_detach_client(client);
+	if (r < 0)
+		return r;
+
+	kfree(client);
 	return 0;
 }
-
-static const struct i2c_device_id wis_ov7640_id[] = {
-	{ "wis_ov7640", 0 },
-	{ }
-};
 
 static struct i2c_driver wis_ov7640_driver = {
 	.driver = {
 		.name	= "WIS OV7640 I2C driver",
 	},
-	.probe		= wis_ov7640_probe,
-	.remove		= wis_ov7640_remove,
-	.id_table	= wis_ov7640_id,
+	.id		= I2C_DRIVERID_WIS_OV7640,
+	.detach_client	= wis_ov7640_detach,
 };
 
 static int __init wis_ov7640_init(void)
 {
-	return i2c_add_driver(&wis_ov7640_driver);
+	int r;
+
+	r = i2c_add_driver(&wis_ov7640_driver);
+	if (r < 0)
+		return r;
+	return wis_i2c_add_driver(wis_ov7640_driver.id, wis_ov7640_detect);
 }
 
 static void __exit wis_ov7640_cleanup(void)
 {
+	wis_i2c_del_driver(wis_ov7640_detect);
 	i2c_del_driver(&wis_ov7640_driver);
 }
 

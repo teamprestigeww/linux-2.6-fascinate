@@ -119,6 +119,19 @@
 #define REALVIEW_SYS_TEST_OSC3               (REALVIEW_SYS_BASE + REALVIEW_SYS_TEST_OSC3_OFFSET)
 #define REALVIEW_SYS_TEST_OSC4               (REALVIEW_SYS_BASE + REALVIEW_SYS_TEST_OSC4_OFFSET)
 
+/* 
+ * Values for REALVIEW_SYS_RESET_CTRL
+ */
+#define REALVIEW_SYS_CTRL_RESET_CONFIGCLR    0x01
+#define REALVIEW_SYS_CTRL_RESET_CONFIGINIT   0x02
+#define REALVIEW_SYS_CTRL_RESET_DLLRESET     0x03
+#define REALVIEW_SYS_CTRL_RESET_PLLRESET     0x04
+#define REALVIEW_SYS_CTRL_RESET_POR          0x05
+#define REALVIEW_SYS_CTRL_RESET_DoC          0x06
+
+#define REALVIEW_SYS_CTRL_LED         (1 << 0)
+
+
 /* ------------------------------------------------------------------------
  *  RealView control registers
  * ------------------------------------------------------------------------
@@ -140,7 +153,7 @@
  *     SYS_CLD, SYS_BOOTCS
  */
 #define REALVIEW_SYS_LOCK_LOCKED    (1 << 16)
-#define REALVIEW_SYS_LOCK_VAL	0xA05F	       /* Enable write access */
+#define REALVIEW_SYS_LOCKVAL_MASK	0xFFFF		/* write 0xA05F to enable write access */
 
 /*
  * REALVIEW_SYS_FLASH
@@ -191,12 +204,6 @@
 #define REALVIEW_LT_BASE              0x80000000	/* Logic Tile expansion */
 
 /*
- * CompactFlash
- */
-#define REALVIEW_CF_BASE		0x18000000	/* CompactFlash */
-#define REALVIEW_CF_MEM_BASE		0x18003000	/* SMC for CompactFlash */
-
-/*
  * Disk on Chip
  */
 #define REALVIEW_DOC_BASE             0x2C000000
@@ -231,6 +238,12 @@
 #define REALVIEW_INTREG_OFFSET		0x8	/* Interrupt control */
 #define REALVIEW_DECODE_OFFSET		0xC	/* Fitted logic modules */
 
+/* 
+ *  Clean base - dummy
+ * 
+ */
+#define CLEAN_BASE                      REALVIEW_BOOT_ROM_HI
+
 /*
  * System controller bit assignment
  */
@@ -242,6 +255,20 @@
 #define REALVIEW_TIMER3_EnSel	19
 #define REALVIEW_TIMER4_EnSel	21
 
+
+#define MAX_TIMER                       2
+#define MAX_PERIOD                      699050
+#define TICKS_PER_uSEC                  1
+
+/* 
+ *  These are useconds NOT ticks.  
+ * 
+ */
+#define mSEC_1                          1000
+#define mSEC_5                          (mSEC_1 * 5)
+#define mSEC_10                         (mSEC_1 * 10)
+#define mSEC_25                         (mSEC_1 * 25)
+#define SEC_1                           (mSEC_1 * 1000)
 
 #define REALVIEW_CSR_BASE             0x10000000
 #define REALVIEW_CSR_SIZE             0x10000000

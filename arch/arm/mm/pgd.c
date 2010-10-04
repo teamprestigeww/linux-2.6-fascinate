@@ -8,7 +8,6 @@
  * published by the Free Software Foundation.
  */
 #include <linux/mm.h>
-#include <linux/gfp.h>
 #include <linux/highmem.h>
 
 #include <asm/pgalloc.h>

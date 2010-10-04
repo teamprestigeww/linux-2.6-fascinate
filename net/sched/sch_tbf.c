@@ -127,7 +127,7 @@ static int tbf_enqueue(struct sk_buff *skb, struct Qdisc* sch)
 		return qdisc_reshape_fail(skb, sch);
 
 	ret = qdisc_enqueue(skb, q->qdisc);
-	if (ret != NET_XMIT_SUCCESS) {
+	if (ret != 0) {
 		if (net_xmit_drop_count(ret))
 			sch->qstats.drops++;
 		return ret;
@@ -136,7 +136,7 @@ static int tbf_enqueue(struct sk_buff *skb, struct Qdisc* sch)
 	sch->q.qlen++;
 	sch->bstats.bytes += qdisc_pkt_len(skb);
 	sch->bstats.packets++;
-	return NET_XMIT_SUCCESS;
+	return 0;
 }
 
 static unsigned int tbf_drop(struct Qdisc* sch)
@@ -236,6 +236,7 @@ static int tbf_change(struct Qdisc* sch, struct nlattr *opt)
 	struct tc_tbf_qopt *qopt;
 	struct qdisc_rate_table *rtab = NULL;
 	struct qdisc_rate_table *ptab = NULL;
+	struct qdisc_rate_table *tmp;
 	struct Qdisc *child = NULL;
 	int max_size,n;
 
@@ -273,11 +274,7 @@ static int tbf_change(struct Qdisc* sch, struct nlattr *opt)
 	if (max_size < 0)
 		goto done;
 
-	if (q->qdisc != &noop_qdisc) {
-		err = fifo_set_limit(q->qdisc, qopt->limit);
-		if (err)
-			goto done;
-	} else if (qopt->limit > 0) {
+	if (qopt->limit > 0) {
 		child = fifo_create_dflt(sch, &bfifo_qdisc_ops, qopt->limit);
 		if (IS_ERR(child)) {
 			err = PTR_ERR(child);
@@ -298,9 +295,13 @@ static int tbf_change(struct Qdisc* sch, struct nlattr *opt)
 	q->tokens = q->buffer;
 	q->ptokens = q->mtu;
 
-	swap(q->R_tab, rtab);
-	swap(q->P_tab, ptab);
+	tmp = q->R_tab;
+	q->R_tab = rtab;
+	rtab = tmp;
 
+	tmp = q->P_tab;
+	q->P_tab = ptab;
+	ptab = tmp;
 	sch_tree_unlock(sch);
 	err = 0;
 done:
@@ -372,6 +373,9 @@ static int tbf_dump_class(struct Qdisc *sch, unsigned long cl,
 {
 	struct tbf_sched_data *q = qdisc_priv(sch);
 
+	if (cl != 1) 	/* only one class */
+		return -ENOENT;
+
 	tcm->tcm_handle |= TC_H_MIN(1);
 	tcm->tcm_info = q->qdisc->handle;
 
@@ -411,6 +415,17 @@ static void tbf_put(struct Qdisc *sch, unsigned long arg)
 {
 }
 
+static int tbf_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
+			    struct nlattr **tca, unsigned long *arg)
+{
+	return -ENOSYS;
+}
+
+static int tbf_delete(struct Qdisc *sch, unsigned long arg)
+{
+	return -ENOSYS;
+}
+
 static void tbf_walk(struct Qdisc *sch, struct qdisc_walker *walker)
 {
 	if (!walker->stop) {
@@ -423,13 +438,21 @@ static void tbf_walk(struct Qdisc *sch, struct qdisc_walker *walker)
 	}
 }
 
+static struct tcf_proto **tbf_find_tcf(struct Qdisc *sch, unsigned long cl)
+{
+	return NULL;
+}
+
 static const struct Qdisc_class_ops tbf_class_ops =
 {
 	.graft		=	tbf_graft,
 	.leaf		=	tbf_leaf,
 	.get		=	tbf_get,
 	.put		=	tbf_put,
+	.change		=	tbf_change_class,
+	.delete		=	tbf_delete,
 	.walk		=	tbf_walk,
+	.tcf_chain	=	tbf_find_tcf,
 	.dump		=	tbf_dump_class,
 };
 

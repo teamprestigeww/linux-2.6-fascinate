@@ -29,7 +29,7 @@
 #include <linux/poll.h>
 #include <linux/ptrace.h>
 #include <linux/seq_file.h>
-#include <linux/slab.h>
+#include <linux/marker.h>
 
 #include <asm/io.h>
 #include <asm/time.h>
@@ -38,7 +38,6 @@
 #include <asm/uaccess.h>
 
 #include "spufs.h"
-#include "sputrace.h"
 
 #define SPUFS_MMAP_4K (PAGE_SIZE == 0x1000)
 
@@ -148,7 +147,7 @@ static int __fops ## _open(struct inode *inode, struct file *file)	\
 	__simple_attr_check_format(__fmt, 0ull);			\
 	return spufs_attr_open(inode, file, __get, __set, __fmt);	\
 }									\
-static const struct file_operations __fops = {				\
+static struct file_operations __fops = {				\
 	.owner	 = THIS_MODULE,						\
 	.open	 = __fops ## _open,					\
 	.release = spufs_attr_release,					\
@@ -310,7 +309,7 @@ static int spufs_mem_mmap_access(struct vm_area_struct *vma,
 	return len;
 }
 
-static const struct vm_operations_struct spufs_mem_mmap_vmops = {
+static struct vm_operations_struct spufs_mem_mmap_vmops = {
 	.fault = spufs_mem_mmap_fault,
 	.access = spufs_mem_mmap_access,
 };
@@ -437,7 +436,7 @@ static int spufs_cntl_mmap_fault(struct vm_area_struct *vma,
 	return spufs_ps_fault(vma, vmf, 0x4000, SPUFS_CNTL_MAP_SIZE);
 }
 
-static const struct vm_operations_struct spufs_cntl_mmap_vmops = {
+static struct vm_operations_struct spufs_cntl_mmap_vmops = {
 	.fault = spufs_cntl_mmap_fault,
 };
 
@@ -569,17 +568,16 @@ spufs_regs_write(struct file *file, const char __user *buffer,
 	struct spu_lscsa *lscsa = ctx->csa.lscsa;
 	int ret;
 
-	if (*pos >= sizeof(lscsa->gprs))
+	size = min_t(ssize_t, sizeof lscsa->gprs - *pos, size);
+	if (size <= 0)
 		return -EFBIG;
-
-	size = min_t(ssize_t, sizeof(lscsa->gprs) - *pos, size);
 	*pos += size;
 
 	ret = spu_acquire_saved(ctx);
 	if (ret)
 		return ret;
 
-	ret = copy_from_user((char *)lscsa->gprs + *pos - size,
+	ret = copy_from_user(lscsa->gprs + *pos - size,
 			     buffer, size) ? -EFAULT : size;
 
 	spu_release_saved(ctx);
@@ -625,10 +623,9 @@ spufs_fpcr_write(struct file *file, const char __user * buffer,
 	struct spu_lscsa *lscsa = ctx->csa.lscsa;
 	int ret;
 
-	if (*pos >= sizeof(lscsa->fpcr))
-		return -EFBIG;
-
 	size = min_t(ssize_t, sizeof(lscsa->fpcr) - *pos, size);
+	if (size <= 0)
+		return -EFBIG;
 
 	ret = spu_acquire_saved(ctx);
 	if (ret)
@@ -1144,7 +1141,7 @@ spufs_signal1_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 #endif
 }
 
-static const struct vm_operations_struct spufs_signal1_mmap_vmops = {
+static struct vm_operations_struct spufs_signal1_mmap_vmops = {
 	.fault = spufs_signal1_mmap_fault,
 };
 
@@ -1280,7 +1277,7 @@ spufs_signal2_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 #endif
 }
 
-static const struct vm_operations_struct spufs_signal2_mmap_vmops = {
+static struct vm_operations_struct spufs_signal2_mmap_vmops = {
 	.fault = spufs_signal2_mmap_fault,
 };
 
@@ -1398,7 +1395,7 @@ spufs_mss_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	return spufs_ps_fault(vma, vmf, 0x0000, SPUFS_MSS_MAP_SIZE);
 }
 
-static const struct vm_operations_struct spufs_mss_mmap_vmops = {
+static struct vm_operations_struct spufs_mss_mmap_vmops = {
 	.fault = spufs_mss_mmap_fault,
 };
 
@@ -1459,7 +1456,7 @@ spufs_psmap_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	return spufs_ps_fault(vma, vmf, 0x0000, SPUFS_PS_MAP_SIZE);
 }
 
-static const struct vm_operations_struct spufs_psmap_mmap_vmops = {
+static struct vm_operations_struct spufs_psmap_mmap_vmops = {
 	.fault = spufs_psmap_mmap_fault,
 };
 
@@ -1518,7 +1515,7 @@ spufs_mfc_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	return spufs_ps_fault(vma, vmf, 0x3000, SPUFS_MFC_MAP_SIZE);
 }
 
-static const struct vm_operations_struct spufs_mfc_mmap_vmops = {
+static struct vm_operations_struct spufs_mfc_mmap_vmops = {
 	.fault = spufs_mfc_mmap_fault,
 };
 
@@ -1849,7 +1846,8 @@ out:
 	return ret;
 }
 
-static int spufs_mfc_fsync(struct file *file, int datasync)
+static int spufs_mfc_fsync(struct file *file, struct dentry *dentry,
+			   int datasync)
 {
 	return spufs_mfc_flush(file, NULL);
 }
@@ -2494,7 +2492,7 @@ static ssize_t spufs_switch_log_read(struct file *file, char __user *buf,
 	struct spu_context *ctx = SPUFS_I(inode)->i_ctx;
 	int error = 0, cnt = 0;
 
-	if (!buf)
+	if (!buf || len < 0)
 		return -EINVAL;
 
 	error = spu_acquire(ctx);
@@ -2667,7 +2665,7 @@ static const struct file_operations spufs_ctx_fops = {
 	.release        = single_release,
 };
 
-const struct spufs_tree_descr spufs_dir_contents[] = {
+struct spufs_tree_descr spufs_dir_contents[] = {
 	{ "capabilities", &spufs_caps_fops, 0444, },
 	{ "mem",  &spufs_mem_fops,  0666, LS_SIZE, },
 	{ "regs", &spufs_regs_fops,  0666, sizeof(struct spu_reg128[128]), },
@@ -2708,7 +2706,7 @@ const struct spufs_tree_descr spufs_dir_contents[] = {
 	{},
 };
 
-const struct spufs_tree_descr spufs_dir_nosched_contents[] = {
+struct spufs_tree_descr spufs_dir_nosched_contents[] = {
 	{ "capabilities", &spufs_caps_fops, 0444, },
 	{ "mem",  &spufs_mem_fops,  0666, LS_SIZE, },
 	{ "mbox", &spufs_mbox_fops, 0444, },
@@ -2733,12 +2731,12 @@ const struct spufs_tree_descr spufs_dir_nosched_contents[] = {
 	{},
 };
 
-const struct spufs_tree_descr spufs_dir_debug_contents[] = {
+struct spufs_tree_descr spufs_dir_debug_contents[] = {
 	{ ".ctx", &spufs_ctx_fops, 0444, },
 	{},
 };
 
-const struct spufs_coredump_reader spufs_coredump_read[] = {
+struct spufs_coredump_reader spufs_coredump_read[] = {
 	{ "regs", __spufs_regs_read, NULL, sizeof(struct spu_reg128[128])},
 	{ "fpcr", __spufs_fpcr_read, NULL, sizeof(struct spu_reg128) },
 	{ "lslr", NULL, spufs_lslr_get, 19 },

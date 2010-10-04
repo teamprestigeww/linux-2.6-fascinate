@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel(R) Gigabit Ethernet Linux driver
-  Copyright(c) 2007-2009 Intel Corporation.
+  Copyright(c) 2007 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -78,7 +78,9 @@ static void igb_shift_out_eec_bits(struct e1000_hw *hw, u16 data, u16 count)
 	u32 mask;
 
 	mask = 0x01 << (count - 1);
-	if (nvm->type == e1000_nvm_eeprom_spi)
+	if (nvm->type == e1000_nvm_eeprom_microwire)
+		eecd &= ~E1000_EECD_DO;
+	else if (nvm->type == e1000_nvm_eeprom_spi)
 		eecd |= E1000_EECD_DO;
 
 	do {
@@ -218,7 +220,22 @@ static void igb_standby_nvm(struct e1000_hw *hw)
 	struct e1000_nvm_info *nvm = &hw->nvm;
 	u32 eecd = rd32(E1000_EECD);
 
-	if (nvm->type == e1000_nvm_eeprom_spi) {
+	if (nvm->type == e1000_nvm_eeprom_microwire) {
+		eecd &= ~(E1000_EECD_CS | E1000_EECD_SK);
+		wr32(E1000_EECD, eecd);
+		wrfl();
+		udelay(nvm->delay_usec);
+
+		igb_raise_eec_clk(hw, &eecd);
+
+		/* Select EEPROM */
+		eecd |= E1000_EECD_CS;
+		wr32(E1000_EECD, eecd);
+		wrfl();
+		udelay(nvm->delay_usec);
+
+		igb_lower_eec_clk(hw, &eecd);
+	} else if (nvm->type == e1000_nvm_eeprom_spi) {
 		/* Toggle CS to flush commands */
 		eecd |= E1000_EECD_CS;
 		wr32(E1000_EECD, eecd);
@@ -245,6 +262,12 @@ static void e1000_stop_nvm(struct e1000_hw *hw)
 	if (hw->nvm.type == e1000_nvm_eeprom_spi) {
 		/* Pull CS high */
 		eecd |= E1000_EECD_CS;
+		igb_lower_eec_clk(hw, &eecd);
+	} else if (hw->nvm.type == e1000_nvm_eeprom_microwire) {
+		/* CS on Microcwire is active-high */
+		eecd &= ~(E1000_EECD_CS | E1000_EECD_DI);
+		wr32(E1000_EECD, eecd);
+		igb_raise_eec_clk(hw, &eecd);
 		igb_lower_eec_clk(hw, &eecd);
 	}
 }
@@ -281,7 +304,14 @@ static s32 igb_ready_nvm_eeprom(struct e1000_hw *hw)
 	u8 spi_stat_reg;
 
 
-	if (nvm->type == e1000_nvm_eeprom_spi) {
+	if (nvm->type == e1000_nvm_eeprom_microwire) {
+		/* Clear SK and DI */
+		eecd &= ~(E1000_EECD_DI | E1000_EECD_SK);
+		wr32(E1000_EECD, eecd);
+		/* Set CS */
+		eecd |= E1000_EECD_CS;
+		wr32(E1000_EECD, eecd);
+	} else if (nvm->type == e1000_nvm_eeprom_spi) {
 		/* Clear SK and CS */
 		eecd &= ~(E1000_EECD_CS | E1000_EECD_SK);
 		wr32(E1000_EECD, eecd);
@@ -389,7 +419,7 @@ s32 igb_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 		goto out;
 	}
 
-	ret_val = hw->nvm.ops.acquire(hw);
+	ret_val = hw->nvm.ops.acquire_nvm(hw);
 	if (ret_val)
 		goto out;
 
@@ -438,7 +468,7 @@ s32 igb_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 
 	msleep(10);
 release:
-	hw->nvm.ops.release(hw);
+	hw->nvm.ops.release_nvm(hw);
 
 out:
 	return ret_val;
@@ -457,14 +487,14 @@ s32 igb_read_part_num(struct e1000_hw *hw, u32 *part_num)
 	s32  ret_val;
 	u16 nvm_data;
 
-	ret_val = hw->nvm.ops.read(hw, NVM_PBA_OFFSET_0, 1, &nvm_data);
+	ret_val = hw->nvm.ops.read_nvm(hw, NVM_PBA_OFFSET_0, 1, &nvm_data);
 	if (ret_val) {
 		hw_dbg("NVM Read Error\n");
 		goto out;
 	}
 	*part_num = (u32)(nvm_data << 16);
 
-	ret_val = hw->nvm.ops.read(hw, NVM_PBA_OFFSET_1, 1, &nvm_data);
+	ret_val = hw->nvm.ops.read_nvm(hw, NVM_PBA_OFFSET_1, 1, &nvm_data);
 	if (ret_val) {
 		hw_dbg("NVM Read Error\n");
 		goto out;
@@ -485,23 +515,29 @@ out:
  **/
 s32 igb_read_mac_addr(struct e1000_hw *hw)
 {
-	u32 rar_high;
-	u32 rar_low;
-	u16 i;
+	s32  ret_val = 0;
+	u16 offset, nvm_data, i;
 
-	rar_high = rd32(E1000_RAH(0));
-	rar_low = rd32(E1000_RAL(0));
+	for (i = 0; i < ETH_ALEN; i += 2) {
+		offset = i >> 1;
+		ret_val = hw->nvm.ops.read_nvm(hw, offset, 1, &nvm_data);
+		if (ret_val) {
+			hw_dbg("NVM Read Error\n");
+			goto out;
+		}
+		hw->mac.perm_addr[i] = (u8)(nvm_data & 0xFF);
+		hw->mac.perm_addr[i+1] = (u8)(nvm_data >> 8);
+	}
 
-	for (i = 0; i < E1000_RAL_MAC_ADDR_LEN; i++)
-		hw->mac.perm_addr[i] = (u8)(rar_low >> (i*8));
-
-	for (i = 0; i < E1000_RAH_MAC_ADDR_LEN; i++)
-		hw->mac.perm_addr[i+4] = (u8)(rar_high >> (i*8));
+	/* Flip last bit of mac address if we're on second port */
+	if (hw->bus.func == E1000_FUNC_1)
+		hw->mac.perm_addr[5] ^= 1;
 
 	for (i = 0; i < ETH_ALEN; i++)
 		hw->mac.addr[i] = hw->mac.perm_addr[i];
 
-	return 0;
+out:
+	return ret_val;
 }
 
 /**
@@ -518,7 +554,7 @@ s32 igb_validate_nvm_checksum(struct e1000_hw *hw)
 	u16 i, nvm_data;
 
 	for (i = 0; i < (NVM_CHECKSUM_REG + 1); i++) {
-		ret_val = hw->nvm.ops.read(hw, i, 1, &nvm_data);
+		ret_val = hw->nvm.ops.read_nvm(hw, i, 1, &nvm_data);
 		if (ret_val) {
 			hw_dbg("NVM Read Error\n");
 			goto out;
@@ -551,7 +587,7 @@ s32 igb_update_nvm_checksum(struct e1000_hw *hw)
 	u16 i, nvm_data;
 
 	for (i = 0; i < NVM_CHECKSUM_REG; i++) {
-		ret_val = hw->nvm.ops.read(hw, i, 1, &nvm_data);
+		ret_val = hw->nvm.ops.read_nvm(hw, i, 1, &nvm_data);
 		if (ret_val) {
 			hw_dbg("NVM Read Error while updating checksum.\n");
 			goto out;
@@ -559,7 +595,7 @@ s32 igb_update_nvm_checksum(struct e1000_hw *hw)
 		checksum += nvm_data;
 	}
 	checksum = (u16) NVM_SUM - checksum;
-	ret_val = hw->nvm.ops.write(hw, NVM_CHECKSUM_REG, 1, &checksum);
+	ret_val = hw->nvm.ops.write_nvm(hw, NVM_CHECKSUM_REG, 1, &checksum);
 	if (ret_val)
 		hw_dbg("NVM Write Error while updating checksum.\n");
 

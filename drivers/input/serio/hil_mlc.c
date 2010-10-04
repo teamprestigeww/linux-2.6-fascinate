@@ -58,7 +58,6 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
-#include <linux/slab.h>
 #include <linux/timer.h>
 #include <linux/list.h>
 
@@ -994,8 +993,10 @@ int hil_mlc_unregister(hil_mlc *mlc)
 
 static int __init hil_mlc_init(void)
 {
-	setup_timer(&hil_mlcs_kicker, &hil_mlcs_timer, 0);
-	mod_timer(&hil_mlcs_kicker, jiffies + HZ);
+	init_timer(&hil_mlcs_kicker);
+	hil_mlcs_kicker.expires = jiffies + HZ;
+	hil_mlcs_kicker.function = &hil_mlcs_timer;
+	add_timer(&hil_mlcs_kicker);
 
 	tasklet_enable(&hil_mlcs_tasklet);
 
@@ -1004,7 +1005,7 @@ static int __init hil_mlc_init(void)
 
 static void __exit hil_mlc_exit(void)
 {
-	del_timer_sync(&hil_mlcs_kicker);
+	del_timer(&hil_mlcs_kicker);
 
 	tasklet_disable(&hil_mlcs_tasklet);
 	tasklet_kill(&hil_mlcs_tasklet);

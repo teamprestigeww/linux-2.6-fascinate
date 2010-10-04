@@ -157,7 +157,7 @@ static struct hlist_head dn_sk_hash[DN_SK_HASH_SIZE];
 static struct hlist_head dn_wild_sk;
 static atomic_t decnet_memory_allocated;
 
-static int __dn_setsockopt(struct socket *sock, int level, int optname, char __user *optval, unsigned int optlen, int flags);
+static int __dn_setsockopt(struct socket *sock, int level, int optname, char __user *optval, int optlen, int flags);
 static int __dn_getsockopt(struct socket *sock, int level, int optname, char __user *optval, int __user *optlen, int flags);
 
 static struct hlist_head *dn_find_list(struct sock *sk)
@@ -446,7 +446,7 @@ static void dn_destruct(struct sock *sk)
 	skb_queue_purge(&scp->other_xmit_queue);
 	skb_queue_purge(&scp->other_receive_queue);
 
-	dst_release(rcu_dereference_check(sk->sk_dst_cache, 1));
+	dst_release(xchg(&sk->sk_dst_cache, NULL));
 }
 
 static int dn_memory_pressure;
@@ -675,12 +675,11 @@ char *dn_addr2asc(__u16 addr, char *buf)
 
 
 
-static int dn_create(struct net *net, struct socket *sock, int protocol,
-		     int kern)
+static int dn_create(struct net *net, struct socket *sock, int protocol)
 {
 	struct sock *sk;
 
-	if (!net_eq(net, &init_net))
+	if (net != &init_net)
 		return -EAFNOSUPPORT;
 
 	switch(sock->type) {
@@ -750,9 +749,9 @@ static int dn_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 
 	if (!(saddr->sdn_flags & SDF_WILD)) {
 		if (le16_to_cpu(saddr->sdn_nodeaddrl)) {
-			rcu_read_lock();
+			read_lock(&dev_base_lock);
 			ldev = NULL;
-			for_each_netdev_rcu(&init_net, dev) {
+			for_each_netdev(&init_net, dev) {
 				if (!dev->dn_ptr)
 					continue;
 				if (dn_dev_islocal(dev, dn_saddr2dn(saddr))) {
@@ -760,7 +759,7 @@ static int dn_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 					break;
 				}
 			}
-			rcu_read_unlock();
+			read_unlock(&dev_base_lock);
 			if (ldev == NULL)
 				return -EADDRNOTAVAIL;
 		}
@@ -832,7 +831,7 @@ static int dn_confirm_accept(struct sock *sk, long *timeo, gfp_t allocation)
 	scp->segsize_loc = dst_metric(__sk_dst_get(sk), RTAX_ADVMSS);
 	dn_send_conn_conf(sk, allocation);
 
-	prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+	prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	for(;;) {
 		release_sock(sk);
 		if (scp->state == DN_CC)
@@ -850,9 +849,9 @@ static int dn_confirm_accept(struct sock *sk, long *timeo, gfp_t allocation)
 		err = -EAGAIN;
 		if (!*timeo)
 			break;
-		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	}
-	finish_wait(sk_sleep(sk), &wait);
+	finish_wait(sk->sk_sleep, &wait);
 	if (err == 0) {
 		sk->sk_socket->state = SS_CONNECTED;
 	} else if (scp->state != DN_CC) {
@@ -873,7 +872,7 @@ static int dn_wait_run(struct sock *sk, long *timeo)
 	if (!*timeo)
 		return -EALREADY;
 
-	prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+	prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	for(;;) {
 		release_sock(sk);
 		if (scp->state == DN_CI || scp->state == DN_CC)
@@ -891,9 +890,9 @@ static int dn_wait_run(struct sock *sk, long *timeo)
 		err = -ETIMEDOUT;
 		if (!*timeo)
 			break;
-		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	}
-	finish_wait(sk_sleep(sk), &wait);
+	finish_wait(sk->sk_sleep, &wait);
 out:
 	if (err == 0) {
 		sk->sk_socket->state = SS_CONNECTED;
@@ -1040,7 +1039,7 @@ static struct sk_buff *dn_wait_for_connect(struct sock *sk, long *timeo)
 	struct sk_buff *skb = NULL;
 	int err = 0;
 
-	prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+	prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	for(;;) {
 		release_sock(sk);
 		skb = skb_dequeue(&sk->sk_receive_queue);
@@ -1060,9 +1059,9 @@ static struct sk_buff *dn_wait_for_connect(struct sock *sk, long *timeo)
 		err = -EAGAIN;
 		if (!*timeo)
 			break;
-		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	}
-	finish_wait(sk_sleep(sk), &wait);
+	finish_wait(sk->sk_sleep, &wait);
 
 	return skb == NULL ? ERR_PTR(err) : skb;
 }
@@ -1076,7 +1075,6 @@ static int dn_accept(struct socket *sock, struct socket *newsock, int flags)
 	int err = 0;
 	unsigned char type;
 	long timeo = sock_rcvtimeo(sk, flags & O_NONBLOCK);
-	struct dst_entry *dst;
 
 	lock_sock(sk);
 
@@ -1104,9 +1102,8 @@ static int dn_accept(struct socket *sock, struct socket *newsock, int flags)
 	}
 	release_sock(sk);
 
-	dst = skb_dst(skb);
-	sk_dst_set(newsk, dst);
-	skb_dst_set(skb, NULL);
+	dst_release(xchg(&newsk->sk_dst_cache, skb->dst));
+	skb->dst = NULL;
 
 	DN_SK(newsk)->state        = DN_CR;
 	DN_SK(newsk)->addrrem      = cb->src_port;
@@ -1241,7 +1238,7 @@ static int dn_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		return val;
 
 	case TIOCOUTQ:
-		amount = sk->sk_sndbuf - sk_wmem_alloc_get(sk);
+		amount = sk->sk_sndbuf - atomic_read(&sk->sk_wmem_alloc);
 		if (amount < 0)
 			amount = 0;
 		err = put_user(amount, (int __user *)arg);
@@ -1249,12 +1246,17 @@ static int dn_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 
 	case TIOCINQ:
 		lock_sock(sk);
-		skb = skb_peek(&scp->other_receive_queue);
-		if (skb) {
+		if ((skb = skb_peek(&scp->other_receive_queue)) != NULL) {
 			amount = skb->len;
 		} else {
-			skb_queue_walk(&sk->sk_receive_queue, skb)
+			struct sk_buff *skb = sk->sk_receive_queue.next;
+			for(;;) {
+				if (skb ==
+				    (struct sk_buff *)&sk->sk_receive_queue)
+					break;
 				amount += skb->len;
+				skb = skb->next;
+			}
 		}
 		release_sock(sk);
 		err = put_user(amount, (int __user *)arg);
@@ -1326,7 +1328,7 @@ out:
 	return err;
 }
 
-static int dn_setsockopt(struct socket *sock, int level, int optname, char __user *optval, unsigned int optlen)
+static int dn_setsockopt(struct socket *sock, int level, int optname, char __user *optval, int optlen)
 {
 	struct sock *sk = sock->sk;
 	int err;
@@ -1338,7 +1340,7 @@ static int dn_setsockopt(struct socket *sock, int level, int optname, char __use
 	return err;
 }
 
-static int __dn_setsockopt(struct socket *sock, int level,int optname, char __user *optval, unsigned int optlen, int flags)
+static int __dn_setsockopt(struct socket *sock, int level,int optname, char __user *optval, int optlen, int flags)
 {
 	struct	sock *sk = sock->sk;
 	struct dn_scp *scp = DN_SK(sk);
@@ -1577,16 +1579,16 @@ static int __dn_getsockopt(struct socket *sock, int level,int optname, char __us
 		default:
 #ifdef CONFIG_NETFILTER
 		{
-			int ret, len;
+			int val, len;
 
 			if(get_user(len, optlen))
 				return -EFAULT;
 
-			ret = nf_getsockopt(sk, PF_DECnet, optname,
+			val = nf_getsockopt(sk, PF_DECnet, optname,
 							optval, &len);
-			if (ret >= 0)
-				ret = put_user(len, optlen);
-			return ret;
+			if (val >= 0)
+				val = put_user(len, optlen);
+			return val;
 		}
 #endif
 		case DSO_STREAM:
@@ -1641,13 +1643,13 @@ static int __dn_getsockopt(struct socket *sock, int level,int optname, char __us
 
 static int dn_data_ready(struct sock *sk, struct sk_buff_head *q, int flags, int target)
 {
-	struct sk_buff *skb;
+	struct sk_buff *skb = q->next;
 	int len = 0;
 
 	if (flags & MSG_OOB)
 		return !skb_queue_empty(q) ? 1 : 0;
 
-	skb_queue_walk(q, skb) {
+	while(skb != (struct sk_buff *)q) {
 		struct dn_skb_cb *cb = DN_SKB_CB(skb);
 		len += skb->len;
 
@@ -1663,6 +1665,8 @@ static int dn_data_ready(struct sock *sk, struct sk_buff_head *q, int flags, int
 		/* minimum data length for read exceeded */
 		if (len >= target)
 			return 1;
+
+		skb = skb->next;
 	}
 
 	return 0;
@@ -1678,7 +1682,7 @@ static int dn_recvmsg(struct kiocb *iocb, struct socket *sock,
 	size_t target = size > 1 ? 1 : 0;
 	size_t copied = 0;
 	int rv = 0;
-	struct sk_buff *skb, *n;
+	struct sk_buff *skb, *nskb;
 	struct dn_skb_cb *cb = NULL;
 	unsigned char eor = 0;
 	long timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
@@ -1746,14 +1750,14 @@ static int dn_recvmsg(struct kiocb *iocb, struct socket *sock,
 			goto out;
 		}
 
-		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 		set_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
 		sk_wait_event(sk, &timeo, dn_data_ready(sk, queue, flags, target));
 		clear_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
-		finish_wait(sk_sleep(sk), &wait);
+		finish_wait(sk->sk_sleep, &wait);
 	}
 
-	skb_queue_walk_safe(queue, skb, n) {
+	for(skb = queue->next; skb != (struct sk_buff *)queue; skb = nskb) {
 		unsigned int chunk = skb->len;
 		cb = DN_SKB_CB(skb);
 
@@ -1770,6 +1774,7 @@ static int dn_recvmsg(struct kiocb *iocb, struct socket *sock,
 			skb_pull(skb, chunk);
 
 		eor = cb->nsp_flags & 0x40;
+		nskb = skb->next;
 
 		if (skb->len == 0) {
 			skb_unlink(skb, queue);
@@ -1956,7 +1961,7 @@ static int dn_sendmsg(struct kiocb *iocb, struct socket *sock,
 	}
 
 	if ((flags & MSG_TRYHARD) && sk->sk_dst_cache)
-		dst_negative_advice(sk);
+		dst_negative_advice(&sk->sk_dst_cache);
 
 	mss = scp->segsize_rem;
 	fctype = scp->services_rem & NSP_FC_MASK;
@@ -2003,12 +2008,12 @@ static int dn_sendmsg(struct kiocb *iocb, struct socket *sock,
 				goto out;
 			}
 
-			prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+			prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 			set_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
 			sk_wait_event(sk, &timeo,
 				      !dn_queue_too_long(scp, queue, flags));
 			clear_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
-			finish_wait(sk_sleep(sk), &wait);
+			finish_wait(sk->sk_sleep, &wait);
 			continue;
 		}
 
@@ -2066,7 +2071,8 @@ static int dn_sendmsg(struct kiocb *iocb, struct socket *sock,
 	}
 out:
 
-	kfree_skb(skb);
+	if (skb)
+		kfree_skb(skb);
 
 	release_sock(sk);
 
@@ -2106,8 +2112,9 @@ static struct notifier_block dn_dev_notifier = {
 
 extern int dn_route_rcv(struct sk_buff *, struct net_device *, struct packet_type *, struct net_device *);
 
-static struct packet_type dn_dix_packet_type __read_mostly = {
-	.type =		cpu_to_be16(ETH_P_DNA_RT),
+static struct packet_type dn_dix_packet_type = {
+	.type =		__constant_htons(ETH_P_DNA_RT),
+	.dev =		NULL,		/* All devices */
 	.func =		dn_route_rcv,
 };
 
@@ -2326,7 +2333,7 @@ static const struct file_operations dn_socket_seq_fops = {
 };
 #endif
 
-static const struct net_proto_family	dn_family_ops = {
+static struct net_proto_family	dn_family_ops = {
 	.family =	AF_DECnet,
 	.create =	dn_create,
 	.owner	=	THIS_MODULE,
@@ -2414,8 +2421,6 @@ static void __exit decnet_exit(void)
 	proc_net_remove(&init_net, "decnet");
 
 	proto_unregister(&dn_proto);
-
-	rcu_barrier_bh(); /* Wait for completion of call_rcu_bh()'s */
 }
 module_exit(decnet_exit);
 #endif

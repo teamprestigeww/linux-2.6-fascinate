@@ -32,7 +32,6 @@
  *  add RDS support
  */
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/init.h>			/* Initdata			*/
 #include <linux/videodev2.h>		/* kernel radio structs		*/
@@ -299,8 +298,7 @@ static int vidioc_querycap(struct file *file, void  *priv,
 
 	strlcpy(v->driver, dev->dev.driver->name, sizeof(v->driver));
 	strlcpy(v->card, dev->name, sizeof(v->card));
-	snprintf(v->bus_info, sizeof(v->bus_info),
-		 "I2C:%s", dev_name(&dev->dev));
+	snprintf(v->bus_info, sizeof(v->bus_info), "I2C:%s", dev->dev.bus_id);
 	v->version = RADIO_VERSION;
 	v->capabilities = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
 	return 0;
@@ -315,7 +313,7 @@ static int vidioc_g_tuner(struct file *file, void *priv,
 	if (v->index > 0)
 		return -EINVAL;
 
-	memset(v, 0, sizeof(*v));
+	memset(v, 0, sizeof(v));
 	strcpy(v->name, "FM");
 	v->type = V4L2_TUNER_RADIO;
 	tea5764_i2c_read(radio);
@@ -323,9 +321,7 @@ static int vidioc_g_tuner(struct file *file, void *priv,
 	v->rangehigh  = FREQ_MAX * FREQ_MUL;
 	v->capability = V4L2_TUNER_CAP_LOW | V4L2_TUNER_CAP_STEREO;
 	if (r->tunchk & TEA5764_TUNCHK_STEREO)
-		v->rxsubchans = V4L2_TUNER_SUB_STEREO;
-	else
-		v->rxsubchans = V4L2_TUNER_SUB_MONO;
+			v->rxsubchans = V4L2_TUNER_SUB_STEREO;
 	v->audmode = tea5764_get_audout_mode(radio);
 	v->signal = TEA5764_TUNCHK_LEVEL(r->tunchk) * 0xffff / 0xf;
 	v->afc = TEA5764_TUNCHK_IFCNT(r->tunchk);
@@ -350,7 +346,7 @@ static int vidioc_s_frequency(struct file *file, void *priv,
 {
 	struct tea5764_device *radio = video_drvdata(file);
 
-	if (f->tuner != 0 || f->type != V4L2_TUNER_RADIO)
+	if (f->tuner != 0)
 		return -EINVAL;
 	if (f->frequency == 0) {
 		/* We special case this as a power down control. */
@@ -371,10 +367,8 @@ static int vidioc_g_frequency(struct file *file, void *priv,
 	struct tea5764_device *radio = video_drvdata(file);
 	struct tea5764_regs *r = &radio->regs;
 
-	if (f->tuner != 0)
-		return -EINVAL;
 	tea5764_i2c_read(radio);
-	memset(f, 0, sizeof(*f));
+	memset(f, 0, sizeof(f));
 	f->type = V4L2_TUNER_RADIO;
 	if (r->tnctrl & TEA5764_TNCTRL_PUPD0)
 		f->frequency = (tea5764_get_freq(radio) * 2) / 125;
@@ -461,7 +455,11 @@ static int vidioc_s_audio(struct file *file, void *priv,
 static int tea5764_open(struct file *file)
 {
 	/* Currently we support only one device */
+	int minor = video_devdata(file)->minor;
 	struct tea5764_device *radio = video_drvdata(file);
+
+	if (radio->videodev->minor != minor)
+		return -ENODEV;
 
 	mutex_lock(&radio->mutex);
 	/* Only exclusive access */

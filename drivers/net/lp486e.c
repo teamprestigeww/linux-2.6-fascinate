@@ -377,7 +377,7 @@ static char init_setup[14] = {
 };
 
 static int i596_open(struct net_device *dev);
-static netdev_tx_t i596_start_xmit(struct sk_buff *skb, struct net_device *dev);
+static int i596_start_xmit(struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t i596_interrupt(int irq, void *dev_id);
 static int i596_close(struct net_device *dev);
 static void i596_add_cmd(struct net_device *dev, struct i596_cmd *cmd);
@@ -845,7 +845,7 @@ static int i596_open(struct net_device *dev)
 {
 	int i;
 
-	i = request_irq(dev->irq, i596_interrupt, IRQF_SHARED, dev->name, dev);
+	i = request_irq(dev->irq, &i596_interrupt, IRQF_SHARED, dev->name, dev);
 	if (i) {
 		printk(KERN_ERR "%s: IRQ %d not free\n", dev->name, dev->irq);
 		return i;
@@ -863,7 +863,7 @@ static int i596_open(struct net_device *dev)
 	return 0;			/* Always succeed */
 }
 
-static netdev_tx_t i596_start_xmit (struct sk_buff *skb, struct net_device *dev) {
+static int i596_start_xmit (struct sk_buff *skb, struct net_device *dev) {
 	struct tx_cmd *tx_cmd;
 	short length;
 
@@ -871,9 +871,11 @@ static netdev_tx_t i596_start_xmit (struct sk_buff *skb, struct net_device *dev)
 
 	if (length < ETH_ZLEN) {
 		if (skb_padto(skb, ETH_ZLEN))
-			return NETDEV_TX_OK;
+			return 0;
 		length = ETH_ZLEN;
 	}
+
+	dev->trans_start = jiffies;
 
 	tx_cmd = kmalloc((sizeof (struct tx_cmd) + sizeof (struct i596_tbd)), GFP_ATOMIC);
 	if (tx_cmd == NULL) {
@@ -904,7 +906,7 @@ static netdev_tx_t i596_start_xmit (struct sk_buff *skb, struct net_device *dev)
 		dev->stats.tx_packets++;
 	}
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 static void
@@ -949,17 +951,6 @@ static void print_eth(char *add)
 	printk ("type %2.2X%2.2X\n",
 		(unsigned char) add[12], (unsigned char) add[13]);
 }
-
-static const struct net_device_ops i596_netdev_ops = {
-	.ndo_open		= i596_open,
-	.ndo_stop		= i596_close,
-	.ndo_start_xmit		= i596_start_xmit,
-	.ndo_set_multicast_list = set_multicast_list,
-	.ndo_tx_timeout		= i596_tx_timeout,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_mac_address 	= eth_mac_addr,
-	.ndo_validate_addr	= eth_validate_addr,
-};
 
 static int __init lp486e_probe(struct net_device *dev) {
 	struct i596_private *lp;
@@ -1023,8 +1014,12 @@ static int __init lp486e_probe(struct net_device *dev) {
 	printk("\n");
 
 	/* The LP486E-specific entries in the device structure. */
-	dev->netdev_ops = &i596_netdev_ops;
+	dev->open = &i596_open;
+	dev->stop = &i596_close;
+	dev->hard_start_xmit = &i596_start_xmit;
+	dev->set_multicast_list = &set_multicast_list;
 	dev->watchdog_timeo = 5*HZ;
+	dev->tx_timeout = i596_tx_timeout;
 
 #if 0
 	/* selftest reports 0x320925ae - don't know what that means */
@@ -1251,22 +1246,21 @@ static void set_multicast_list(struct net_device *dev) {
 
 	if (i596_debug > 1)
 		printk ("%s: set multicast list %d\n",
-			dev->name, netdev_mc_count(dev));
+			dev->name, dev->mc_count);
 
-	if (!netdev_mc_empty(dev)) {
-		struct netdev_hw_addr *ha;
+	if (dev->mc_count > 0) {
+		struct dev_mc_list *dmi;
 		char *cp;
-		cmd = kmalloc(sizeof(struct i596_cmd) + 2 +
-			      netdev_mc_count(dev) * 6, GFP_ATOMIC);
+		cmd = kmalloc(sizeof(struct i596_cmd)+2+dev->mc_count*6, GFP_ATOMIC);
 		if (cmd == NULL) {
 			printk (KERN_ERR "%s: set_multicast Memory squeeze.\n", dev->name);
 			return;
 		}
 		cmd->command = CmdMulticastList;
-		*((unsigned short *) (cmd + 1)) = netdev_mc_count(dev) * 6;
+		*((unsigned short *) (cmd + 1)) = dev->mc_count * 6;
 		cp = ((char *)(cmd + 1))+2;
-		netdev_for_each_mc_addr(ha, dev) {
-			memcpy(cp, ha->addr, 6);
+		for (dmi = dev->mc_list; dmi != NULL; dmi = dmi->next) {
+			memcpy(cp, dmi,6);
 			cp += 6;
 		}
 		if (i596_debug & LOG_SRCDST)
@@ -1276,8 +1270,7 @@ static void set_multicast_list(struct net_device *dev) {
 		if (lp->set_conf.pa_next != I596_NULL) {
 			return;
 		}
-		if (netdev_mc_empty(dev) &&
-		    !(dev->flags & (IFF_PROMISC | IFF_ALLMULTI))) {
+		if (dev->mc_count == 0 && !(dev->flags & (IFF_PROMISC | IFF_ALLMULTI))) {
 			lp->i596_config[8] &= ~0x01;
 		} else {
 			lp->i596_config[8] |= 0x01;

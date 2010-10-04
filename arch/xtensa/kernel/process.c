@@ -23,6 +23,7 @@
 #include <linux/stddef.h>
 #include <linux/unistd.h>
 #include <linux/ptrace.h>
+#include <linux/slab.h>
 #include <linux/elf.h>
 #include <linux/init.h>
 #include <linux/prctl.h>
@@ -30,7 +31,6 @@
 #include <linux/module.h>
 #include <linux/mqueue.h>
 #include <linux/fs.h>
-#include <linux/slab.h>
 
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
@@ -172,7 +172,7 @@ void prepare_to_copy(struct task_struct *tsk)
  *       childregs.
  */
 
-int copy_thread(unsigned long clone_flags, unsigned long usp,
+int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 		unsigned long unused,
                 struct task_struct * p, struct pt_regs * regs)
 {
@@ -318,9 +318,8 @@ long xtensa_clone(unsigned long clone_flags, unsigned long newsp,
  */
 
 asmlinkage
-long xtensa_execve(const char __user *name,
-		   const char __user *const __user *argv,
-                   const char __user *const __user *envp,
+long xtensa_execve(char __user *name, char __user * __user *argv,
+                   char __user * __user *envp,
                    long a3, long a4, long a5,
                    struct pt_regs *regs)
 {
@@ -332,6 +331,11 @@ long xtensa_execve(const char __user *name,
 	if (IS_ERR(filename))
 		goto out;
 	error = do_execve(filename, argv, envp, regs);
+	if (error == 0) {
+		task_lock(current);
+		current->ptrace &= ~PT_DTRACE;
+		task_unlock(current);
+	}
 	putname(filename);
 out:
 	return error;

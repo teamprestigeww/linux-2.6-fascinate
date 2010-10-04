@@ -132,7 +132,7 @@ static char *open_min_error[] = {"No error", "Function Failure", "Signal Lost", 
 				   "Reserved", "Reserved", "No Monitor Detected for RPL", 
 				   "Monitor Contention failer for RPL", "FDX Protocol Error"};
 
-/* Module parameters */
+/* Module paramters */
 
 MODULE_AUTHOR("Mike Phillips <mikep@linuxtr.net>") ; 
 MODULE_DESCRIPTION("Olympic PCI/Cardbus Chipset Driver") ; 
@@ -172,7 +172,7 @@ module_param_array(message_level, int, NULL, 0) ;
 static int network_monitor[OLYMPIC_MAX_ADAPTERS] = {0,};
 module_param_array(network_monitor, int, NULL, 0);
 
-static DEFINE_PCI_DEVICE_TABLE(olympic_pci_tbl) = {
+static struct pci_device_id olympic_pci_tbl[] = {
 	{PCI_VENDOR_ID_IBM,PCI_DEVICE_ID_IBM_TR_WAKE,PCI_ANY_ID,PCI_ANY_ID,},
 	{ } 	/* Terminating Entry */
 };
@@ -182,27 +182,18 @@ MODULE_DEVICE_TABLE(pci,olympic_pci_tbl) ;
 static int olympic_probe(struct pci_dev *pdev, const struct pci_device_id *ent); 
 static int olympic_init(struct net_device *dev);
 static int olympic_open(struct net_device *dev);
-static netdev_tx_t olympic_xmit(struct sk_buff *skb,
-				      struct net_device *dev);
+static int olympic_xmit(struct sk_buff *skb, struct net_device *dev);
 static int olympic_close(struct net_device *dev);
 static void olympic_set_rx_mode(struct net_device *dev);
 static void olympic_freemem(struct net_device *dev) ;  
 static irqreturn_t olympic_interrupt(int irq, void *dev_id);
+static struct net_device_stats * olympic_get_stats(struct net_device *dev);
 static int olympic_set_mac_address(struct net_device *dev, void *addr) ; 
 static void olympic_arb_cmd(struct net_device *dev);
 static int olympic_change_mtu(struct net_device *dev, int mtu);
 static void olympic_srb_bh(struct net_device *dev) ; 
 static void olympic_asb_bh(struct net_device *dev) ; 
 static int olympic_proc_info(char *buffer, char **start, off_t offset, int length, int *eof, void *data) ; 
-
-static const struct net_device_ops olympic_netdev_ops = {
-	.ndo_open		= olympic_open,
-	.ndo_stop		= olympic_close,
-	.ndo_start_xmit		= olympic_xmit,
-	.ndo_change_mtu		= olympic_change_mtu,
-	.ndo_set_multicast_list	= olympic_set_rx_mode,
-	.ndo_set_mac_address	= olympic_set_mac_address,
-};
 
 static int __devinit olympic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
@@ -262,7 +253,14 @@ static int __devinit olympic_probe(struct pci_dev *pdev, const struct pci_device
 		goto op_free_iomap;
 	}				
 
-	dev->netdev_ops = &olympic_netdev_ops;
+	dev->open=&olympic_open;
+	dev->hard_start_xmit=&olympic_xmit;
+	dev->change_mtu=&olympic_change_mtu;
+	dev->stop=&olympic_close;
+	dev->do_ioctl=NULL;
+	dev->set_multicast_list=&olympic_set_rx_mode;
+	dev->get_stats=&olympic_get_stats ;
+	dev->set_mac_address=&olympic_set_mac_address ;  
 	SET_NETDEV_DEV(dev, &pdev->dev);
 
 	pci_set_drvdata(pdev,dev) ; 
@@ -302,7 +300,7 @@ static int olympic_init(struct net_device *dev)
 	olympic_priv=netdev_priv(dev);
 	olympic_mmio=olympic_priv->olympic_mmio;
 
-	printk("%s\n", version);
+	printk("%s \n", version);
 	printk("%s. I/O at %hx, MMIO at %p, LAP at %p, using irq %d\n", olympic_priv->olympic_card_name, (unsigned int) dev->base_addr,olympic_priv->olympic_mmio, olympic_priv->olympic_lap, dev->irq);
 
 	writel(readl(olympic_mmio+BCTL) | BCTL_SOFTRESET,olympic_mmio+BCTL);
@@ -445,9 +443,9 @@ static int olympic_open(struct net_device *dev)
 
 	olympic_init(dev);
 
-	if (request_irq(dev->irq, olympic_interrupt, IRQF_SHARED , "olympic",
-			dev))
+	if(request_irq(dev->irq, &olympic_interrupt, IRQF_SHARED , "olympic", dev)) {
 		return -EAGAIN;
+	}
 
 #if OLYMPIC_DEBUG
 	printk("BMCTL: %x\n",readl(olympic_mmio+BMCTL_SUM));
@@ -468,7 +466,7 @@ static int olympic_open(struct net_device *dev)
 #if OLYMPIC_DEBUG
 	printk("LAPWWO: %x, LAPA: %x\n",readw(olympic_mmio+LAPWWO), readl(olympic_mmio+LAPA));
 	printk("SISR Mask = %04x\n", readl(olympic_mmio+SISR_MASK));
-	printk("Before the open command\n");
+	printk("Before the open command \n");
 #endif	
 	do {
 		memset_io(init_srb,0,SRB_COMMAND_SIZE);
@@ -520,7 +518,7 @@ static int olympic_open(struct net_device *dev)
             			break;
         		}
 			if (time_after(jiffies, t + 10*HZ)) {
-				printk(KERN_WARNING "%s: SRB timed out.\n",dev->name);
+				printk(KERN_WARNING "%s: SRB timed out. \n",dev->name) ; 
 				olympic_priv->srb_queued=0;
 				break ; 
 			} 
@@ -549,7 +547,7 @@ static int olympic_open(struct net_device *dev)
 			break;
 		case 0x07:
 			if (!olympic_priv->olympic_ring_speed && open_finished) { /* Autosense , first time around */
-				printk(KERN_WARNING "%s: Retrying at different ring speed\n", dev->name);
+				printk(KERN_WARNING "%s: Retrying at different ring speed \n", dev->name); 
 				open_finished = 0 ;  
 				continue;
 			}
@@ -558,7 +556,7 @@ static int olympic_open(struct net_device *dev)
 
 			if (!olympic_priv->olympic_ring_speed && ((err & 0x0f) == 0x0d)) { 
 				printk(KERN_WARNING "%s: Tried to autosense ring speed with no monitors present\n",dev->name);
-				printk(KERN_WARNING "%s: Please try again with a specified ring speed\n",dev->name);
+				printk(KERN_WARNING "%s: Please try again with a specified ring speed \n",dev->name);
 			} else {
 				printk(KERN_WARNING "%s: %s - %s\n", dev->name,
 					open_maj_error[(err & 0xf0) >> 4],
@@ -700,6 +698,7 @@ static int olympic_open(struct net_device *dev)
 	if (olympic_priv->olympic_network_monitor) { 
 		u8 __iomem *oat;
 		u8 __iomem *opt;
+		int i;
 		u8 addr[6];
 		oat = (olympic_priv->olympic_lap + olympic_priv->olympic_addr_table_addr);
 		opt = (olympic_priv->olympic_lap + olympic_priv->olympic_parms_addr);
@@ -759,7 +758,7 @@ static void olympic_rx(struct net_device *dev)
 		olympic_priv->rx_status_last_received++ ;
 		olympic_priv->rx_status_last_received &= (OLYMPIC_RX_RING_SIZE -1);
 #if OLYMPIC_DEBUG
-		printk("rx status: %x rx len: %x\n", le32_to_cpu(rx_status->status_buffercnt), le32_to_cpu(rx_status->fragmentcnt_framelen));
+		printk("rx status: %x rx len: %x \n", le32_to_cpu(rx_status->status_buffercnt), le32_to_cpu(rx_status->fragmentcnt_framelen));
 #endif
 		length = le32_to_cpu(rx_status->fragmentcnt_framelen) & 0xffff;
 		buffer_cnt = le32_to_cpu(rx_status->status_buffercnt) & 0xffff; 
@@ -774,19 +773,19 @@ static void olympic_rx(struct net_device *dev)
 			if (l_status_buffercnt & 0x3B000000) {
 				if (olympic_priv->olympic_message_level) {
 					if (l_status_buffercnt & (1<<29))  /* Rx Frame Truncated */
-						printk(KERN_WARNING "%s: Rx Frame Truncated\n",dev->name);
+						printk(KERN_WARNING "%s: Rx Frame Truncated \n",dev->name);
 					if (l_status_buffercnt & (1<<28)) /*Rx receive overrun */
-						printk(KERN_WARNING "%s: Rx Frame Receive overrun\n",dev->name);
+						printk(KERN_WARNING "%s: Rx Frame Receive overrun \n",dev->name);
 					if (l_status_buffercnt & (1<<27)) /* No receive buffers */
-						printk(KERN_WARNING "%s: No receive buffers\n",dev->name);
+						printk(KERN_WARNING "%s: No receive buffers \n",dev->name);
 					if (l_status_buffercnt & (1<<25)) /* Receive frame error detect */
-						printk(KERN_WARNING "%s: Receive frame error detect\n",dev->name);
+						printk(KERN_WARNING "%s: Receive frame error detect \n",dev->name);
 					if (l_status_buffercnt & (1<<24)) /* Received Error Detect */
-						printk(KERN_WARNING "%s: Received Error Detect\n",dev->name);
+						printk(KERN_WARNING "%s: Received Error Detect \n",dev->name);
 				} 
 				olympic_priv->rx_ring_last_received += i ; 
 				olympic_priv->rx_ring_last_received &= (OLYMPIC_RX_RING_SIZE -1) ; 
-				dev->stats.rx_errors++;
+				olympic_priv->olympic_stats.rx_errors++;	 
 			} else {	
 			
 				if (buffer_cnt == 1) {
@@ -796,8 +795,8 @@ static void olympic_rx(struct net_device *dev)
 				}
 
 				if (skb == NULL) {
-					printk(KERN_WARNING "%s: Not enough memory to copy packet to upper layers.\n",dev->name) ;
-					dev->stats.rx_dropped++;
+					printk(KERN_WARNING "%s: Not enough memory to copy packet to upper layers. \n",dev->name) ;
+					olympic_priv->olympic_stats.rx_dropped++ ; 
 					/* Update counters even though we don't transfer the frame */
 					olympic_priv->rx_ring_last_received += i ; 
 					olympic_priv->rx_ring_last_received &= (OLYMPIC_RX_RING_SIZE -1) ;  
@@ -863,8 +862,8 @@ static void olympic_rx(struct net_device *dev)
 						skb->protocol = tr_type_trans(skb,dev);
 						netif_rx(skb) ; 
 					} 
-					dev->stats.rx_packets++ ;
-					dev->stats.rx_bytes += length ;
+					olympic_priv->olympic_stats.rx_packets++ ; 
+					olympic_priv->olympic_stats.rx_bytes += length ; 
 				} /* if skb == null */
 			} /* If status & 0x3b */
 
@@ -972,8 +971,8 @@ static irqreturn_t olympic_interrupt(int irq, void *dev_id)
 				olympic_priv->tx_ring_last_status++;
 				olympic_priv->tx_ring_last_status &= (OLYMPIC_TX_RING_SIZE-1);
 				olympic_priv->free_tx_ring_entries++;
-				dev->stats.tx_bytes += olympic_priv->tx_ring_skb[olympic_priv->tx_ring_last_status]->len;
-				dev->stats.tx_packets++ ;
+				olympic_priv->olympic_stats.tx_bytes += olympic_priv->tx_ring_skb[olympic_priv->tx_ring_last_status]->len;
+				olympic_priv->olympic_stats.tx_packets++ ; 
 				pci_unmap_single(olympic_priv->pdev, 
 					le32_to_cpu(olympic_priv->olympic_tx_ring[olympic_priv->tx_ring_last_status].buffer), 
 					olympic_priv->tx_ring_skb[olympic_priv->tx_ring_last_status]->len,PCI_DMA_TODEVICE);
@@ -1031,8 +1030,7 @@ static irqreturn_t olympic_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }	
 
-static netdev_tx_t olympic_xmit(struct sk_buff *skb,
-				      struct net_device *dev)
+static int olympic_xmit(struct sk_buff *skb, struct net_device *dev) 
 {
 	struct olympic_private *olympic_priv=netdev_priv(dev);
 	u8 __iomem *olympic_mmio=olympic_priv->olympic_mmio;
@@ -1054,10 +1052,10 @@ static netdev_tx_t olympic_xmit(struct sk_buff *skb,
 		writew((((readw(olympic_mmio+TXENQ_1)) & 0x8000) ^ 0x8000) | 1,olympic_mmio+TXENQ_1);
 		netif_wake_queue(dev);
 		spin_unlock_irqrestore(&olympic_priv->olympic_lock,flags);
-		return NETDEV_TX_OK;
+		return 0;
 	} else {
 		spin_unlock_irqrestore(&olympic_priv->olympic_lock,flags);
-		return NETDEV_TX_BUSY;
+		return 1;
 	} 
 
 }
@@ -1101,7 +1099,7 @@ static int olympic_close(struct net_device *dev)
         	}
 
 		if (t == 0) { 
-			printk(KERN_WARNING "%s: SRB timed out. May not be fatal.\n",dev->name);
+			printk(KERN_WARNING "%s: SRB timed out. May not be fatal. \n",dev->name) ; 
 		} 
 		olympic_priv->srb_queued=0;
     	}
@@ -1139,8 +1137,9 @@ static void olympic_set_rx_mode(struct net_device *dev)
    	u8 __iomem *olympic_mmio = olympic_priv->olympic_mmio ; 
 	u8 options = 0; 
 	u8 __iomem *srb;
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *dmi ; 
 	unsigned char dev_mc_address[4] ; 
+	int i ; 
 
 	writel(olympic_priv->srb,olympic_mmio+LAPA);
 	srb=olympic_priv->olympic_lap + (olympic_priv->srb & (~0xf800));
@@ -1177,11 +1176,11 @@ static void olympic_set_rx_mode(struct net_device *dev)
 
 	dev_mc_address[0] = dev_mc_address[1] = dev_mc_address[2] = dev_mc_address[3] = 0 ; 
 
-	netdev_for_each_mc_addr(ha, dev) {
-		dev_mc_address[0] |= ha->addr[2];
-		dev_mc_address[1] |= ha->addr[3];
-		dev_mc_address[2] |= ha->addr[4];
-		dev_mc_address[3] |= ha->addr[5];
+	for (i=0,dmi=dev->mc_list;i < dev->mc_count; i++,dmi = dmi->next) { 
+		dev_mc_address[0] |= dmi->dmi_addr[2] ; 
+		dev_mc_address[1] |= dmi->dmi_addr[3] ; 
+		dev_mc_address[2] |= dmi->dmi_addr[4] ; 
+		dev_mc_address[3] |= dmi->dmi_addr[5] ; 
 	}
 
 	writeb(SRB_SET_FUNC_ADDRESS,srb+0);
@@ -1239,7 +1238,7 @@ static void olympic_srb_bh(struct net_device *dev)
 				case 0x00:
 					break ; 
 				case 0x01:
-					printk(KERN_WARNING "%s: Unrecognized srb command\n",dev->name);
+					printk(KERN_WARNING "%s: Unrecognized srb command \n",dev->name) ; 
 					break ;
 				case 0x04:
 					printk(KERN_WARNING "%s: Adapter must be open for this operation, doh!!\n",dev->name); 
@@ -1266,13 +1265,13 @@ static void olympic_srb_bh(struct net_device *dev)
 				case 0x00:
 					break ; 
 				case 0x01:
-					printk(KERN_WARNING "%s: Unrecognized srb command\n",dev->name);
+					printk(KERN_WARNING "%s: Unrecognized srb command \n",dev->name) ; 
 					break ; 
 				case 0x04:
 					printk(KERN_WARNING "%s: Adapter must be open for this operation, doh!!\n",dev->name) ; 
 					break ; 
 				case 0x39: /* Must deal with this if individual multicast addresses used */
-					printk(KERN_INFO "%s: Group address not found\n",dev->name);
+					printk(KERN_INFO "%s: Group address not found \n",dev->name); 
 					break ;
 				default:
 					break ; 
@@ -1287,10 +1286,10 @@ static void olympic_srb_bh(struct net_device *dev)
 			switch (readb(srb+2)) { 
 				case 0x00:
 					if (olympic_priv->olympic_message_level)
-						printk(KERN_INFO "%s: Functional Address Mask Set\n",dev->name);
+						printk(KERN_INFO "%s: Functional Address Mask Set \n",dev->name) ; 
 					break ;
 				case 0x01:
-					printk(KERN_WARNING "%s: Unrecognized srb command\n",dev->name);
+					printk(KERN_WARNING "%s: Unrecognized srb command \n",dev->name) ; 
 					break ; 
 				case 0x04:
 					printk(KERN_WARNING "%s: Adapter must be open for this operation, doh!!\n",dev->name) ; 
@@ -1310,7 +1309,7 @@ static void olympic_srb_bh(struct net_device *dev)
 						printk(KERN_INFO "%s: Read Log issued\n",dev->name) ; 
 					break ; 
 				case 0x01:
-					printk(KERN_WARNING "%s: Unrecognized srb command\n",dev->name);
+					printk(KERN_WARNING "%s: Unrecognized srb command \n",dev->name) ; 
 					break ; 
 				case 0x04:
 					printk(KERN_WARNING "%s: Adapter must be open for this operation, doh!!\n",dev->name) ; 
@@ -1328,7 +1327,7 @@ static void olympic_srb_bh(struct net_device *dev)
 						printk(KERN_INFO "%s: Read Source Routing Counters issued\n",dev->name) ; 
 					break ; 
 				case 0x01:
-					printk(KERN_WARNING "%s: Unrecognized srb command\n",dev->name);
+					printk(KERN_WARNING "%s: Unrecognized srb command \n",dev->name) ; 
 					break ; 
 				case 0x04:
 					printk(KERN_WARNING "%s: Adapter must be open for this operation, doh!!\n",dev->name) ; 
@@ -1344,6 +1343,13 @@ static void olympic_srb_bh(struct net_device *dev)
 	} /* switch srb[0] */
 
 } 
+
+static struct net_device_stats * olympic_get_stats(struct net_device *dev)
+{
+	struct olympic_private *olympic_priv ;
+	olympic_priv=netdev_priv(dev);
+	return (struct net_device_stats *) &olympic_priv->olympic_stats; 
+}
 
 static int olympic_set_mac_address (struct net_device *dev, void *addr) 
 {
@@ -1404,7 +1410,7 @@ static void olympic_arb_cmd(struct net_device *dev)
 			printk("Loc %d = %02x\n",i,readb(frame_data + i)); 
 		}
 
-		printk("next %04x, fs %02x, len %04x\n",readw(buf_ptr+offsetof(struct mac_receive_buffer,next)), readb(buf_ptr+offsetof(struct mac_receive_buffer,frame_status)), readw(buf_ptr+offsetof(struct mac_receive_buffer,buffer_length)));
+		printk("next %04x, fs %02x, len %04x \n",readw(buf_ptr+offsetof(struct mac_receive_buffer,next)), readb(buf_ptr+offsetof(struct mac_receive_buffer,frame_status)), readw(buf_ptr+offsetof(struct mac_receive_buffer,buffer_length))); 
 }
 #endif 
 		mac_frame = dev_alloc_skb(frame_len) ; 
@@ -1426,7 +1432,7 @@ static void olympic_arb_cmd(struct net_device *dev)
 
 		if (olympic_priv->olympic_network_monitor) { 
 			struct trh_hdr *mac_hdr;
-			printk(KERN_WARNING "%s: Received MAC Frame, details:\n",dev->name);
+			printk(KERN_WARNING "%s: Received MAC Frame, details: \n",dev->name);
 			mac_hdr = tr_hdr(mac_frame);
 			printk(KERN_WARNING "%s: MAC Frame Dest. Addr: %pM\n",
 			       dev->name, mac_hdr->daddr);
@@ -1489,20 +1495,20 @@ drop_frame:
 			writel(readl(olympic_mmio+BCTL)&~(3<<13),olympic_mmio+BCTL);
 			netif_stop_queue(dev);
 			olympic_priv->srb = readw(olympic_priv->olympic_lap + LAPWWO) ; 
-			printk(KERN_WARNING "%s: Adapter has been closed\n", dev->name);
+			printk(KERN_WARNING "%s: Adapter has been closed \n", dev->name) ; 
 		} /* If serious error */
 		
 		if (olympic_priv->olympic_message_level) { 
 			if (lan_status_diff & LSC_SIG_LOSS) 
-					printk(KERN_WARNING "%s: No receive signal detected\n", dev->name);
+					printk(KERN_WARNING "%s: No receive signal detected \n", dev->name) ; 
 			if (lan_status_diff & LSC_HARD_ERR)
-					printk(KERN_INFO "%s: Beaconing\n",dev->name);
+					printk(KERN_INFO "%s: Beaconing \n",dev->name);
 			if (lan_status_diff & LSC_SOFT_ERR)
-					printk(KERN_WARNING "%s: Adapter transmitted Soft Error Report Mac Frame\n",dev->name);
+					printk(KERN_WARNING "%s: Adapter transmitted Soft Error Report Mac Frame \n",dev->name);
 			if (lan_status_diff & LSC_TRAN_BCN) 
 					printk(KERN_INFO "%s: We are tranmitting the beacon, aaah\n",dev->name);
 			if (lan_status_diff & LSC_SS) 
-					printk(KERN_INFO "%s: Single Station on the ring\n", dev->name);
+					printk(KERN_INFO "%s: Single Station on the ring \n", dev->name);
 			if (lan_status_diff & LSC_RING_REC)
 					printk(KERN_INFO "%s: Ring recovery ongoing\n",dev->name);
 			if (lan_status_diff & LSC_FDX_MODE)
@@ -1512,7 +1518,7 @@ drop_frame:
 		if (lan_status_diff & LSC_CO) { 
 					
 				if (olympic_priv->olympic_message_level) 
-					printk(KERN_INFO "%s: Counter Overflow\n", dev->name);
+					printk(KERN_INFO "%s: Counter Overflow \n", dev->name);
 					
 				/* Issue READ.LOG command */
 
@@ -1551,7 +1557,7 @@ drop_frame:
 	
 	}  /* Lan.change.status */
 	else
-		printk(KERN_WARNING "%s: Unknown arb command\n", dev->name);
+		printk(KERN_WARNING "%s: Unknown arb command \n", dev->name);
 }
 
 static void olympic_asb_bh(struct net_device *dev) 
@@ -1578,10 +1584,10 @@ static void olympic_asb_bh(struct net_device *dev)
 	if (olympic_priv->asb_queued == 2) { 
 		switch (readb(asb_block+2)) {
 			case 0x01:
-				printk(KERN_WARNING "%s: Unrecognized command code\n", dev->name);
+				printk(KERN_WARNING "%s: Unrecognized command code \n", dev->name);
 				break ;
 			case 0x26:
-				printk(KERN_WARNING "%s: Unrecognized buffer address\n", dev->name);
+				printk(KERN_WARNING "%s: Unrecognized buffer address \n", dev->name);
 				break ;
 			case 0xFF:
 				/* Valid response, everything should be ok again */

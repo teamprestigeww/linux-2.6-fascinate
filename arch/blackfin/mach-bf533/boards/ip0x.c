@@ -1,12 +1,34 @@
 /*
- * Copyright 2004-2009 Analog Devices Inc.
- *                2007 David Rowe
- *                2006 Intratrade Ltd.
- *                     Ivan Danov <idanov@gmail.com>
- *                2005 National ICT Australia (NICTA)
- *                     Aidan Williams <aidan@nicta.com.au>
+ * File:         arch/blackfin/mach-bf533/ip0x.c
+ * Based on:     arch/blackfin/mach-bf533/bf1.c
+ * Based on:     arch/blackfin/mach-bf533/stamp.c
+ * Author:       Ivan Danov <idanov@gmail.com>
+ *               Modified for IP0X David Rowe
  *
- * Licensed under the GPL-2 or later.
+ * Created:      2007
+ * Description:  Board info file for the IP04/IP08 boards, which
+ *               are derived from the BlackfinOne V2.0 boards.
+ *
+ * Modified:
+ *               COpyright 2007 David Rowe
+ *               Copyright 2006 Intratrade Ltd.
+ *               Copyright 2005 National ICT Australia (NICTA)
+ *               Copyright 2004-2006 Analog Devices Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see the file COPYING, or write
+ * to the Free Software Foundation, Inc.,
+ * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <linux/device.h>
@@ -19,9 +41,7 @@
 #include <linux/usb/isp1362.h>
 #endif
 #include <asm/irq.h>
-#include <asm/dma.h>
 #include <asm/bfin5xx_spi.h>
-#include <asm/portmux.h>
 
 /*
  * Name the Board for the /proc/cpuinfo
@@ -109,8 +129,23 @@ static struct platform_device dm9000_device2 = {
 
 #if defined(CONFIG_MMC_SPI) || defined(CONFIG_MMC_SPI_MODULE)
 static struct bfin5xx_spi_chip mmc_spi_chip_info = {
+/*
+ * CPOL (Clock Polarity)
+ *  0 - Active high SCK
+ *  1 - Active low SCK
+ *  CPHA (Clock Phase) Selects transfer format and operation mode
+ *  0 - SCLK toggles from middle of the first data bit, slave select
+ *      pins controlled by hardware.
+ *  1 - SCLK toggles from beginning of first data bit, slave select
+ *      pins controller by user software.
+ * 	.ctl_reg = 0x1c00,		 *  CPOL=1,CPHA=1,Sandisk 1G work
+ * NO NO	.ctl_reg = 0x1800,		 *  CPOL=1,CPHA=0
+ * NO NO	.ctl_reg = 0x1400,		 *  CPOL=0,CPHA=1
+ */
+	.ctl_reg = 0x1000,		/* CPOL=0,CPHA=0,Sandisk 1G work */
 	.enable_dma = 0,		/* if 1 - block!!! */
 	.bits_per_word = 8,
+	.cs_change_per_word = 0,
 };
 #endif
 
@@ -144,49 +179,20 @@ static struct platform_device spi_bfin_master_device = {
 #endif  /* spi master and devices */
 
 #if defined(CONFIG_SERIAL_BFIN) || defined(CONFIG_SERIAL_BFIN_MODULE)
-#ifdef CONFIG_SERIAL_BFIN_UART0
-static struct resource bfin_uart0_resources[] = {
+static struct resource bfin_uart_resources[] = {
 	{
-		.start = BFIN_UART_THR,
-		.end = BFIN_UART_GCTL+2,
+		.start = 0xFFC00400,
+		.end = 0xFFC004FF,
 		.flags = IORESOURCE_MEM,
 	},
-	{
-		.start = IRQ_UART0_RX,
-		.end = IRQ_UART0_RX + 1,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.start = IRQ_UART0_ERROR,
-		.end = IRQ_UART0_ERROR,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.start = CH_UART0_TX,
-		.end = CH_UART0_TX,
-		.flags = IORESOURCE_DMA,
-	},
-	{
-		.start = CH_UART0_RX,
-		.end = CH_UART0_RX,
-		.flags = IORESOURCE_DMA,
-	},
 };
 
-unsigned short bfin_uart0_peripherals[] = {
-	P_UART0_TX, P_UART0_RX, 0
-};
-
-static struct platform_device bfin_uart0_device = {
+static struct platform_device bfin_uart_device = {
 	.name = "bfin-uart",
-	.id = 0,
-	.num_resources = ARRAY_SIZE(bfin_uart0_resources),
-	.resource = bfin_uart0_resources,
-	.dev = {
-		.platform_data = &bfin_uart0_peripherals, /* Passed to driver */
-	},
+	.id = 1,
+	.num_resources = ARRAY_SIZE(bfin_uart_resources),
+	.resource = bfin_uart_resources,
 };
-#endif
 #endif
 
 #if defined(CONFIG_BFIN_SIR) || defined(CONFIG_BFIN_SIR_MODULE)
@@ -271,9 +277,7 @@ static struct platform_device *ip0x_devices[] __initdata = {
 #endif
 
 #if defined(CONFIG_SERIAL_BFIN) || defined(CONFIG_SERIAL_BFIN_MODULE)
-#ifdef CONFIG_SERIAL_BFIN_UART0
-	&bfin_uart0_device,
-#endif
+	&bfin_uart_device,
 #endif
 
 #if defined(CONFIG_BFIN_SIR) || defined(CONFIG_BFIN_SIR_MODULE)
@@ -308,18 +312,3 @@ static int __init ip0x_init(void)
 }
 
 arch_initcall(ip0x_init);
-
-static struct platform_device *ip0x_early_devices[] __initdata = {
-#if defined(CONFIG_SERIAL_BFIN_CONSOLE) || defined(CONFIG_EARLY_PRINTK)
-#ifdef CONFIG_SERIAL_BFIN_UART0
-	&bfin_uart0_device,
-#endif
-#endif
-};
-
-void __init native_machine_early_platform_add_devices(void)
-{
-	printk(KERN_INFO "register early platform devices\n");
-	early_platform_add_devices(ip0x_early_devices,
-		ARRAY_SIZE(ip0x_early_devices));
-}

@@ -1,1 +1,4 @@
-#include <asm-generic/auxvec.h>
+#ifndef __ASMBFIN_AUXVEC_H
+#define __ASMBFIN_AUXVEC_H
+
+#endif

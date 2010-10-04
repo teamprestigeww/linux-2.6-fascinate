@@ -18,7 +18,6 @@
 
 #include <linux/acpi_pmtmr.h>
 #include <linux/clocksource.h>
-#include <linux/timex.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/pci.h>
@@ -58,7 +57,7 @@ u32 acpi_pm_read_verified(void)
 	return v2;
 }
 
-static cycle_t acpi_pm_read(struct clocksource *cs)
+static cycle_t acpi_pm_read(void)
 {
 	return (cycle_t)read_pmtmr();
 }
@@ -68,7 +67,10 @@ static struct clocksource clocksource_acpi_pm = {
 	.rating		= 200,
 	.read		= acpi_pm_read,
 	.mask		= (cycle_t)ACPI_PM_MASK,
+	.mult		= 0, /*to be calculated*/
+	.shift		= 22,
 	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
+
 };
 
 
@@ -81,7 +83,7 @@ static int __init acpi_pm_good_setup(char *__str)
 }
 __setup("acpi_pm_good", acpi_pm_good_setup);
 
-static cycle_t acpi_pm_read_slow(struct clocksource *cs)
+static cycle_t acpi_pm_read_slow(void)
 {
 	return (cycle_t)acpi_pm_read_verified();
 }
@@ -141,7 +143,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_LE,
 #endif
 
 #ifndef CONFIG_X86_64
-#include <asm/mach_timer.h>
+#include "mach_timer.h"
 #define PMTMR_EXPECTED_RATE \
   ((CALIBRATE_LATCH * (PMTMR_TICKS_PER_SEC >> 10)) / (CLOCK_TICK_RATE>>10))
 /*
@@ -154,9 +156,9 @@ static int verify_pmtmr_rate(void)
 	unsigned long count, delta;
 
 	mach_prepare_counter();
-	value1 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
+	value1 = clocksource_acpi_pm.read();
 	mach_countup(&count);
-	value2 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
+	value2 = clocksource_acpi_pm.read();
 	delta = (value2 - value1) & ACPI_PM_MASK;
 
 	/* Check that the PMTMR delta is within 5% of what we expect */
@@ -187,12 +189,15 @@ static int __init init_acpi_pm_clocksource(void)
 	if (!pmtmr_ioport)
 		return -ENODEV;
 
+	clocksource_acpi_pm.mult = clocksource_hz2mult(PMTMR_TICKS_PER_SEC,
+						clocksource_acpi_pm.shift);
+
 	/* "verify" this timing source: */
 	for (j = 0; j < ACPI_PM_MONOTONICITY_CHECKS; j++) {
 		udelay(100 * j);
-		value1 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
+		value1 = clocksource_acpi_pm.read();
 		for (i = 0; i < ACPI_PM_READ_CHECKS; i++) {
-			value2 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
+			value2 = clocksource_acpi_pm.read();
 			if (value2 == value1)
 				continue;
 			if (value2 > value1)
@@ -214,8 +219,7 @@ static int __init init_acpi_pm_clocksource(void)
 	if (verify_pmtmr_rate() != 0)
 		return -ENODEV;
 
-	return clocksource_register_hz(&clocksource_acpi_pm,
-						PMTMR_TICKS_PER_SEC);
+	return clocksource_register(&clocksource_acpi_pm);
 }
 
 /* We use fs_initcall because we want the PCI fixups to have run

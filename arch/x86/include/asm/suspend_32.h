@@ -15,8 +15,6 @@ static inline int arch_prepare_suspend(void) { return 0; }
 struct saved_context {
 	u16 es, fs, gs, ss;
 	unsigned long cr0, cr2, cr3, cr4;
-	u64 misc_enable;
-	bool misc_enable_saved;
 	struct desc_ptr gdt;
 	struct desc_ptr idt;
 	u16 ldt;
@@ -25,5 +23,29 @@ struct saved_context {
 	unsigned long safety;
 	unsigned long return_address;
 } __attribute__((packed));
+
+#ifdef CONFIG_ACPI
+extern unsigned long saved_eip;
+extern unsigned long saved_esp;
+extern unsigned long saved_ebp;
+extern unsigned long saved_ebx;
+extern unsigned long saved_esi;
+extern unsigned long saved_edi;
+
+static inline void acpi_save_register_state(unsigned long return_point)
+{
+	saved_eip = return_point;
+	asm volatile("movl %%esp,%0" : "=m" (saved_esp));
+	asm volatile("movl %%ebp,%0" : "=m" (saved_ebp));
+	asm volatile("movl %%ebx,%0" : "=m" (saved_ebx));
+	asm volatile("movl %%edi,%0" : "=m" (saved_edi));
+	asm volatile("movl %%esi,%0" : "=m" (saved_esi));
+}
+
+#define acpi_restore_register_state()  do {} while (0)
+
+/* routines for saving/restoring kernel state */
+extern int acpi_save_state_mem(void);
+#endif
 
 #endif /* _ASM_X86_SUSPEND_32_H */

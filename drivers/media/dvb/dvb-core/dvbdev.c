@@ -154,11 +154,10 @@ int dvb_generic_release(struct inode *inode, struct file *file)
 EXPORT_SYMBOL(dvb_generic_release);
 
 
-long dvb_generic_ioctl(struct file *file,
-		       unsigned int cmd, unsigned long arg)
+int dvb_generic_ioctl(struct inode *inode, struct file *file,
+		      unsigned int cmd, unsigned long arg)
 {
 	struct dvb_device *dvbdev = file->private_data;
-	int ret;
 
 	if (!dvbdev)
 		return -ENODEV;
@@ -166,11 +165,7 @@ long dvb_generic_ioctl(struct file *file,
 	if (!dvbdev->kernel_ioctl)
 		return -EINVAL;
 
-	lock_kernel();
-	ret = dvb_usercopy(file, cmd, arg, dvbdev->kernel_ioctl);
-	unlock_kernel();
-
-	return ret;
+	return dvb_usercopy (inode, file, cmd, arg, dvbdev->kernel_ioctl);
 }
 EXPORT_SYMBOL(dvb_generic_ioctl);
 
@@ -233,8 +228,8 @@ int dvb_register_device(struct dvb_adapter *adap, struct dvb_device **pdvbdev,
 	dvbdev->fops = dvbdevfops;
 	init_waitqueue_head (&dvbdev->wait_queue);
 
-	memcpy(dvbdevfops, template->fops, sizeof(struct file_operations));
-	dvbdevfops->owner = adap->module;
+	memcpy(dvbdev->fops, template->fops, sizeof(struct file_operations));
+	dvbdev->fops->owner = adap->module;
 
 	list_add_tail (&dvbdev->list_head, &adap->device_list);
 
@@ -382,9 +377,9 @@ EXPORT_SYMBOL(dvb_unregister_adapter);
    define this as video_usercopy(). this will introduce a dependecy
    to the v4l "videodev.o" module, which is unnecessary for some
    cards (ie. the budget dvb-cards don't need the v4l module...) */
-int dvb_usercopy(struct file *file,
+int dvb_usercopy(struct inode *inode, struct file *file,
 		     unsigned int cmd, unsigned long arg,
-		     int (*func)(struct file *file,
+		     int (*func)(struct inode *inode, struct file *file,
 		     unsigned int cmd, void *arg))
 {
 	char    sbuf[128];
@@ -421,7 +416,7 @@ int dvb_usercopy(struct file *file,
 	}
 
 	/* call driver */
-	if ((err = func(file, cmd, parg)) == -ENOIOCTLCMD)
+	if ((err = func(inode, file, cmd, parg)) == -ENOIOCTLCMD)
 		err = -EINVAL;
 
 	if (err < 0)
@@ -452,15 +447,6 @@ static int dvb_uevent(struct device *dev, struct kobj_uevent_env *env)
 	return 0;
 }
 
-static char *dvb_devnode(struct device *dev, mode_t *mode)
-{
-	struct dvb_device *dvbdev = dev_get_drvdata(dev);
-
-	return kasprintf(GFP_KERNEL, "dvb/adapter%d/%s%d",
-		dvbdev->adapter->num, dnames[dvbdev->type], dvbdev->id);
-}
-
-
 static int __init init_dvbdev(void)
 {
 	int retval;
@@ -483,7 +469,6 @@ static int __init init_dvbdev(void)
 		goto error;
 	}
 	dvb_class->dev_uevent = dvb_uevent;
-	dvb_class->devnode = dvb_devnode;
 	return 0;
 
 error:

@@ -35,7 +35,7 @@ extern int usb_disabled(void);
 
 static void at91_start_clock(void)
 {
-	if (cpu_is_at91sam9261() || cpu_is_at91sam9g10())
+	if (cpu_is_at91sam9261())
 		clk_enable(hclk);
 	clk_enable(iclk);
 	clk_enable(fclk);
@@ -46,7 +46,7 @@ static void at91_stop_clock(void)
 {
 	clk_disable(fclk);
 	clk_disable(iclk);
-	if (cpu_is_at91sam9261() || cpu_is_at91sam9g10())
+	if (cpu_is_at91sam9261())
 		clk_disable(hclk);
 	clocked = 0;
 }
@@ -142,20 +142,20 @@ static int usb_hcd_at91_probe(const struct hc_driver *driver,
 
 	iclk = clk_get(&pdev->dev, "ohci_clk");
 	fclk = clk_get(&pdev->dev, "uhpck");
-	if (cpu_is_at91sam9261() || cpu_is_at91sam9g10())
+	if (cpu_is_at91sam9261())
 		hclk = clk_get(&pdev->dev, "hck0");
 
 	at91_start_hc(pdev);
 	ohci_hcd_init(hcd_to_ohci(hcd));
 
-	retval = usb_add_hcd(hcd, pdev->resource[1].start, IRQF_SHARED);
+	retval = usb_add_hcd(hcd, pdev->resource[1].start, IRQF_DISABLED);
 	if (retval == 0)
 		return retval;
 
 	/* Error handling */
 	at91_stop_hc(pdev);
 
-	if (cpu_is_at91sam9261() || cpu_is_at91sam9g10())
+	if (cpu_is_at91sam9261())
 		clk_put(hclk);
 	clk_put(fclk);
 	clk_put(iclk);
@@ -192,7 +192,7 @@ static void usb_hcd_at91_remove(struct usb_hcd *hcd,
 	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
 	usb_put_hcd(hcd);
 
-	if (cpu_is_at91sam9261() || cpu_is_at91sam9g10())
+	if (cpu_is_at91sam9261())
 		clk_put(hclk);
 	clk_put(fclk);
 	clk_put(iclk);
@@ -280,7 +280,7 @@ static int ohci_hcd_at91_drv_probe(struct platform_device *pdev)
 		 * are always powered while this driver is active, and use
 		 * active-low power switches.
 		 */
-		for (i = 0; i < ARRAY_SIZE(pdata->vbus_pin); i++) {
+		for (i = 0; i < pdata->ports; i++) {
 			if (pdata->vbus_pin[i] <= 0)
 				continue;
 			gpio_request(pdata->vbus_pin[i], "ohci_vbus");
@@ -298,7 +298,7 @@ static int ohci_hcd_at91_drv_remove(struct platform_device *pdev)
 	int			i;
 
 	if (pdata) {
-		for (i = 0; i < ARRAY_SIZE(pdata->vbus_pin); i++) {
+		for (i = 0; i < pdata->ports; i++) {
 			if (pdata->vbus_pin[i] <= 0)
 				continue;
 			gpio_direction_output(pdata->vbus_pin[i], 1);
@@ -331,8 +331,6 @@ ohci_hcd_at91_drv_suspend(struct platform_device *pdev, pm_message_t mesg)
 	 */
 	if (at91_suspend_entering_slow_clock()) {
 		ohci_usb_reset (ohci);
-		/* flush the writes */
-		(void) ohci_readl (ohci, &ohci->regs->control);
 		at91_stop_clock();
 	}
 

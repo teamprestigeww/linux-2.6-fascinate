@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/libata.h>
 #include <linux/irq.h>
-#include <linux/slab.h>
 #include <linux/platform_device.h>
 #include <linux/workqueue.h>
 #include <scsi/scsi_host.h>
@@ -214,7 +213,7 @@ static void octeon_cf_set_dmamode(struct ata_port *ap, struct ata_device *dev)
 	 * This is tI, C.F. spec. says 0, but Sony CF card requires
 	 * more, we use 20 nS.
 	 */
-	dma_tim.s.dmack_s = ns_to_tim_reg(tim_mult, 20);
+	dma_tim.s.dmack_s = ns_to_tim_reg(tim_mult, 20);;
 	dma_tim.s.dmack_h = ns_to_tim_reg(tim_mult, dma_ackh);
 
 	dma_tim.s.dmarq = dma_arq;
@@ -489,8 +488,9 @@ static void octeon_cf_exec_command16(struct ata_port *ap,
 	ata_wait_idle(ap);
 }
 
-static void octeon_cf_irq_on(struct ata_port *ap)
+static u8 octeon_cf_irq_on(struct ata_port *ap)
 {
+	return 0;
 }
 
 static void octeon_cf_irq_clear(struct ata_port *ap)
@@ -503,7 +503,7 @@ static void octeon_cf_dma_setup(struct ata_queued_cmd *qc)
 	struct ata_port *ap = qc->ap;
 	struct octeon_cf_port *cf_port;
 
-	cf_port = ap->private_data;
+	cf_port = (struct octeon_cf_port *)ap->private_data;
 	DPRINTK("ENTER\n");
 	/* issue r/w command */
 	qc->cursg = qc->sg;
@@ -596,7 +596,7 @@ static unsigned int octeon_cf_dma_finished(struct ata_port *ap,
 	if (ap->hsm_task_state != HSM_ST_LAST)
 		return 0;
 
-	cf_port = ap->private_data;
+	cf_port = (struct octeon_cf_port *)ap->private_data;
 
 	dma_cfg.u64 = cvmx_read_csr(CVMX_MIO_BOOT_DMA_CFGX(ocd->dma_engine));
 	if (dma_cfg.s.size != 0xfffff) {
@@ -653,9 +653,11 @@ static irqreturn_t octeon_cf_interrupt(int irq, void *dev_instance)
 
 		ap = host->ports[i];
 		ocd = ap->dev->platform_data;
+		if (!ap || (ap->flags & ATA_FLAG_DISABLED))
+			continue;
 
 		ocd = ap->dev->platform_data;
-		cf_port = ap->private_data;
+		cf_port = (struct octeon_cf_port *)ap->private_data;
 		dma_int.u64 =
 			cvmx_read_csr(CVMX_MIO_BOOT_DMA_INTX(ocd->dma_engine));
 		dma_cfg.u64 =
@@ -663,7 +665,8 @@ static irqreturn_t octeon_cf_interrupt(int irq, void *dev_instance)
 
 		qc = ata_qc_from_tag(ap, ap->link.active_tag);
 
-		if (qc && !(qc->tf.flags & ATA_TFLAG_POLLING)) {
+		if (qc && (!(qc->tf.flags & ATA_TFLAG_POLLING)) &&
+		    (qc->flags & ATA_QCFLAG_ACTIVE)) {
 			if (dma_int.s.done && !dma_cfg.s.en) {
 				if (!sg_is_last(qc->cursg)) {
 					qc->cursg = sg_next(qc->cursg);
@@ -733,7 +736,8 @@ static void octeon_cf_delayed_finish(struct work_struct *work)
 		goto out;
 	}
 	qc = ata_qc_from_tag(ap, ap->link.active_tag);
-	if (qc && !(qc->tf.flags & ATA_TFLAG_POLLING))
+	if (qc && (!(qc->tf.flags & ATA_TFLAG_POLLING)) &&
+	    (qc->flags & ATA_QCFLAG_ACTIVE))
 		octeon_cf_dma_finished(ap, qc);
 out:
 	spin_unlock_irqrestore(&host->lock, flags);
@@ -747,6 +751,20 @@ static void octeon_cf_dev_config(struct ata_device *dev)
 	 * (2^12 - 1 == 4095) to assure that this can never happen.
 	 */
 	dev->max_sectors = min(dev->max_sectors, 4095U);
+}
+
+/*
+ * Trap if driver tries to do standard bmdma commands.  They are not
+ * supported.
+ */
+static void unreachable_qc(struct ata_queued_cmd *qc)
+{
+	BUG();
+}
+
+static u8 unreachable_port(struct ata_port *ap)
+{
+	BUG();
 }
 
 /*
@@ -790,6 +808,10 @@ static struct ata_port_operations octeon_cf_ops = {
 	.sff_dev_select		= octeon_cf_dev_select,
 	.sff_irq_on		= octeon_cf_irq_on,
 	.sff_irq_clear		= octeon_cf_irq_clear,
+	.bmdma_setup		= unreachable_qc,
+	.bmdma_start		= unreachable_qc,
+	.bmdma_stop		= unreachable_qc,
+	.bmdma_status		= unreachable_port,
 	.cable_detect		= ata_cable_40wire,
 	.set_piomode		= octeon_cf_set_piomode,
 	.set_dmamode		= octeon_cf_set_dmamode,
@@ -818,7 +840,7 @@ static int __devinit octeon_cf_probe(struct platform_device *pdev)
 	ocd = pdev->dev.platform_data;
 
 	cs0 = devm_ioremap_nocache(&pdev->dev, res_cs0->start,
-				   resource_size(res_cs0));
+				   res_cs0->end - res_cs0->start + 1);
 
 	if (!cs0)
 		return -ENOMEM;
@@ -830,7 +852,7 @@ static int __devinit octeon_cf_probe(struct platform_device *pdev)
 			return -EINVAL;
 
 		cs1 = devm_ioremap_nocache(&pdev->dev, res_cs1->start,
-					   resource_size(res_cs1));
+					   res_cs0->end - res_cs1->start + 1);
 
 		if (!cs1)
 			return -ENOMEM;
@@ -849,7 +871,7 @@ static int __devinit octeon_cf_probe(struct platform_device *pdev)
 	ap->private_data = cf_port;
 	cf_port->ap = ap;
 	ap->ops = &octeon_cf_ops;
-	ap->pio_mask = ATA_PIO6;
+	ap->pio_mask = 0x7f; /* Support PIO 0-6 */
 	ap->flags |= ATA_FLAG_MMIO | ATA_FLAG_NO_LEGACY
 		  | ATA_FLAG_NO_ATAPI | ATA_FLAG_PIO_POLLING;
 
@@ -878,7 +900,7 @@ static int __devinit octeon_cf_probe(struct platform_device *pdev)
 		ap->ioaddr.ctl_addr	= cs1 + (6 << 1) + 1;
 		octeon_cf_ops.sff_data_xfer = octeon_cf_data_xfer16;
 
-		ap->mwdma_mask	= ATA_MWDMA4;
+		ap->mwdma_mask	= 0x1f; /* Support MWDMA 0-4 */
 		irq = platform_get_irq(pdev, 0);
 		irq_handler = octeon_cf_interrupt;
 

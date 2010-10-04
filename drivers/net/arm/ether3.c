@@ -463,7 +463,7 @@ static void ether3_setmulticastlist(struct net_device *dev)
 	if (dev->flags & IFF_PROMISC) {
 		/* promiscuous mode */
 		priv(dev)->regs.config1 |= CFG1_RECVPROMISC;
-	} else if (dev->flags & IFF_ALLMULTI || !netdev_mc_empty(dev)) {
+	} else if (dev->flags & IFF_ALLMULTI || dev->mc_count) {
 		priv(dev)->regs.config1 |= CFG1_RECVSPECBRMULTI;
 	} else
 		priv(dev)->regs.config1 |= CFG1_RECVSPECBROAD;
@@ -511,7 +511,7 @@ ether3_sendpacket(struct sk_buff *skb, struct net_device *dev)
 		dev_kfree_skb(skb);
 		priv(dev)->stats.tx_dropped ++;
 		netif_start_queue(dev);
-		return NETDEV_TX_OK;
+		return 0;
 	}
 
 	length = (length + 1) & ~1;
@@ -526,9 +526,10 @@ ether3_sendpacket(struct sk_buff *skb, struct net_device *dev)
 
 	if (priv(dev)->tx_tail == next_ptr) {
 		local_irq_restore(flags);
-		return NETDEV_TX_BUSY;	/* unable to queue */
+		return 1;	/* unable to queue */
 	}
 
+	dev->trans_start = jiffies;
 	ptr		 = 0x600 * priv(dev)->tx_head;
 	priv(dev)->tx_head = next_ptr;
 	next_ptr	*= 0x600;
@@ -561,7 +562,7 @@ ether3_sendpacket(struct sk_buff *skb, struct net_device *dev)
 		netif_stop_queue(dev);
 
  out:
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 static irqreturn_t
@@ -769,18 +770,6 @@ static void __devinit ether3_banner(void)
 		printk(KERN_INFO "%s", version);
 }
 
-static const struct net_device_ops ether3_netdev_ops = {
-	.ndo_open		= ether3_open,
-	.ndo_stop		= ether3_close,
-	.ndo_start_xmit		= ether3_sendpacket,
-	.ndo_get_stats		= ether3_getstats,
-	.ndo_set_multicast_list	= ether3_setmulticastlist,
-	.ndo_tx_timeout		= ether3_timeout,
-	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
-	.ndo_set_mac_address	= eth_mac_addr,
-};
-
 static int __devinit
 ether3_probe(struct expansion_card *ec, const struct ecard_id *id)
 {
@@ -857,7 +846,12 @@ ether3_probe(struct expansion_card *ec, const struct ecard_id *id)
 		goto free;
 	}
 
-	dev->netdev_ops		= &ether3_netdev_ops;
+	dev->open		= ether3_open;
+	dev->stop		= ether3_close;
+	dev->hard_start_xmit	= ether3_sendpacket;
+	dev->get_stats		= ether3_getstats;
+	dev->set_multicast_list	= ether3_setmulticastlist;
+	dev->tx_timeout		= ether3_timeout;
 	dev->watchdog_timeo	= 5 * HZ / 100;
 
 	ret = register_netdev(dev);

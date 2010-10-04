@@ -2789,10 +2789,7 @@ static u16 MXL_TuneRF(struct dvb_frontend *fe, u32 RF_Freq)
 
 	/* add for 2.6.5 Special setting for QAM */
 	if (state->Mod_Type == MXL_QAM) {
-		if (state->config->qam_gain != 0)
-			status += MXL_ControlWrite(fe, RFSYN_CHP_GAIN,
-						   state->config->qam_gain);
-		else if (state->RF_IN < 680000000)
+		if (state->RF_IN < 680000000)
 			status += MXL_ControlWrite(fe, RFSYN_CHP_GAIN, 3);
 		else
 			status += MXL_ControlWrite(fe, RFSYN_CHP_GAIN, 2);
@@ -4006,11 +4003,12 @@ static int mxl5005s_set_params(struct dvb_frontend *fe,
 	/* Change tuner for new modulation type if reqd */
 	if (req_mode != state->current_mode) {
 		switch (req_mode) {
-		case MXL_ATSC:
-		case MXL_QAM:
+		case VSB_8:
+		case QAM_64:
+		case QAM_256:
+		case QAM_AUTO:
 			req_bw  = MXL5005S_BANDWIDTH_6MHZ;
 			break;
-		case MXL_DVBT:
 		default:
 			/* Assume DVB-T */
 			switch (params->u.ofdm.bandwidth) {

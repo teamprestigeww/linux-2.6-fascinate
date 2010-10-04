@@ -19,7 +19,6 @@
 #include <linux/device.h>
 #include <linux/hid.h>
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/usb.h>
 
 #include "hid-ids.h"
@@ -41,11 +40,6 @@ module_param(fnmode, uint, 0644);
 MODULE_PARM_DESC(fnmode, "Mode of fn key on Apple keyboards (0 = disabled, "
 		"[1] = fkeyslast, 2 = fkeysfirst)");
 
-static unsigned int iso_layout = 1;
-module_param(iso_layout, uint, 0644);
-MODULE_PARM_DESC(iso_layout, "Enable/Disable hardcoded ISO-layout of the keyboard. "
-		"(0 = disabled, [1] = enabled)");
-
 struct apple_sc {
 	unsigned long quirks;
 	unsigned int fn_on;
@@ -59,7 +53,7 @@ struct apple_key_translation {
 	u8 flags;
 };
 
-static const struct apple_key_translation apple_fn_keys[] = {
+static struct apple_key_translation apple_fn_keys[] = {
 	{ KEY_BACKSPACE, KEY_DELETE },
 	{ KEY_ENTER,	KEY_INSERT },
 	{ KEY_F1,	KEY_BRIGHTNESSDOWN, APPLE_FLAG_FKEY },
@@ -81,7 +75,7 @@ static const struct apple_key_translation apple_fn_keys[] = {
 	{ }
 };
 
-static const struct apple_key_translation powerbook_fn_keys[] = {
+static struct apple_key_translation powerbook_fn_keys[] = {
 	{ KEY_BACKSPACE, KEY_DELETE },
 	{ KEY_F1,	KEY_BRIGHTNESSDOWN,     APPLE_FLAG_FKEY },
 	{ KEY_F2,	KEY_BRIGHTNESSUP,       APPLE_FLAG_FKEY },
@@ -100,7 +94,7 @@ static const struct apple_key_translation powerbook_fn_keys[] = {
 	{ }
 };
 
-static const struct apple_key_translation powerbook_numlock_keys[] = {
+static struct apple_key_translation powerbook_numlock_keys[] = {
 	{ KEY_J,	KEY_KP1 },
 	{ KEY_K,	KEY_KP2 },
 	{ KEY_L,	KEY_KP3 },
@@ -123,16 +117,16 @@ static const struct apple_key_translation powerbook_numlock_keys[] = {
 	{ }
 };
 
-static const struct apple_key_translation apple_iso_keyboard[] = {
+static struct apple_key_translation apple_iso_keyboard[] = {
 	{ KEY_GRAVE,	KEY_102ND },
 	{ KEY_102ND,	KEY_GRAVE },
 	{ }
 };
 
-static const struct apple_key_translation *apple_find_translation(
-		const struct apple_key_translation *table, u16 from)
+static struct apple_key_translation *apple_find_translation(
+		struct apple_key_translation *table, u16 from)
 {
-	const struct apple_key_translation *trans;
+	struct apple_key_translation *trans;
 
 	/* Look for the translation */
 	for (trans = table; trans->from; trans++)
@@ -146,7 +140,7 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 		struct hid_usage *usage, __s32 value)
 {
 	struct apple_sc *asc = hid_get_drvdata(hid);
-	const struct apple_key_translation *trans;
+	struct apple_key_translation *trans;
 
 	if (usage->code == KEY_FN) {
 		asc->fn_on = !!value;
@@ -157,7 +151,7 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 	if (fnmode) {
 		int do_translate;
 
-		trans = apple_find_translation((hid->product < 0x21d ||
+		trans = apple_find_translation((hid->product < 0x220 ||
 					hid->product >= 0x300) ?
 					powerbook_fn_keys : apple_fn_keys,
 					usage->code);
@@ -205,13 +199,11 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 		}
 	}
 
-        if (iso_layout) {
-		if (asc->quirks & APPLE_ISO_KEYBOARD) {
-			trans = apple_find_translation(apple_iso_keyboard, usage->code);
-			if (trans) {
-				input_event(input, usage->type, trans->to, value);
-				return 1;
-			}
+	if (asc->quirks & APPLE_ISO_KEYBOARD) {
+		trans = apple_find_translation(apple_iso_keyboard, usage->code);
+		if (trans) {
+			input_event(input, usage->type, trans->to, value);
+			return 1;
 		}
 	}
 
@@ -261,7 +253,7 @@ static void apple_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 
 static void apple_setup_input(struct input_dev *input)
 {
-	const struct apple_key_translation *trans;
+	struct apple_key_translation *trans;
 
 	set_bit(KEY_NUMLOCK, input->keybit);
 
@@ -395,12 +387,6 @@ static const struct hid_device_id apple_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_GEYSER4_JIS),
 		.driver_data = APPLE_NUMLOCK_EMULATION | APPLE_HAS_FN |
 			APPLE_RDESC_JIS },
-	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_MINI_ANSI),
-		.driver_data = APPLE_HAS_FN },
-	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_MINI_ISO),
-		.driver_data = APPLE_HAS_FN | APPLE_ISO_KEYBOARD },
-	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_MINI_JIS),
-		.driver_data = APPLE_HAS_FN },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_ANSI),
 		.driver_data = APPLE_HAS_FN },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_ISO),
@@ -439,17 +425,14 @@ static const struct hid_device_id apple_devices[] = {
 		.driver_data = APPLE_HAS_FN | APPLE_ISO_KEYBOARD },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_WELLSPRING3_JIS),
 		.driver_data = APPLE_HAS_FN | APPLE_RDESC_JIS },
-	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_WIRELESS_2009_ANSI),
-		.driver_data = APPLE_NUMLOCK_EMULATION | APPLE_HAS_FN },
-	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_WIRELESS_2009_ISO),
-		.driver_data = APPLE_NUMLOCK_EMULATION | APPLE_HAS_FN |
-			APPLE_ISO_KEYBOARD },
-	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_WIRELESS_2009_JIS),
-		.driver_data = APPLE_NUMLOCK_EMULATION | APPLE_HAS_FN },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_FOUNTAIN_TP_ONLY),
 		.driver_data = APPLE_NUMLOCK_EMULATION | APPLE_HAS_FN },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_GEYSER1_TP_ONLY),
 		.driver_data = APPLE_NUMLOCK_EMULATION | APPLE_HAS_FN },
+
+	/* Apple wireless Mighty Mouse */
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE, 0x030c),
+		.driver_data = APPLE_MIGHTYMOUSE | APPLE_INVERT_HWHEEL },
 
 	{ }
 };
@@ -466,7 +449,7 @@ static struct hid_driver apple_driver = {
 	.input_mapped = apple_input_mapped,
 };
 
-static int __init apple_init(void)
+static int apple_init(void)
 {
 	int ret;
 
@@ -477,7 +460,7 @@ static int __init apple_init(void)
 	return ret;
 }
 
-static void __exit apple_exit(void)
+static void apple_exit(void)
 {
 	hid_unregister_driver(&apple_driver);
 }
@@ -485,3 +468,5 @@ static void __exit apple_exit(void)
 module_init(apple_init);
 module_exit(apple_exit);
 MODULE_LICENSE("GPL");
+
+HID_COMPAT_LOAD_DRIVER(apple);

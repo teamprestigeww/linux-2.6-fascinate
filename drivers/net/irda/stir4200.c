@@ -560,8 +560,7 @@ static int change_speed(struct stir_cb *stir, unsigned speed)
 /*
  * Called from net/core when new frame is available.
  */
-static netdev_tx_t stir_hard_xmit(struct sk_buff *skb,
-					struct net_device *netdev)
+static int stir_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct stir_cb *stir = netdev_priv(netdev);
 
@@ -579,7 +578,7 @@ static netdev_tx_t stir_hard_xmit(struct sk_buff *skb,
 		dev_kfree_skb(skb);
 	}
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*
@@ -612,16 +611,16 @@ static int fifo_txwait(struct stir_cb *stir, int space)
 		pr_debug("fifo status 0x%lx count %lu\n", status, count);
 
 		/* is fifo receiving already, or empty */
-		if (!(status & FIFOCTL_DIR) ||
-		    (status & FIFOCTL_EMPTY))
+		if (!(status & FIFOCTL_DIR)
+		    || (status & FIFOCTL_EMPTY))
 			return 0;
 
 		if (signal_pending(current))
 			return -EINTR;
 
 		/* shutting down? */
-		if (!netif_running(stir->netdev) ||
-		    !netif_device_present(stir->netdev))
+		if (!netif_running(stir->netdev)
+		    || !netif_device_present(stir->netdev))
 			return -ESHUTDOWN;
 
 		/* only waiting for some space */
@@ -776,8 +775,8 @@ static int stir_transmit_thread(void *arg)
 		}
 
 		/* nothing to send? start receiving */
-		if (!stir->receiving &&
-		    irda_device_txqueue_empty(dev)) {
+		if (!stir->receiving 
+		    && irda_device_txqueue_empty(dev)) {
 			/* Wait otherwise chip gets confused. */
 			if (fifo_txwait(stir, -1))
 				break;
@@ -1008,13 +1007,6 @@ static int stir_net_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
 	return ret;
 }
 
-static const struct net_device_ops stir_netdev_ops = {
-	.ndo_open       = stir_net_open,
-	.ndo_stop       = stir_net_close,
-	.ndo_start_xmit = stir_hard_xmit,
-	.ndo_do_ioctl   = stir_net_ioctl,
-};
-
 /*
  * This routine is called by the USB subsystem for each new device
  * in the system. We need to check if the device is ours, and in
@@ -1062,7 +1054,10 @@ static int stir_probe(struct usb_interface *intf,
 	irda_qos_bits_to_value(&stir->qos);
 
 	/* Override the network functions we need to use */
-	net->netdev_ops = &stir_netdev_ops;
+	net->hard_start_xmit = stir_hard_xmit;
+	net->open            = stir_net_open;
+	net->stop            = stir_net_close;
+	net->do_ioctl        = stir_net_ioctl;
 
 	ret = register_netdev(net);
 	if (ret != 0)

@@ -23,7 +23,7 @@
 
 extern unsigned long sn_rtc_cycles_per_second;
 
-static cycle_t read_sn2(struct clocksource *cs)
+static cycle_t read_sn2(void)
 {
 	return (cycle_t)readq(RTC_COUNTER_ADDR);
 }

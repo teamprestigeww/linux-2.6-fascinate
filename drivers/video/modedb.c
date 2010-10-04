@@ -12,9 +12,7 @@
  */
 
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/fb.h>
-#include <linux/kernel.h>
 
 #undef DEBUG
 
@@ -266,14 +264,6 @@ static const struct fb_videomode modedb[] = {
 	/* 1280x800, 60 Hz, 47.403 kHz hsync, WXGA 16:10 aspect ratio */
 	NULL, 60, 1280, 800, 12048, 200, 64, 24, 1, 136, 3,
 	0, FB_VMODE_NONINTERLACED
-    }, {
-       /* 720x576i @ 50 Hz, 15.625 kHz hsync (PAL RGB) */
-       NULL, 50, 720, 576, 74074, 64, 16, 39, 5, 64, 5,
-       0, FB_VMODE_INTERLACED
-    }, {
-       /* 800x520i @ 50 Hz, 15.625 kHz hsync (PAL RGB) */
-       NULL, 50, 800, 520, 58823, 144, 64, 72, 28, 80, 5,
-       0, FB_VMODE_INTERLACED
     },
 };
 
@@ -404,6 +394,21 @@ const struct fb_videomode vesa_modes[] = {
 EXPORT_SYMBOL(vesa_modes);
 #endif /* CONFIG_FB_MODE_HELPERS */
 
+static int my_atoi(const char *name)
+{
+    int val = 0;
+
+    for (;; name++) {
+	switch (*name) {
+	    case '0' ... '9':
+		val = 10*val+(*name-'0');
+		break;
+	    default:
+		return val;
+	}
+    }
+}
+
 /**
  *	fb_try_mode - test a video mode
  *	@var: frame buffer user defined part of display
@@ -526,7 +531,7 @@ int fb_find_mode(struct fb_var_screeninfo *var,
 		    namelen = i;
 		    if (!refresh_specified && !bpp_specified &&
 			!yres_specified) {
-			refresh = simple_strtol(&name[i+1], NULL, 10);
+			refresh = my_atoi(&name[i+1]);
 			refresh_specified = 1;
 			if (cvt || rb)
 			    cvt = 0;
@@ -536,7 +541,7 @@ int fb_find_mode(struct fb_var_screeninfo *var,
 		case '-':
 		    namelen = i;
 		    if (!bpp_specified && !yres_specified) {
-			bpp = simple_strtol(&name[i+1], NULL, 10);
+			bpp = my_atoi(&name[i+1]);
 			bpp_specified = 1;
 			if (cvt || rb)
 			    cvt = 0;
@@ -545,7 +550,7 @@ int fb_find_mode(struct fb_var_screeninfo *var,
 		    break;
 		case 'x':
 		    if (!yres_specified) {
-			yres = simple_strtol(&name[i+1], NULL, 10);
+			yres = my_atoi(&name[i+1]);
 			yres_specified = 1;
 		    } else
 			goto done;
@@ -573,7 +578,7 @@ int fb_find_mode(struct fb_var_screeninfo *var,
 	    }
 	}
 	if (i < 0 && yres_specified) {
-	    xres = simple_strtol(name, NULL, 10);
+	    xres = my_atoi(name);
 	    res_specified = 1;
 	}
 done:
@@ -894,7 +899,7 @@ const struct fb_videomode *fb_match_mode(const struct fb_var_screeninfo *var,
 }
 
 /**
- * fb_add_videomode - adds videomode entry to modelist
+ * fb_add_videomode: adds videomode entry to modelist
  * @mode: videomode to add
  * @head: struct list_head of modelist
  *
@@ -929,7 +934,7 @@ int fb_add_videomode(const struct fb_videomode *mode, struct list_head *head)
 }
 
 /**
- * fb_delete_videomode - removed videomode entry from modelist
+ * fb_delete_videomode: removed videomode entry from modelist
  * @mode: videomode to remove
  * @head: struct list_head of modelist
  *
@@ -954,7 +959,7 @@ void fb_delete_videomode(const struct fb_videomode *mode,
 }
 
 /**
- * fb_destroy_modelist - destroy modelist
+ * fb_destroy_modelist: destroy modelist
  * @head: struct list_head of modelist
  */
 void fb_destroy_modelist(struct list_head *head)
@@ -969,7 +974,7 @@ void fb_destroy_modelist(struct list_head *head)
 EXPORT_SYMBOL_GPL(fb_destroy_modelist);
 
 /**
- * fb_videomode_to_modelist - convert mode array to mode list
+ * fb_videomode_to_modelist: convert mode array to mode list
  * @modedb: array of struct fb_videomode
  * @num: number of entries in array
  * @head: struct list_head of modelist

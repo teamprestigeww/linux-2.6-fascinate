@@ -20,6 +20,7 @@
  *
  */
 
+#include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/clk.h>
@@ -29,7 +30,9 @@
 
 #include <mach/board.h>
 #include <mach/gpio.h>
+#include <mach/at91sam9263.h>
 #include <mach/at91sam9_smc.h>
+#include <mach/at91sam9263_matrix.h>
 
 #define DRV_NAME "at91_ide"
 
@@ -140,7 +143,7 @@ static void apply_timings(const u8 chipselect, const u8 pio,
 	set_smc_timings(chipselect, cycle, setup, pulse, data_float, use_iordy);
 }
 
-static void at91_ide_input_data(ide_drive_t *drive, struct ide_cmd *cmd,
+static void at91_ide_input_data(ide_drive_t *drive, struct request *rq,
 				void *buf, unsigned int len)
 {
 	ide_hwif_t *hwif = drive->hwif;
@@ -153,11 +156,11 @@ static void at91_ide_input_data(ide_drive_t *drive, struct ide_cmd *cmd,
 	len++;
 
 	enter_16bit(chipselect, mode);
-	readsw((void __iomem *)io_ports->data_addr, buf, len / 2);
+	__ide_mm_insw((void __iomem *) io_ports->data_addr, buf, len / 2);
 	leave_16bit(chipselect, mode);
 }
 
-static void at91_ide_output_data(ide_drive_t *drive, struct ide_cmd *cmd,
+static void at91_ide_output_data(ide_drive_t *drive, struct request *rq,
 				 void *buf, unsigned int len)
 {
 	ide_hwif_t *hwif = drive->hwif;
@@ -168,23 +171,121 @@ static void at91_ide_output_data(ide_drive_t *drive, struct ide_cmd *cmd,
 	pdbg("cs %u buf %p len %d\n", chipselect,  buf, len);
 
 	enter_16bit(chipselect, mode);
-	writesw((void __iomem *)io_ports->data_addr, buf, len / 2);
+	__ide_mm_outsw((void __iomem *) io_ports->data_addr, buf, len / 2);
 	leave_16bit(chipselect, mode);
 }
 
-static void at91_ide_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
+static u8 ide_mm_inb(unsigned long port)
+{
+	return readb((void __iomem *) port);
+}
+
+static void ide_mm_outb(u8 value, unsigned long port)
+{
+	writeb(value, (void __iomem *) port);
+}
+
+static void at91_ide_tf_load(ide_drive_t *drive, ide_task_t *task)
+{
+	ide_hwif_t *hwif = drive->hwif;
+	struct ide_io_ports *io_ports = &hwif->io_ports;
+	struct ide_taskfile *tf = &task->tf;
+	u8 HIHI = (task->tf_flags & IDE_TFLAG_LBA48) ? 0xE0 : 0xEF;
+
+	if (task->tf_flags & IDE_TFLAG_FLAGGED)
+		HIHI = 0xFF;
+
+	if (task->tf_flags & IDE_TFLAG_OUT_DATA) {
+		u16 data = (tf->hob_data << 8) | tf->data;
+
+		at91_ide_output_data(drive, NULL, &data, 2);
+	}
+
+	if (task->tf_flags & IDE_TFLAG_OUT_HOB_FEATURE)
+		ide_mm_outb(tf->hob_feature, io_ports->feature_addr);
+	if (task->tf_flags & IDE_TFLAG_OUT_HOB_NSECT)
+		ide_mm_outb(tf->hob_nsect, io_ports->nsect_addr);
+	if (task->tf_flags & IDE_TFLAG_OUT_HOB_LBAL)
+		ide_mm_outb(tf->hob_lbal, io_ports->lbal_addr);
+	if (task->tf_flags & IDE_TFLAG_OUT_HOB_LBAM)
+		ide_mm_outb(tf->hob_lbam, io_ports->lbam_addr);
+	if (task->tf_flags & IDE_TFLAG_OUT_HOB_LBAH)
+		ide_mm_outb(tf->hob_lbah, io_ports->lbah_addr);
+
+	if (task->tf_flags & IDE_TFLAG_OUT_FEATURE)
+		ide_mm_outb(tf->feature, io_ports->feature_addr);
+	if (task->tf_flags & IDE_TFLAG_OUT_NSECT)
+		ide_mm_outb(tf->nsect, io_ports->nsect_addr);
+	if (task->tf_flags & IDE_TFLAG_OUT_LBAL)
+		ide_mm_outb(tf->lbal, io_ports->lbal_addr);
+	if (task->tf_flags & IDE_TFLAG_OUT_LBAM)
+		ide_mm_outb(tf->lbam, io_ports->lbam_addr);
+	if (task->tf_flags & IDE_TFLAG_OUT_LBAH)
+		ide_mm_outb(tf->lbah, io_ports->lbah_addr);
+
+	if (task->tf_flags & IDE_TFLAG_OUT_DEVICE)
+		ide_mm_outb((tf->device & HIHI) | drive->select, io_ports->device_addr);
+}
+
+static void at91_ide_tf_read(ide_drive_t *drive, ide_task_t *task)
+{
+	ide_hwif_t *hwif = drive->hwif;
+	struct ide_io_ports *io_ports = &hwif->io_ports;
+	struct ide_taskfile *tf = &task->tf;
+
+	if (task->tf_flags & IDE_TFLAG_IN_DATA) {
+		u16 data;
+
+		at91_ide_input_data(drive, NULL, &data, 2);
+		tf->data = data & 0xff;
+		tf->hob_data = (data >> 8) & 0xff;
+	}
+
+	/* be sure we're looking at the low order bits */
+	ide_mm_outb(ATA_DEVCTL_OBS & ~0x80, io_ports->ctl_addr);
+
+	if (task->tf_flags & IDE_TFLAG_IN_FEATURE)
+		tf->feature = ide_mm_inb(io_ports->feature_addr);
+	if (task->tf_flags & IDE_TFLAG_IN_NSECT)
+		tf->nsect  = ide_mm_inb(io_ports->nsect_addr);
+	if (task->tf_flags & IDE_TFLAG_IN_LBAL)
+		tf->lbal   = ide_mm_inb(io_ports->lbal_addr);
+	if (task->tf_flags & IDE_TFLAG_IN_LBAM)
+		tf->lbam   = ide_mm_inb(io_ports->lbam_addr);
+	if (task->tf_flags & IDE_TFLAG_IN_LBAH)
+		tf->lbah   = ide_mm_inb(io_ports->lbah_addr);
+	if (task->tf_flags & IDE_TFLAG_IN_DEVICE)
+		tf->device = ide_mm_inb(io_ports->device_addr);
+
+	if (task->tf_flags & IDE_TFLAG_LBA48) {
+		ide_mm_outb(ATA_DEVCTL_OBS | 0x80, io_ports->ctl_addr);
+
+		if (task->tf_flags & IDE_TFLAG_IN_HOB_FEATURE)
+			tf->hob_feature = ide_mm_inb(io_ports->feature_addr);
+		if (task->tf_flags & IDE_TFLAG_IN_HOB_NSECT)
+			tf->hob_nsect   = ide_mm_inb(io_ports->nsect_addr);
+		if (task->tf_flags & IDE_TFLAG_IN_HOB_LBAL)
+			tf->hob_lbal    = ide_mm_inb(io_ports->lbal_addr);
+		if (task->tf_flags & IDE_TFLAG_IN_HOB_LBAM)
+			tf->hob_lbam    = ide_mm_inb(io_ports->lbam_addr);
+		if (task->tf_flags & IDE_TFLAG_IN_HOB_LBAH)
+			tf->hob_lbah    = ide_mm_inb(io_ports->lbah_addr);
+	}
+}
+
+static void at91_ide_set_pio_mode(ide_drive_t *drive, const u8 pio)
 {
 	struct ide_timing *timing;
-	u8 chipselect = hwif->select_data;
+	u8 chipselect = drive->hwif->select_data;
 	int use_iordy = 0;
-	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 	pdbg("chipselect %u pio %u\n", chipselect, pio);
 
 	timing = ide_timing_find_mode(XFER_PIO_0 + pio);
 	BUG_ON(!timing);
 
-	if (ide_pio_need_iordy(drive, pio))
+	if ((pio > 2 || ata_id_has_iordy(drive->id)) &&
+	    !(ata_id_is_cfa(drive->id) && pio > 4))
 		use_iordy = 1;
 
 	apply_timings(chipselect, pio, timing, use_iordy);
@@ -194,11 +295,10 @@ static const struct ide_tp_ops at91_ide_tp_ops = {
 	.exec_command	= ide_exec_command,
 	.read_status	= ide_read_status,
 	.read_altstatus	= ide_read_altstatus,
-	.write_devctl	= ide_write_devctl,
+	.set_irq	= ide_set_irq,
 
-	.dev_select	= ide_dev_select,
-	.tf_load	= ide_tf_load,
-	.tf_read	= ide_tf_read,
+	.tf_load	= at91_ide_tf_load,
+	.tf_read	= at91_ide_tf_read,
 
 	.input_data	= at91_ide_input_data,
 	.output_data	= at91_ide_output_data,
@@ -213,8 +313,7 @@ static const struct ide_port_info at91_ide_port_info __initdata = {
 	.tp_ops		= &at91_ide_tp_ops,
 	.host_flags 	= IDE_HFLAG_MMIO | IDE_HFLAG_NO_DMA | IDE_HFLAG_SINGLE |
 			  IDE_HFLAG_NO_IO_32BIT | IDE_HFLAG_UNMASK_IRQS,
-	.pio_mask 	= ATA_PIO6,
-	.chipset	= ide_generic,
+	.pio_mask 	= ATA_PIO5,
 };
 
 /*
@@ -245,7 +344,8 @@ irqreturn_t at91_irq_handler(int irq, void *dev_id)
 static int __init at91_ide_probe(struct platform_device *pdev)
 {
 	int ret;
-	struct ide_hw hw, *hws[] = { &hw };
+	hw_regs_t hw;
+	hw_regs_t *hws[] = { &hw, NULL, NULL, NULL };
 	struct ide_host *host;
 	struct resource *res;
 	unsigned long tf_base = 0, ctl_base = 0;
@@ -302,9 +402,10 @@ static int __init at91_ide_probe(struct platform_device *pdev)
 		ide_std_init_ports(&hw, tf_base, ctl_base + 6);
 
 	hw.irq = board->irq_pin;
+	hw.chipset = ide_generic;
 	hw.dev = &pdev->dev;
 
-	host = ide_host_alloc(&at91_ide_port_info, hws, 1);
+	host = ide_host_alloc(&at91_ide_port_info, hws);
 	if (!host) {
 		perr("failed to allocate ide host\n");
 		return -ENOMEM;

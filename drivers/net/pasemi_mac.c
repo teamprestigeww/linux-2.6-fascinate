@@ -20,12 +20,10 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/dmaengine.h>
 #include <linux/delay.h>
 #include <linux/netdevice.h>
-#include <linux/of_mdio.h>
 #include <linux/etherdevice.h>
 #include <asm/dma-mapping.h>
 #include <linux/in.h>
@@ -972,7 +970,7 @@ static irqreturn_t pasemi_mac_rx_intr(int irq, void *data)
 	if (*chan->status & PAS_STATUS_ERROR)
 		reg |= PAS_IOB_DMA_RXCH_RESET_DINTC;
 
-	napi_schedule(&mac->napi);
+	netif_rx_schedule(&mac->napi);
 
 	write_iob_reg(PAS_IOB_DMA_RXCH_RESET(chan->chno), reg);
 
@@ -1012,7 +1010,7 @@ static irqreturn_t pasemi_mac_tx_intr(int irq, void *data)
 
 	mod_timer(&txring->clean_timer, jiffies + (TX_CLEAN_INTERVAL)*2);
 
-	napi_schedule(&mac->napi);
+	netif_rx_schedule(&mac->napi);
 
 	if (reg)
 		write_iob_reg(PAS_IOB_DMA_TXCH_RESET(chan->chno), reg);
@@ -1088,17 +1086,34 @@ static int pasemi_mac_phy_init(struct net_device *dev)
 	struct pasemi_mac *mac = netdev_priv(dev);
 	struct device_node *dn, *phy_dn;
 	struct phy_device *phydev;
+	unsigned int phy_id;
+	const phandle *ph;
+	const unsigned int *prop;
+	struct resource r;
+	int ret;
 
 	dn = pci_device_to_OF_node(mac->pdev);
-	phy_dn = of_parse_phandle(dn, "phy-handle", 0);
+	ph = of_get_property(dn, "phy-handle", NULL);
+	if (!ph)
+		return -ENODEV;
+	phy_dn = of_find_node_by_phandle(*ph);
+
+	prop = of_get_property(phy_dn, "reg", NULL);
+	ret = of_address_to_resource(phy_dn->parent, 0, &r);
+	if (ret)
+		goto err;
+
+	phy_id = *prop;
+	snprintf(mac->phy_id, sizeof(mac->phy_id), "%x:%02x",
+		 (int)r.start, phy_id);
+
 	of_node_put(phy_dn);
 
 	mac->link = 0;
 	mac->speed = 0;
 	mac->duplex = -1;
 
-	phydev = of_phy_connect(dev, phy_dn, &pasemi_adjust_link, 0,
-				PHY_INTERFACE_MODE_SGMII);
+	phydev = phy_connect(dev, mac->phy_id, &pasemi_adjust_link, 0, PHY_INTERFACE_MODE_SGMII);
 
 	if (IS_ERR(phydev)) {
 		printk(KERN_ERR "%s: Could not attach to phy\n", dev->name);
@@ -1108,6 +1123,10 @@ static int pasemi_mac_phy_init(struct net_device *dev)
 	mac->phydev = phydev;
 
 	return 0;
+
+err:
+	of_node_put(phy_dn);
+	return -ENODEV;
 }
 
 
@@ -1217,7 +1236,7 @@ static int pasemi_mac_open(struct net_device *dev)
 	snprintf(mac->tx_irq_name, sizeof(mac->tx_irq_name), "%s tx",
 		 dev->name);
 
-	ret = request_irq(mac->tx->chan.irq, pasemi_mac_tx_intr, IRQF_DISABLED,
+	ret = request_irq(mac->tx->chan.irq, &pasemi_mac_tx_intr, IRQF_DISABLED,
 			  mac->tx_irq_name, mac->tx);
 	if (ret) {
 		dev_err(&mac->pdev->dev, "request_irq of irq %d failed: %d\n",
@@ -1228,7 +1247,7 @@ static int pasemi_mac_open(struct net_device *dev)
 	snprintf(mac->rx_irq_name, sizeof(mac->rx_irq_name), "%s rx",
 		 dev->name);
 
-	ret = request_irq(mac->rx->chan.irq, pasemi_mac_rx_intr, IRQF_DISABLED,
+	ret = request_irq(mac->rx->chan.irq, &pasemi_mac_rx_intr, IRQF_DISABLED,
 			  mac->rx_irq_name, mac->rx);
 	if (ret) {
 		dev_err(&mac->pdev->dev, "request_irq of irq %d failed: %d\n",
@@ -1472,6 +1491,8 @@ static void pasemi_mac_queue_csdesc(const struct sk_buff *skb,
 	txring->next_to_fill = fill;
 
 	write_dma_reg(PAS_DMA_TXCHAN_INCR(txring->chan.chno), 2);
+
+	return;
 }
 
 static int pasemi_mac_start_tx(struct sk_buff *skb, struct net_device *dev)
@@ -1618,7 +1639,7 @@ static int pasemi_mac_poll(struct napi_struct *napi, int budget)
 	pkts = pasemi_mac_clean_rx(rx_ring(mac), budget);
 	if (pkts < budget) {
 		/* all done, no more packets present */
-		napi_complete(napi);
+		netif_rx_complete(napi);
 
 		pasemi_mac_restart_rx_intr(mac);
 		pasemi_mac_restart_tx_intr(mac);
@@ -1714,25 +1735,12 @@ out:
 	return ret;
 }
 
-static const struct net_device_ops pasemi_netdev_ops = {
-	.ndo_open		= pasemi_mac_open,
-	.ndo_stop		= pasemi_mac_close,
-	.ndo_start_xmit		= pasemi_mac_start_tx,
-	.ndo_set_multicast_list	= pasemi_mac_set_rx_mode,
-	.ndo_set_mac_address	= pasemi_mac_set_mac_addr,
-	.ndo_change_mtu		= pasemi_mac_change_mtu,
-	.ndo_validate_addr	= eth_validate_addr,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= pasemi_mac_netpoll,
-#endif
-};
-
 static int __devinit
 pasemi_mac_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct net_device *dev;
 	struct pasemi_mac *mac;
-	int err, ret;
+	int err;
 
 	err = pci_enable_device(pdev);
 	if (err)
@@ -1790,13 +1798,12 @@ pasemi_mac_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 	memcpy(dev->dev_addr, mac->mac_addr, sizeof(mac->mac_addr));
 
-	ret = mac_to_intf(mac);
-	if (ret < 0) {
+	mac->dma_if = mac_to_intf(mac);
+	if (mac->dma_if < 0) {
 		dev_err(&mac->pdev->dev, "Can't map DMA interface\n");
 		err = -ENODEV;
 		goto out;
 	}
-	mac->dma_if = ret;
 
 	switch (pdev->device) {
 	case 0xa005:
@@ -1810,11 +1817,19 @@ pasemi_mac_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto out;
 	}
 
-	dev->netdev_ops = &pasemi_netdev_ops;
+	dev->open = pasemi_mac_open;
+	dev->stop = pasemi_mac_close;
+	dev->hard_start_xmit = pasemi_mac_start_tx;
+	dev->set_multicast_list = pasemi_mac_set_rx_mode;
+	dev->set_mac_address = pasemi_mac_set_mac_addr;
 	dev->mtu = PE_DEF_MTU;
 	/* 1500 MTU + ETH_HLEN + VLAN_HLEN + 2 64B cachelines */
 	mac->bufsz = dev->mtu + ETH_HLEN + ETH_FCS_LEN + LOCAL_SKB_ALIGN + 128;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = pasemi_mac_netpoll;
+#endif
 
+	dev->change_mtu = pasemi_mac_change_mtu;
 	dev->ethtool_ops = &pasemi_mac_ethtool_ops;
 
 	if (err)
@@ -1874,7 +1889,7 @@ static void __devexit pasemi_mac_remove(struct pci_dev *pdev)
 	free_netdev(netdev);
 }
 
-static DEFINE_PCI_DEVICE_TABLE(pasemi_mac_pci_tbl) = {
+static struct pci_device_id pasemi_mac_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_PASEMI, 0xa005) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_PASEMI, 0xa006) },
 	{ },

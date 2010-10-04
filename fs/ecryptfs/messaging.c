@@ -20,7 +20,6 @@
  * 02111-1307, USA.
  */
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/user_namespace.h>
 #include <linux/nsproxy.h>
 #include "ecryptfs_kernel.h"
@@ -31,9 +30,9 @@ static struct mutex ecryptfs_msg_ctx_lists_mux;
 
 static struct hlist_head *ecryptfs_daemon_hash;
 struct mutex ecryptfs_daemon_hash_mux;
-static int ecryptfs_hash_bits;
+static int ecryptfs_hash_buckets;
 #define ecryptfs_uid_hash(uid) \
-        hash_long((unsigned long)uid, ecryptfs_hash_bits)
+        hash_long((unsigned long)uid, ecryptfs_hash_buckets)
 
 static u32 ecryptfs_msg_counter;
 static struct ecryptfs_msg_ctx *ecryptfs_msg_ctx_arr;
@@ -134,6 +133,45 @@ out:
 	return rc;
 }
 
+static int
+ecryptfs_send_message_locked(char *data, int data_len, u8 msg_type,
+			     struct ecryptfs_msg_ctx **msg_ctx);
+
+/**
+ * ecryptfs_send_raw_message
+ * @msg_type: Message type
+ * @daemon: Daemon struct for recipient of message
+ *
+ * A raw message is one that does not include an ecryptfs_message
+ * struct. It simply has a type.
+ *
+ * Must be called with ecryptfs_daemon_hash_mux held.
+ *
+ * Returns zero on success; non-zero otherwise
+ */
+static int ecryptfs_send_raw_message(u8 msg_type,
+				     struct ecryptfs_daemon *daemon)
+{
+	struct ecryptfs_msg_ctx *msg_ctx;
+	int rc;
+
+	rc = ecryptfs_send_message_locked(NULL, 0, msg_type, &msg_ctx);
+	if (rc) {
+		printk(KERN_ERR "%s: Error whilst attempting to send "
+		       "message to ecryptfsd; rc = [%d]\n", __func__, rc);
+		goto out;
+	}
+	/* Raw messages are logically context-free (e.g., no
+	 * reply is expected), so we set the state of the
+	 * ecryptfs_msg_ctx object to indicate that it should
+	 * be freed as soon as the message is sent. */
+	mutex_lock(&msg_ctx->mux);
+	msg_ctx->state = ECRYPTFS_MSG_CTX_STATE_NO_REPLY;
+	mutex_unlock(&msg_ctx->mux);
+out:
+	return rc;
+}
+
 /**
  * ecryptfs_spawn_daemon - Create and initialize a new daemon struct
  * @daemon: Pointer to set to newly allocated daemon struct
@@ -174,6 +212,49 @@ out:
 }
 
 /**
+ * ecryptfs_process_helo
+ * @euid: The user ID owner of the message
+ * @user_ns: The namespace in which @euid applies
+ * @pid: The process ID for the userspace program that sent the
+ *       message
+ *
+ * Adds the euid and pid values to the daemon euid hash.  If an euid
+ * already has a daemon pid registered, the daemon will be
+ * unregistered before the new daemon is put into the hash list.
+ * Returns zero after adding a new daemon to the hash list;
+ * non-zero otherwise.
+ */
+int ecryptfs_process_helo(uid_t euid, struct user_namespace *user_ns,
+			  struct pid *pid)
+{
+	struct ecryptfs_daemon *new_daemon;
+	struct ecryptfs_daemon *old_daemon;
+	int rc;
+
+	mutex_lock(&ecryptfs_daemon_hash_mux);
+	rc = ecryptfs_find_daemon_by_euid(&old_daemon, euid, user_ns);
+	if (rc != 0) {
+		printk(KERN_WARNING "Received request from user [%d] "
+		       "to register daemon [0x%p]; unregistering daemon "
+		       "[0x%p]\n", euid, pid, old_daemon->pid);
+		rc = ecryptfs_send_raw_message(ECRYPTFS_MSG_QUIT, old_daemon);
+		if (rc)
+			printk(KERN_WARNING "Failed to send QUIT "
+			       "message to daemon [0x%p]; rc = [%d]\n",
+			       old_daemon->pid, rc);
+		hlist_del(&old_daemon->euid_chain);
+		kfree(old_daemon);
+	}
+	rc = ecryptfs_spawn_daemon(&new_daemon, euid, user_ns, pid);
+	if (rc)
+		printk(KERN_ERR "%s: The gods are displeased with this attempt "
+		       "to create a new daemon object for euid [%d]; pid "
+		       "[0x%p]; rc = [%d]\n", __func__, euid, pid, rc);
+	mutex_unlock(&ecryptfs_daemon_hash_mux);
+	return rc;
+}
+
+/**
  * ecryptfs_exorcise_daemon - Destroy the daemon struct
  *
  * Must be called ceremoniously while in possession of
@@ -210,7 +291,8 @@ int ecryptfs_exorcise_daemon(struct ecryptfs_daemon *daemon)
 	if (daemon->user_ns)
 		put_user_ns(daemon->user_ns);
 	mutex_unlock(&daemon->mux);
-	kzfree(daemon);
+	memset(daemon, 0, sizeof(*daemon));
+	kfree(daemon);
 out:
 	return rc;
 }
@@ -274,7 +356,7 @@ int ecryptfs_process_response(struct ecryptfs_message *msg, uid_t euid,
 			      struct user_namespace *user_ns, struct pid *pid,
 			      u32 seq)
 {
-	struct ecryptfs_daemon *uninitialized_var(daemon);
+	struct ecryptfs_daemon *daemon;
 	struct ecryptfs_msg_ctx *msg_ctx;
 	size_t msg_size;
 	struct nsproxy *nsproxy;
@@ -473,7 +555,7 @@ sleep:
 	return rc;
 }
 
-int __init ecryptfs_init_messaging(void)
+int ecryptfs_init_messaging(void)
 {
 	int i;
 	int rc = 0;
@@ -486,19 +568,18 @@ int __init ecryptfs_init_messaging(void)
 	}
 	mutex_init(&ecryptfs_daemon_hash_mux);
 	mutex_lock(&ecryptfs_daemon_hash_mux);
-	ecryptfs_hash_bits = 1;
-	while (ecryptfs_number_of_users >> ecryptfs_hash_bits)
-		ecryptfs_hash_bits++;
+	ecryptfs_hash_buckets = 1;
+	while (ecryptfs_number_of_users >> ecryptfs_hash_buckets)
+		ecryptfs_hash_buckets++;
 	ecryptfs_daemon_hash = kmalloc((sizeof(struct hlist_head)
-					* (1 << ecryptfs_hash_bits)),
-				       GFP_KERNEL);
+					* ecryptfs_hash_buckets), GFP_KERNEL);
 	if (!ecryptfs_daemon_hash) {
 		rc = -ENOMEM;
 		printk(KERN_ERR "%s: Failed to allocate memory\n", __func__);
 		mutex_unlock(&ecryptfs_daemon_hash_mux);
 		goto out;
 	}
-	for (i = 0; i < (1 << ecryptfs_hash_bits); i++)
+	for (i = 0; i < ecryptfs_hash_buckets; i++)
 		INIT_HLIST_HEAD(&ecryptfs_daemon_hash[i]);
 	mutex_unlock(&ecryptfs_daemon_hash_mux);
 	ecryptfs_msg_ctx_arr = kmalloc((sizeof(struct ecryptfs_msg_ctx)
@@ -555,7 +636,7 @@ void ecryptfs_release_messaging(void)
 		int i;
 
 		mutex_lock(&ecryptfs_daemon_hash_mux);
-		for (i = 0; i < (1 << ecryptfs_hash_bits); i++) {
+		for (i = 0; i < ecryptfs_hash_buckets; i++) {
 			int rc;
 
 			hlist_for_each_entry(daemon, elem,

@@ -41,7 +41,6 @@ ENTRY(efi_call0)
 	addq $32, %rsp
 	RESTORE_XMM
 	ret
-ENDPROC(efi_call0)
 
 ENTRY(efi_call1)
 	SAVE_XMM
@@ -51,7 +50,6 @@ ENTRY(efi_call1)
 	addq $32, %rsp
 	RESTORE_XMM
 	ret
-ENDPROC(efi_call1)
 
 ENTRY(efi_call2)
 	SAVE_XMM
@@ -61,7 +59,6 @@ ENTRY(efi_call2)
 	addq $32, %rsp
 	RESTORE_XMM
 	ret
-ENDPROC(efi_call2)
 
 ENTRY(efi_call3)
 	SAVE_XMM
@@ -72,7 +69,6 @@ ENTRY(efi_call3)
 	addq $32, %rsp
 	RESTORE_XMM
 	ret
-ENDPROC(efi_call3)
 
 ENTRY(efi_call4)
 	SAVE_XMM
@@ -84,7 +80,6 @@ ENTRY(efi_call4)
 	addq $32, %rsp
 	RESTORE_XMM
 	ret
-ENDPROC(efi_call4)
 
 ENTRY(efi_call5)
 	SAVE_XMM
@@ -97,7 +92,6 @@ ENTRY(efi_call5)
 	addq $48, %rsp
 	RESTORE_XMM
 	ret
-ENDPROC(efi_call5)
 
 ENTRY(efi_call6)
 	SAVE_XMM
@@ -113,4 +107,3 @@ ENTRY(efi_call6)
 	addq $48, %rsp
 	RESTORE_XMM
 	ret
-ENDPROC(efi_call6)

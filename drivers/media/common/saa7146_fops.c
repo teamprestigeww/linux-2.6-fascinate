@@ -1,5 +1,7 @@
 #include <media/saa7146_vv.h>
 
+#define BOARD_CAN_DO_VBI(dev)   (dev->revision != 0 && dev->vv_data->vbi_minor != -1)
+
 /****************************************************************************/
 /* resource management functions, shamelessly stolen from saa7134 driver */
 
@@ -57,7 +59,7 @@ void saa7146_dma_free(struct saa7146_dev *dev,struct videobuf_queue *q,
 	BUG_ON(in_interrupt());
 
 	videobuf_waiton(&buf->vb,0,0);
-	videobuf_dma_unmap(q->dev, dma);
+	videobuf_dma_unmap(q, dma);
 	videobuf_dma_free(dma);
 	buf->vb.state = VIDEOBUF_NEEDS_INIT;
 }
@@ -192,23 +194,42 @@ void saa7146_buffer_timeout(unsigned long data)
 
 static int fops_open(struct file *file)
 {
-	struct video_device *vdev = video_devdata(file);
-	struct saa7146_dev *dev = video_drvdata(file);
+	unsigned int minor = video_devdata(file)->minor;
+	struct saa7146_dev *h = NULL, *dev = NULL;
+	struct list_head *list;
 	struct saa7146_fh *fh = NULL;
 	int result = 0;
 
-	enum v4l2_buf_type type;
+	enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-	DEB_EE(("file:%p, dev:%s\n", file, video_device_node_name(vdev)));
+	DEB_EE(("file:%p, minor:%d\n", file, minor));
 
 	if (mutex_lock_interruptible(&saa7146_devices_lock))
 		return -ERESTARTSYS;
 
-	DEB_D(("using: %p\n",dev));
+	list_for_each(list,&saa7146_devices) {
+		h = list_entry(list, struct saa7146_dev, item);
+		if( NULL == h->vv_data ) {
+			DEB_D(("device %p has not registered video devices.\n",h));
+			continue;
+		}
+		DEB_D(("trying: %p @ major %d,%d\n",h,h->vv_data->video_minor,h->vv_data->vbi_minor));
 
-	type = vdev->vfl_type == VFL_TYPE_GRABBER
-	     ? V4L2_BUF_TYPE_VIDEO_CAPTURE
-	     : V4L2_BUF_TYPE_VBI_CAPTURE;
+		if (h->vv_data->video_minor == minor) {
+			dev = h;
+		}
+		if (h->vv_data->vbi_minor == minor) {
+			type = V4L2_BUF_TYPE_VBI_CAPTURE;
+			dev = h;
+		}
+	}
+	if (NULL == dev) {
+		DEB_S(("no such video device.\n"));
+		result = -ENODEV;
+		goto out;
+	}
+
+	DEB_D(("using: %p\n",dev));
 
 	/* check if an extension is registered */
 	if( NULL == dev->ext ) {
@@ -285,6 +306,14 @@ static int fops_release(struct file *file)
 	mutex_unlock(&saa7146_devices_lock);
 
 	return 0;
+}
+
+static long fops_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+/*
+	DEB_EE(("file:%p, cmd:%d, arg:%li\n", file, cmd, arg));
+*/
+	return video_usercopy(file, cmd, arg, saa7146_video_do_ioctl);
 }
 
 static int fops_mmap(struct file *file, struct vm_area_struct * vma)
@@ -396,7 +425,7 @@ static const struct v4l2_file_operations video_fops =
 	.write		= fops_write,
 	.poll		= fops_poll,
 	.mmap		= fops_mmap,
-	.ioctl		= video_ioctl2,
+	.ioctl		= fops_ioctl,
 };
 
 static void vv_callback(struct saa7146_dev *dev, unsigned long status)
@@ -423,22 +452,19 @@ static void vv_callback(struct saa7146_dev *dev, unsigned long status)
 	}
 }
 
+static struct video_device device_template =
+{
+	.fops		= &video_fops,
+	.minor		= -1,
+};
+
 int saa7146_vv_init(struct saa7146_dev* dev, struct saa7146_ext_vv *ext_vv)
 {
-	struct saa7146_vv *vv;
-	int err;
-
-	err = v4l2_device_register(&dev->pci->dev, &dev->v4l2_dev);
-	if (err)
-		return err;
-
-	vv = kzalloc(sizeof(struct saa7146_vv), GFP_KERNEL);
-	if (vv == NULL) {
+	struct saa7146_vv *vv = kzalloc (sizeof(struct saa7146_vv),GFP_KERNEL);
+	if( NULL == vv ) {
 		ERR(("out of memory. aborting.\n"));
-		return -ENOMEM;
+		return -1;
 	}
-	ext_vv->ops = saa7146_video_ioctl_ops;
-	ext_vv->core_ops = &saa7146_video_ioctl_ops;
 
 	DEB_EE(("dev:%p\n",dev));
 
@@ -452,6 +478,9 @@ int saa7146_vv_init(struct saa7146_dev* dev, struct saa7146_ext_vv *ext_vv)
 	   handle different devices that might need different
 	   configuration data) */
 	dev->ext_vv_data = ext_vv;
+
+	vv->video_minor = -1;
+	vv->vbi_minor = -1;
 
 	vv->d_clipping.cpu_addr = pci_alloc_consistent(dev->pci, SAA7146_CLIPPING_MEM, &vv->d_clipping.dma_handle);
 	if( NULL == vv->d_clipping.cpu_addr ) {
@@ -478,7 +507,6 @@ int saa7146_vv_release(struct saa7146_dev* dev)
 
 	DEB_EE(("dev:%p\n",dev));
 
-	v4l2_device_unregister(&dev->v4l2_dev);
 	pci_free_consistent(dev->pci, SAA7146_CLIPPING_MEM, vv->d_clipping.cpu_addr, vv->d_clipping.dma_handle);
 	kfree(vv);
 	dev->vv_data = NULL;
@@ -491,9 +519,8 @@ EXPORT_SYMBOL_GPL(saa7146_vv_release);
 int saa7146_register_device(struct video_device **vid, struct saa7146_dev* dev,
 			    char *name, int type)
 {
+	struct saa7146_vv *vv = dev->vv_data;
 	struct video_device *vfd;
-	int err;
-	int i;
 
 	DEB_EE(("dev:%p, name:'%s', type:%d\n",dev,name,type));
 
@@ -502,24 +529,27 @@ int saa7146_register_device(struct video_device **vid, struct saa7146_dev* dev,
 	if (vfd == NULL)
 		return -ENOMEM;
 
-	vfd->fops = &video_fops;
-	vfd->ioctl_ops = &dev->ext_vv_data->ops;
-	vfd->release = video_device_release;
-	vfd->tvnorms = 0;
-	for (i = 0; i < dev->ext_vv_data->num_stds; i++)
-		vfd->tvnorms |= dev->ext_vv_data->stds[i].id;
+	memcpy(vfd, &device_template, sizeof(struct video_device));
 	strlcpy(vfd->name, name, sizeof(vfd->name));
+	vfd->release = video_device_release;
 	video_set_drvdata(vfd, dev);
 
-	err = video_register_device(vfd, type, -1);
-	if (err < 0) {
+	// fixme: -1 should be an insmod parameter *for the extension* (like "video_nr");
+	if (video_register_device(vfd, type, -1) < 0) {
 		ERR(("cannot register v4l2 device. skipping.\n"));
 		video_device_release(vfd);
-		return err;
+		return -1;
 	}
 
-	INFO(("%s: registered device %s [v4l2]\n",
-		dev->name, video_device_node_name(vfd)));
+	if( VFL_TYPE_GRABBER == type ) {
+		vv->video_minor = vfd->minor;
+		INFO(("%s: registered device video%d [v4l2]\n",
+			dev->name, vfd->num));
+	} else {
+		vv->vbi_minor = vfd->minor;
+		INFO(("%s: registered device vbi%d [v4l2]\n",
+			dev->name, vfd->num));
+	}
 
 	*vid = vfd;
 	return 0;
@@ -528,7 +558,15 @@ EXPORT_SYMBOL_GPL(saa7146_register_device);
 
 int saa7146_unregister_device(struct video_device **vid, struct saa7146_dev* dev)
 {
+	struct saa7146_vv *vv = dev->vv_data;
+
 	DEB_EE(("dev:%p\n",dev));
+
+	if ((*vid)->vfl_type == VFL_TYPE_GRABBER) {
+		vv->video_minor = -1;
+	} else {
+		vv->vbi_minor = -1;
+	}
 
 	video_unregister_device(*vid);
 	*vid = NULL;

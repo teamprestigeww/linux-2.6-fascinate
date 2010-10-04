@@ -737,14 +737,11 @@ static int sym53c8xx_slave_alloc(struct scsi_device *sdev)
 	struct sym_hcb *np = sym_get_hcb(sdev->host);
 	struct sym_tcb *tp = &np->target[sdev->id];
 	struct sym_lcb *lp;
-	unsigned long flags;
-	int error;
 
 	if (sdev->id >= SYM_CONF_MAX_TARGET || sdev->lun >= SYM_CONF_MAX_LUN)
 		return -ENXIO;
 
-	spin_lock_irqsave(np->s.host->host_lock, flags);
-
+	tp->starget = sdev->sdev_target;
 	/*
 	 * Fail the device init if the device is flagged NOSCAN at BOOT in
 	 * the NVRAM.  This may speed up boot and maintain coherency with
@@ -756,37 +753,26 @@ static int sym53c8xx_slave_alloc(struct scsi_device *sdev)
 
 	if (tp->usrflags & SYM_SCAN_BOOT_DISABLED) {
 		tp->usrflags &= ~SYM_SCAN_BOOT_DISABLED;
-		starget_printk(KERN_INFO, sdev->sdev_target,
+		starget_printk(KERN_INFO, tp->starget,
 				"Scan at boot disabled in NVRAM\n");
-		error = -ENXIO;
-		goto out;
+		return -ENXIO;
 	}
 
 	if (tp->usrflags & SYM_SCAN_LUNS_DISABLED) {
-		if (sdev->lun != 0) {
-			error = -ENXIO;
-			goto out;
-		}
-		starget_printk(KERN_INFO, sdev->sdev_target,
+		if (sdev->lun != 0)
+			return -ENXIO;
+		starget_printk(KERN_INFO, tp->starget,
 				"Multiple LUNs disabled in NVRAM\n");
 	}
 
 	lp = sym_alloc_lcb(np, sdev->id, sdev->lun);
-	if (!lp) {
-		error = -ENOMEM;
-		goto out;
-	}
-	if (tp->nlcb == 1)
-		tp->starget = sdev->sdev_target;
+	if (!lp)
+		return -ENOMEM;
 
 	spi_min_period(tp->starget) = tp->usr_period;
 	spi_max_width(tp->starget) = tp->usr_width;
 
-	error = 0;
-out:
-	spin_unlock_irqrestore(np->s.host->host_lock, flags);
-
-	return error;
+	return 0;
 }
 
 /*
@@ -806,9 +792,9 @@ static int sym53c8xx_slave_configure(struct scsi_device *sdev)
 
 	/*
 	 *  Select queue depth from driver setup.
-	 *  Do not use more than configured by user.
-	 *  Use at least 1.
-	 *  Do not use more than our maximum.
+	 *  Donnot use more than configured by user.
+	 *  Use at least 2.
+	 *  Donnot use more than our maximum.
 	 */
 	reqtags = sym_driver_setup.max_tag;
 	if (reqtags > tp->usrtags)
@@ -817,7 +803,7 @@ static int sym53c8xx_slave_configure(struct scsi_device *sdev)
 		reqtags = 0;
 	if (reqtags > SYM_CONF_MAX_TAG)
 		reqtags = SYM_CONF_MAX_TAG;
-	depth_to_use = reqtags ? reqtags : 1;
+	depth_to_use = reqtags ? reqtags : 2;
 	scsi_adjust_queue_depth(sdev,
 				sdev->tagged_supported ? MSG_SIMPLE_TAG : 0,
 				depth_to_use);
@@ -833,34 +819,12 @@ static int sym53c8xx_slave_configure(struct scsi_device *sdev)
 static void sym53c8xx_slave_destroy(struct scsi_device *sdev)
 {
 	struct sym_hcb *np = sym_get_hcb(sdev->host);
-	struct sym_tcb *tp = &np->target[sdev->id];
-	struct sym_lcb *lp = sym_lp(tp, sdev->lun);
-	unsigned long flags;
+	struct sym_lcb *lp = sym_lp(&np->target[sdev->id], sdev->lun);
 
-	spin_lock_irqsave(np->s.host->host_lock, flags);
-
-	if (lp->busy_itlq || lp->busy_itl) {
-		/*
-		 * This really shouldn't happen, but we can't return an error
-		 * so let's try to stop all on-going I/O.
-		 */
-		starget_printk(KERN_WARNING, tp->starget,
-			       "Removing busy LCB (%d)\n", sdev->lun);
-		sym_reset_scsi_bus(np, 1);
-	}
-
-	if (sym_free_lcb(np, sdev->id, sdev->lun) == 0) {
-		/*
-		 * It was the last unit for this target.
-		 */
-		tp->head.sval        = 0;
-		tp->head.wval        = np->rv_scntl3;
-		tp->head.uval        = 0;
-		tp->tgoal.check_nego = 1;
-		tp->starget	     = NULL;
-	}
-
-	spin_unlock_irqrestore(np->s.host->host_lock, flags);
+	if (lp->itlq_tbl)
+		sym_mfree_dma(lp->itlq_tbl, SYM_CONF_MAX_TASK * 4, "ITLQ_TBL");
+	kfree(lp->cb_tags);
+	sym_mfree_dma(lp, sizeof(*lp), "LCB");
 }
 
 /*
@@ -926,8 +890,6 @@ static void sym_exec_user_command (struct sym_hcb *np, struct sym_usrcmd *uc)
 			if (!((uc->target >> t) & 1))
 				continue;
 			tp = &np->target[t];
-			if (!tp->nlcb)
-				continue;
 
 			switch (uc->cmd) {
 
@@ -984,7 +946,7 @@ static void sym_exec_user_command (struct sym_hcb *np, struct sym_usrcmd *uc)
 	}
 }
 
-static int sym_skip_spaces(char *ptr, int len)
+static int skip_spaces(char *ptr, int len)
 {
 	int cnt, c;
 
@@ -1012,7 +974,7 @@ static int is_keyword(char *ptr, int len, char *verb)
 }
 
 #define SKIP_SPACES(ptr, len)						\
-	if ((arg_len = sym_skip_spaces(ptr, len)) < 1)			\
+	if ((arg_len = skip_spaces(ptr, len)) < 1)			\
 		return -EINVAL;						\
 	ptr += arg_len; len -= arg_len;
 
@@ -1274,29 +1236,14 @@ static int sym53c8xx_proc_info(struct Scsi_Host *shost, char *buffer,
 #endif /* SYM_LINUX_PROC_INFO_SUPPORT */
 
 /*
- * Free resources claimed by sym_iomap_device().  Note that
- * sym_free_resources() should be used instead of this function after calling
- * sym_attach().
- */
-static void __devinit
-sym_iounmap_device(struct sym_device *device)
-{
-	if (device->s.ioaddr)
-		pci_iounmap(device->pdev, device->s.ioaddr);
-	if (device->s.ramaddr)
-		pci_iounmap(device->pdev, device->s.ramaddr);
-}
-
-/*
  *	Free controller resources.
  */
-static void sym_free_resources(struct sym_hcb *np, struct pci_dev *pdev,
-		int do_free_irq)
+static void sym_free_resources(struct sym_hcb *np, struct pci_dev *pdev)
 {
 	/*
 	 *  Free O/S specific resources.
 	 */
-	if (do_free_irq)
+	if (pdev->irq)
 		free_irq(pdev->irq, np->s.host);
 	if (np->s.ioaddr)
 		pci_iounmap(pdev, np->s.ioaddr);
@@ -1324,11 +1271,10 @@ static struct Scsi_Host * __devinit sym_attach(struct scsi_host_template *tpnt,
 {
 	struct sym_data *sym_data;
 	struct sym_hcb *np = NULL;
-	struct Scsi_Host *shost = NULL;
+	struct Scsi_Host *shost;
 	struct pci_dev *pdev = dev->pdev;
 	unsigned long flags;
 	struct sym_fw *fw;
-	int do_free_irq = 0;
 
 	printk(KERN_INFO "sym%d: <%s> rev 0x%x at pci %s irq %u\n",
 		unit, dev->chip.name, pdev->revision, pci_name(pdev),
@@ -1339,11 +1285,11 @@ static struct Scsi_Host * __devinit sym_attach(struct scsi_host_template *tpnt,
 	 */
 	fw = sym_find_firmware(&dev->chip);
 	if (!fw)
-		goto attach_failed;
+		return NULL;
 
 	shost = scsi_host_alloc(tpnt, sizeof(*sym_data));
 	if (!shost)
-		goto attach_failed;
+		return NULL;
 	sym_data = shost_priv(shost);
 
 	/*
@@ -1373,10 +1319,6 @@ static struct Scsi_Host * __devinit sym_attach(struct scsi_host_template *tpnt,
 	np->maxoffs	= dev->chip.offset_max;
 	np->maxburst	= dev->chip.burst_max;
 	np->myaddr	= dev->host_id;
-	np->mmio_ba	= (u32)dev->mmio_base;
-	np->ram_ba	= (u32)dev->ram_base;
-	np->s.ioaddr	= dev->s.ioaddr;
-	np->s.ramaddr	= dev->s.ramaddr;
 
 	/*
 	 *  Edit its name.
@@ -1387,10 +1329,26 @@ static struct Scsi_Host * __devinit sym_attach(struct scsi_host_template *tpnt,
 	if ((SYM_CONF_DMA_ADDRESSING_MODE > 0) && (np->features & FE_DAC) &&
 			!pci_set_dma_mask(pdev, DMA_DAC_MASK)) {
 		set_dac(np);
-	} else if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
+	} else if (pci_set_dma_mask(pdev, DMA_32BIT_MASK)) {
 		printf_warning("%s: No suitable DMA available\n", sym_name(np));
 		goto attach_failed;
 	}
+
+	/*
+	 *  Try to map the controller chip to
+	 *  virtual and physical memory.
+	 */
+	np->mmio_ba = (u32)dev->mmio_base;
+	np->s.ioaddr	= dev->s.ioaddr;
+	np->s.ramaddr	= dev->s.ramaddr;
+
+	/*
+	 *  Map on-chip RAM if present and supported.
+	 */
+	if (!(np->features & FE_RAM))
+		dev->ram_base = 0;
+	if (dev->ram_base)
+		np->ram_ba = (u32)dev->ram_base;
 
 	if (sym_hcb_attach(shost, fw, dev->nvram))
 		goto attach_failed;
@@ -1406,7 +1364,6 @@ static struct Scsi_Host * __devinit sym_attach(struct scsi_host_template *tpnt,
 			sym_name(np), pdev->irq);
 		goto attach_failed;
 	}
-	do_free_irq = 1;
 
 	/*
 	 *  After SCSI devices have been opened, we cannot
@@ -1459,13 +1416,12 @@ static struct Scsi_Host * __devinit sym_attach(struct scsi_host_template *tpnt,
 		   "TERMINATION, DEVICE POWER etc.!\n", sym_name(np));
 	spin_unlock_irqrestore(shost->host_lock, flags);
  attach_failed:
-	printf_info("sym%d: giving up ...\n", unit);
+	if (!shost)
+		return NULL;
+	printf_info("%s: giving up ...\n", sym_name(np));
 	if (np)
-		sym_free_resources(np, pdev, do_free_irq);
-	else
-		sym_iounmap_device(dev);
-	if (shost)
-		scsi_host_put(shost);
+		sym_free_resources(np, pdev);
+	scsi_host_put(shost);
 
 	return NULL;
  }
@@ -1594,28 +1550,30 @@ static int __devinit sym_set_workarounds(struct sym_device *device)
 }
 
 /*
- * Map HBA registers and on-chip SRAM (if present).
+ *  Read and check the PCI configuration for any detected NCR 
+ *  boards and save data for attaching after all boards have 
+ *  been detected.
  */
-static int __devinit
-sym_iomap_device(struct sym_device *device)
+static void __devinit
+sym_init_device(struct pci_dev *pdev, struct sym_device *device)
 {
-	struct pci_dev *pdev = device->pdev;
-	struct pci_bus_region bus_addr;
 	int i = 2;
+	struct pci_bus_region bus_addr;
+
+	device->host_id = SYM_SETUP_HOST_ID;
+	device->pdev = pdev;
 
 	pcibios_resource_to_bus(pdev, &bus_addr, &pdev->resource[1]);
 	device->mmio_base = bus_addr.start;
 
-	if (device->chip.features & FE_RAM) {
-		/*
-		 * If the BAR is 64-bit, resource 2 will be occupied by the
-		 * upper 32 bits
-		 */
-		if (!pdev->resource[i].flags)
-			i++;
-		pcibios_resource_to_bus(pdev, &bus_addr, &pdev->resource[i]);
-		device->ram_base = bus_addr.start;
-	}
+	/*
+	 * If the BAR is 64-bit, resource 2 will be occupied by the
+	 * upper 32 bits
+	 */
+	if (!pdev->resource[i].flags)
+		i++;
+	pcibios_resource_to_bus(pdev, &bus_addr, &pdev->resource[i]);
+	device->ram_base = bus_addr.start;
 
 #ifdef CONFIG_SCSI_SYM53C8XX_MMIO
 	if (device->mmio_base)
@@ -1625,21 +1583,9 @@ sym_iomap_device(struct sym_device *device)
 	if (!device->s.ioaddr)
 		device->s.ioaddr = pci_iomap(pdev, 0,
 						pci_resource_len(pdev, 0));
-	if (!device->s.ioaddr) {
-		dev_err(&pdev->dev, "could not map registers; giving up.\n");
-		return -EIO;
-	}
-	if (device->ram_base) {
+	if (device->ram_base)
 		device->s.ramaddr = pci_iomap(pdev, i,
 						pci_resource_len(pdev, i));
-		if (!device->s.ramaddr) {
-			dev_warn(&pdev->dev,
-				"could not map SRAM; continuing anyway.\n");
-			device->ram_base = 0;
-		}
-	}
-
-	return 0;
 }
 
 /*
@@ -1713,8 +1659,7 @@ static int sym_detach(struct Scsi_Host *shost, struct pci_dev *pdev)
 	udelay(10);
 	OUTB(np, nc_istat, 0);
 
-	sym_free_resources(np, pdev, 1);
-	scsi_host_put(shost);
+	sym_free_resources(np, pdev);
 
 	return 1;
 }
@@ -1751,13 +1696,9 @@ static int __devinit sym2_probe(struct pci_dev *pdev,
 	struct sym_device sym_dev;
 	struct sym_nvram nvram;
 	struct Scsi_Host *shost;
-	int do_iounmap = 0;
-	int do_disable_device = 1;
 
 	memset(&sym_dev, 0, sizeof(sym_dev));
 	memset(&nvram, 0, sizeof(nvram));
-	sym_dev.pdev = pdev;
-	sym_dev.host_id = SYM_SETUP_HOST_ID;
 
 	if (pci_enable_device(pdev))
 		goto leave;
@@ -1767,17 +1708,12 @@ static int __devinit sym2_probe(struct pci_dev *pdev,
 	if (pci_request_regions(pdev, NAME53C8XX))
 		goto disable;
 
+	sym_init_device(pdev, &sym_dev);
 	if (sym_check_supported(&sym_dev))
 		goto free;
 
-	if (sym_iomap_device(&sym_dev))
-		goto free;
-	do_iounmap = 1;
-
-	if (sym_check_raid(&sym_dev)) {
-		do_disable_device = 0;	/* Don't disable the device */
-		goto free;
-	}
+	if (sym_check_raid(&sym_dev))
+		goto leave;	/* Don't disable the device */
 
 	if (sym_set_workarounds(&sym_dev))
 		goto free;
@@ -1786,7 +1722,6 @@ static int __devinit sym2_probe(struct pci_dev *pdev,
 
 	sym_get_nvram(&sym_dev, &nvram);
 
-	do_iounmap = 0; /* Don't sym_iounmap_device() after sym_attach(). */
 	shost = sym_attach(&sym2_template, attach_count, &sym_dev);
 	if (!shost)
 		goto free;
@@ -1802,12 +1737,9 @@ static int __devinit sym2_probe(struct pci_dev *pdev,
  detach:
 	sym_detach(pci_get_drvdata(pdev), pdev);
  free:
-	if (do_iounmap)
-		sym_iounmap_device(&sym_dev);
 	pci_release_regions(pdev);
  disable:
-	if (do_disable_device)
-		pci_disable_device(pdev);
+	pci_disable_device(pdev);
  leave:
 	return -ENODEV;
 }
@@ -1817,6 +1749,7 @@ static void sym2_remove(struct pci_dev *pdev)
 	struct Scsi_Host *shost = pci_get_drvdata(pdev);
 
 	scsi_remove_host(shost);
+	scsi_host_put(shost);
 	sym_detach(shost, pdev);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
@@ -1864,7 +1797,7 @@ static pci_ers_result_t sym2_io_slot_dump(struct pci_dev *pdev)
  *
  * This routine is similar to sym_set_workarounds(), except
  * that, at this point, we already know that the device was
- * successfully intialized at least once before, and so most
+ * succesfully intialized at least once before, and so most
  * of the steps taken there are un-needed here.
  */
 static void sym2_reset_workarounds(struct pci_dev *pdev)

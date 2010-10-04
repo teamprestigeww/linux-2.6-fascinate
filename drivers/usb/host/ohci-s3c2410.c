@@ -21,14 +21,21 @@
 
 #include <linux/platform_device.h>
 #include <linux/clk.h>
-#include <plat/usb-control.h>
+
+#include <mach/hardware.h>
+#include <mach/usb-control.h>
 
 #define valid_port(idx) ((idx) == 1 || (idx) == 2)
+
+extern void usb_host_clk_en(void);
 
 /* clock device associated with the hcd */
 
 static struct clk *clk;
+
+#if defined(CONFIG_ARCH_2410)
 static struct clk *usb_clk;
+#endif
 
 /* forward definitions */
 
@@ -47,8 +54,10 @@ static void s3c2410_start_hc(struct platform_device *dev, struct usb_hcd *hcd)
 
 	dev_dbg(&dev->dev, "s3c2410_start_hc:\n");
 
+#if defined(CONFIG_ARCH_2410)
 	clk_enable(usb_clk);
 	mdelay(2);			/* let the bus clock stabilise */
+#endif
 
 	clk_enable(clk);
 
@@ -78,7 +87,9 @@ static void s3c2410_stop_hc(struct platform_device *dev)
 	}
 
 	clk_disable(clk);
+#if defined(CONFIG_ARCH_2410)
 	clk_disable(usb_clk);
+#endif
 }
 
 /* ohci_s3c2410_hub_status_data
@@ -345,6 +356,10 @@ static int usb_hcd_s3c2410_probe (const struct hc_driver *driver,
 	struct usb_hcd *hcd = NULL;
 	int retval;
 
+#if !defined(CONFIG_ARCH_2410)
+        usb_host_clk_en();
+#endif
+
 	s3c2410_usb_set_power(dev->dev.platform_data, 1, 1);
 	s3c2410_usb_set_power(dev->dev.platform_data, 2, 1);
 
@@ -368,12 +383,14 @@ static int usb_hcd_s3c2410_probe (const struct hc_driver *driver,
 		goto err_mem;
 	}
 
+#if defined(CONFIG_ARCH_2410)
 	usb_clk = clk_get(&dev->dev, "usb-bus-host");
 	if (IS_ERR(usb_clk)) {
-		dev_err(&dev->dev, "cannot get usb-bus-host clock\n");
+		dev_err(&dev->dev, "cannot get usb-host clock\n");
 		retval = -ENOENT;
 		goto err_clk;
 	}
+#endif
 
 	s3c2410_start_hc(dev, hcd);
 
@@ -395,10 +412,13 @@ static int usb_hcd_s3c2410_probe (const struct hc_driver *driver,
  err_ioremap:
 	s3c2410_stop_hc(dev);
 	iounmap(hcd->regs);
+
+#if defined(CONFIG_ARCH_2410)
 	clk_put(usb_clk);
 
  err_clk:
 	clk_put(clk);
+#endif
 
  err_mem:
 	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);

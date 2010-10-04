@@ -19,18 +19,13 @@
  *    (a) TLB cache version (or round, cycle whatever expression you like)
  *    (b) ASID (Address Space IDentifier)
  */
-#ifdef CONFIG_CPU_HAS_PTEAEX
-#define MMU_CONTEXT_ASID_MASK		0x0000ffff
-#else
 #define MMU_CONTEXT_ASID_MASK		0x000000ff
-#endif
-
-#define MMU_CONTEXT_VERSION_MASK	(~0UL & ~MMU_CONTEXT_ASID_MASK)
-#define MMU_CONTEXT_FIRST_VERSION	(MMU_CONTEXT_ASID_MASK + 1)
-
-/* Impossible ASID value, to differentiate from NO_CONTEXT. */
-#define MMU_NO_ASID			MMU_CONTEXT_FIRST_VERSION
+#define MMU_CONTEXT_VERSION_MASK	0xffffff00
+#define MMU_CONTEXT_FIRST_VERSION	0x00000100
 #define NO_CONTEXT			0UL
+
+/* ASID is 8-bit value, so it can't be 0x100 */
+#define MMU_NO_ASID			0x100
 
 #define asid_cache(cpu)		(cpu_data[cpu].asid_cache)
 
@@ -69,7 +64,7 @@ static inline void get_mmu_context(struct mm_struct *mm, unsigned int cpu)
 		 * We exhaust ASID of this version.
 		 * Flush all TLB and start new cycle.
 		 */
-		local_flush_tlb_all();
+		flush_tlb_all();
 
 #ifdef CONFIG_SUPERH64
 		/*
@@ -122,30 +117,30 @@ static inline void switch_mm(struct mm_struct *prev,
 	unsigned int cpu = smp_processor_id();
 
 	if (likely(prev != next)) {
-		cpumask_set_cpu(cpu, mm_cpumask(next));
+		cpu_set(cpu, next->cpu_vm_mask);
 		set_TTB(next->pgd);
 		activate_context(next, cpu);
 	} else
-		if (!cpumask_test_and_set_cpu(cpu, mm_cpumask(next)))
+		if (!cpu_test_and_set(cpu, next->cpu_vm_mask))
 			activate_context(next, cpu);
 }
-
-#define activate_mm(prev, next)		switch_mm((prev),(next),NULL)
-#define deactivate_mm(tsk,mm)		do { } while (0)
-#define enter_lazy_tlb(mm,tsk)		do { } while (0)
-
 #else
-
+#define get_mmu_context(mm)		do { } while (0)
+#define init_new_context(tsk,mm)	(0)
+#define destroy_context(mm)		do { } while (0)
 #define set_asid(asid)			do { } while (0)
 #define get_asid()			(0)
 #define cpu_asid(cpu, mm)		({ (void)cpu; NO_CONTEXT; })
 #define switch_and_save_asid(asid)	(0)
 #define set_TTB(pgd)			do { } while (0)
 #define get_TTB()			(0)
-
-#include <asm-generic/mmu_context.h>
-
+#define activate_context(mm,cpu)	do { } while (0)
+#define switch_mm(prev,next,tsk)	do { } while (0)
 #endif /* CONFIG_MMU */
+
+#define activate_mm(prev, next)		switch_mm((prev),(next),NULL)
+#define deactivate_mm(tsk,mm)		do { } while (0)
+#define enter_lazy_tlb(mm,tsk)		do { } while (0)
 
 #if defined(CONFIG_CPU_SH3) || defined(CONFIG_CPU_SH4)
 /*
@@ -158,7 +153,7 @@ static inline void enable_mmu(void)
 	unsigned int cpu = smp_processor_id();
 
 	/* Enable MMU */
-	__raw_writel(MMU_CONTROL_INIT, MMUCR);
+	ctrl_outl(MMU_CONTROL_INIT, MMUCR);
 	ctrl_barrier();
 
 	if (asid_cache(cpu) == NO_CONTEXT)
@@ -171,9 +166,9 @@ static inline void disable_mmu(void)
 {
 	unsigned long cr;
 
-	cr = __raw_readl(MMUCR);
+	cr = ctrl_inl(MMUCR);
 	cr &= ~MMU_CONTROL_INIT;
-	__raw_writel(cr, MMUCR);
+	ctrl_outl(cr, MMUCR);
 
 	ctrl_barrier();
 }

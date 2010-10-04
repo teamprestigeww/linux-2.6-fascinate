@@ -31,7 +31,6 @@
 #include <linux/if_vlan.h>
 #include <linux/in.h>
 #include <linux/init.h>
-#include <linux/gfp.h>
 #include <linux/ioport.h>
 #include <linux/ip.h>
 #include <linux/kernel.h>
@@ -41,6 +40,7 @@
 #include <linux/device.h>
 #include <linux/pci.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/tcp.h>
 #include <linux/types.h>
 #include <linux/vmalloc.h>
@@ -57,7 +57,6 @@ MODULE_AUTHOR("Utz Bacher <utz.bacher@de.ibm.com> and Jens Osterkamp " \
 MODULE_DESCRIPTION("Spider Southbridge Gigabit Ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(VERSION);
-MODULE_FIRMWARE(SPIDER_NET_FIRMWARE_NAME);
 
 static int rx_descriptors = SPIDER_NET_RX_DESCRIPTORS_DEFAULT;
 static int tx_descriptors = SPIDER_NET_TX_DESCRIPTORS_DEFAULT;
@@ -72,7 +71,7 @@ MODULE_PARM_DESC(tx_descriptors, "number of descriptors used " \
 
 char spider_net_driver_name[] = "spidernet";
 
-static DEFINE_PCI_DEVICE_TABLE(spider_net_pci_tbl) = {
+static struct pci_device_id spider_net_pci_tbl[] = {
 	{ PCI_VENDOR_ID_TOSHIBA_2, PCI_DEVICE_ID_TOSHIBA_SPIDER_NET,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0UL },
 	{ 0, }
@@ -410,7 +409,7 @@ spider_net_free_rx_chain_contents(struct spider_net_card *card)
  * @card: card structure
  * @descr: descriptor to re-init
  *
- * Return 0 on success, <0 on failure.
+ * Return 0 on succes, <0 on failure.
  *
  * Allocates a new rx skb, iommu-maps it and attaches it to the
  * descriptor. Mark the descriptor as activated, ready-to-use.
@@ -474,7 +473,7 @@ spider_net_prepare_rx_descr(struct spider_net_card *card,
  * spider_net_enable_rxchtails - sets RX dmac chain tail addresses
  * @card: card structure
  *
- * spider_net_enable_rxchtails sets the RX DMAC chain tail addresses in the
+ * spider_net_enable_rxchtails sets the RX DMAC chain tail adresses in the
  * chip by writing to the appropriate register. DMA is enabled in
  * spider_net_enable_rxdmac.
  */
@@ -625,7 +624,7 @@ spider_net_get_multicast_hash(struct net_device *netdev, __u8 *addr)
 static void
 spider_net_set_multi(struct net_device *netdev)
 {
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *mc;
 	u8 hash;
 	int i;
 	u32 reg;
@@ -646,8 +645,8 @@ spider_net_set_multi(struct net_device *netdev)
 	hash = spider_net_get_multicast_hash(netdev, netdev->broadcast); */
 	set_bit(0xfd, bitmask);
 
-	netdev_for_each_mc_addr(ha, netdev) {
-		hash = spider_net_get_multicast_hash(netdev, ha->addr);
+	for (mc = netdev->mc_list; mc; mc = mc->next) {
+		hash = spider_net_get_multicast_hash(netdev, mc->dmi_addr);
 		set_bit(hash, bitmask);
 	}
 
@@ -1302,7 +1301,7 @@ static int spider_net_poll(struct napi_struct *napi, int budget)
 	/* if all packets are in the stack, enable interrupts and return 0 */
 	/* if not, return 1 */
 	if (packets_done < budget) {
-		napi_complete(napi);
+		netif_rx_complete(napi);
 		spider_net_rx_irq_on(card);
 		card->ignore_rx_ramfull = 0;
 	}
@@ -1529,7 +1528,7 @@ spider_net_handle_error_irq(struct spider_net_card *card, u32 status_reg,
 			spider_net_refill_rx_chain(card);
 			spider_net_enable_rxdmac(card);
 			card->num_rx_ints ++;
-			napi_schedule(&card->napi);
+			netif_rx_schedule(&card->napi);
 		}
 		show_error = 0;
 		break;
@@ -1549,7 +1548,7 @@ spider_net_handle_error_irq(struct spider_net_card *card, u32 status_reg,
 		spider_net_refill_rx_chain(card);
 		spider_net_enable_rxdmac(card);
 		card->num_rx_ints ++;
-		napi_schedule(&card->napi);
+		netif_rx_schedule(&card->napi);
 		show_error = 0;
 		break;
 
@@ -1563,7 +1562,7 @@ spider_net_handle_error_irq(struct spider_net_card *card, u32 status_reg,
 		spider_net_refill_rx_chain(card);
 		spider_net_enable_rxdmac(card);
 		card->num_rx_ints ++;
-		napi_schedule(&card->napi);
+		netif_rx_schedule(&card->napi);
 		show_error = 0;
 		break;
 
@@ -1657,11 +1656,11 @@ spider_net_interrupt(int irq, void *ptr)
 
 	if (status_reg & SPIDER_NET_RXINT ) {
 		spider_net_rx_irq_off(card);
-		napi_schedule(&card->napi);
+		netif_rx_schedule(&card->napi);
 		card->num_rx_ints ++;
 	}
 	if (status_reg & SPIDER_NET_TXINT)
-		napi_schedule(&card->napi);
+		netif_rx_schedule(&card->napi);
 
 	if (status_reg & SPIDER_NET_LINKINT)
 		spider_net_link_reset(netdev);
@@ -1820,7 +1819,7 @@ spider_net_enable_card(struct spider_net_card *card)
 
 	spider_net_write_reg(card, SPIDER_NET_ECMODE, SPIDER_NET_ECMODE_VALUE);
 
-	/* set chain tail address for RX chains and
+	/* set chain tail adress for RX chains and
 	 * enable DMA */
 	spider_net_enable_rxchtails(card);
 	spider_net_enable_rxdmac(card);
@@ -2095,6 +2094,8 @@ static void spider_net_link_phy(unsigned long data)
 		card->netdev->name, phy->speed,
 		phy->duplex == 1 ? "Full" : "Half",
 		phy->autoneg == 1 ? "" : "no ");
+
+	return;
 }
 
 /**
@@ -2258,23 +2259,6 @@ spider_net_tx_timeout(struct net_device *netdev)
 	card->spider_stats.tx_timeouts++;
 }
 
-static const struct net_device_ops spider_net_ops = {
-	.ndo_open		= spider_net_open,
-	.ndo_stop		= spider_net_stop,
-	.ndo_start_xmit		= spider_net_xmit,
-	.ndo_set_multicast_list	= spider_net_set_multi,
-	.ndo_set_mac_address	= spider_net_set_mac,
-	.ndo_change_mtu		= spider_net_change_mtu,
-	.ndo_do_ioctl		= spider_net_do_ioctl,
-	.ndo_tx_timeout		= spider_net_tx_timeout,
-	.ndo_validate_addr	= eth_validate_addr,
-	/* HW VLAN */
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	/* poll controller */
-	.ndo_poll_controller	= spider_net_poll_controller,
-#endif /* CONFIG_NET_POLL_CONTROLLER */
-};
-
 /**
  * spider_net_setup_netdev_ops - initialization of net_device operations
  * @netdev: net_device structure
@@ -2284,8 +2268,21 @@ static const struct net_device_ops spider_net_ops = {
 static void
 spider_net_setup_netdev_ops(struct net_device *netdev)
 {
-	netdev->netdev_ops = &spider_net_ops;
+	netdev->open = &spider_net_open;
+	netdev->stop = &spider_net_stop;
+	netdev->hard_start_xmit = &spider_net_xmit;
+	netdev->set_multicast_list = &spider_net_set_multi;
+	netdev->set_mac_address = &spider_net_set_mac;
+	netdev->change_mtu = &spider_net_change_mtu;
+	netdev->do_ioctl = &spider_net_do_ioctl;
+	/* tx watchdog */
+	netdev->tx_timeout = &spider_net_tx_timeout;
 	netdev->watchdog_timeo = SPIDER_NET_WATCHDOG_TIMEOUT;
+	/* HW VLAN */
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	/* poll controller */
+	netdev->poll_controller = &spider_net_poll_controller;
+#endif /* CONFIG_NET_POLL_CONTROLLER */
 	/* ethtool ops */
 	netdev->ethtool_ops = &spider_net_ethtool_ops;
 }

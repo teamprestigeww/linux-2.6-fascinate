@@ -23,7 +23,7 @@ static int divisors[]    = { 1, 2, 3, 4, 6 };
 
 static void master_clk_init(struct clk *clk)
 {
-	int frqcr = __raw_readw(FRQCR);
+	int frqcr = ctrl_inw(FRQCR);
 	int idx = (frqcr & 0x0300) >> 8;
 
 	clk->rate *= multipliers[idx];
@@ -33,24 +33,24 @@ static struct clk_ops sh7712_master_clk_ops = {
 	.init		= master_clk_init,
 };
 
-static unsigned long module_clk_recalc(struct clk *clk)
+static void module_clk_recalc(struct clk *clk)
 {
-	int frqcr = __raw_readw(FRQCR);
+	int frqcr = ctrl_inw(FRQCR);
 	int idx = frqcr & 0x0007;
 
-	return clk->parent->rate / divisors[idx];
+	clk->rate = clk->parent->rate / divisors[idx];
 }
 
 static struct clk_ops sh7712_module_clk_ops = {
 	.recalc		= module_clk_recalc,
 };
 
-static unsigned long cpu_clk_recalc(struct clk *clk)
+static void cpu_clk_recalc(struct clk *clk)
 {
-	int frqcr = __raw_readw(FRQCR);
+	int frqcr = ctrl_inw(FRQCR);
 	int idx = (frqcr & 0x0030) >> 4;
 
-	return clk->parent->rate / divisors[idx];
+	clk->rate = clk->parent->rate / divisors[idx];
 }
 
 static struct clk_ops sh7712_cpu_clk_ops = {

@@ -37,6 +37,7 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <asm/io.h>
@@ -340,7 +341,7 @@ static int sca_poll(struct napi_struct *napi, int budget)
 		received = sca_rx_done(port, budget);
 
 	if (received < budget) {
-		napi_complete(napi);
+		netif_rx_complete(napi);
 		enable_intr(port);
 	}
 
@@ -358,7 +359,7 @@ static irqreturn_t sca_intr(int irq, void *dev_id)
 		if (port && (isr0 & (i ? 0x08002200 : 0x00080022))) {
 			handled = 1;
 			disable_intr(port);
-			napi_schedule(&port->napi);
+			netif_rx_schedule(&port->napi);
 		}
 	}
 
@@ -528,9 +529,8 @@ static void sca_dump_rings(struct net_device *dev)
 	       sca_in(DSR_RX(port->chan), card) & DSR_DE ? "" : "in");
 	for (cnt = 0; cnt < port->card->rx_ring_buffers; cnt++)
 		printk(" %02X", readb(&(desc_address(port, cnt, 0)->stat)));
-	printk(KERN_CONT "\n");
 
-	printk(KERN_DEBUG "TX ring: CDA=%u EDA=%u DSR=%02X in=%u "
+	printk("\n" KERN_DEBUG "TX ring: CDA=%u EDA=%u DSR=%02X in=%u "
 	       "last=%u %sactive",
 	       sca_inl(get_dmac_tx(port) + CDAL, card),
 	       sca_inl(get_dmac_tx(port) + EDAL, card),
@@ -561,7 +561,7 @@ static void sca_dump_rings(struct net_device *dev)
 #endif /* DEBUG_RINGS */
 
 
-static netdev_tx_t sca_xmit(struct sk_buff *skb, struct net_device *dev)
+static int sca_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	port_t *port = dev_to_port(dev);
 	card_t *card = port->card;
@@ -585,6 +585,7 @@ static netdev_tx_t sca_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	writew(len, &desc->len);
 	writeb(ST_TX_EOM, &desc->stat);
+	dev->trans_start = jiffies;
 
 	port->txin = (port->txin + 1) % card->tx_ring_buffers;
 	sca_outl(desc_offset(port, port->txin, 1),
@@ -599,7 +600,7 @@ static netdev_tx_t sca_xmit(struct sk_buff *skb, struct net_device *dev)
 	spin_unlock_irq(&port->lock);
 
 	dev_kfree_skb(skb);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 

@@ -43,7 +43,6 @@
  ********************************************************************/
 
 #include <linux/module.h>
-#include <linux/gfp.h>
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -51,6 +50,7 @@
 #include <linux/netdevice.h>
 #include <linux/ioport.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/rtnetlink.h>
 #include <linux/dma-mapping.h>
@@ -173,10 +173,8 @@ static int  nsc_ircc_setup(chipio_t *info);
 static void nsc_ircc_pio_receive(struct nsc_ircc_cb *self);
 static int  nsc_ircc_dma_receive(struct nsc_ircc_cb *self); 
 static int  nsc_ircc_dma_receive_complete(struct nsc_ircc_cb *self, int iobase);
-static netdev_tx_t  nsc_ircc_hard_xmit_sir(struct sk_buff *skb,
-						 struct net_device *dev);
-static netdev_tx_t  nsc_ircc_hard_xmit_fir(struct sk_buff *skb,
-						 struct net_device *dev);
+static int  nsc_ircc_hard_xmit_sir(struct sk_buff *skb, struct net_device *dev);
+static int  nsc_ircc_hard_xmit_fir(struct sk_buff *skb, struct net_device *dev);
 static int  nsc_ircc_pio_write(int iobase, __u8 *buf, int len, int fifo_size);
 static void nsc_ircc_dma_xmit(struct nsc_ircc_cb *self, int iobase);
 static __u8 nsc_ircc_change_speed(struct nsc_ircc_cb *self, __u32 baud);
@@ -333,20 +331,6 @@ static void __exit nsc_ircc_cleanup(void)
 	pnp_registered = 0;
 }
 
-static const struct net_device_ops nsc_ircc_sir_ops = {
-	.ndo_open       = nsc_ircc_net_open,
-	.ndo_stop       = nsc_ircc_net_close,
-	.ndo_start_xmit = nsc_ircc_hard_xmit_sir,
-	.ndo_do_ioctl   = nsc_ircc_net_ioctl,
-};
-
-static const struct net_device_ops nsc_ircc_fir_ops = {
-	.ndo_open       = nsc_ircc_net_open,
-	.ndo_stop       = nsc_ircc_net_close,
-	.ndo_start_xmit = nsc_ircc_hard_xmit_fir,
-	.ndo_do_ioctl   = nsc_ircc_net_ioctl,
-};
-
 /*
  * Function nsc_ircc_open (iobase, irq)
  *
@@ -457,7 +441,10 @@ static int __init nsc_ircc_open(chipio_t *info)
 	self->tx_fifo.tail = self->tx_buff.head;
 
 	/* Override the network functions we need to use */
-	dev->netdev_ops = &nsc_ircc_sir_ops;
+	dev->hard_start_xmit = nsc_ircc_hard_xmit_sir;
+	dev->open            = nsc_ircc_net_open;
+	dev->stop            = nsc_ircc_net_close;
+	dev->do_ioctl        = nsc_ircc_net_ioctl;
 
 	err = register_netdev(dev);
 	if (err) {
@@ -1333,12 +1320,12 @@ static __u8 nsc_ircc_change_speed(struct nsc_ircc_cb *self, __u32 speed)
 	switch_bank(iobase, BANK0); 
 	if (speed > 115200) {
 		/* Install FIR xmit handler */
-		dev->netdev_ops = &nsc_ircc_fir_ops;
+		dev->hard_start_xmit = nsc_ircc_hard_xmit_fir;
 		ier = IER_SFIF_IE;
 		nsc_ircc_dma_receive(self);
 	} else {
 		/* Install SIR xmit handler */
-		dev->netdev_ops = &nsc_ircc_sir_ops;
+		dev->hard_start_xmit = nsc_ircc_hard_xmit_sir;
 		ier = IER_RXHDL_IE;
 	}
 	/* Set our current interrupt mask */
@@ -1357,8 +1344,7 @@ static __u8 nsc_ircc_change_speed(struct nsc_ircc_cb *self, __u32 speed)
  *    Transmit the frame!
  *
  */
-static netdev_tx_t nsc_ircc_hard_xmit_sir(struct sk_buff *skb,
-						struct net_device *dev)
+static int nsc_ircc_hard_xmit_sir(struct sk_buff *skb, struct net_device *dev)
 {
 	struct nsc_ircc_cb *self;
 	unsigned long flags;
@@ -1368,7 +1354,7 @@ static netdev_tx_t nsc_ircc_hard_xmit_sir(struct sk_buff *skb,
 	
 	self = netdev_priv(dev);
 
-	IRDA_ASSERT(self != NULL, return NETDEV_TX_OK;);
+	IRDA_ASSERT(self != NULL, return 0;);
 
 	iobase = self->io.fir_base;
 
@@ -1400,7 +1386,7 @@ static netdev_tx_t nsc_ircc_hard_xmit_sir(struct sk_buff *skb,
 			dev->trans_start = jiffies;
 			spin_unlock_irqrestore(&self->lock, flags);
 			dev_kfree_skb(skb);
-			return NETDEV_TX_OK;
+			return 0;
 		} else
 			self->new_speed = speed;
 	}
@@ -1427,11 +1413,10 @@ static netdev_tx_t nsc_ircc_hard_xmit_sir(struct sk_buff *skb,
 
 	dev_kfree_skb(skb);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
-static netdev_tx_t nsc_ircc_hard_xmit_fir(struct sk_buff *skb,
-						struct net_device *dev)
+static int nsc_ircc_hard_xmit_fir(struct sk_buff *skb, struct net_device *dev)
 {
 	struct nsc_ircc_cb *self;
 	unsigned long flags;
@@ -1471,7 +1456,7 @@ static netdev_tx_t nsc_ircc_hard_xmit_fir(struct sk_buff *skb,
 			dev->trans_start = jiffies;
 			spin_unlock_irqrestore(&self->lock, flags);
 			dev_kfree_skb(skb);
-			return NETDEV_TX_OK;
+			return 0;
 		} else {
 			/* Change speed after current frame */
 			self->new_speed = speed;
@@ -1558,7 +1543,7 @@ static netdev_tx_t nsc_ircc_hard_xmit_fir(struct sk_buff *skb,
 	spin_unlock_irqrestore(&self->lock, flags);
 	dev_kfree_skb(skb);
 
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /*

@@ -18,9 +18,8 @@
 
 #define BH_TRACE 0
 #include <linux/module.h>
-#include <linux/gfp.h>
+#include <linux/raid/md.h>
 #include <linux/raid/xor.h>
-#include <linux/jiffies.h>
 #include <asm/xor.h>
 
 /* The xor routines to use.  */
@@ -102,12 +101,7 @@ calibrate_xor_blocks(void)
 	void *b1, *b2;
 	struct xor_block_template *f, *fastest;
 
-	/*
-	 * Note: Since the memory is not actually used for _anything_ but to
-	 * test the XOR speed, we don't really want kmemcheck to warn about
-	 * reading uninitialized bytes here.
-	 */
-	b1 = (void *) __get_free_pages(GFP_KERNEL | __GFP_NOTRACK, 2);
+	b1 = (void *) __get_free_pages(GFP_KERNEL, 2);
 	if (!b1) {
 		printk(KERN_WARNING "xor: Yikes!  No memory available.\n");
 		return -ENOMEM;

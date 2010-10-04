@@ -83,7 +83,7 @@ static void smp_iSeries_message_pass(int target, int msg)
 
 static int smp_iSeries_probe(void)
 {
-	return cpumask_weight(cpu_possible_mask);
+	return cpus_weight(cpu_possible_map);
 }
 
 static void smp_iSeries_kick_cpu(int nr)

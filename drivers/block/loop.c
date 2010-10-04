@@ -61,17 +61,18 @@
 #include <linux/blkdev.h>
 #include <linux/blkpg.h>
 #include <linux/init.h>
+#include <linux/smp_lock.h>
 #include <linux/swap.h>
 #include <linux/slab.h>
 #include <linux/loop.h>
 #include <linux/compat.h>
 #include <linux/suspend.h>
 #include <linux/freezer.h>
-#include <linux/smp_lock.h>
 #include <linux/writeback.h>
 #include <linux/buffer_head.h>		/* for invalidate_bdev() */
 #include <linux/completion.h>
 #include <linux/highmem.h>
+#include <linux/gfp.h>
 #include <linux/kthread.h>
 #include <linux/splice.h>
 
@@ -237,8 +238,6 @@ static int do_lo_send_aops(struct loop_device *lo, struct bio_vec *bvec,
 							&page, &fsdata);
 		if (ret)
 			goto fail;
-
-		file_update_time(file);
 
 		transfer_result = lo_do_transfer(lo, WRITE, page, offset,
 				bvec->bv_page, bv_offs, size, IV);
@@ -475,35 +474,10 @@ static int do_bio_filebacked(struct loop_device *lo, struct bio *bio)
 	int ret;
 
 	pos = ((loff_t) bio->bi_sector << 9) + lo->lo_offset;
-
-	if (bio_rw(bio) == WRITE) {
-		bool barrier = !!(bio->bi_rw & REQ_HARDBARRIER);
-		struct file *file = lo->lo_backing_file;
-
-		if (barrier) {
-			if (unlikely(!file->f_op->fsync)) {
-				ret = -EOPNOTSUPP;
-				goto out;
-			}
-
-			ret = vfs_fsync(file, 0);
-			if (unlikely(ret)) {
-				ret = -EIO;
-				goto out;
-			}
-		}
-
+	if (bio_rw(bio) == WRITE)
 		ret = lo_send(lo, bio, pos);
-
-		if (barrier && !ret) {
-			ret = vfs_fsync(file, 0);
-			if (unlikely(ret))
-				ret = -EIO;
-		}
-	} else
+	else
 		ret = lo_receive(lo, bio, lo->lo_blocksize, pos);
-
-out:
 	return ret;
 }
 
@@ -512,7 +486,11 @@ out:
  */
 static void loop_add_bio(struct loop_device *lo, struct bio *bio)
 {
-	bio_list_add(&lo->lo_bio_list, bio);
+	if (lo->lo_biotail) {
+		lo->lo_biotail->bi_next = bio;
+		lo->lo_biotail = bio;
+	} else
+		lo->lo_bio = lo->lo_biotail = bio;
 }
 
 /*
@@ -520,7 +498,16 @@ static void loop_add_bio(struct loop_device *lo, struct bio *bio)
  */
 static struct bio *loop_get_bio(struct loop_device *lo)
 {
-	return bio_list_pop(&lo->lo_bio_list);
+	struct bio *bio;
+
+	if ((bio = lo->lo_bio)) {
+		if (bio == lo->lo_biotail)
+			lo->lo_biotail = NULL;
+		lo->lo_bio = bio->bi_next;
+		bio->bi_next = NULL;
+	}
+
+	return bio;
 }
 
 static int loop_make_request(struct request_queue *q, struct bio *old_bio)
@@ -597,13 +584,12 @@ static int loop_thread(void *data)
 
 	set_user_nice(current, -20);
 
-	while (!kthread_should_stop() || !bio_list_empty(&lo->lo_bio_list)) {
+	while (!kthread_should_stop() || lo->lo_bio) {
 
 		wait_event_interruptible(lo->lo_event,
-				!bio_list_empty(&lo->lo_bio_list) ||
-				kthread_should_stop());
+				lo->lo_bio || kthread_should_stop());
 
-		if (bio_list_empty(&lo->lo_bio_list))
+		if (!lo->lo_bio)
 			continue;
 		spin_lock_irq(&lo->lo_lock);
 		bio = loop_get_bio(lo);
@@ -710,6 +696,10 @@ static int loop_change_fd(struct loop_device *lo, struct block_device *bdev,
 	if (!S_ISREG(inode->i_mode) && !S_ISBLK(inode->i_mode))
 		goto out_putf;
 
+	/* new backing store needs to support loop (eg splice_read) */
+	if (!inode->i_fop->splice_read)
+		goto out_putf;
+
 	/* size of the new backing store needs to be the same */
 	if (get_loop_size(lo, file) != get_loop_size(lo, old_file))
 		goto out_putf;
@@ -785,7 +775,12 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 	error = -EINVAL;
 	if (S_ISREG(inode->i_mode) || S_ISBLK(inode->i_mode)) {
 		const struct address_space_operations *aops = mapping->a_ops;
-
+		/*
+		 * If we can't read - sorry. If we only can't write - well,
+		 * it's going to be read-only.
+		 */
+		if (!file->f_op->splice_read)
+			goto out_putf;
 		if (aops->write_begin)
 			lo_flags |= LO_FLAGS_USE_AOPS;
 		if (!(lo_flags & LO_FLAGS_USE_AOPS) && !file->f_op->write)
@@ -821,7 +816,7 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 	lo->old_gfp_mask = mapping_gfp_mask(mapping);
 	mapping_set_gfp_mask(mapping, lo->old_gfp_mask & ~(__GFP_IO|__GFP_FS));
 
-	bio_list_init(&lo->lo_bio_list);
+	lo->lo_bio = lo->lo_biotail = NULL;
 
 	/*
 	 * set queue make_request_fn, and add limits based on lower level
@@ -831,13 +826,8 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 	lo->lo_queue->queuedata = lo;
 	lo->lo_queue->unplug_fn = loop_unplug;
 
-	if (!(lo_flags & LO_FLAGS_READ_ONLY) && file->f_op->fsync)
-		blk_queue_ordered(lo->lo_queue, QUEUE_ORDERED_DRAIN);
-
 	set_capacity(lo->lo_disk, size);
 	bd_set_size(bdev, size << 9);
-	/* let user-space know about the new size */
-	kobject_uevent(&disk_to_dev(bdev->bd_disk)->kobj, KOBJ_CHANGE);
 
 	set_blocksize(bdev, lo_blocksize);
 
@@ -861,7 +851,6 @@ out_clr:
 	set_capacity(lo->lo_disk, 0);
 	invalidate_bdev(bdev);
 	bd_set_size(bdev, 0);
-	kobject_uevent(&disk_to_dev(bdev->bd_disk)->kobj, KOBJ_CHANGE);
 	mapping_set_gfp_mask(mapping, lo->old_gfp_mask);
 	lo->lo_state = Lo_unbound;
  out_putf:
@@ -948,25 +937,15 @@ static int loop_clr_fd(struct loop_device *lo, struct block_device *bdev)
 	if (bdev)
 		invalidate_bdev(bdev);
 	set_capacity(lo->lo_disk, 0);
-	if (bdev) {
+	if (bdev)
 		bd_set_size(bdev, 0);
-		/* let user-space know about this change */
-		kobject_uevent(&disk_to_dev(bdev->bd_disk)->kobj, KOBJ_CHANGE);
-	}
 	mapping_set_gfp_mask(filp->f_mapping, gfp);
 	lo->lo_state = Lo_unbound;
+	fput(filp);
 	/* This is safe: open() is still holding a reference. */
 	module_put(THIS_MODULE);
-	if (max_part > 0 && bdev)
+	if (max_part > 0)
 		ioctl_by_bdev(bdev, BLKRRPART, 0);
-	mutex_unlock(&lo->lo_ctl_mutex);
-	/*
-	 * Need not hold lo_ctl_mutex to fput backing file.
-	 * Calling fput holding lo_ctl_mutex triggers a circular
-	 * lock dependency possibility warning as fput can take
-	 * bd_mutex which is usually taken before lo_ctl_mutex.
-	 */
-	fput(filp);
 	return 0;
 }
 
@@ -1178,39 +1157,13 @@ loop_get_status64(struct loop_device *lo, struct loop_info64 __user *arg) {
 	return err;
 }
 
-static int loop_set_capacity(struct loop_device *lo, struct block_device *bdev)
-{
-	int err;
-	sector_t sec;
-	loff_t sz;
-
-	err = -ENXIO;
-	if (unlikely(lo->lo_state != Lo_bound))
-		goto out;
-	err = figure_loop_size(lo);
-	if (unlikely(err))
-		goto out;
-	sec = get_capacity(lo->lo_disk);
-	/* the width of sector_t may be narrow for bit-shift */
-	sz = sec;
-	sz <<= 9;
-	mutex_lock(&bdev->bd_mutex);
-	bd_set_size(bdev, sz);
-	/* let user-space know about the new size */
-	kobject_uevent(&disk_to_dev(bdev->bd_disk)->kobj, KOBJ_CHANGE);
-	mutex_unlock(&bdev->bd_mutex);
-
- out:
-	return err;
-}
-
 static int lo_ioctl(struct block_device *bdev, fmode_t mode,
 	unsigned int cmd, unsigned long arg)
 {
 	struct loop_device *lo = bdev->bd_disk->private_data;
 	int err;
 
-	mutex_lock_nested(&lo->lo_ctl_mutex, 1);
+	mutex_lock(&lo->lo_ctl_mutex);
 	switch (cmd) {
 	case LOOP_SET_FD:
 		err = loop_set_fd(lo, mode, bdev, arg);
@@ -1219,10 +1172,7 @@ static int lo_ioctl(struct block_device *bdev, fmode_t mode,
 		err = loop_change_fd(lo, bdev, arg);
 		break;
 	case LOOP_CLR_FD:
-		/* loop_clr_fd would have unlocked lo_ctl_mutex on success */
 		err = loop_clr_fd(lo, bdev);
-		if (!err)
-			goto out_unlocked;
 		break;
 	case LOOP_SET_STATUS:
 		err = loop_set_status_old(lo, (struct loop_info __user *) arg);
@@ -1236,17 +1186,10 @@ static int lo_ioctl(struct block_device *bdev, fmode_t mode,
 	case LOOP_GET_STATUS64:
 		err = loop_get_status64(lo, (struct loop_info64 __user *) arg);
 		break;
-	case LOOP_SET_CAPACITY:
-		err = -EPERM;
-		if ((mode & FMODE_WRITE) || capable(CAP_SYS_ADMIN))
-			err = loop_set_capacity(lo, bdev);
-		break;
 	default:
 		err = lo->ioctl ? lo->ioctl(lo, cmd, arg) : -EINVAL;
 	}
 	mutex_unlock(&lo->lo_ctl_mutex);
-
-out_unlocked:
 	return err;
 }
 
@@ -1388,7 +1331,6 @@ static int lo_compat_ioctl(struct block_device *bdev, fmode_t mode,
 			lo, (struct compat_loop_info __user *) arg);
 		mutex_unlock(&lo->lo_ctl_mutex);
 		break;
-	case LOOP_SET_CAPACITY:
 	case LOOP_CLR_FD:
 	case LOOP_GET_STATUS64:
 	case LOOP_SET_STATUS64:
@@ -1409,11 +1351,9 @@ static int lo_open(struct block_device *bdev, fmode_t mode)
 {
 	struct loop_device *lo = bdev->bd_disk->private_data;
 
-	lock_kernel();
 	mutex_lock(&lo->lo_ctl_mutex);
 	lo->lo_refcnt++;
 	mutex_unlock(&lo->lo_ctl_mutex);
-	unlock_kernel();
 
 	return 0;
 }
@@ -1421,9 +1361,7 @@ static int lo_open(struct block_device *bdev, fmode_t mode)
 static int lo_release(struct gendisk *disk, fmode_t mode)
 {
 	struct loop_device *lo = disk->private_data;
-	int err;
 
-	lock_kernel();
 	mutex_lock(&lo->lo_ctl_mutex);
 
 	if (--lo->lo_refcnt)
@@ -1434,9 +1372,7 @@ static int lo_release(struct gendisk *disk, fmode_t mode)
 		 * In autoclear mode, stop the loop thread
 		 * and remove configuration after last close.
 		 */
-		err = loop_clr_fd(lo, NULL);
-		if (!err)
-			goto out_unlocked;
+		loop_clr_fd(lo, NULL);
 	} else {
 		/*
 		 * Otherwise keep thread (if running) and config,
@@ -1447,12 +1383,11 @@ static int lo_release(struct gendisk *disk, fmode_t mode)
 
 out:
 	mutex_unlock(&lo->lo_ctl_mutex);
-out_unlocked:
-	lock_kernel();
+
 	return 0;
 }
 
-static const struct block_device_operations lo_fops = {
+static struct block_device_operations lo_fops = {
 	.owner =	THIS_MODULE,
 	.open =		lo_open,
 	.release =	lo_release,

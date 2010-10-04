@@ -188,7 +188,7 @@ static void end_a20r_irq(unsigned int irq)
 }
 
 static struct irq_chip a20r_irq_type = {
-	.name		= "A20R",
+	.typename	= "A20R",
 	.ack		= mask_a20r_irq,
 	.mask		= mask_a20r_irq,
 	.mask_ack	= mask_a20r_irq,
@@ -219,7 +219,7 @@ void __init sni_a20r_irq_init(void)
 	int i;
 
 	for (i = SNI_A20R_IRQ_BASE + 2 ; i < SNI_A20R_IRQ_BASE + 8; i++)
-		set_irq_chip_and_handler(i, &a20r_irq_type, handle_level_irq);
+		set_irq_chip(i, &a20r_irq_type);
 	sni_hwint = a20r_hwint;
 	change_c0_status(ST0_IM, IE_IRQ0);
 	setup_irq(SNI_A20R_IRQ_BASE + 3, &sni_isa_irq);

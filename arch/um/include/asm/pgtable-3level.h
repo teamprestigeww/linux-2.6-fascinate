@@ -60,7 +60,7 @@
 	set_pud(pud, __pud(_PAGE_TABLE + __pa(pmd)))
 
 #ifdef CONFIG_64BIT
-#define set_pud(pudptr, pudval) set_64bit((u64 *) (pudptr), pud_val(pudval))
+#define set_pud(pudptr, pudval) set_64bit((phys_t *) (pudptr), pud_val(pudval))
 #else
 #define set_pud(pudptr, pudval) (*(pudptr) = (pudval))
 #endif
@@ -73,7 +73,7 @@ static inline int pgd_newpage(pgd_t pgd)
 static inline void pgd_mkuptodate(pgd_t pgd) { pgd_val(pgd) &= ~_PAGE_NEWPAGE; }
 
 #ifdef CONFIG_64BIT
-#define set_pmd(pmdptr, pmdval) set_64bit((u64 *) (pmdptr), pmd_val(pmdval))
+#define set_pmd(pmdptr, pmdval) set_64bit((phys_t *) (pmdptr), pmd_val(pmdval))
 #else
 #define set_pmd(pmdptr, pmdval) (*(pmdptr) = (pmdval))
 #endif
@@ -134,3 +134,13 @@ static inline pmd_t pfn_pmd(pfn_t page_nr, pgprot_t pgprot)
 
 #endif
 
+/*
+ * Overrides for Emacs so that we follow Linus's tabbing style.
+ * Emacs will notice this stuff at the end of the file and automatically
+ * adjust the settings for this buffer only.  This must remain at the end
+ * of the file.
+ * ---------------------------------------------------------------------------
+ * Local variables:
+ * c-file-style: "linux"
+ * End:
+ */

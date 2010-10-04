@@ -120,7 +120,7 @@ int cpu_check_affinity(unsigned int irq, const struct cpumask *dest)
 	if (CHECK_IRQ_PER_CPU(irq)) {
 		/* Bad linux design decision.  The mask has already
 		 * been set; we must reset it */
-		cpumask_setall(irq_desc[irq].affinity);
+		cpumask_setall(&irq_desc[irq].affinity);
 		return -EINVAL;
 	}
 
@@ -130,22 +130,20 @@ int cpu_check_affinity(unsigned int irq, const struct cpumask *dest)
 	return cpu_dest;
 }
 
-static int cpu_set_affinity_irq(unsigned int irq, const struct cpumask *dest)
+static void cpu_set_affinity_irq(unsigned int irq, const struct cpumask *dest)
 {
 	int cpu_dest;
 
 	cpu_dest = cpu_check_affinity(irq, dest);
 	if (cpu_dest < 0)
-		return -1;
+		return;
 
-	cpumask_copy(irq_desc[irq].affinity, dest);
-
-	return 0;
+	cpumask_copy(&irq_desc[irq].affinity, &cpumask_of_cpu(cpu_dest));
 }
 #endif
 
-static struct irq_chip cpu_interrupt_type = {
-	.name		= "CPU",
+static struct hw_interrupt_type cpu_interrupt_type = {
+	.typename	= "CPU",
 	.startup	= cpu_startup_irq,
 	.shutdown	= cpu_disable_irq,
 	.enable		= cpu_enable_irq,
@@ -180,19 +178,19 @@ int show_interrupts(struct seq_file *p, void *v)
 	if (i < NR_IRQS) {
 		struct irqaction *action;
 
-		raw_spin_lock_irqsave(&irq_desc[i].lock, flags);
+		spin_lock_irqsave(&irq_desc[i].lock, flags);
 		action = irq_desc[i].action;
 		if (!action)
 			goto skip;
 		seq_printf(p, "%3d: ", i);
 #ifdef CONFIG_SMP
 		for_each_online_cpu(j)
-			seq_printf(p, "%10u ", kstat_irqs_cpu(i, j));
+			seq_printf(p, "%10u ", kstat_cpu(j).irqs[i]);
 #else
 		seq_printf(p, "%10u ", kstat_irqs(i));
 #endif
 
-		seq_printf(p, " %14s", irq_desc[i].chip->name);
+		seq_printf(p, " %14s", irq_desc[i].chip->typename);
 #ifndef PARISC_IRQ_CR16_COUNTS
 		seq_printf(p, "  %s", action->name);
 
@@ -224,7 +222,7 @@ int show_interrupts(struct seq_file *p, void *v)
 
 		seq_putc(p, '\n');
  skip:
-		raw_spin_unlock_irqrestore(&irq_desc[i].lock, flags);
+		spin_unlock_irqrestore(&irq_desc[i].lock, flags);
 	}
 
 	return 0;
@@ -299,7 +297,7 @@ int txn_alloc_irq(unsigned int bits_wide)
 unsigned long txn_affinity_addr(unsigned int irq, int cpu)
 {
 #ifdef CONFIG_SMP
-	cpumask_copy(irq_desc[irq].affinity, cpumask_of(cpu));
+	cpumask_copy(&irq_desc[irq].affinity, cpumask_of(cpu));
 #endif
 
 	return per_cpu(cpu_data, cpu).txn_addr;
@@ -313,12 +311,12 @@ unsigned long txn_alloc_addr(unsigned int virt_irq)
 	next_cpu++; /* assign to "next" CPU we want this bugger on */
 
 	/* validate entry */
-	while ((next_cpu < nr_cpu_ids) &&
+	while ((next_cpu < NR_CPUS) &&
 		(!per_cpu(cpu_data, next_cpu).txn_addr ||
 		 !cpu_online(next_cpu)))
 		next_cpu++;
 
-	if (next_cpu >= nr_cpu_ids) 
+	if (next_cpu >= NR_CPUS) 
 		next_cpu = 0;	/* nothing else, assign monarch */
 
 	return txn_affinity_addr(virt_irq, next_cpu);
@@ -356,7 +354,7 @@ void do_cpu_irq_mask(struct pt_regs *regs)
 	irq = eirr_to_irq(eirr_val);
 
 #ifdef CONFIG_SMP
-	cpumask_copy(&dest, irq_desc[irq].affinity);
+	cpumask_copy(&dest, &irq_desc[irq].affinity);
 	if (CHECK_IRQ_PER_CPU(irq_desc[irq].status) &&
 	    !cpu_isset(smp_processor_id(), dest)) {
 		int cpu = first_cpu(dest);
@@ -422,4 +420,9 @@ void __init init_IRQ(void)
 #endif
         set_eiem(cpu_eiem);	/* EIEM : enable all external intr */
 
+}
+
+void ack_bad_irq(unsigned int irq)
+{
+	printk(KERN_WARNING "unexpected IRQ %d\n", irq);
 }

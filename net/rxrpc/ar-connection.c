@@ -10,7 +10,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/slab.h>
 #include <linux/net.h>
 #include <linux/skbuff.h>
 #include <linux/crypto.h>
@@ -344,9 +343,9 @@ static int rxrpc_connect_exclusive(struct rxrpc_sock *rx,
 		/* not yet present - create a candidate for a new connection
 		 * and then redo the check */
 		conn = rxrpc_alloc_connection(gfp);
-		if (!conn) {
-			_leave(" = -ENOMEM");
-			return -ENOMEM;
+		if (IS_ERR(conn)) {
+			_leave(" = %ld", PTR_ERR(conn));
+			return PTR_ERR(conn);
 		}
 
 		conn->trans = trans;
@@ -445,11 +444,6 @@ int rxrpc_connect_call(struct rxrpc_sock *rx,
 			conn = list_entry(bundle->avail_conns.next,
 					  struct rxrpc_connection,
 					  bundle_link);
-			if (conn->state >= RXRPC_CONN_REMOTELY_ABORTED) {
-				list_del_init(&conn->bundle_link);
-				bundle->num_conns--;
-				continue;
-			}
 			if (--conn->avail_calls == 0)
 				list_move(&conn->bundle_link,
 					  &bundle->busy_conns);
@@ -467,11 +461,6 @@ int rxrpc_connect_call(struct rxrpc_sock *rx,
 			conn = list_entry(bundle->unused_conns.next,
 					  struct rxrpc_connection,
 					  bundle_link);
-			if (conn->state >= RXRPC_CONN_REMOTELY_ABORTED) {
-				list_del_init(&conn->bundle_link);
-				bundle->num_conns--;
-				continue;
-			}
 			ASSERTCMP(conn->avail_calls, ==, RXRPC_MAXCALLS);
 			conn->avail_calls = RXRPC_MAXCALLS - 1;
 			ASSERT(conn->channels[0] == NULL &&
@@ -519,9 +508,9 @@ int rxrpc_connect_call(struct rxrpc_sock *rx,
 		/* not yet present - create a candidate for a new connection and then
 		 * redo the check */
 		candidate = rxrpc_alloc_connection(gfp);
-		if (!candidate) {
-			_leave(" = -ENOMEM");
-			return -ENOMEM;
+		if (IS_ERR(candidate)) {
+			_leave(" = %ld", PTR_ERR(candidate));
+			return PTR_ERR(candidate);
 		}
 
 		candidate->trans = trans;

@@ -44,8 +44,6 @@
 #include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/mutex.h>
-#include <linux/smp_lock.h>
-#include <linux/slab.h>
 #include <asm/uaccess.h>
 
 #include <scsi/scsi.h>
@@ -294,8 +292,7 @@ static int sr_done(struct scsi_cmnd *SCpnt)
 			if (cd->device->sector_size == 2048)
 				error_sector <<= 2;
 			error_sector &= ~(block_sectors - 1);
-			good_bytes = (error_sector -
-				      blk_rq_pos(SCpnt->request)) << 9;
+			good_bytes = (error_sector - SCpnt->request->sector) << 9;
 			if (good_bytes < 0 || good_bytes >= this_count)
 				good_bytes = 0;
 			/*
@@ -312,6 +309,15 @@ static int sr_done(struct scsi_cmnd *SCpnt)
 			break;
 
 		case RECOVERED_ERROR:
+
+			/*
+			 * An error occured, but it recovered.  Inform the
+			 * user, but make sure that it's not treated as a
+			 * hard error.
+			 */
+			scsi_print_sense("sr", SCpnt);
+			SCpnt->result = 0;
+			SCpnt->sense_buffer[0] = 0x0;
 			good_bytes = this_count;
 			break;
 
@@ -352,8 +358,8 @@ static int sr_prep_fn(struct request_queue *q, struct request *rq)
 				cd->disk->disk_name, block));
 
 	if (!cd->device || !scsi_device_online(cd->device)) {
-		SCSI_LOG_HLQUEUE(2, printk("Finishing %u sectors\n",
-					   blk_rq_sectors(rq)));
+		SCSI_LOG_HLQUEUE(2, printk("Finishing %ld sectors\n",
+					rq->nr_sectors));
 		SCSI_LOG_HLQUEUE(2, printk("Retry with 0x%p\n", SCpnt));
 		goto out;
 	}
@@ -416,7 +422,7 @@ static int sr_prep_fn(struct request_queue *q, struct request *rq)
 	/*
 	 * request doesn't start on hw block boundary, add scatter pads
 	 */
-	if (((unsigned int)blk_rq_pos(rq) % (s_size >> 9)) ||
+	if (((unsigned int)rq->sector % (s_size >> 9)) ||
 	    (scsi_bufflen(SCpnt) % s_size)) {
 		scmd_printk(KERN_NOTICE, SCpnt, "unaligned transfer\n");
 		goto out;
@@ -425,14 +431,14 @@ static int sr_prep_fn(struct request_queue *q, struct request *rq)
 	this_count = (scsi_bufflen(SCpnt) >> 9) / (s_size >> 9);
 
 
-	SCSI_LOG_HLQUEUE(2, printk("%s : %s %d/%u 512 byte blocks.\n",
+	SCSI_LOG_HLQUEUE(2, printk("%s : %s %d/%ld 512 byte blocks.\n",
 				cd->cdi.name,
 				(rq_data_dir(rq) == WRITE) ?
 					"writing" : "reading",
-				this_count, blk_rq_sectors(rq)));
+				this_count, rq->nr_sectors));
 
 	SCpnt->cmnd[1] = 0;
-	block = (unsigned int)blk_rq_pos(rq) / (s_size >> 9);
+	block = (unsigned int)rq->sector / (s_size >> 9);
 
 	if (this_count > 0xffff) {
 		this_count = 0xffff;
@@ -467,27 +473,22 @@ static int sr_prep_fn(struct request_queue *q, struct request *rq)
 
 static int sr_block_open(struct block_device *bdev, fmode_t mode)
 {
-	struct scsi_cd *cd;
+	struct scsi_cd *cd = scsi_cd_get(bdev->bd_disk);
 	int ret = -ENXIO;
 
-	lock_kernel();
-	cd = scsi_cd_get(bdev->bd_disk);
 	if (cd) {
 		ret = cdrom_open(&cd->cdi, bdev, mode);
 		if (ret)
 			scsi_cd_put(cd);
 	}
-	unlock_kernel();
 	return ret;
 }
 
 static int sr_block_release(struct gendisk *disk, fmode_t mode)
 {
 	struct scsi_cd *cd = scsi_cd(disk);
-	lock_kernel();
 	cdrom_release(&cd->cdi, mode);
 	scsi_cd_put(cd);
-	unlock_kernel();
 	return 0;
 }
 
@@ -499,8 +500,6 @@ static int sr_block_ioctl(struct block_device *bdev, fmode_t mode, unsigned cmd,
 	void __user *argp = (void __user *)arg;
 	int ret;
 
-	lock_kernel();
-
 	/*
 	 * Send SCSI addressing ioctls directly to mid level, send other
 	 * ioctls to cdrom/block level.
@@ -508,13 +507,12 @@ static int sr_block_ioctl(struct block_device *bdev, fmode_t mode, unsigned cmd,
 	switch (cmd) {
 	case SCSI_IOCTL_GET_IDLUN:
 	case SCSI_IOCTL_GET_BUS_NUMBER:
-		ret = scsi_ioctl(sdev, cmd, argp);
-		goto out;
+		return scsi_ioctl(sdev, cmd, argp);
 	}
 
 	ret = cdrom_ioctl(&cd->cdi, bdev, mode, cmd, arg);
 	if (ret != -ENOSYS)
-		goto out;
+		return ret;
 
 	/*
 	 * ENODEV means that we didn't recognise the ioctl, or that we
@@ -525,12 +523,8 @@ static int sr_block_ioctl(struct block_device *bdev, fmode_t mode, unsigned cmd,
 	ret = scsi_nonblockable_ioctl(sdev, cmd, argp,
 					(mode & FMODE_NDELAY) != 0);
 	if (ret != -ENODEV)
-		goto out;
-	ret = scsi_ioctl(sdev, cmd, argp);
-
-out:
-	unlock_kernel();
-	return ret;
+		return ret;
+	return scsi_ioctl(sdev, cmd, argp);
 }
 
 static int sr_block_media_changed(struct gendisk *disk)
@@ -539,12 +533,12 @@ static int sr_block_media_changed(struct gendisk *disk)
 	return cdrom_media_changed(&cd->cdi);
 }
 
-static const struct block_device_operations sr_bdops =
+static struct block_device_operations sr_bdops =
 {
 	.owner		= THIS_MODULE,
 	.open		= sr_block_open,
 	.release	= sr_block_release,
-	.ioctl		= sr_block_ioctl,
+	.locked_ioctl	= sr_block_ioctl,
 	.media_changed	= sr_block_media_changed,
 	/* 
 	 * No compat_ioctl for now because sr_block_ioctl never
@@ -698,20 +692,14 @@ static void get_sectorsize(struct scsi_cd *cd)
 		cd->capacity = 0x1fffff;
 		sector_size = 2048;	/* A guess, just in case */
 	} else {
-		long last_written;
-
-		cd->capacity = 1 + ((buffer[0] << 24) | (buffer[1] << 16) |
-				    (buffer[2] << 8) | buffer[3]);
-		/*
-		 * READ_CAPACITY doesn't return the correct size on
-		 * certain UDF media.  If last_written is larger, use
-		 * it instead.
-		 *
-		 * http://bugzilla.kernel.org/show_bug.cgi?id=9668
-		 */
-		if (!cdrom_get_last_written(&cd->cdi, &last_written))
-			cd->capacity = max_t(long, cd->capacity, last_written);
-
+#if 0
+		if (cdrom_get_last_written(&cd->cdi,
+					   &cd->capacity))
+#endif
+			cd->capacity = 1 + ((buffer[0] << 24) |
+						    (buffer[1] << 16) |
+						    (buffer[2] << 8) |
+						    buffer[3]);
 		sector_size = (buffer[4] << 24) |
 		    (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
 		switch (sector_size) {
@@ -747,7 +735,7 @@ static void get_sectorsize(struct scsi_cd *cd)
 	}
 
 	queue = cd->device->request_queue;
-	blk_queue_logical_block_size(queue, sector_size);
+	blk_queue_hardsect_size(queue, sector_size);
 
 	return;
 }
@@ -901,7 +889,6 @@ static int sr_remove(struct device *dev)
 {
 	struct scsi_cd *cd = dev_get_drvdata(dev);
 
-	blk_queue_prep_rq(cd->device->request_queue, scsi_prep_fn);
 	del_gendisk(cd->disk);
 
 	mutex_lock(&sr_ref_mutex);

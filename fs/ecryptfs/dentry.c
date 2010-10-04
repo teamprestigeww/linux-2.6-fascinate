@@ -26,7 +26,6 @@
 #include <linux/namei.h>
 #include <linux/mount.h>
 #include <linux/fs_stack.h>
-#include <linux/slab.h>
 #include "ecryptfs_kernel.h"
 
 /**
@@ -63,7 +62,7 @@ static int ecryptfs_d_revalidate(struct dentry *dentry, struct nameidata *nd)
 		struct inode *lower_inode =
 			ecryptfs_inode_to_lower(dentry->d_inode);
 
-		fsstack_copy_attr_all(dentry->d_inode, lower_inode);
+		fsstack_copy_attr_all(dentry->d_inode, lower_inode, NULL);
 	}
 out:
 	return rc;
@@ -90,7 +89,7 @@ static void ecryptfs_d_release(struct dentry *dentry)
 	return;
 }
 
-const struct dentry_operations ecryptfs_dops = {
+struct dentry_operations ecryptfs_dops = {
 	.d_revalidate = ecryptfs_d_revalidate,
 	.d_release = ecryptfs_d_release,
 };

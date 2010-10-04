@@ -24,6 +24,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
@@ -521,12 +522,6 @@ static int bit_xfer(struct i2c_adapter *i2c_adap,
 	int i, ret;
 	unsigned short nak_ok;
 
-	if (adap->pre_xfer) {
-		ret = adap->pre_xfer(i2c_adap);
-		if (ret < 0)
-			return ret;
-	}
-
 	bit_dbg(3, &i2c_adap->dev, "emitting start condition\n");
 	i2c_start(adap);
 	for (i = 0; i < num; i++) {
@@ -575,9 +570,6 @@ static int bit_xfer(struct i2c_adapter *i2c_adap,
 bailout:
 	bit_dbg(3, &i2c_adap->dev, "emitting stop condition\n");
 	i2c_stop(adap);
-
-	if (adap->post_xfer)
-		adap->post_xfer(i2c_adap);
 	return ret;
 }
 
@@ -612,7 +604,9 @@ static int i2c_bit_prepare_bus(struct i2c_adapter *adap)
 
 	/* register new adapter to i2c module... */
 	adap->algo = &i2c_bit_algo;
-	adap->retries = 3;
+
+	adap->timeout = 100;	/* default values, should	*/
+	adap->retries = 3;	/* be replaced by defines	*/
 
 	return 0;
 }

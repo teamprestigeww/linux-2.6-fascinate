@@ -26,13 +26,11 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/acpi.h>
 #include <acpi/acpi_bus.h>
 #include <acpi/acpi_drivers.h>
-#include <linux/dmi.h>
 
 static int debug;
 static int check_sta_before_sun;
@@ -59,7 +57,7 @@ ACPI_MODULE_NAME("pci_slot");
 				MY_NAME , ## arg);		\
 	} while (0)
 
-#define SLOT_NAME_SIZE 21		/* Inspired by #define in acpiphp.h */
+#define SLOT_NAME_SIZE 20		/* Inspired by #define in acpiphp.h */
 
 struct acpi_pci_slot {
 	acpi_handle root_handle;	/* handle of the root bridge */
@@ -151,7 +149,7 @@ register_slot(acpi_handle handle, u32 lvl, void *context, void **rv)
 		return AE_OK;
 	}
 
-	snprintf(name, sizeof(name), "%llu", sun);
+	snprintf(name, sizeof(name), "%u", (u32)sun);
 	pci_slot = pci_create_slot(pci_bus, device, name, NULL);
 	if (IS_ERR(pci_slot)) {
 		err("pci_create_slot returned %ld\n", PTR_ERR(pci_slot));
@@ -165,8 +163,6 @@ register_slot(acpi_handle handle, u32 lvl, void *context, void **rv)
 	mutex_lock(&slot_list_lock);
 	list_add(&slot->list, &slot_list);
 	mutex_unlock(&slot_list_lock);
-
-	get_device(&pci_bus->dev);
 
 	dbg("pci_slot: %p, pci_bus: %x, device: %d, name: %s\n",
 		pci_slot, pci_bus->number, device, name);
@@ -220,12 +216,12 @@ walk_p2p_bridge(acpi_handle handle, u32 lvl, void *context, void **rv)
 
 	dbg("p2p bridge walk, pci_bus = %x\n", dev->subordinate->number);
 	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, (u32)1,
-				     user_function, NULL, &child_context, NULL);
+				     user_function, &child_context, NULL);
 	if (ACPI_FAILURE(status))
 		goto out;
 
 	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, (u32)1,
-				     walk_p2p_bridge, NULL, &child_context, NULL);
+				     walk_p2p_bridge, &child_context, NULL);
 out:
 	pci_dev_put(dev);
 	return AE_OK;
@@ -278,12 +274,12 @@ walk_root_bridge(acpi_handle handle, acpi_walk_callback user_function)
 
 	dbg("root bridge walk, pci_bus = %x\n", pci_bus->number);
 	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, (u32)1,
-				     user_function, NULL, &context, NULL);
+				     user_function, &context, NULL);
 	if (ACPI_FAILURE(status))
 		return status;
 
 	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, (u32)1,
-				     walk_p2p_bridge, NULL, &context, NULL);
+				     walk_p2p_bridge, &context, NULL);
 	if (ACPI_FAILURE(status))
 		err("%s: walk_p2p_bridge failure - %d\n", __func__, status);
 
@@ -314,15 +310,12 @@ static void
 acpi_pci_slot_remove(acpi_handle handle)
 {
 	struct acpi_pci_slot *slot, *tmp;
-	struct pci_bus *pbus;
 
 	mutex_lock(&slot_list_lock);
 	list_for_each_entry_safe(slot, tmp, &slot_list, list) {
 		if (slot->root_handle == handle) {
 			list_del(&slot->list);
-			pbus = slot->pci_slot->bus;
 			pci_destroy_slot(slot->pci_slot);
-			put_device(&pbus->dev);
 			kfree(slot);
 		}
 	}

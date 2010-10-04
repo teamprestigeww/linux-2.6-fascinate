@@ -12,21 +12,31 @@
  *
  *  Licensed under the terms of the GNU General Public
  *  License version 2. See file COPYING for details.
- */
+*/
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
+#include <linux/capability.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/sched.h>
+#include <linux/cpumask.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/vmalloc.h>
+#include <linux/miscdevice.h>
+#include <linux/spinlock.h>
+#include <linux/mm.h>
+#include <linux/fs.h>
+#include <linux/mutex.h>
+#include <linux/cpu.h>
 #include <linux/firmware.h>
+#include <linux/platform_device.h>
+#include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/uaccess.h>
-#include <linux/vmalloc.h>
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/pci.h>
 
-#include <asm/microcode.h>
-#include <asm/processor.h>
 #include <asm/msr.h>
+#include <asm/processor.h>
+#include <asm/microcode.h>
 
 MODULE_DESCRIPTION("AMD Microcode Update Driver");
 MODULE_AUTHOR("Peter Oruba");
@@ -62,13 +72,16 @@ struct microcode_header_amd {
 } __attribute__((packed));
 
 struct microcode_amd {
-	struct microcode_header_amd	hdr;
-	unsigned int			mpb[0];
+	struct microcode_header_amd hdr;
+	unsigned int mpb[0];
 };
 
 #define UCODE_MAX_SIZE			2048
 #define UCODE_CONTAINER_SECTION_HDR	8
 #define UCODE_CONTAINER_HEADER_SIZE	12
+
+/* serialize access to the physical write */
+static DEFINE_SPINLOCK(microcode_update_lock);
 
 static struct equiv_cpu_entry *equiv_cpu_table;
 
@@ -79,12 +92,12 @@ static int collect_cpu_info_amd(int cpu, struct cpu_signature *csig)
 
 	memset(csig, 0, sizeof(*csig));
 	if (c->x86_vendor != X86_VENDOR_AMD || c->x86 < 0x10) {
-		pr_warning("microcode: CPU%d: AMD CPU family 0x%x not "
-			   "supported\n", cpu, c->x86);
+		printk(KERN_WARNING "microcode: CPU%d: AMD CPU family 0x%x not "
+		       "supported\n", cpu, c->x86);
 		return -1;
 	}
 	rdmsr(MSR_AMD64_PATCH_LEVEL, csig->rev, dummy);
-	pr_info("CPU%d: patch_level=0x%x\n", cpu, csig->rev);
+	printk(KERN_INFO "microcode: CPU%d: patch_level=0x%x\n", cpu, csig->rev);
 	return 0;
 }
 
@@ -106,16 +119,23 @@ static int get_matching_microcode(int cpu, void *mc, int rev)
 		i++;
 	}
 
-	if (!equiv_cpu_id)
+	if (!equiv_cpu_id) {
+		printk(KERN_WARNING "microcode: CPU%d: cpu revision "
+		       "not listed in equivalent cpu table\n", cpu);
 		return 0;
+	}
 
-	if (mc_header->processor_rev_id != equiv_cpu_id)
+	if (mc_header->processor_rev_id != equiv_cpu_id) {
+		printk(KERN_ERR	"microcode: CPU%d: patch mismatch "
+		       "(processor_rev_id: %x, equiv_cpu_id: %x)\n",
+		       cpu, mc_header->processor_rev_id, equiv_cpu_id);
 		return 0;
+	}
 
 	/* ucode might be chipset specific -- currently we don't support this */
 	if (mc_header->nb_dev_id || mc_header->sb_dev_id) {
-		pr_err("CPU%d: loading of chipset specific code not yet supported\n",
-		       cpu);
+		printk(KERN_ERR "microcode: CPU%d: loading of chipset "
+		       "specific code not yet supported\n", cpu);
 		return 0;
 	}
 
@@ -125,8 +145,9 @@ static int get_matching_microcode(int cpu, void *mc, int rev)
 	return 1;
 }
 
-static int apply_microcode_amd(int cpu)
+static void apply_microcode_amd(int cpu)
 {
+	unsigned long flags;
 	u32 rev, dummy;
 	int cpu_num = raw_smp_processor_id();
 	struct ucode_cpu_info *uci = ucode_cpu_info + cpu_num;
@@ -136,23 +157,25 @@ static int apply_microcode_amd(int cpu)
 	BUG_ON(cpu_num != cpu);
 
 	if (mc_amd == NULL)
-		return 0;
+		return;
 
+	spin_lock_irqsave(&microcode_update_lock, flags);
 	wrmsrl(MSR_AMD64_PATCH_LOADER, (u64)(long)&mc_amd->hdr.data_code);
 	/* get patch id after patching */
 	rdmsr(MSR_AMD64_PATCH_LEVEL, rev, dummy);
+	spin_unlock_irqrestore(&microcode_update_lock, flags);
 
 	/* check current patch id and patch's id for match */
 	if (rev != mc_amd->hdr.patch_id) {
-		pr_err("CPU%d: update failed (for patch_level=0x%x)\n",
-		       cpu, mc_amd->hdr.patch_id);
-		return -1;
+		printk(KERN_ERR "microcode: CPU%d: update failed "
+		       "(for patch_level=0x%x)\n", cpu, mc_amd->hdr.patch_id);
+		return;
 	}
 
-	pr_info("CPU%d: updated (new patch_level=0x%x)\n", cpu, rev);
-	uci->cpu_sig.rev = rev;
+	printk(KERN_INFO "microcode: CPU%d: updated (new patch_level=0x%x)\n",
+	       cpu, rev);
 
-	return 0;
+	uci->cpu_sig.rev = rev;
 }
 
 static int get_ucode_data(void *to, const u8 *from, size_t n)
@@ -161,8 +184,8 @@ static int get_ucode_data(void *to, const u8 *from, size_t n)
 	return 0;
 }
 
-static void *
-get_next_ucode(const u8 *buf, unsigned int size, unsigned int *mc_size)
+static void *get_next_ucode(const u8 *buf, unsigned int size,
+			    unsigned int *mc_size)
 {
 	unsigned int total_size;
 	u8 section_hdr[UCODE_CONTAINER_SECTION_HDR];
@@ -172,14 +195,18 @@ get_next_ucode(const u8 *buf, unsigned int size, unsigned int *mc_size)
 		return NULL;
 
 	if (section_hdr[0] != UCODE_UCODE_TYPE) {
-		pr_err("error: invalid type field in container file section header\n");
+		printk(KERN_ERR "microcode: error: invalid type field in "
+		       "container file section header\n");
 		return NULL;
 	}
 
 	total_size = (unsigned long) (section_hdr[4] + (section_hdr[5] << 8));
 
+	printk(KERN_DEBUG "microcode: size %u, total_size %u\n",
+	       size, total_size);
+
 	if (total_size > size || total_size > UCODE_MAX_SIZE) {
-		pr_err("error: size mismatch\n");
+		printk(KERN_ERR "microcode: error: size mismatch\n");
 		return NULL;
 	}
 
@@ -196,6 +223,7 @@ get_next_ucode(const u8 *buf, unsigned int size, unsigned int *mc_size)
 	return mc;
 }
 
+
 static int install_equiv_cpu_table(const u8 *buf)
 {
 	u8 *container_hdr[UCODE_CONTAINER_HEADER_SIZE];
@@ -208,13 +236,15 @@ static int install_equiv_cpu_table(const u8 *buf)
 	size = buf_pos[2];
 
 	if (buf_pos[1] != UCODE_EQUIV_CPU_TABLE_TYPE || !size) {
-		pr_err("error: invalid type field in container file section header\n");
+		printk(KERN_ERR "microcode: error: invalid type field in "
+		       "container file section header\n");
 		return 0;
 	}
 
 	equiv_cpu_table = (struct equiv_cpu_entry *) vmalloc(size);
 	if (!equiv_cpu_table) {
-		pr_err("failed to allocate equivalent CPU table\n");
+		printk(KERN_ERR "microcode: failed to allocate "
+		       "equivalent CPU table\n");
 		return 0;
 	}
 
@@ -229,12 +259,13 @@ static int install_equiv_cpu_table(const u8 *buf)
 
 static void free_equiv_cpu_table(void)
 {
-	vfree(equiv_cpu_table);
-	equiv_cpu_table = NULL;
+	if (equiv_cpu_table) {
+		vfree(equiv_cpu_table);
+		equiv_cpu_table = NULL;
+	}
 }
 
-static enum ucode_state
-generic_load_microcode(int cpu, const u8 *data, size_t size)
+static int generic_load_microcode(int cpu, const u8 *data, size_t size)
 {
 	struct ucode_cpu_info *uci = ucode_cpu_info + cpu;
 	const u8 *ucode_ptr = data;
@@ -243,12 +274,12 @@ generic_load_microcode(int cpu, const u8 *data, size_t size)
 	int new_rev = uci->cpu_sig.rev;
 	unsigned int leftover;
 	unsigned long offset;
-	enum ucode_state state = UCODE_OK;
 
 	offset = install_equiv_cpu_table(ucode_ptr);
 	if (!offset) {
-		pr_err("failed to create equivalent cpu table\n");
-		return UCODE_ERROR;
+		printk(KERN_ERR "microcode: failed to create "
+		       "equivalent cpu table\n");
+		return -EINVAL;
 	}
 
 	ucode_ptr += offset;
@@ -264,7 +295,8 @@ generic_load_microcode(int cpu, const u8 *data, size_t size)
 
 		mc_header = (struct microcode_header_amd *)mc;
 		if (get_matching_microcode(cpu, mc, new_rev)) {
-			vfree(new_mc);
+			if (new_mc)
+				vfree(new_mc);
 			new_rev = mc_header->patch_id;
 			new_mc  = mc;
 		} else
@@ -276,37 +308,34 @@ generic_load_microcode(int cpu, const u8 *data, size_t size)
 
 	if (new_mc) {
 		if (!leftover) {
-			vfree(uci->mc);
+			if (uci->mc)
+				vfree(uci->mc);
 			uci->mc = new_mc;
-			pr_debug("CPU%d found a matching microcode update with version 0x%x (current=0x%x)\n",
+			pr_debug("microcode: CPU%d found a matching microcode "
+				 "update with version 0x%x (current=0x%x)\n",
 				 cpu, new_rev, uci->cpu_sig.rev);
-		} else {
+		} else
 			vfree(new_mc);
-			state = UCODE_ERROR;
-		}
-	} else
-		state = UCODE_NFOUND;
+	}
 
 	free_equiv_cpu_table();
 
-	return state;
+	return (int)leftover;
 }
 
-static enum ucode_state request_microcode_fw(int cpu, struct device *device)
+static int request_microcode_fw(int cpu, struct device *device)
 {
 	const char *fw_name = "amd-ucode/microcode_amd.bin";
 	const struct firmware *firmware;
-	enum ucode_state ret;
+	int ret;
 
-	if (request_firmware(&firmware, fw_name, device)) {
+	/* We should bind the task to the CPU */
+	BUG_ON(cpu != raw_smp_processor_id());
+
+	ret = request_firmware(&firmware, fw_name, device);
+	if (ret) {
 		printk(KERN_ERR "microcode: failed to load file %s\n", fw_name);
-		return UCODE_NFOUND;
-	}
-
-	if (*(u32 *)firmware->data != UCODE_MAGIC) {
-		pr_err("invalid UCODE_MAGIC (0x%08x)\n",
-		       *(u32 *)firmware->data);
-		return UCODE_ERROR;
+		return ret;
 	}
 
 	ret = generic_load_microcode(cpu, firmware->data, firmware->size);
@@ -316,11 +345,11 @@ static enum ucode_state request_microcode_fw(int cpu, struct device *device)
 	return ret;
 }
 
-static enum ucode_state
-request_microcode_user(int cpu, const void __user *buf, size_t size)
+static int request_microcode_user(int cpu, const void __user *buf, size_t size)
 {
-	pr_info("AMD microcode update via /dev/cpu/microcode not supported\n");
-	return UCODE_ERROR;
+	printk(KERN_INFO "microcode: AMD microcode update via "
+	       "/dev/cpu/microcode not supported\n");
+	return -1;
 }
 
 static void microcode_fini_cpu_amd(int cpu)
@@ -343,3 +372,4 @@ struct microcode_ops * __init init_amd_microcode(void)
 {
 	return &microcode_amd_ops;
 }
+

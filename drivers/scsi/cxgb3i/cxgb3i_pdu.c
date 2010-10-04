@@ -12,7 +12,6 @@
  * Written by: Karen Xie (kxie@chelsio.com)
  */
 
-#include <linux/slab.h>
 #include <linux/skbuff.h>
 #include <linux/crypto.h>
 #include <scsi/scsi_cmnd.h>
@@ -389,8 +388,8 @@ int cxgb3i_conn_xmit_pdu(struct iscsi_task *task)
 	if (err > 0) {
 		int pdulen = err;
 
-		cxgb3i_tx_debug("task 0x%p, skb 0x%p, len %u/%u, rv %d.\n",
-				task, skb, skb->len, skb->data_len, err);
+	cxgb3i_tx_debug("task 0x%p, skb 0x%p, len %u/%u, rv %d.\n",
+			task, skb, skb->len, skb->data_len, err);
 
 		if (task->conn->hdrdgst_en)
 			pdulen += ISCSI_DIGEST_SIZE;
@@ -401,18 +400,17 @@ int cxgb3i_conn_xmit_pdu(struct iscsi_task *task)
 		return 0;
 	}
 
-	if (err == -EAGAIN || err == -ENOBUFS) {
-		/* reset skb to send when we are called again */
-		tdata->skb = skb;
+	if (err < 0 && err != -EAGAIN) {
+		kfree_skb(skb);
+		cxgb3i_tx_debug("itt 0x%x, skb 0x%p, len %u/%u, xmit err %d.\n",
+				task->itt, skb, skb->len, skb->data_len, err);
+		iscsi_conn_printk(KERN_ERR, task->conn, "xmit err %d.\n", err);
+		iscsi_conn_failure(task->conn, ISCSI_ERR_XMIT_FAILED);
 		return err;
 	}
-
-	kfree_skb(skb);
-	cxgb3i_tx_debug("itt 0x%x, skb 0x%p, len %u/%u, xmit err %d.\n",
-			task->itt, skb, skb->len, skb->data_len, err);
-	iscsi_conn_printk(KERN_ERR, task->conn, "xmit err %d.\n", err);
-	iscsi_conn_failure(task->conn, ISCSI_ERR_XMIT_FAILED);
-	return err;
+	/* reset skb to send when we are called again */
+	tdata->skb = skb;
+	return -EAGAIN;
 }
 
 int cxgb3i_pdu_init(void)
@@ -462,8 +460,10 @@ void cxgb3i_conn_pdu_ready(struct s3_conn *c3cn)
 		skb = skb_peek(&c3cn->receive_queue);
 	}
 	read_unlock(&c3cn->callback_lock);
-	c3cn->copied_seq += read;
-	cxgb3i_c3cn_rx_credits(c3cn, read);
+	if (c3cn) {
+		c3cn->copied_seq += read;
+		cxgb3i_c3cn_rx_credits(c3cn, read);
+	}
 	conn->rxdata_octets += read;
 
 	if (err) {
@@ -479,7 +479,7 @@ void cxgb3i_conn_tx_open(struct s3_conn *c3cn)
 	cxgb3i_tx_debug("cn 0x%p.\n", c3cn);
 	if (conn) {
 		cxgb3i_tx_debug("cn 0x%p, cid %d.\n", c3cn, conn->id);
-		iscsi_conn_queue_work(conn);
+		scsi_queue_work(conn->session->host, &conn->xmitwork);
 	}
 }
 

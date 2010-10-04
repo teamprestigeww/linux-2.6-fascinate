@@ -10,6 +10,7 @@
 
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/pagemap.h>
 #include <linux/init.h>
@@ -18,8 +19,6 @@
 #include <linux/fs.h>
 #include <linux/seq_file.h>
 #include <linux/kdebug.h>
-#include <linux/log2.h>
-#include <linux/gfp.h>
 
 #include <asm/bitext.h>
 #include <asm/page.h>
@@ -46,7 +45,6 @@
 #include <asm/tsunami.h>
 #include <asm/swift.h>
 #include <asm/turbosparc.h>
-#include <asm/leon.h>
 
 #include <asm/btfixup.h>
 
@@ -351,7 +349,7 @@ static void srmmu_free_nocache(unsigned long vaddr, int size)
 		    vaddr, srmmu_nocache_end);
 		BUG();
 	}
-	if (!is_power_of_2(size)) {
+	if (size & (size-1)) {
 		printk("Size 0x%x is not a power of 2\n", size);
 		BUG();
 	}
@@ -570,9 +568,6 @@ static void srmmu_switch_mm(struct mm_struct *old_mm, struct mm_struct *mm,
 		srmmu_ctxd_set(&srmmu_context_table[mm->context], mm->pgd);
 	}
 
-	if (sparc_cpu_model == sparc_leon)
-		leon_switch_mm();
-
 	if (is_hypersparc)
 		hyper_flush_whole_icache();
 
@@ -694,7 +689,7 @@ extern void tsunami_setup_blockops(void);
  * The following code is a deadwood that may be necessary when
  * we start to make precise page flushes again. --zaitcev
  */
-static void swift_update_mmu_cache(struct vm_area_struct * vma, unsigned long address, pte_t *ptep)
+static void swift_update_mmu_cache(struct vm_area_struct * vma, unsigned long address, pte_t pte)
 {
 #if 0
 	static unsigned long last;
@@ -703,10 +698,10 @@ static void swift_update_mmu_cache(struct vm_area_struct * vma, unsigned long ad
 
 	if (address == last) {
 		val = srmmu_hwprobe(address);
-		if (val != 0 && pte_val(*ptep) != val) {
+		if (val != 0 && pte_val(pte) != val) {
 			printk("swift_update_mmu_cache: "
 			    "addr %lx put %08x probed %08x from %p\n",
-			    address, pte_val(*ptep), val,
+			    address, pte_val(pte), val,
 			    __builtin_return_address(0));
 			srmmu_flush_whole_tlb();
 		}
@@ -1430,7 +1425,7 @@ static void __init init_vac_layout(void)
 				min_line_size = vac_line_size;
 			//FIXME: cpus not contiguous!!
 			cpu++;
-			if (cpu >= nr_cpu_ids || !cpu_online(cpu))
+			if (cpu >= NR_CPUS || !cpu_online(cpu))
 				break;
 #else
 			break;
@@ -1981,45 +1976,6 @@ static void __init init_viking(void)
 	poke_srmmu = poke_viking;
 }
 
-#ifdef CONFIG_SPARC_LEON
-
-void __init poke_leonsparc(void)
-{
-}
-
-void __init init_leon(void)
-{
-
-	srmmu_name = "LEON";
-
-	BTFIXUPSET_CALL(flush_cache_all, leon_flush_cache_all,
-			BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(flush_cache_mm, leon_flush_cache_all,
-			BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(flush_cache_page, leon_flush_pcache_all,
-			BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(flush_cache_range, leon_flush_cache_all,
-			BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(flush_page_for_dma, leon_flush_dcache_all,
-			BTFIXUPCALL_NORM);
-
-	BTFIXUPSET_CALL(flush_tlb_all, leon_flush_tlb_all, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(flush_tlb_mm, leon_flush_tlb_all, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(flush_tlb_page, leon_flush_tlb_all, BTFIXUPCALL_NORM);
-	BTFIXUPSET_CALL(flush_tlb_range, leon_flush_tlb_all, BTFIXUPCALL_NORM);
-
-	BTFIXUPSET_CALL(__flush_page_to_ram, leon_flush_cache_all,
-			BTFIXUPCALL_NOP);
-	BTFIXUPSET_CALL(flush_sig_insns, leon_flush_cache_all, BTFIXUPCALL_NOP);
-
-	poke_srmmu = poke_leonsparc;
-
-	srmmu_cache_pagetables = 0;
-
-	leon_flush_during_switch = leon_flush_needed();
-}
-#endif
-
 /* Probe for the srmmu chip version. */
 static void __init get_srmmu_type(void)
 {
@@ -2035,13 +1991,7 @@ static void __init get_srmmu_type(void)
 	psr_typ = (psr >> 28) & 0xf;
 	psr_vers = (psr >> 24) & 0xf;
 
-	/* First, check for sparc-leon. */
-	if (sparc_cpu_model == sparc_leon) {
-		init_leon();
-		return;
-	}
-
-	/* Second, check for HyperSparc or Cypress. */
+	/* First, check for HyperSparc or Cypress. */
 	if(mod_typ == 1) {
 		switch(mod_rev) {
 		case 7:
@@ -2215,6 +2165,8 @@ void __init ld_mmu_srmmu(void)
 	BTFIXUPSET_CALL(pmd_page, srmmu_pmd_page, BTFIXUPCALL_NORM);
 	BTFIXUPSET_CALL(pgd_page_vaddr, srmmu_pgd_page, BTFIXUPCALL_NORM);
 
+	BTFIXUPSET_SETHI(none_mask, 0xF0000000);
+
 	BTFIXUPSET_CALL(pte_present, srmmu_pte_present, BTFIXUPCALL_NORM);
 	BTFIXUPSET_CALL(pte_clear, srmmu_pte_clear, BTFIXUPCALL_SWAPO0G0);
 
@@ -2297,8 +2249,7 @@ void __init ld_mmu_srmmu(void)
 	BTFIXUPSET_CALL(flush_cache_mm, smp_flush_cache_mm, BTFIXUPCALL_NORM);
 	BTFIXUPSET_CALL(flush_cache_range, smp_flush_cache_range, BTFIXUPCALL_NORM);
 	BTFIXUPSET_CALL(flush_cache_page, smp_flush_cache_page, BTFIXUPCALL_NORM);
-	if (sparc_cpu_model != sun4d &&
-	    sparc_cpu_model != sparc_leon) {
+	if (sparc_cpu_model != sun4d) {
 		BTFIXUPSET_CALL(flush_tlb_all, smp_flush_tlb_all, BTFIXUPCALL_NORM);
 		BTFIXUPSET_CALL(flush_tlb_mm, smp_flush_tlb_mm, BTFIXUPCALL_NORM);
 		BTFIXUPSET_CALL(flush_tlb_range, smp_flush_tlb_range, BTFIXUPCALL_NORM);
@@ -2327,8 +2278,6 @@ void __init ld_mmu_srmmu(void)
 #ifdef CONFIG_SMP
 	if (sparc_cpu_model == sun4d)
 		sun4d_init_smp();
-	else if (sparc_cpu_model == sparc_leon)
-		leon_init_smp();
 	else
 		sun4m_init_smp();
 #endif

@@ -92,8 +92,8 @@ prototypes:
 	void (*destroy_inode)(struct inode *);
 	void (*dirty_inode) (struct inode *);
 	int (*write_inode) (struct inode *, int);
-	int (*drop_inode) (struct inode *);
-	void (*evict_inode) (struct inode *);
+	void (*drop_inode) (struct inode *);
+	void (*delete_inode) (struct inode *);
 	void (*put_super) (struct super_block *);
 	void (*write_super) (struct super_block *);
 	int (*sync_fs)(struct super_block *sb, int wait);
@@ -101,39 +101,36 @@ prototypes:
 	int (*unfreeze_fs) (struct super_block *);
 	int (*statfs) (struct dentry *, struct kstatfs *);
 	int (*remount_fs) (struct super_block *, int *, char *);
+	void (*clear_inode) (struct inode *);
 	void (*umount_begin) (struct super_block *);
 	int (*show_options)(struct seq_file *, struct vfsmount *);
 	ssize_t (*quota_read)(struct super_block *, int, char *, size_t, loff_t);
 	ssize_t (*quota_write)(struct super_block *, int, const char *, size_t, loff_t);
 
 locking rules:
-	All may block [not true, see below]
-	None have BKL
-			s_umount
-alloc_inode:
-destroy_inode:
-dirty_inode:				(must not sleep)
-write_inode:
-drop_inode:				!!!inode_lock!!!
-evict_inode:
-put_super:		write
-write_super:		read
-sync_fs:		read
-freeze_fs:		read
-unfreeze_fs:		read
-statfs:			maybe(read)	(see below)
-remount_fs:		write
-umount_begin:		no
-show_options:		no		(namespace_sem)
-quota_read:		no		(see below)
-quota_write:		no		(see below)
+	All may block.
+			BKL	s_lock	s_umount
+alloc_inode:		no	no	no
+destroy_inode:		no
+dirty_inode:		no				(must not sleep)
+write_inode:		no
+drop_inode:		no				!!!inode_lock!!!
+delete_inode:		no
+put_super:		yes	yes	no
+write_super:		no	yes	read
+sync_fs:		no	no	read
+freeze_fs:		?
+unfreeze_fs:		?
+statfs:			no	no	no
+remount_fs:		yes	yes	maybe		(see below)
+clear_inode:		no
+umount_begin:		yes	no	no
+show_options:		no				(vfsmount->sem)
+quota_read:		no	no	no		(see below)
+quota_write:		no	no	no		(see below)
 
-->statfs() has s_umount (shared) when called by ustat(2) (native or
-compat), but that's an accident of bad API; s_umount is used to pin
-the superblock down when we only have dev_t given us by userland to
-identify the superblock.  Everything else (statfs(), fstatfs(), etc.)
-doesn't hold it when calling ->statfs() - superblock is pinned down
-by resolving the pathname passed to syscall.
+->remount_fs() will have the s_umount lock if it's already mounted.
+When called from get_sb_single, it does NOT have the s_umount lock.
 ->quota_read() and ->quota_write() functions are both guaranteed to
 be the only ones operating on the quota file by the quota code (via
 dqio_sem) (unless an admin really wants to screw up something and
@@ -180,7 +177,7 @@ prototypes:
 locking rules:
 	All except set_page_dirty may block
 
-			BKL	PageLocked(page)	i_mutex
+			BKL	PageLocked(page)	i_sem
 writepage:		no	yes, unlocks (see below)
 readpage:		no	yes, unlocks
 sync_page:		no	maybe
@@ -190,7 +187,7 @@ readpages:		no
 write_begin:		no	locks the page		yes
 write_end:		no	yes, unlocks		yes
 perform_write:		no	n/a			yes
-bmap:			no
+bmap:			yes
 invalidatepage:		no	yes
 releasepage:		no	yes
 direct_IO:		no
@@ -374,13 +371,15 @@ prototypes:
 	ssize_t (*aio_write) (struct kiocb *, const struct iovec *, unsigned long, loff_t);
 	int (*readdir) (struct file *, void *, filldir_t);
 	unsigned int (*poll) (struct file *, struct poll_table_struct *);
+	int (*ioctl) (struct inode *, struct file *, unsigned int,
+			unsigned long);
 	long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);
 	long (*compat_ioctl) (struct file *, unsigned int, unsigned long);
 	int (*mmap) (struct file *, struct vm_area_struct *);
 	int (*open) (struct inode *, struct file *);
 	int (*flush) (struct file *);
 	int (*release) (struct inode *, struct file *);
-	int (*fsync) (struct file *, int datasync);
+	int (*fsync) (struct file *, struct dentry *, int datasync);
 	int (*aio_fsync) (struct kiocb *, int datasync);
 	int (*fasync) (int, struct file *, int);
 	int (*lock) (struct file *, int, struct file_lock *);
@@ -407,7 +406,8 @@ write:			no
 aio_write:		no
 readdir: 		no
 poll:			no
-unlocked_ioctl:		no
+ioctl:			yes	(see below)
+unlocked_ioctl:		no	(see below)
 compat_ioctl:		no
 mmap:			no
 open:			no
@@ -428,9 +428,8 @@ check_flags:		no
 implementations.  If your fs is not using generic_file_llseek, you
 need to acquire and release the appropriate locks in your ->llseek().
 For many filesystems, it is probably safe to acquire the inode
-mutex or just to use i_size_read() instead.
-Note: this does not protect the file->f_pos against concurrent modifications
-since this is something the userspace has to take care about.
+semaphore.  Note some filesystems (i.e. remote ones) provide no
+protection for i_size so you will need to use the BKL.
 
 Note: ext2_release() was *the* source of contention on fs-intensive
 loads and dropping BKL on ->release() helps to get rid of that (we still
@@ -438,17 +437,17 @@ grab BKL for cases when we close a file that had been opened r/w, but that
 can and should be done using the internal locking with smaller critical areas).
 Current worst offender is ext2_get_block()...
 
-->fasync() is called without BKL protection, and is responsible for
-maintaining the FASYNC bit in filp->f_flags.  Most instances call
-fasync_helper(), which does that maintenance, so it's not normally
-something one needs to worry about.  Return values > 0 will be mapped to
-zero in the VFS layer.
+->fasync() is a mess. This area needs a big cleanup and that will probably
+affect locking.
 
 ->readdir() and ->ioctl() on directories must be changed. Ideally we would
 move ->readdir() to inode_operations and use a separate method for directory
 ->ioctl() or kill the latter completely. One of the problems is that for
 anything that resembles union-mount we won't have a struct file for all
 components. And there are other reasons why the current interface is a mess...
+
+->ioctl() on regular files is superceded by the ->unlocked_ioctl() that
+doesn't take the BKL.
 
 ->read on directories probably must go away - we should just enforce -EISDIR
 in sys_read() and friends.
@@ -457,6 +456,13 @@ in sys_read() and friends.
 
 --------------------------- dquot_operations -------------------------------
 prototypes:
+	int (*initialize) (struct inode *, int);
+	int (*drop) (struct inode *);
+	int (*alloc_space) (struct inode *, qsize_t, int);
+	int (*alloc_inode) (const struct inode *, unsigned long);
+	int (*free_space) (struct inode *, qsize_t);
+	int (*free_inode) (const struct inode *, unsigned long);
+	int (*transfer) (struct inode *, struct iattr *);
 	int (*write_dquot) (struct dquot *);
 	int (*acquire_dquot) (struct dquot *);
 	int (*release_dquot) (struct dquot *);
@@ -469,6 +475,13 @@ a proper locking wrt the filesystem and call the generic quota operations.
 What filesystem should expect from the generic quota functions:
 
 		FS recursion	Held locks when called
+initialize:	yes		maybe dqonoff_sem
+drop:		yes		-
+alloc_space:	->mark_dirty()	-
+alloc_inode:	->mark_dirty()	-
+free_space:	->mark_dirty()	-
+free_inode:	->mark_dirty()	-
+transfer:	yes		-
 write_dquot:	yes		dqonoff_sem or dqptr_sem
 acquire_dquot:	yes		dqonoff_sem or dqptr_sem
 release_dquot:	yes		dqonoff_sem or dqptr_sem
@@ -478,6 +491,10 @@ write_info:	yes		dqonoff_sem
 FS recursion means calling ->quota_read() and ->quota_write() from superblock
 operations.
 
+->alloc_space(), ->alloc_inode(), ->free_space(), ->free_inode() are called
+only directly by the filesystem and do not call any fs functions only
+the ->mark_dirty() operation.
+
 More details about quota locking can be found in fs/dquot.c.
 
 --------------------------- vm_operations_struct -----------------------------
@@ -485,31 +502,23 @@ prototypes:
 	void (*open)(struct vm_area_struct*);
 	void (*close)(struct vm_area_struct*);
 	int (*fault)(struct vm_area_struct*, struct vm_fault *);
-	int (*page_mkwrite)(struct vm_area_struct *, struct vm_fault *);
+	int (*page_mkwrite)(struct vm_area_struct *, struct page *);
 	int (*access)(struct vm_area_struct *, unsigned long, void*, int, int);
 
 locking rules:
 		BKL	mmap_sem	PageLocked(page)
 open:		no	yes
 close:		no	yes
-fault:		no	yes		can return with page locked
-page_mkwrite:	no	yes		can return with page locked
+fault:		no	yes
+page_mkwrite:	no	yes		no
 access:		no	yes
 
-	->fault() is called when a previously not present pte is about
-to be faulted in. The filesystem must find and return the page associated
-with the passed in "pgoff" in the vm_fault structure. If it is possible that
-the page may be truncated and/or invalidated, then the filesystem must lock
-the page, then ensure it is not already truncated (the page lock will block
-subsequent truncate), and then return with VM_FAULT_LOCKED, and the page
-locked. The VM will unlock the page.
-
-	->page_mkwrite() is called when a previously read-only pte is
-about to become writeable. The filesystem again must ensure that there are
-no truncate/invalidate races, and then return with the page locked. If
-the page has been truncated, the filesystem should not look up a new page
-like the ->fault() handler, but simply return with VM_FAULT_NOPAGE, which
-will cause the VM to retry the fault.
+	->page_mkwrite() is called when a previously read-only page is
+about to become writeable. The file system is responsible for
+protecting against truncate races. Once appropriate action has been
+taking to lock out truncate, the page range should be verified to be
+within i_size. The page mapping should also be checked that it is not
+NULL.
 
 	->access() is called when get_user_pages() fails in
 acces_process_vm(), typically used to debug a process through

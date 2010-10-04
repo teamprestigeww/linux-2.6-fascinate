@@ -9,8 +9,6 @@
  * the dangers of modifying code on the run.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/spinlock.h>
 #include <linux/hardirq.h>
 #include <linux/uaccess.h>
@@ -20,45 +18,13 @@
 #include <linux/init.h>
 #include <linux/list.h>
 
-#include <trace/syscall.h>
-
-#include <asm/cacheflush.h>
 #include <asm/ftrace.h>
+#include <linux/ftrace.h>
 #include <asm/nops.h>
 #include <asm/nmi.h>
 
 
 #ifdef CONFIG_DYNAMIC_FTRACE
-
-/*
- * modifying_code is set to notify NMIs that they need to use
- * memory barriers when entering or exiting. But we don't want
- * to burden NMIs with unnecessary memory barriers when code
- * modification is not being done (which is most of the time).
- *
- * A mutex is already held when ftrace_arch_code_modify_prepare
- * and post_process are called. No locks need to be taken here.
- *
- * Stop machine will make sure currently running NMIs are done
- * and new NMIs will see the updated variable before we need
- * to worry about NMIs doing memory barriers.
- */
-static int modifying_code __read_mostly;
-static DEFINE_PER_CPU(int, save_modifying_code);
-
-int ftrace_arch_code_modify_prepare(void)
-{
-	set_kernel_text_rw();
-	modifying_code = 1;
-	return 0;
-}
-
-int ftrace_arch_code_modify_post_process(void)
-{
-	modifying_code = 0;
-	set_kernel_text_ro();
-	return 0;
-}
 
 union ftrace_code_union {
 	char code[MCOUNT_INSN_SIZE];
@@ -100,11 +66,11 @@ static unsigned char *ftrace_call_replace(unsigned long ip, unsigned long addr)
  *
  * 1) Put the instruction pointer into the IP buffer
  *    and the new code into the "code" buffer.
- * 2) Wait for any running NMIs to finish and set a flag that says
- *    we are modifying code, it is done in an atomic operation.
- * 3) Write the code
- * 4) clear the flag.
- * 5) Wait for any running NMIs to finish.
+ * 2) Set a flag that says we are modifying code
+ * 3) Wait for any running NMIs to finish.
+ * 4) Write the code
+ * 5) clear the flag.
+ * 6) Wait for any running NMIs to finish.
  *
  * If an NMI is executed, the first thing it does is to call
  * "ftrace_nmi_enter". This will check if the flag is set to write
@@ -116,9 +82,9 @@ static unsigned char *ftrace_call_replace(unsigned long ip, unsigned long addr)
  * are the same as what exists.
  */
 
-#define MOD_CODE_WRITE_FLAG (1 << 31)	/* set when NMI should do the write */
-static atomic_t nmi_running = ATOMIC_INIT(0);
+static atomic_t in_nmi = ATOMIC_INIT(0);
 static int mod_code_status;		/* holds return value of text write */
+static int mod_code_write;		/* set when NMI should do the write */
 static void *mod_code_ip;		/* holds the IP to write to */
 static void *mod_code_newcode;		/* holds the text to write to the IP */
 
@@ -135,20 +101,6 @@ int ftrace_arch_read_dyn_info(char *buf, int size)
 	return r;
 }
 
-static void clear_mod_flag(void)
-{
-	int old = atomic_read(&nmi_running);
-
-	for (;;) {
-		int new = old & ~MOD_CODE_WRITE_FLAG;
-
-		if (old == new)
-			break;
-
-		old = atomic_cmpxchg(&nmi_running, old, new);
-	}
-}
-
 static void ftrace_mod_code(void)
 {
 	/*
@@ -159,89 +111,54 @@ static void ftrace_mod_code(void)
 	 */
 	mod_code_status = probe_kernel_write(mod_code_ip, mod_code_newcode,
 					     MCOUNT_INSN_SIZE);
-
-	/* if we fail, then kill any new writers */
-	if (mod_code_status)
-		clear_mod_flag();
 }
 
 void ftrace_nmi_enter(void)
 {
-	__get_cpu_var(save_modifying_code) = modifying_code;
-
-	if (!__get_cpu_var(save_modifying_code))
-		return;
-
-	if (atomic_inc_return(&nmi_running) & MOD_CODE_WRITE_FLAG) {
-		smp_rmb();
+	atomic_inc(&in_nmi);
+	/* Must have in_nmi seen before reading write flag */
+	smp_mb();
+	if (mod_code_write) {
 		ftrace_mod_code();
 		atomic_inc(&nmi_update_count);
 	}
-	/* Must have previous changes seen before executions */
-	smp_mb();
 }
 
 void ftrace_nmi_exit(void)
 {
-	if (!__get_cpu_var(save_modifying_code))
-		return;
-
-	/* Finish all executions before clearing nmi_running */
-	smp_mb();
-	atomic_dec(&nmi_running);
-}
-
-static void wait_for_nmi_and_set_mod_flag(void)
-{
-	if (!atomic_cmpxchg(&nmi_running, 0, MOD_CODE_WRITE_FLAG))
-		return;
-
-	do {
-		cpu_relax();
-	} while (atomic_cmpxchg(&nmi_running, 0, MOD_CODE_WRITE_FLAG));
-
-	nmi_wait_count++;
+	/* Finish all executions before clearing in_nmi */
+	smp_wmb();
+	atomic_dec(&in_nmi);
 }
 
 static void wait_for_nmi(void)
 {
-	if (!atomic_read(&nmi_running))
-		return;
+	int waited = 0;
 
-	do {
+	while (atomic_read(&in_nmi)) {
+		waited = 1;
 		cpu_relax();
-	} while (atomic_read(&nmi_running));
+	}
 
-	nmi_wait_count++;
-}
-
-static inline int
-within(unsigned long addr, unsigned long start, unsigned long end)
-{
-	return addr >= start && addr < end;
+	if (waited)
+		nmi_wait_count++;
 }
 
 static int
 do_ftrace_mod_code(unsigned long ip, void *new_code)
 {
-	/*
-	 * On x86_64, kernel text mappings are mapped read-only with
-	 * CONFIG_DEBUG_RODATA. So we use the kernel identity mapping instead
-	 * of the kernel text mapping to modify the kernel text.
-	 *
-	 * For 32bit kernels, these mappings are same and we can use
-	 * kernel identity mapping to modify code.
-	 */
-	if (within(ip, (unsigned long)_text, (unsigned long)_etext))
-		ip = (unsigned long)__va(__pa(ip));
-
 	mod_code_ip = (void *)ip;
 	mod_code_newcode = new_code;
 
 	/* The buffers need to be visible before we let NMIs write them */
+	smp_wmb();
+
+	mod_code_write = 1;
+
+	/* Make sure write bit is visible before we wait on NMIs */
 	smp_mb();
 
-	wait_for_nmi_and_set_mod_flag();
+	wait_for_nmi();
 
 	/* Make sure all running NMIs have finished before we write the code */
 	smp_mb();
@@ -249,9 +166,13 @@ do_ftrace_mod_code(unsigned long ip, void *new_code)
 	ftrace_mod_code();
 
 	/* Make sure the write happens before clearing the bit */
+	smp_wmb();
+
+	mod_code_write = 0;
+
+	/* make sure NMIs see the cleared bit */
 	smp_mb();
 
-	clear_mod_flag();
 	wait_for_nmi();
 
 	return mod_code_status;
@@ -381,15 +302,15 @@ int __init ftrace_dyn_arch_init(void *data)
 
 	switch (faulted) {
 	case 0:
-		pr_info("converting mcount calls to 0f 1f 44 00 00\n");
+		pr_info("ftrace: converting mcount calls to 0f 1f 44 00 00\n");
 		memcpy(ftrace_nop, ftrace_test_p6nop, MCOUNT_INSN_SIZE);
 		break;
 	case 1:
-		pr_info("converting mcount calls to 66 66 66 66 90\n");
+		pr_info("ftrace: converting mcount calls to 66 66 66 66 90\n");
 		memcpy(ftrace_nop, ftrace_test_nop5, MCOUNT_INSN_SIZE);
 		break;
 	case 2:
-		pr_info("converting mcount calls to jmp . + 5\n");
+		pr_info("ftrace: converting mcount calls to jmp . + 5\n");
 		memcpy(ftrace_nop, ftrace_test_jmp, MCOUNT_INSN_SIZE);
 		break;
 	}
@@ -447,20 +368,116 @@ int ftrace_disable_ftrace_graph_caller(void)
 	return ftrace_mod_jmp(ip, old_offset, new_offset);
 }
 
+#else /* CONFIG_DYNAMIC_FTRACE */
+
+/*
+ * These functions are picked from those used on
+ * this page for dynamic ftrace. They have been
+ * simplified to ignore all traces in NMI context.
+ */
+static atomic_t in_nmi;
+
+void ftrace_nmi_enter(void)
+{
+	atomic_inc(&in_nmi);
+}
+
+void ftrace_nmi_exit(void)
+{
+	atomic_dec(&in_nmi);
+}
+
 #endif /* !CONFIG_DYNAMIC_FTRACE */
+
+/* Add a function return address to the trace stack on thread info.*/
+static int push_return_trace(unsigned long ret, unsigned long long time,
+				unsigned long func, int *depth)
+{
+	int index;
+
+	if (!current->ret_stack)
+		return -EBUSY;
+
+	/* The return trace stack is full */
+	if (current->curr_ret_stack == FTRACE_RETFUNC_DEPTH - 1) {
+		atomic_inc(&current->trace_overrun);
+		return -EBUSY;
+	}
+
+	index = ++current->curr_ret_stack;
+	barrier();
+	current->ret_stack[index].ret = ret;
+	current->ret_stack[index].func = func;
+	current->ret_stack[index].calltime = time;
+	*depth = index;
+
+	return 0;
+}
+
+/* Retrieve a function return address to the trace stack on thread info.*/
+static void pop_return_trace(struct ftrace_graph_ret *trace, unsigned long *ret)
+{
+	int index;
+
+	index = current->curr_ret_stack;
+
+	if (unlikely(index < 0)) {
+		ftrace_graph_stop();
+		WARN_ON(1);
+		/* Might as well panic, otherwise we have no where to go */
+		*ret = (unsigned long)panic;
+		return;
+	}
+
+	*ret = current->ret_stack[index].ret;
+	trace->func = current->ret_stack[index].func;
+	trace->calltime = current->ret_stack[index].calltime;
+	trace->overrun = atomic_read(&current->trace_overrun);
+	trace->depth = index;
+	barrier();
+	current->curr_ret_stack--;
+
+}
+
+/*
+ * Send the trace to the ring-buffer.
+ * @return the original return address.
+ */
+unsigned long ftrace_return_to_handler(void)
+{
+	struct ftrace_graph_ret trace;
+	unsigned long ret;
+
+	pop_return_trace(&trace, &ret);
+	trace.rettime = cpu_clock(raw_smp_processor_id());
+	ftrace_graph_return(&trace);
+
+	if (unlikely(!ret)) {
+		ftrace_graph_stop();
+		WARN_ON(1);
+		/* Might as well panic. What else to do? */
+		ret = (unsigned long)panic;
+	}
+
+	return ret;
+}
 
 /*
  * Hook the return address and push it in the stack of return addrs
  * in current thread info.
  */
-void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr,
-			   unsigned long frame_pointer)
+void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr)
 {
 	unsigned long old;
+	unsigned long long calltime;
 	int faulted;
 	struct ftrace_graph_ent trace;
 	unsigned long return_hooker = (unsigned long)
 				&return_to_handler;
+
+	/* Nmi's are currently unsupported */
+	if (unlikely(atomic_read(&in_nmi)))
+		return;
 
 	if (unlikely(atomic_read(&current->tracing_graph_pause)))
 		return;
@@ -484,7 +501,7 @@ void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr,
 		_ASM_EXTABLE(1b, 4b)
 		_ASM_EXTABLE(2b, 4b)
 
-		: [old] "=&r" (old), [faulted] "=r" (faulted)
+		: [old] "=r" (old), [faulted] "=r" (faulted)
 		: [parent] "r" (parent), [return_hooker] "r" (return_hooker)
 		: "memory"
 	);
@@ -495,8 +512,17 @@ void prepare_ftrace_return(unsigned long *parent, unsigned long self_addr,
 		return;
 	}
 
-	if (ftrace_push_return_trace(old, self_addr, &trace.depth,
-		    frame_pointer) == -EBUSY) {
+	if (unlikely(!__kernel_text_address(old))) {
+		ftrace_graph_stop();
+		*parent = old;
+		WARN_ON(1);
+		return;
+	}
+
+	calltime = cpu_clock(raw_smp_processor_id());
+
+	if (push_return_trace(old, calltime,
+				self_addr, &trace.depth) == -EBUSY) {
 		*parent = old;
 		return;
 	}

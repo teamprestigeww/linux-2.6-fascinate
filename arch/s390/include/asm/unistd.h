@@ -265,14 +265,7 @@
 #define __NR_pipe2		325
 #define __NR_dup3		326
 #define __NR_epoll_create1	327
-#define	__NR_preadv		328
-#define	__NR_pwritev		329
-#define __NR_rt_tgsigqueueinfo	330
-#define __NR_perf_event_open	331
-#define __NR_fanotify_init	332
-#define __NR_fanotify_mark	333
-#define __NR_prlimit64		334
-#define NR_syscalls 335
+#define NR_syscalls 328
 
 /* 
  * There are some system calls that are not present on 64 bit, some
@@ -379,9 +372,6 @@
 #define __IGNORE_migrate_pages
 #define __IGNORE_move_pages
 
-/* Ignore system calls that are also reachable via sys_socket */
-#define __IGNORE_recvmmsg
-
 #define __ARCH_WANT_IPC_PARSE_VERSION
 #define __ARCH_WANT_OLD_READDIR
 #define __ARCH_WANT_SYS_ALARM
@@ -395,7 +385,6 @@
 #define __ARCH_WANT_SYS_LLSEEK
 #define __ARCH_WANT_SYS_NICE
 #define __ARCH_WANT_SYS_OLD_GETRLIMIT
-#define __ARCH_WANT_SYS_OLD_MMAP
 #define __ARCH_WANT_SYS_OLDUMOUNT
 #define __ARCH_WANT_SYS_SIGPENDING
 #define __ARCH_WANT_SYS_SIGPROCMASK

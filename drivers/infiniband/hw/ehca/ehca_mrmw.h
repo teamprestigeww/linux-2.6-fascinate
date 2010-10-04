@@ -42,11 +42,6 @@
 #ifndef _EHCA_MRMW_H_
 #define _EHCA_MRMW_H_
 
-enum ehca_reg_type {
-	EHCA_REG_MR,
-	EHCA_REG_BUSMAP_MR
-};
-
 int ehca_reg_mr(struct ehca_shca *shca,
 		struct ehca_mr *e_mr,
 		u64 *iova_start,
@@ -55,8 +50,7 @@ int ehca_reg_mr(struct ehca_shca *shca,
 		struct ehca_pd *e_pd,
 		struct ehca_mr_pginfo *pginfo,
 		u32 *lkey,
-		u32 *rkey,
-		enum ehca_reg_type reg_type);
+		u32 *rkey);
 
 int ehca_reg_mr_rpages(struct ehca_shca *shca,
 		       struct ehca_mr *e_mr,
@@ -124,9 +118,4 @@ void ehca_mrmw_reverse_map_acl(const u32 *hipz_acl,
 
 void ehca_mr_deletenew(struct ehca_mr *mr);
 
-int ehca_create_busmap(void);
-
-void ehca_destroy_busmap(void);
-
-extern struct ib_dma_mapping_ops ehca_dma_mapping_ops;
 #endif  /*_EHCA_MRMW_H_*/

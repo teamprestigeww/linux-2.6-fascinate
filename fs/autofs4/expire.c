@@ -27,7 +27,7 @@ static inline int autofs4_can_expire(struct dentry *dentry,
 		return 0;
 
 	/* No point expiring a pending mount */
-	if (ino->flags & AUTOFS_INF_PENDING)
+	if (dentry->d_flags & DCACHE_AUTOFS_PENDING)
 		return 0;
 
 	if (!do_now) {
@@ -48,19 +48,19 @@ static inline int autofs4_can_expire(struct dentry *dentry,
 static int autofs4_mount_busy(struct vfsmount *mnt, struct dentry *dentry)
 {
 	struct dentry *top = dentry;
-	struct path path = {.mnt = mnt, .dentry = dentry};
 	int status = 1;
 
 	DPRINTK("dentry %p %.*s",
 		dentry, (int)dentry->d_name.len, dentry->d_name.name);
 
-	path_get(&path);
+	mntget(mnt);
+	dget(dentry);
 
-	if (!follow_down(&path))
+	if (!follow_down(&mnt, &dentry))
 		goto done;
 
-	if (is_autofs4_dentry(path.dentry)) {
-		struct autofs_sb_info *sbi = autofs4_sbi(path.dentry->d_sb);
+	if (is_autofs4_dentry(dentry)) {
+		struct autofs_sb_info *sbi = autofs4_sbi(dentry->d_sb);
 
 		/* This is an autofs submount, we can't expire it */
 		if (autofs_type_indirect(sbi->type))
@@ -70,14 +70,12 @@ static int autofs4_mount_busy(struct vfsmount *mnt, struct dentry *dentry)
 		 * Otherwise it's an offset mount and we need to check
 		 * if we can umount its mount, if there is one.
 		 */
-		if (!d_mountpoint(path.dentry)) {
-			status = 0;
+		if (!d_mountpoint(dentry))
 			goto done;
-		}
 	}
 
 	/* Update the expiry counter if fs is busy */
-	if (!may_umount_tree(path.mnt)) {
+	if (!may_umount_tree(mnt)) {
 		struct autofs_info *ino = autofs4_dentry_ino(top);
 		ino->last_used = jiffies;
 		goto done;
@@ -86,7 +84,8 @@ static int autofs4_mount_busy(struct vfsmount *mnt, struct dentry *dentry)
 	status = 0;
 done:
 	DPRINTK("returning = %d", status);
-	path_put(&path);
+	dput(dentry);
+	mntput(mnt);
 	return status;
 }
 
@@ -479,16 +478,22 @@ int autofs4_expire_run(struct super_block *sb,
 	return ret;
 }
 
-int autofs4_do_expire_multi(struct super_block *sb, struct vfsmount *mnt,
-			    struct autofs_sb_info *sbi, int when)
+/* Call repeatedly until it returns -EAGAIN, meaning there's nothing
+   more to be done */
+int autofs4_expire_multi(struct super_block *sb, struct vfsmount *mnt,
+			struct autofs_sb_info *sbi, int __user *arg)
 {
 	struct dentry *dentry;
 	int ret = -EAGAIN;
+	int do_now = 0;
+
+	if (arg && get_user(do_now, arg))
+		return -EFAULT;
 
 	if (autofs_type_trigger(sbi->type))
-		dentry = autofs4_expire_direct(sb, mnt, sbi, when);
+		dentry = autofs4_expire_direct(sb, mnt, sbi, do_now);
 	else
-		dentry = autofs4_expire_indirect(sb, mnt, sbi, when);
+		dentry = autofs4_expire_indirect(sb, mnt, sbi, do_now);
 
 	if (dentry) {
 		struct autofs_info *ino = autofs4_dentry_ino(dentry);
@@ -509,18 +514,5 @@ int autofs4_do_expire_multi(struct super_block *sb, struct vfsmount *mnt,
 	}
 
 	return ret;
-}
-
-/* Call repeatedly until it returns -EAGAIN, meaning there's nothing
-   more to be done */
-int autofs4_expire_multi(struct super_block *sb, struct vfsmount *mnt,
-			struct autofs_sb_info *sbi, int __user *arg)
-{
-	int do_now = 0;
-
-	if (arg && get_user(do_now, arg))
-		return -EFAULT;
-
-	return autofs4_do_expire_multi(sb, mnt, sbi, do_now);
 }
 

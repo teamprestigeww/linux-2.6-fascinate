@@ -1,6 +1,6 @@
 /* AFS client file system
  *
- * Copyright (C) 2002,5 Red Hat, Inc. All Rights Reserved.
+ * Copyright (C) 2002 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
  *
  * This program is free software; you can redistribute it and/or
@@ -28,6 +28,18 @@ static char *rootcell;
 
 module_param(rootcell, charp, 0);
 MODULE_PARM_DESC(rootcell, "root AFS cell name and VL server IP addr list");
+
+#ifdef AFS_CACHING_SUPPORT
+static struct cachefs_netfs_operations afs_cache_ops = {
+	.get_page_cookie	= afs_cache_get_page_cookie,
+};
+
+struct cachefs_netfs afs_cache_netfs = {
+	.name			= "afs",
+	.version		= 0,
+	.ops			= &afs_cache_ops,
+};
+#endif
 
 struct afs_uuid afs_uuid;
 
@@ -92,9 +104,10 @@ static int __init afs_init(void)
 	if (ret < 0)
 		return ret;
 
-#ifdef CONFIG_AFS_FSCACHE
+#ifdef AFS_CACHING_SUPPORT
 	/* we want to be able to cache */
-	ret = fscache_register_netfs(&afs_cache_netfs);
+	ret = cachefs_register_netfs(&afs_cache_netfs,
+				     &afs_cache_cell_index_def);
 	if (ret < 0)
 		goto error_cache;
 #endif
@@ -111,8 +124,6 @@ static int __init afs_init(void)
 
 	/* initialise the callback update process */
 	ret = afs_callback_update_init();
-	if (ret < 0)
-		goto error_callback_update_init;
 
 	/* create the RxRPC transport */
 	ret = afs_open_socket();
@@ -129,16 +140,15 @@ static int __init afs_init(void)
 error_fs:
 	afs_close_socket();
 error_open_socket:
-	afs_callback_update_kill();
-error_callback_update_init:
-	afs_vlocation_purge();
 error_vl_update_init:
-	afs_cell_purge();
 error_cell_init:
-#ifdef CONFIG_AFS_FSCACHE
-	fscache_unregister_netfs(&afs_cache_netfs);
+#ifdef AFS_CACHING_SUPPORT
+	cachefs_unregister_netfs(&afs_cache_netfs);
 error_cache:
 #endif
+	afs_callback_update_kill();
+	afs_vlocation_purge();
+	afs_cell_purge();
 	afs_proc_cleanup();
 	rcu_barrier();
 	printk(KERN_ERR "kAFS: failed to register: %d\n", ret);
@@ -165,8 +175,8 @@ static void __exit afs_exit(void)
 	afs_vlocation_purge();
 	flush_scheduled_work();
 	afs_cell_purge();
-#ifdef CONFIG_AFS_FSCACHE
-	fscache_unregister_netfs(&afs_cache_netfs);
+#ifdef AFS_CACHING_SUPPORT
+	cachefs_unregister_netfs(&afs_cache_netfs);
 #endif
 	afs_proc_cleanup();
 	rcu_barrier();

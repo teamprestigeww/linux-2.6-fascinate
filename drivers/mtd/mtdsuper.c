@@ -1,8 +1,6 @@
 /* MTD-based superblock management
  *
  * Copyright © 2001-2007 Red Hat, Inc. All Rights Reserved.
- * Copyright © 2001-2010 David Woodhouse <dwmw2@infradead.org>
- *
  * Written by:  David Howells <dhowells@redhat.com>
  *              David Woodhouse <dwmw2@infradead.org>
  *
@@ -15,7 +13,6 @@
 #include <linux/mtd/super.h>
 #include <linux/namei.h>
 #include <linux/ctype.h>
-#include <linux/slab.h>
 
 /*
  * compare superblocks to see if they're equivalent
@@ -47,7 +44,6 @@ static int get_sb_mtd_set(struct super_block *sb, void *_mtd)
 
 	sb->s_mtd = mtd;
 	sb->s_dev = MKDEV(MTD_BLOCK_MAJOR, mtd->index);
-	sb->s_bdi = mtd->backing_dev_info;
 	return 0;
 }
 
@@ -78,22 +74,20 @@ static int get_sb_mtd_aux(struct file_system_type *fs_type, int flags,
 
 	ret = fill_super(sb, data, flags & MS_SILENT ? 1 : 0);
 	if (ret < 0) {
-		deactivate_locked_super(sb);
+		up_write(&sb->s_umount);
+		deactivate_super(sb);
 		return ret;
 	}
 
 	/* go */
 	sb->s_flags |= MS_ACTIVE;
-	simple_set_mnt(mnt, sb);
-
-	return 0;
+	return simple_set_mnt(mnt, sb);
 
 	/* new mountpoint for an already mounted superblock */
 already_mounted:
 	DEBUG(1, "MTDSB: Device %d (\"%s\") is already mounted\n",
 	      mtd->index, mtd->name);
-	simple_set_mnt(mnt, sb);
-	ret = 0;
+	ret = simple_set_mnt(mnt, sb);
 	goto out_put;
 
 out_error:
@@ -154,12 +148,18 @@ int get_sb_mtd(struct file_system_type *fs_type, int flags,
 			DEBUG(1, "MTDSB: mtd:%%s, name \"%s\"\n",
 			      dev_name + 4);
 
-			mtd = get_mtd_device_nm(dev_name + 4);
-			if (!IS_ERR(mtd))
-				return get_sb_mtd_aux(
-					fs_type, flags,
-					dev_name, data, mtd,
-					fill_super, mnt);
+			for (mtdnr = 0; mtdnr < MAX_MTD_DEVICES; mtdnr++) {
+				mtd = get_mtd_device(NULL, mtdnr);
+				if (!IS_ERR(mtd)) {
+					if (!strcmp(mtd->name, dev_name + 4))
+						return get_sb_mtd_aux(
+							fs_type, flags,
+							dev_name, data, mtd,
+							fill_super, mnt);
+
+					put_mtd_device(mtd);
+				}
+			}
 
 			printk(KERN_NOTICE "MTD:"
 			       " MTD device with name \"%s\" not found.\n",

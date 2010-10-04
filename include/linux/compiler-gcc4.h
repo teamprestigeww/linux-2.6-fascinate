@@ -3,10 +3,8 @@
 #endif
 
 /* GCC 4.1.[01] miscompiles __weak */
-#ifdef __KERNEL__
-# if __GNUC_MINOR__ == 1 && __GNUC_PATCHLEVEL__ <= 1
-#  error Your version of gcc miscompiles the __weak directive
-# endif
+#if __GNUC_MINOR__ == 1 && __GNUC_PATCHLEVEL__ <= 1
+# error Your version of gcc miscompiles the __weak directive
 #endif
 
 #define __used			__attribute__((__used__))
@@ -36,30 +34,4 @@
    the kernel context */
 #define __cold			__attribute__((__cold__))
 
-
-#if __GNUC_MINOR__ >= 5
-/*
- * Mark a position in code as unreachable.  This can be used to
- * suppress control flow warnings after asm blocks that transfer
- * control elsewhere.
- *
- * Early snapshots of gcc 4.5 don't support this and we can't detect
- * this in the preprocessor, but we can live with this because they're
- * unreleased.  Really, we need to have autoconf for the kernel.
- */
-#define unreachable() __builtin_unreachable()
-
-/* Mark a function definition as prohibited from being cloned. */
-#define __noclone	__attribute__((__noclone__))
-
-#endif
-
-#endif
-
-#if __GNUC_MINOR__ > 0
-#define __compiletime_object_size(obj) __builtin_object_size(obj, 0)
-#endif
-#if __GNUC_MINOR__ >= 4
-#define __compiletime_warning(message) __attribute__((warning(message)))
-#define __compiletime_error(message) __attribute__((error(message)))
 #endif

@@ -158,6 +158,7 @@
 #include <linux/in.h>
 #include <linux/fcntl.h>
 #include <linux/ptrace.h>
+#include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
@@ -183,8 +184,7 @@
 
 #include "z8530.h"
 
-static const char banner[] __initdata = KERN_INFO \
-	"AX.25: Z8530 SCC driver version "VERSION".dl1bke\n";
+static char banner[] __initdata = KERN_INFO "AX.25: Z8530 SCC driver version "VERSION".dl1bke\n";
 
 static void t_dwait(unsigned long);
 static void t_txdelay(unsigned long);
@@ -208,8 +208,7 @@ static void scc_net_setup(struct net_device *dev);
 static int scc_net_open(struct net_device *dev);
 static int scc_net_close(struct net_device *dev);
 static void scc_net_rx(struct scc_channel *scc, struct sk_buff *skb);
-static netdev_tx_t scc_net_tx(struct sk_buff *skb,
-			      struct net_device *dev);
+static int scc_net_tx(struct sk_buff *skb, struct net_device *dev);
 static int scc_net_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
 static int scc_net_set_mac_address(struct net_device *dev, void *addr);
 static struct net_device_stats * scc_net_get_stats(struct net_device *dev);
@@ -1543,23 +1542,22 @@ static int scc_net_alloc(const char *name, struct scc_channel *scc)
 /* *			    Network driver methods		      * */
 /* ******************************************************************** */
 
-static const struct net_device_ops scc_netdev_ops = {
-	.ndo_open            = scc_net_open,
-	.ndo_stop	     = scc_net_close,
-	.ndo_start_xmit	     = scc_net_tx,
-	.ndo_set_mac_address = scc_net_set_mac_address,
-	.ndo_get_stats       = scc_net_get_stats,
-	.ndo_do_ioctl        = scc_net_ioctl,
-};
-
 /* ----> Initialize device <----- */
 
 static void scc_net_setup(struct net_device *dev)
 {
 	dev->tx_queue_len    = 16;	/* should be enough... */
 
-	dev->netdev_ops	     = &scc_netdev_ops;
+	dev->open            = scc_net_open;
+	dev->stop	     = scc_net_close;
+
+	dev->hard_start_xmit = scc_net_tx;
 	dev->header_ops      = &ax25_header_ops;
+
+	dev->set_mac_address = scc_net_set_mac_address;
+	dev->get_stats       = scc_net_get_stats;
+	dev->do_ioctl        = scc_net_ioctl;
+	dev->tx_timeout      = NULL;
 
 	memcpy(dev->broadcast, &ax25_bcast,  AX25_ADDR_LEN);
 	memcpy(dev->dev_addr,  &ax25_defaddr, AX25_ADDR_LEN);
@@ -1629,11 +1627,12 @@ static void scc_net_rx(struct scc_channel *scc, struct sk_buff *skb)
 	skb->protocol = ax25_type_trans(skb, scc->dev);
 	
 	netif_rx(skb);
+	return;
 }
 
 /* ----> transmit frame <---- */
 
-static netdev_tx_t scc_net_tx(struct sk_buff *skb, struct net_device *dev)
+static int scc_net_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct scc_channel *scc = (struct scc_channel *) dev->ml_priv;
 	unsigned long flags;
@@ -1642,7 +1641,7 @@ static netdev_tx_t scc_net_tx(struct sk_buff *skb, struct net_device *dev)
 	if (skb->len > scc->stat.bufsize || skb->len < 2) {
 		scc->dev_stat.tx_dropped++;	/* bogus frame */
 		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;
+		return 0;
 	}
 	
 	scc->dev_stat.tx_packets++;
@@ -1655,7 +1654,7 @@ static netdev_tx_t scc_net_tx(struct sk_buff *skb, struct net_device *dev)
 	if (kisscmd) {
 		scc_set_param(scc, kisscmd, *skb->data);
 		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;
+		return 0;
 	}
 
 	spin_lock_irqsave(&scc->lock, flags);
@@ -1683,7 +1682,7 @@ static netdev_tx_t scc_net_tx(struct sk_buff *skb, struct net_device *dev)
 			__scc_start_tx_timer(scc, t_dwait, 0);
 	}
 	spin_unlock_irqrestore(&scc->lock, flags);
-	return NETDEV_TX_OK;
+	return 0;
 }
 
 /* ----> ioctl functions <---- */
@@ -2074,7 +2073,7 @@ static int scc_net_seq_show(struct seq_file *seq, void *v)
         return 0;
 }
 
-static const struct seq_operations scc_net_seq_ops = {
+static struct seq_operations scc_net_seq_ops = {
 	.start  = scc_net_seq_start,
 	.next   = scc_net_seq_next,
 	.stop   = scc_net_seq_stop,

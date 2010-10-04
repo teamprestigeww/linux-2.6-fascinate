@@ -22,6 +22,7 @@
 #include <linux/spinlock.h>
 #include <linux/smp.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/kernel_stat.h>
 
 #include <asm/errno.h>
@@ -49,7 +50,7 @@ static void enable_sb1250_irq(unsigned int irq);
 static void disable_sb1250_irq(unsigned int irq);
 static void ack_sb1250_irq(unsigned int irq);
 #ifdef CONFIG_SMP
-static int sb1250_set_affinity(unsigned int irq, const struct cpumask *mask);
+static void sb1250_set_affinity(unsigned int irq, const struct cpumask *mask);
 #endif
 
 #ifdef CONFIG_SIBYTE_HAS_LDT
@@ -71,20 +72,20 @@ static struct irq_chip sb1250_irq_type = {
 /* Store the CPU id (not the logical number) */
 int sb1250_irq_owner[SB1250_NR_IRQS];
 
-static DEFINE_RAW_SPINLOCK(sb1250_imr_lock);
+DEFINE_SPINLOCK(sb1250_imr_lock);
 
 void sb1250_mask_irq(int cpu, int irq)
 {
 	unsigned long flags;
 	u64 cur_ints;
 
-	raw_spin_lock_irqsave(&sb1250_imr_lock, flags);
+	spin_lock_irqsave(&sb1250_imr_lock, flags);
 	cur_ints = ____raw_readq(IOADDR(A_IMR_MAPPER(cpu) +
 					R_IMR_INTERRUPT_MASK));
 	cur_ints |= (((u64) 1) << irq);
 	____raw_writeq(cur_ints, IOADDR(A_IMR_MAPPER(cpu) +
 					R_IMR_INTERRUPT_MASK));
-	raw_spin_unlock_irqrestore(&sb1250_imr_lock, flags);
+	spin_unlock_irqrestore(&sb1250_imr_lock, flags);
 }
 
 void sb1250_unmask_irq(int cpu, int irq)
@@ -92,29 +93,36 @@ void sb1250_unmask_irq(int cpu, int irq)
 	unsigned long flags;
 	u64 cur_ints;
 
-	raw_spin_lock_irqsave(&sb1250_imr_lock, flags);
+	spin_lock_irqsave(&sb1250_imr_lock, flags);
 	cur_ints = ____raw_readq(IOADDR(A_IMR_MAPPER(cpu) +
 					R_IMR_INTERRUPT_MASK));
 	cur_ints &= ~(((u64) 1) << irq);
 	____raw_writeq(cur_ints, IOADDR(A_IMR_MAPPER(cpu) +
 					R_IMR_INTERRUPT_MASK));
-	raw_spin_unlock_irqrestore(&sb1250_imr_lock, flags);
+	spin_unlock_irqrestore(&sb1250_imr_lock, flags);
 }
 
 #ifdef CONFIG_SMP
-static int sb1250_set_affinity(unsigned int irq, const struct cpumask *mask)
+static void sb1250_set_affinity(unsigned int irq, const struct cpumask *mask)
 {
 	int i = 0, old_cpu, cpu, int_on;
 	u64 cur_ints;
+	struct irq_desc *desc = irq_desc + irq;
 	unsigned long flags;
 
 	i = cpumask_first(mask);
+
+	if (cpumask_weight(mask) > 1) {
+		printk("attempted to set irq affinity for irq %d to multiple CPUs\n", irq);
+		return;
+	}
 
 	/* Convert logical CPU to physical CPU */
 	cpu = cpu_logical_map(i);
 
 	/* Protect against other affinity changers and IMR manipulation */
-	raw_spin_lock_irqsave(&sb1250_imr_lock, flags);
+	spin_lock_irqsave(&desc->lock, flags);
+	spin_lock(&sb1250_imr_lock);
 
 	/* Swizzle each CPU's IMR (but leave the IP selection alone) */
 	old_cpu = sb1250_irq_owner[irq];
@@ -136,9 +144,8 @@ static int sb1250_set_affinity(unsigned int irq, const struct cpumask *mask)
 		____raw_writeq(cur_ints, IOADDR(A_IMR_MAPPER(cpu) +
 					R_IMR_INTERRUPT_MASK));
 	}
-	raw_spin_unlock_irqrestore(&sb1250_imr_lock, flags);
-
-	return 0;
+	spin_unlock(&sb1250_imr_lock);
+	spin_unlock_irqrestore(&desc->lock, flags);
 }
 #endif
 
@@ -213,7 +220,7 @@ void __init init_sb1250_irqs(void)
 	int i;
 
 	for (i = 0; i < SB1250_NR_IRQS; i++) {
-		set_irq_chip_and_handler(i, &sb1250_irq_type, handle_level_irq);
+		set_irq_chip(i, &sb1250_irq_type);
 		sb1250_irq_owner[i] = 0;
 	}
 }
@@ -236,7 +243,7 @@ void __init init_sb1250_irqs(void)
  * On the second cpu, everything is set to IP5, which is
  * ignored, EXCEPT the mailbox interrupt.  That one is
  * set to IP[2] so it is handled.  This is needed so we
- * can do cross-cpu function calls, as required by SMP
+ * can do cross-cpu function calls, as requred by SMP
  */
 
 #define IMR_IP2_VAL	K_INT_MAP_I0

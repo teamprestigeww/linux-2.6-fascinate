@@ -73,18 +73,17 @@ static const char * const boot_msg =
 
 /* Include files */
 
-#include <linux/capability.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
+#include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
 #include <linux/netdevice.h>
 #include <linux/fddidevice.h>
 #include <linux/skbuff.h>
 #include <linux/bitops.h>
-#include <linux/gfp.h>
 
 #include <asm/byteorder.h>
 #include <asm/io.h>
@@ -108,8 +107,7 @@ static void skfp_ctl_set_multicast_list(struct net_device *dev);
 static void skfp_ctl_set_multicast_list_wo_lock(struct net_device *dev);
 static int skfp_ctl_set_mac_address(struct net_device *dev, void *addr);
 static int skfp_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
-static netdev_tx_t skfp_send_pkt(struct sk_buff *skb,
-				       struct net_device *dev);
+static int skfp_send_pkt(struct sk_buff *skb, struct net_device *dev);
 static void send_queued_packets(struct s_smc *smc);
 static void CheckSourceAddress(unsigned char *frame, unsigned char *hw_addr);
 static void ResetAdapter(struct s_smc *smc);
@@ -137,11 +135,14 @@ void dump_data(unsigned char *Data, int length);
 
 // External functions from the hardware module
 extern u_int mac_drv_check_space(void);
+extern void read_address(struct s_smc *smc, u_char * mac_addr);
+extern void card_stop(struct s_smc *smc);
 extern int mac_drv_init(struct s_smc *smc);
 extern void hwm_tx_frag(struct s_smc *smc, char far * virt, u_long phys,
 			int len, int frame_status);
 extern int hwm_tx_init(struct s_smc *smc, u_char fc, int frag_count,
 		       int frame_len, int frame_status);
+extern int init_smt(struct s_smc *smc, u_char * mac_addr);
 extern void fddi_isr(struct s_smc *smc);
 extern void hwm_rx_frag(struct s_smc *smc, char far * virt, u_long phys,
 			int len, int frame_status);
@@ -149,7 +150,7 @@ extern void mac_drv_rx_mode(struct s_smc *smc, int mode);
 extern void mac_drv_clear_rx_queue(struct s_smc *smc);
 extern void enable_tx_irq(struct s_smc *smc, u_short queue);
 
-static DEFINE_PCI_DEVICE_TABLE(skfddi_pci_tbl) = {
+static struct pci_device_id skfddi_pci_tbl[] = {
 	{ PCI_VENDOR_ID_SK, PCI_DEVICE_ID_SK_FP, PCI_ANY_ID, PCI_ANY_ID, },
 	{ }			/* Terminating entry */
 };
@@ -160,6 +161,12 @@ MODULE_AUTHOR("Mirko Lindner <mlindner@syskonnect.de>");
 // Define module-wide (static) variables
 
 static int num_boards;	/* total number of adapters configured */
+
+#ifdef DRIVERDEBUG
+#define PRINTK(s, args...) printk(s, ## args)
+#else
+#define PRINTK(s, args...)
+#endif				// DRIVERDEBUG
 
 static const struct net_device_ops skfp_netdev_ops = {
 	.ndo_open		= skfp_open,
@@ -209,7 +216,7 @@ static int skfp_init_one(struct pci_dev *pdev,
 	void __iomem *mem;
 	int err;
 
-	pr_debug(KERN_INFO "entering skfp_init_one\n");
+	PRINTK(KERN_INFO "entering skfp_init_one\n");
 
 	if (num_boards == 0) 
 		printk("%s\n", boot_msg);
@@ -385,7 +392,7 @@ static  int skfp_driver_init(struct net_device *dev)
 	skfddi_priv *bp = &smc->os;
 	int err = -EIO;
 
-	pr_debug(KERN_INFO "entering skfp_driver_init\n");
+	PRINTK(KERN_INFO "entering skfp_driver_init\n");
 
 	// set the io address in private structures
 	bp->base_addr = dev->base_addr;
@@ -405,7 +412,7 @@ static  int skfp_driver_init(struct net_device *dev)
 
 	// Determine the required size of the 'shared' memory area.
 	bp->SharedMemSize = mac_drv_check_space();
-	pr_debug(KERN_INFO "Memory for HWM: %ld\n", bp->SharedMemSize);
+	PRINTK(KERN_INFO "Memory for HWM: %ld\n", bp->SharedMemSize);
 	if (bp->SharedMemSize > 0) {
 		bp->SharedMemSize += 16;	// for descriptor alignment
 
@@ -429,13 +436,19 @@ static  int skfp_driver_init(struct net_device *dev)
 
 	card_stop(smc);		// Reset adapter.
 
-	pr_debug(KERN_INFO "mac_drv_init()..\n");
+	PRINTK(KERN_INFO "mac_drv_init()..\n");
 	if (mac_drv_init(smc) != 0) {
-		pr_debug(KERN_INFO "mac_drv_init() failed.\n");
+		PRINTK(KERN_INFO "mac_drv_init() failed.\n");
 		goto fail;
 	}
 	read_address(smc, NULL);
-	pr_debug(KERN_INFO "HW-Addr: %pMF\n", smc->hw.fddi_canon_addr.a);
+	PRINTK(KERN_INFO "HW-Addr: %02x %02x %02x %02x %02x %02x\n",
+	       smc->hw.fddi_canon_addr.a[0],
+	       smc->hw.fddi_canon_addr.a[1],
+	       smc->hw.fddi_canon_addr.a[2],
+	       smc->hw.fddi_canon_addr.a[3],
+	       smc->hw.fddi_canon_addr.a[4],
+	       smc->hw.fddi_canon_addr.a[5]);
 	memcpy(dev->dev_addr, smc->hw.fddi_canon_addr.a, 6);
 
 	smt_reset_defaults(smc, 0);
@@ -485,7 +498,7 @@ static int skfp_open(struct net_device *dev)
 	struct s_smc *smc = netdev_priv(dev);
 	int err;
 
-	pr_debug(KERN_INFO "entering skfp_open\n");
+	PRINTK(KERN_INFO "entering skfp_open\n");
 	/* Register IRQ - support shared interrupts by passing device ptr */
 	err = request_irq(dev->irq, skfp_interrupt, IRQF_SHARED,
 			  dev->name, dev);
@@ -844,6 +857,7 @@ static void skfp_ctl_set_multicast_list(struct net_device *dev)
 	spin_lock_irqsave(&bp->DriverLock, Flags);
 	skfp_ctl_set_multicast_list_wo_lock(dev);
 	spin_unlock_irqrestore(&bp->DriverLock, Flags);
+	return;
 }				// skfp_ctl_set_multicast_list
 
 
@@ -851,17 +865,18 @@ static void skfp_ctl_set_multicast_list(struct net_device *dev)
 static void skfp_ctl_set_multicast_list_wo_lock(struct net_device *dev)
 {
 	struct s_smc *smc = netdev_priv(dev);
-	struct netdev_hw_addr *ha;
+	struct dev_mc_list *dmi;	/* ptr to multicast addr entry */
+	int i;
 
 	/* Enable promiscuous mode, if necessary */
 	if (dev->flags & IFF_PROMISC) {
 		mac_drv_rx_mode(smc, RX_ENABLE_PROMISC);
-		pr_debug(KERN_INFO "PROMISCUOUS MODE ENABLED\n");
+		PRINTK(KERN_INFO "PROMISCUOUS MODE ENABLED\n");
 	}
 	/* Else, update multicast address table */
 	else {
 		mac_drv_rx_mode(smc, RX_DISABLE_PROMISC);
-		pr_debug(KERN_INFO "PROMISCUOUS MODE DISABLED\n");
+		PRINTK(KERN_INFO "PROMISCUOUS MODE DISABLED\n");
 
 		// Reset all MC addresses
 		mac_clear_multicast(smc);
@@ -869,34 +884,45 @@ static void skfp_ctl_set_multicast_list_wo_lock(struct net_device *dev)
 
 		if (dev->flags & IFF_ALLMULTI) {
 			mac_drv_rx_mode(smc, RX_ENABLE_ALLMULTI);
-			pr_debug(KERN_INFO "ENABLE ALL MC ADDRESSES\n");
-		} else if (!netdev_mc_empty(dev)) {
-			if (netdev_mc_count(dev) <= FPMAX_MULTICAST) {
+			PRINTK(KERN_INFO "ENABLE ALL MC ADDRESSES\n");
+		} else if (dev->mc_count > 0) {
+			if (dev->mc_count <= FPMAX_MULTICAST) {
 				/* use exact filtering */
 
 				// point to first multicast addr
-				netdev_for_each_mc_addr(ha, dev) {
-					mac_add_multicast(smc,
-						(struct fddi_addr *)ha->addr,
-						1);
+				dmi = dev->mc_list;
 
-					pr_debug(KERN_INFO "ENABLE MC ADDRESS: %pMF\n",
-						ha->addr);
-				}
+				for (i = 0; i < dev->mc_count; i++) {
+					mac_add_multicast(smc, 
+							  (struct fddi_addr *)dmi->dmi_addr, 
+							  1);
+
+					PRINTK(KERN_INFO "ENABLE MC ADDRESS:");
+					PRINTK(" %02x %02x %02x ",
+					       dmi->dmi_addr[0],
+					       dmi->dmi_addr[1],
+					       dmi->dmi_addr[2]);
+					PRINTK("%02x %02x %02x\n",
+					       dmi->dmi_addr[3],
+					       dmi->dmi_addr[4],
+					       dmi->dmi_addr[5]);
+					dmi = dmi->next;
+				}	// for
 
 			} else {	// more MC addresses than HW supports
 
 				mac_drv_rx_mode(smc, RX_ENABLE_ALLMULTI);
-				pr_debug(KERN_INFO "ENABLE ALL MC ADDRESSES\n");
+				PRINTK(KERN_INFO "ENABLE ALL MC ADDRESSES\n");
 			}
 		} else {	// no MC addresses
 
-			pr_debug(KERN_INFO "DISABLE ALL MC ADDRESSES\n");
+			PRINTK(KERN_INFO "DISABLE ALL MC ADDRESSES\n");
 		}
 
 		/* Update adapter filters */
 		mac_update_multicast(smc);
 	}
+	return;
 }				// skfp_ctl_set_multicast_list_wo_lock
 
 
@@ -983,7 +1009,7 @@ static int skfp_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 		}
 		break;
 	default:
-		printk("ioctl for %s: unknown cmd: %04x\n", dev->name, ioc.cmd);
+		printk("ioctl for %s: unknow cmd: %04x\n", dev->name, ioc.cmd);
 		status = -EOPNOTSUPP;
 
 	}			// switch
@@ -1039,13 +1065,12 @@ static int skfp_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
  * Side Effects:
  *   None
  */
-static netdev_tx_t skfp_send_pkt(struct sk_buff *skb,
-				       struct net_device *dev)
+static int skfp_send_pkt(struct sk_buff *skb, struct net_device *dev)
 {
 	struct s_smc *smc = netdev_priv(dev);
 	skfddi_priv *bp = &smc->os;
 
-	pr_debug(KERN_INFO "skfp_send_pkt\n");
+	PRINTK(KERN_INFO "skfp_send_pkt\n");
 
 	/*
 	 * Verify that incoming transmit request is OK
@@ -1061,12 +1086,12 @@ static netdev_tx_t skfp_send_pkt(struct sk_buff *skb,
 		// dequeue packets from xmt queue and send them
 		netif_start_queue(dev);
 		dev_kfree_skb(skb);
-		return NETDEV_TX_OK;	/* return "success" */
+		return (0);	/* return "success" */
 	}
 	if (bp->QueueSkb == 0) {	// return with tbusy set: queue full
 
 		netif_stop_queue(dev);
-		return NETDEV_TX_BUSY;
+		return 1;
 	}
 	bp->QueueSkb--;
 	skb_queue_tail(&bp->SendSkbQueue, skb);
@@ -1074,7 +1099,8 @@ static netdev_tx_t skfp_send_pkt(struct sk_buff *skb,
 	if (bp->QueueSkb == 0) {
 		netif_stop_queue(dev);
 	}
-	return NETDEV_TX_OK;
+	dev->trans_start = jiffies;
+	return 0;
 
 }				// skfp_send_pkt
 
@@ -1114,13 +1140,13 @@ static void send_queued_packets(struct s_smc *smc)
 
 	int frame_status;	// HWM tx frame status.
 
-	pr_debug(KERN_INFO "send queued packets\n");
+	PRINTK(KERN_INFO "send queued packets\n");
 	for (;;) {
 		// send first buffer from queue
 		skb = skb_dequeue(&bp->SendSkbQueue);
 
 		if (!skb) {
-			pr_debug(KERN_INFO "queue empty\n");
+			PRINTK(KERN_INFO "queue empty\n");
 			return;
 		}		// queue empty !
 
@@ -1151,11 +1177,11 @@ static void send_queued_packets(struct s_smc *smc)
 
 			if ((frame_status & RING_DOWN) != 0) {
 				// Ring is down.
-				pr_debug("Tx attempt while ring down.\n");
+				PRINTK("Tx attempt while ring down.\n");
 			} else if ((frame_status & OUT_OF_TXD) != 0) {
-				pr_debug("%s: out of TXDs.\n", bp->dev->name);
+				PRINTK("%s: out of TXDs.\n", bp->dev->name);
 			} else {
-				pr_debug("%s: out of transmit resources",
+				PRINTK("%s: out of transmit resources",
 					bp->dev->name);
 			}
 
@@ -1232,7 +1258,7 @@ static void CheckSourceAddress(unsigned char *frame, unsigned char *hw_addr)
 static void ResetAdapter(struct s_smc *smc)
 {
 
-	pr_debug(KERN_INFO "[fddi: ResetAdapter]\n");
+	PRINTK(KERN_INFO "[fddi: ResetAdapter]\n");
 
 	// Stop the adapter.
 
@@ -1278,7 +1304,7 @@ void llc_restart_tx(struct s_smc *smc)
 {
 	skfddi_priv *bp = &smc->os;
 
-	pr_debug(KERN_INFO "[llc_restart_tx]\n");
+	PRINTK(KERN_INFO "[llc_restart_tx]\n");
 
 	// Try to send queued packets
 	spin_unlock(&bp->DriverLock);
@@ -1308,7 +1334,7 @@ void *mac_drv_get_space(struct s_smc *smc, unsigned int size)
 {
 	void *virt;
 
-	pr_debug(KERN_INFO "mac_drv_get_space (%d bytes), ", size);
+	PRINTK(KERN_INFO "mac_drv_get_space (%d bytes), ", size);
 	virt = (void *) (smc->os.SharedMemAddr + smc->os.SharedMemHeap);
 
 	if ((smc->os.SharedMemHeap + size) > smc->os.SharedMemSize) {
@@ -1317,9 +1343,9 @@ void *mac_drv_get_space(struct s_smc *smc, unsigned int size)
 	}
 	smc->os.SharedMemHeap += size;	// Move heap pointer.
 
-	pr_debug(KERN_INFO "mac_drv_get_space end\n");
-	pr_debug(KERN_INFO "virt addr: %lx\n", (ulong) virt);
-	pr_debug(KERN_INFO "bus  addr: %lx\n", (ulong)
+	PRINTK(KERN_INFO "mac_drv_get_space end\n");
+	PRINTK(KERN_INFO "virt addr: %lx\n", (ulong) virt);
+	PRINTK(KERN_INFO "bus  addr: %lx\n", (ulong)
 	       (smc->os.SharedMemDMA +
 		((char *) virt - (char *)smc->os.SharedMemAddr)));
 	return (virt);
@@ -1349,7 +1375,7 @@ void *mac_drv_get_desc_mem(struct s_smc *smc, unsigned int size)
 
 	char *virt;
 
-	pr_debug(KERN_INFO "mac_drv_get_desc_mem\n");
+	PRINTK(KERN_INFO "mac_drv_get_desc_mem\n");
 
 	// Descriptor memory must be aligned on 16-byte boundary.
 
@@ -1358,8 +1384,8 @@ void *mac_drv_get_desc_mem(struct s_smc *smc, unsigned int size)
 	size = (u_int) (16 - (((unsigned long) virt) & 15UL));
 	size = size % 16;
 
-	pr_debug("Allocate %u bytes alignment gap ", size);
-	pr_debug("for descriptor memory.\n");
+	PRINTK("Allocate %u bytes alignment gap ", size);
+	PRINTK("for descriptor memory.\n");
 
 	if (!mac_drv_get_space(smc, size)) {
 		printk("fddi: Unable to align descriptor memory.\n");
@@ -1493,11 +1519,11 @@ void mac_drv_tx_complete(struct s_smc *smc, volatile struct s_smt_fp_txd *txd)
 {
 	struct sk_buff *skb;
 
-	pr_debug(KERN_INFO "entering mac_drv_tx_complete\n");
+	PRINTK(KERN_INFO "entering mac_drv_tx_complete\n");
 	// Check if this TxD points to a skb
 
 	if (!(skb = txd->txd_os.skb)) {
-		pr_debug("TXD with no skb assigned.\n");
+		PRINTK("TXD with no skb assigned.\n");
 		return;
 	}
 	txd->txd_os.skb = NULL;
@@ -1513,7 +1539,7 @@ void mac_drv_tx_complete(struct s_smc *smc, volatile struct s_smt_fp_txd *txd)
 	// free the skb
 	dev_kfree_skb_irq(skb);
 
-	pr_debug(KERN_INFO "leaving mac_drv_tx_complete\n");
+	PRINTK(KERN_INFO "leaving mac_drv_tx_complete\n");
 }				// mac_drv_tx_complete
 
 
@@ -1580,7 +1606,7 @@ void mac_drv_rx_complete(struct s_smc *smc, volatile struct s_smt_fp_rxd *rxd,
 	unsigned short ri;
 	u_int RifLength;
 
-	pr_debug(KERN_INFO "entering mac_drv_rx_complete (len=%d)\n", len);
+	PRINTK(KERN_INFO "entering mac_drv_rx_complete (len=%d)\n", len);
 	if (frag_count != 1) {	// This is not allowed to happen.
 
 		printk("fddi: Multi-fragment receive!\n");
@@ -1589,7 +1615,7 @@ void mac_drv_rx_complete(struct s_smc *smc, volatile struct s_smt_fp_rxd *rxd,
 	}
 	skb = rxd->rxd_os.skb;
 	if (!skb) {
-		pr_debug(KERN_INFO "No skb in rxd\n");
+		PRINTK(KERN_INFO "No skb in rxd\n");
 		smc->os.MacStat.gen.rx_errors++;
 		goto RequeueRxd;
 	}
@@ -1619,7 +1645,7 @@ void mac_drv_rx_complete(struct s_smc *smc, volatile struct s_smt_fp_rxd *rxd,
 	else {
 		int n;
 // goos: RIF removal has still to be tested
-		pr_debug(KERN_INFO "RIF found\n");
+		PRINTK(KERN_INFO "RIF found\n");
 		// Get RIF length from Routing Control (RC) field.
 		cp = virt + FDDI_MAC_HDR_LEN;	// Point behind MAC header.
 
@@ -1664,7 +1690,7 @@ void mac_drv_rx_complete(struct s_smc *smc, volatile struct s_smt_fp_rxd *rxd,
 	return;
 
       RequeueRxd:
-	pr_debug(KERN_INFO "Rx: re-queue RXD.\n");
+	PRINTK(KERN_INFO "Rx: re-queue RXD.\n");
 	mac_drv_requeue_rxd(smc, rxd, frag_count);
 	smc->os.MacStat.gen.rx_errors++;	// Count receive packets
 						// not indicated.
@@ -1713,7 +1739,7 @@ void mac_drv_requeue_rxd(struct s_smc *smc, volatile struct s_smt_fp_rxd *rxd,
 		skb = src_rxd->rxd_os.skb;
 		if (skb == NULL) {	// this should not happen
 
-			pr_debug("Requeue with no skb in rxd!\n");
+			PRINTK("Requeue with no skb in rxd!\n");
 			skb = alloc_skb(MaxFrameSize + 3, GFP_ATOMIC);
 			if (skb) {
 				// we got a skb
@@ -1728,7 +1754,7 @@ void mac_drv_requeue_rxd(struct s_smc *smc, volatile struct s_smt_fp_rxd *rxd,
 				rxd->rxd_os.dma_addr = b_addr;
 			} else {
 				// no skb available, use local buffer
-				pr_debug("Queueing invalid buffer!\n");
+				PRINTK("Queueing invalid buffer!\n");
 				rxd->rxd_os.skb = NULL;
 				v_addr = smc->os.LocalRxBuffer;
 				b_addr = smc->os.LocalRxBufferDMA;
@@ -1775,7 +1801,7 @@ void mac_drv_fill_rxd(struct s_smc *smc)
 	struct sk_buff *skb;
 	volatile struct s_smt_fp_rxd *rxd;
 
-	pr_debug(KERN_INFO "entering mac_drv_fill_rxd\n");
+	PRINTK(KERN_INFO "entering mac_drv_fill_rxd\n");
 
 	// Walk through the list of free receive buffers, passing receive
 	// buffers to the HWM as long as RXDs are available.
@@ -1783,7 +1809,7 @@ void mac_drv_fill_rxd(struct s_smc *smc)
 	MaxFrameSize = smc->os.MaxFrameSize;
 	// Check if there is any RXD left.
 	while (HWM_GET_RX_FREE(smc) > 0) {
-		pr_debug(KERN_INFO ".\n");
+		PRINTK(KERN_INFO ".\n");
 
 		rxd = HWM_GET_CURR_RXD(smc);
 		skb = alloc_skb(MaxFrameSize + 3, GFP_ATOMIC);
@@ -1803,7 +1829,7 @@ void mac_drv_fill_rxd(struct s_smc *smc)
 			// keep the receiver running in hope of better times.
 			// Multiple descriptors may point to this local buffer,
 			// so data in it must be considered invalid.
-			pr_debug("Queueing invalid buffer!\n");
+			PRINTK("Queueing invalid buffer!\n");
 			v_addr = smc->os.LocalRxBuffer;
 			b_addr = smc->os.LocalRxBufferDMA;
 		}
@@ -1814,7 +1840,7 @@ void mac_drv_fill_rxd(struct s_smc *smc)
 		hwm_rx_frag(smc, v_addr, b_addr, MaxFrameSize,
 			    FIRST_FRAG | LAST_FRAG);
 	}
-	pr_debug(KERN_INFO "leaving mac_drv_fill_rxd\n");
+	PRINTK(KERN_INFO "leaving mac_drv_fill_rxd\n");
 }				// mac_drv_fill_rxd
 
 
@@ -1840,7 +1866,7 @@ void mac_drv_clear_rxd(struct s_smc *smc, volatile struct s_smt_fp_rxd *rxd,
 
 	struct sk_buff *skb;
 
-	pr_debug("entering mac_drv_clear_rxd\n");
+	PRINTK("entering mac_drv_clear_rxd\n");
 
 	if (frag_count != 1)	// This is not allowed to happen.
 
@@ -1896,19 +1922,19 @@ int mac_drv_rx_init(struct s_smc *smc, int len, int fc,
 {
 	struct sk_buff *skb;
 
-	pr_debug("entering mac_drv_rx_init(len=%d)\n", len);
+	PRINTK("entering mac_drv_rx_init(len=%d)\n", len);
 
 	// "Received" a SMT or NSA frame of the local SMT.
 
 	if (len != la_len || len < FDDI_MAC_HDR_LEN || !look_ahead) {
-		pr_debug("fddi: Discard invalid local SMT frame\n");
-		pr_debug("  len=%d, la_len=%d, (ULONG) look_ahead=%08lXh.\n",
+		PRINTK("fddi: Discard invalid local SMT frame\n");
+		PRINTK("  len=%d, la_len=%d, (ULONG) look_ahead=%08lXh.\n",
 		       len, la_len, (unsigned long) look_ahead);
 		return (0);
 	}
 	skb = alloc_skb(len + 3, GFP_ATOMIC);
 	if (!skb) {
-		pr_debug("fddi: Local SMT: skb memory exhausted.\n");
+		PRINTK("fddi: Local SMT: skb memory exhausted.\n");
 		return (0);
 	}
 	skb_reserve(skb, 3);
@@ -1958,40 +1984,40 @@ void smt_timer_poll(struct s_smc *smc)
  ************************/
 void ring_status_indication(struct s_smc *smc, u_long status)
 {
-	pr_debug("ring_status_indication( ");
+	PRINTK("ring_status_indication( ");
 	if (status & RS_RES15)
-		pr_debug("RS_RES15 ");
+		PRINTK("RS_RES15 ");
 	if (status & RS_HARDERROR)
-		pr_debug("RS_HARDERROR ");
+		PRINTK("RS_HARDERROR ");
 	if (status & RS_SOFTERROR)
-		pr_debug("RS_SOFTERROR ");
+		PRINTK("RS_SOFTERROR ");
 	if (status & RS_BEACON)
-		pr_debug("RS_BEACON ");
+		PRINTK("RS_BEACON ");
 	if (status & RS_PATHTEST)
-		pr_debug("RS_PATHTEST ");
+		PRINTK("RS_PATHTEST ");
 	if (status & RS_SELFTEST)
-		pr_debug("RS_SELFTEST ");
+		PRINTK("RS_SELFTEST ");
 	if (status & RS_RES9)
-		pr_debug("RS_RES9 ");
+		PRINTK("RS_RES9 ");
 	if (status & RS_DISCONNECT)
-		pr_debug("RS_DISCONNECT ");
+		PRINTK("RS_DISCONNECT ");
 	if (status & RS_RES7)
-		pr_debug("RS_RES7 ");
+		PRINTK("RS_RES7 ");
 	if (status & RS_DUPADDR)
-		pr_debug("RS_DUPADDR ");
+		PRINTK("RS_DUPADDR ");
 	if (status & RS_NORINGOP)
-		pr_debug("RS_NORINGOP ");
+		PRINTK("RS_NORINGOP ");
 	if (status & RS_VERSION)
-		pr_debug("RS_VERSION ");
+		PRINTK("RS_VERSION ");
 	if (status & RS_STUCKBYPASSS)
-		pr_debug("RS_STUCKBYPASSS ");
+		PRINTK("RS_STUCKBYPASSS ");
 	if (status & RS_EVENT)
-		pr_debug("RS_EVENT ");
+		PRINTK("RS_EVENT ");
 	if (status & RS_RINGOPCHANGE)
-		pr_debug("RS_RINGOPCHANGE ");
+		PRINTK("RS_RINGOPCHANGE ");
 	if (status & RS_RES0)
-		pr_debug("RS_RES0 ");
-	pr_debug("]\n");
+		PRINTK("RS_RES0 ");
+	PRINTK("]\n");
 }				// ring_status_indication
 
 
@@ -2034,17 +2060,17 @@ void smt_stat_counter(struct s_smc *smc, int stat)
 {
 //      BOOLEAN RingIsUp ;
 
-	pr_debug(KERN_INFO "smt_stat_counter\n");
+	PRINTK(KERN_INFO "smt_stat_counter\n");
 	switch (stat) {
 	case 0:
-		pr_debug(KERN_INFO "Ring operational change.\n");
+		PRINTK(KERN_INFO "Ring operational change.\n");
 		break;
 	case 1:
-		pr_debug(KERN_INFO "Receive fifo overflow.\n");
+		PRINTK(KERN_INFO "Receive fifo overflow.\n");
 		smc->os.MacStat.gen.rx_errors++;
 		break;
 	default:
-		pr_debug(KERN_INFO "Unknown status (%d).\n", stat);
+		PRINTK(KERN_INFO "Unknown status (%d).\n", stat);
 		break;
 	}
 }				// smt_stat_counter
@@ -2100,10 +2126,10 @@ void cfm_state_change(struct s_smc *smc, int c_state)
 		s = "SC11_C_WRAP_S";
 		break;
 	default:
-		pr_debug(KERN_INFO "cfm_state_change: unknown %d\n", c_state);
+		PRINTK(KERN_INFO "cfm_state_change: unknown %d\n", c_state);
 		return;
 	}
-	pr_debug(KERN_INFO "cfm_state_change: %s\n", s);
+	PRINTK(KERN_INFO "cfm_state_change: %s\n", s);
 #endif				// DRIVERDEBUG
 }				// cfm_state_change
 
@@ -2158,7 +2184,7 @@ void ecm_state_change(struct s_smc *smc, int e_state)
 		s = "unknown";
 		break;
 	}
-	pr_debug(KERN_INFO "ecm_state_change: %s\n", s);
+	PRINTK(KERN_INFO "ecm_state_change: %s\n", s);
 #endif				//DRIVERDEBUG
 }				// ecm_state_change
 
@@ -2213,7 +2239,7 @@ void rmt_state_change(struct s_smc *smc, int r_state)
 		s = "unknown";
 		break;
 	}
-	pr_debug(KERN_INFO "[rmt_state_change: %s]\n", s);
+	PRINTK(KERN_INFO "[rmt_state_change: %s]\n", s);
 #endif				// DRIVERDEBUG
 }				// rmt_state_change
 
@@ -2233,7 +2259,7 @@ void rmt_state_change(struct s_smc *smc, int r_state)
  ************************/
 void drv_reset_indication(struct s_smc *smc)
 {
-	pr_debug(KERN_INFO "entering drv_reset_indication\n");
+	PRINTK(KERN_INFO "entering drv_reset_indication\n");
 
 	smc->os.ResetRequested = TRUE;	// Set flag.
 

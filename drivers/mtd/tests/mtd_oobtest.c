@@ -25,7 +25,6 @@
 #include <linux/moduleparam.h>
 #include <linux/err.h>
 #include <linux/mtd/mtd.h>
-#include <linux/slab.h>
 #include <linux/sched.h>
 
 #define PRINT_PREF KERN_INFO "mtd_oobtest: "
@@ -137,7 +136,7 @@ static int write_eraseblock(int ebnum)
 		ops.ooblen    = use_len;
 		ops.oobretlen = 0;
 		ops.ooboffs   = use_offset;
-		ops.datbuf    = NULL;
+		ops.datbuf    = 0;
 		ops.oobbuf    = writebuf;
 		err = mtd->write_oob(mtd, addr, &ops);
 		if (err || ops.oobretlen != use_len) {
@@ -190,7 +189,7 @@ static int verify_eraseblock(int ebnum)
 		ops.ooblen    = use_len;
 		ops.oobretlen = 0;
 		ops.ooboffs   = use_offset;
-		ops.datbuf    = NULL;
+		ops.datbuf    = 0;
 		ops.oobbuf    = readbuf;
 		err = mtd->read_oob(mtd, addr, &ops);
 		if (err || ops.oobretlen != use_len) {
@@ -217,7 +216,7 @@ static int verify_eraseblock(int ebnum)
 			ops.ooblen    = mtd->ecclayout->oobavail;
 			ops.oobretlen = 0;
 			ops.ooboffs   = 0;
-			ops.datbuf    = NULL;
+			ops.datbuf    = 0;
 			ops.oobbuf    = readbuf;
 			err = mtd->read_oob(mtd, addr, &ops);
 			if (err || ops.oobretlen != mtd->ecclayout->oobavail) {
@@ -282,7 +281,7 @@ static int verify_eraseblock_in_one_go(int ebnum)
 	ops.ooblen    = len;
 	ops.oobretlen = 0;
 	ops.ooboffs   = 0;
-	ops.datbuf    = NULL;
+	ops.datbuf    = 0;
 	ops.oobbuf    = readbuf;
 	err = mtd->read_oob(mtd, addr, &ops);
 	if (err || ops.oobretlen != len) {
@@ -344,6 +343,7 @@ static int scan_for_bad_eraseblocks(void)
 		printk(PRINT_PREF "error: cannot allocate memory\n");
 		return -ENOMEM;
 	}
+	memset(bbt, 0 , ebcnt);
 
 	printk(PRINT_PREF "scanning for bad eraseblocks\n");
 	for (i = 0; i < ebcnt; ++i) {
@@ -392,6 +392,7 @@ static int __init mtd_oobtest_init(void)
 	       mtd->writesize, ebcnt, pgcnt, mtd->oobsize);
 
 	err = -ENOMEM;
+	mtd->erasesize = mtd->erasesize;
 	readbuf = kmalloc(mtd->erasesize, GFP_KERNEL);
 	if (!readbuf) {
 		printk(PRINT_PREF "error: cannot allocate memory\n");
@@ -475,10 +476,18 @@ static int __init mtd_oobtest_init(void)
 	use_len_max = mtd->ecclayout->oobavail;
 	vary_offset = 1;
 	simple_srand(5);
-
-	err = write_whole_device();
-	if (err)
-		goto out;
+	printk(PRINT_PREF "writing OOBs of whole device\n");
+	for (i = 0; i < ebcnt; ++i) {
+		if (bbt[i])
+			continue;
+		err = write_eraseblock(i);
+		if (err)
+			goto out;
+		if (i % 256 == 0)
+			printk(PRINT_PREF "written up to eraseblock %u\n", i);
+		cond_resched();
+	}
+	printk(PRINT_PREF "written %u eraseblocks\n", i);
 
 	/* Check all eraseblocks */
 	use_offset = 0;
@@ -503,7 +512,7 @@ static int __init mtd_oobtest_init(void)
 		goto out;
 
 	addr0 = 0;
-	for (i = 0; i < ebcnt && bbt[i]; ++i)
+	for (i = 0; bbt[i] && i < ebcnt; ++i)
 		addr0 += mtd->erasesize;
 
 	/* Attempt to write off end of OOB */
@@ -513,7 +522,7 @@ static int __init mtd_oobtest_init(void)
 	ops.ooblen    = 1;
 	ops.oobretlen = 0;
 	ops.ooboffs   = mtd->ecclayout->oobavail;
-	ops.datbuf    = NULL;
+	ops.datbuf    = 0;
 	ops.oobbuf    = writebuf;
 	printk(PRINT_PREF "attempting to start write past end of OOB\n");
 	printk(PRINT_PREF "an error is expected...\n");
@@ -533,7 +542,7 @@ static int __init mtd_oobtest_init(void)
 	ops.ooblen    = 1;
 	ops.oobretlen = 0;
 	ops.ooboffs   = mtd->ecclayout->oobavail;
-	ops.datbuf    = NULL;
+	ops.datbuf    = 0;
 	ops.oobbuf    = readbuf;
 	printk(PRINT_PREF "attempting to start read past end of OOB\n");
 	printk(PRINT_PREF "an error is expected...\n");
@@ -557,7 +566,7 @@ static int __init mtd_oobtest_init(void)
 		ops.ooblen    = mtd->ecclayout->oobavail + 1;
 		ops.oobretlen = 0;
 		ops.ooboffs   = 0;
-		ops.datbuf    = NULL;
+		ops.datbuf    = 0;
 		ops.oobbuf    = writebuf;
 		printk(PRINT_PREF "attempting to write past end of device\n");
 		printk(PRINT_PREF "an error is expected...\n");
@@ -577,7 +586,7 @@ static int __init mtd_oobtest_init(void)
 		ops.ooblen    = mtd->ecclayout->oobavail + 1;
 		ops.oobretlen = 0;
 		ops.ooboffs   = 0;
-		ops.datbuf    = NULL;
+		ops.datbuf    = 0;
 		ops.oobbuf    = readbuf;
 		printk(PRINT_PREF "attempting to read past end of device\n");
 		printk(PRINT_PREF "an error is expected...\n");
@@ -601,7 +610,7 @@ static int __init mtd_oobtest_init(void)
 		ops.ooblen    = mtd->ecclayout->oobavail;
 		ops.oobretlen = 0;
 		ops.ooboffs   = 1;
-		ops.datbuf    = NULL;
+		ops.datbuf    = 0;
 		ops.oobbuf    = writebuf;
 		printk(PRINT_PREF "attempting to write past end of device\n");
 		printk(PRINT_PREF "an error is expected...\n");
@@ -621,7 +630,7 @@ static int __init mtd_oobtest_init(void)
 		ops.ooblen    = mtd->ecclayout->oobavail;
 		ops.oobretlen = 0;
 		ops.ooboffs   = 1;
-		ops.datbuf    = NULL;
+		ops.datbuf    = 0;
 		ops.oobbuf    = readbuf;
 		printk(PRINT_PREF "attempting to read past end of device\n");
 		printk(PRINT_PREF "an error is expected...\n");
@@ -661,7 +670,7 @@ static int __init mtd_oobtest_init(void)
 			ops.ooblen    = sz;
 			ops.oobretlen = 0;
 			ops.ooboffs   = 0;
-			ops.datbuf    = NULL;
+			ops.datbuf    = 0;
 			ops.oobbuf    = writebuf;
 			err = mtd->write_oob(mtd, addr, &ops);
 			if (err)
@@ -689,7 +698,7 @@ static int __init mtd_oobtest_init(void)
 		ops.ooblen    = mtd->ecclayout->oobavail * 2;
 		ops.oobretlen = 0;
 		ops.ooboffs   = 0;
-		ops.datbuf    = NULL;
+		ops.datbuf    = 0;
 		ops.oobbuf    = readbuf;
 		err = mtd->read_oob(mtd, addr, &ops);
 		if (err)

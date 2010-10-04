@@ -31,13 +31,12 @@
 #include <linux/spinlock.h>
 #include <linux/init.h>
 #include <linux/jiffies.h>
-#include <linux/slab.h>
 #include <asm/uaccess.h>
 #include <asm/string.h>
 
 #define PPP_VERSION	"2.4.2"
 
-#define OBUFSIZE	4096
+#define OBUFSIZE	256
 
 /* Structure for storing local state. */
 struct asyncppp {
@@ -108,9 +107,9 @@ static void ppp_async_process(unsigned long arg);
 static void async_lcp_peek(struct asyncppp *ap, unsigned char *data,
 			   int len, int inbound);
 
-static const struct ppp_channel_ops async_ops = {
-	.start_xmit = ppp_async_send,
-	.ioctl      = ppp_async_ioctl,
+static struct ppp_channel_ops async_ops = {
+	ppp_async_send,
+	ppp_async_ioctl
 };
 
 /*
@@ -158,7 +157,6 @@ ppp_asynctty_open(struct tty_struct *tty)
 {
 	struct asyncppp *ap;
 	int err;
-	int speed;
 
 	if (tty->ops->write == NULL)
 		return -EOPNOTSUPP;
@@ -189,8 +187,6 @@ ppp_asynctty_open(struct tty_struct *tty)
 	ap->chan.private = ap;
 	ap->chan.ops = &async_ops;
 	ap->chan.mtu = PPP_MRU;
-	speed = tty_get_baud_rate(tty);
-	ap->chan.speed = speed;
 	err = ppp_register_channel(&ap->chan);
 	if (err)
 		goto out_free;
@@ -237,9 +233,11 @@ ppp_asynctty_close(struct tty_struct *tty)
 	tasklet_kill(&ap->tsk);
 
 	ppp_unregister_channel(&ap->chan);
-	kfree_skb(ap->rpkt);
+	if (ap->rpkt)
+		kfree_skb(ap->rpkt);
 	skb_queue_purge(&ap->rqueue);
-	kfree_skb(ap->tpkt);
+	if (ap->tpkt)
+		kfree_skb(ap->tpkt);
 	kfree(ap);
 }
 
@@ -338,7 +336,10 @@ ppp_asynctty_poll(struct tty_struct *tty, struct file *file, poll_table *wait)
 	return 0;
 }
 
-/* May sleep, don't call from interrupt level or with interrupts disabled */
+/*
+ * This can now be called from hard interrupt level as well
+ * as soft interrupt level or mainline.
+ */
 static void
 ppp_asynctty_receive(struct tty_struct *tty, const unsigned char *buf,
 		  char *cflags, int count)
@@ -559,8 +560,8 @@ ppp_async_encode(struct asyncppp *ap)
 		 * Start of a new packet - insert the leading FLAG
 		 * character if necessary.
 		 */
-		if (islcp || flag_time == 0 ||
-		    time_after_eq(jiffies, ap->last_xmit + flag_time))
+		if (islcp || flag_time == 0
+		    || time_after_eq(jiffies, ap->last_xmit + flag_time))
 			*buf++ = PPP_FLAG;
 		ap->last_xmit = jiffies;
 		fcs = PPP_INITFCS;
@@ -697,8 +698,8 @@ ppp_async_push(struct asyncppp *ap)
 		 */
 		clear_bit(XMIT_BUSY, &ap->xmit_flags);
 		/* any more work to do? if not, exit the loop */
-		if (!(test_bit(XMIT_WAKEUP, &ap->xmit_flags) ||
-		      (!tty_stuffed && ap->tpkt)))
+		if (!(test_bit(XMIT_WAKEUP, &ap->xmit_flags)
+		      || (!tty_stuffed && ap->tpkt)))
 			break;
 		/* more work to do, see if we can do it now */
 		if (test_and_set_bit(XMIT_BUSY, &ap->xmit_flags))
@@ -755,8 +756,8 @@ scan_ordinary(struct asyncppp *ap, const unsigned char *buf, int count)
 
 	for (i = 0; i < count; ++i) {
 		c = buf[i];
-		if (c == PPP_ESCAPE || c == PPP_FLAG ||
-		    (c < 0x20 && (ap->raccm & (1 << c)) != 0))
+		if (c == PPP_ESCAPE || c == PPP_FLAG
+		    || (c < 0x20 && (ap->raccm & (1 << c)) != 0))
 			break;
 	}
 	return i;

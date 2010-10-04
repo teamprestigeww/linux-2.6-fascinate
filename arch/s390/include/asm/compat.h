@@ -5,7 +5,6 @@
  */
 #include <linux/types.h>
 #include <linux/sched.h>
-#include <linux/thread_info.h>
 
 #define PSW32_MASK_PER		0x40000000UL
 #define PSW32_MASK_DAT		0x04000000UL
@@ -35,8 +34,7 @@
 
 extern long psw32_user_bits;
 
-#define COMPAT_USER_HZ		100
-#define COMPAT_UTS_MACHINE	"s390\0\0\0\0"
+#define COMPAT_USER_HZ	100
 
 typedef u32		compat_size_t;
 typedef s32		compat_ssize_t;
@@ -165,28 +163,12 @@ static inline compat_uptr_t ptr_to_compat(void __user *uptr)
 	return (u32)(unsigned long)uptr;
 }
 
-#ifdef CONFIG_COMPAT
-
-static inline int is_compat_task(void)
-{
-	return test_thread_flag(TIF_31BIT);
-}
-
-#else
-
-static inline int is_compat_task(void)
-{
-	return 0;
-}
-
-#endif
-
-static inline void __user *arch_compat_alloc_user_space(long len)
+static inline void __user *compat_alloc_user_space(long len)
 {
 	unsigned long stack;
 
 	stack = KSTK_ESP(current);
-	if (is_compat_task())
+	if (test_thread_flag(TIF_31BIT))
 		stack &= 0x7fffffffUL;
 	return (void __user *) (stack - len);
 }

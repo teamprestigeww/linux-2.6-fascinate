@@ -134,10 +134,14 @@ static int celleb_epci_read_config(struct pci_bus *bus,
 {
 	PCI_IO_ADDR epci_base;
 	PCI_IO_ADDR addr;
-	struct pci_controller *hose = pci_bus_to_host(bus);
+	struct device_node *node;
+	struct pci_controller *hose;
 
 	/* allignment check */
 	BUG_ON(where % size);
+
+	node = (struct device_node *)bus->sysdata;
+	hose = pci_find_hose_for_OF_device(node);
 
 	if (!celleb_epci_get_epci_cfg(hose))
 		return PCIBIOS_DEVICE_NOT_FOUND;
@@ -194,10 +198,15 @@ static int celleb_epci_write_config(struct pci_bus *bus,
 {
 	PCI_IO_ADDR epci_base;
 	PCI_IO_ADDR addr;
-	struct pci_controller *hose = pci_bus_to_host(bus);
+	struct device_node *node;
+	struct pci_controller *hose;
 
 	/* allignment check */
 	BUG_ON(where % size);
+
+	node = (struct device_node *)bus->sysdata;
+	hose = pci_find_hose_for_OF_device(node);
+
 
 	if (!celleb_epci_get_epci_cfg(hose))
 		return PCIBIOS_DEVICE_NOT_FOUND;

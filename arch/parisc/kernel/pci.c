@@ -1,4 +1,5 @@
-/*
+/* $Id: pci.c,v 1.6 2000/01/29 00:12:05 grundler Exp $
+ *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
@@ -13,10 +14,12 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 
 #include <asm/io.h>
 #include <asm/system.h>
+#include <asm/cache.h>		/* for L1_CACHE_BYTES */
 #include <asm/superio.h>
 
 #define DEBUG_RESOURCES 0
@@ -121,10 +124,6 @@ static int __init pcibios_init(void)
 	} else {
 		printk(KERN_WARNING "pci_bios != NULL but init() is!\n");
 	}
-
-	/* Set the CLS for PCI as early as possible. */
-	pci_cache_line_size = pci_dfl_cache_line_size;
-
 	return 0;
 }
 
@@ -173,7 +172,7 @@ void pcibios_set_master(struct pci_dev *dev)
 	** upper byte is PCI_LATENCY_TIMER.
 	*/
 	pci_write_config_word(dev, PCI_CACHE_LINE_SIZE,
-			      (0x80 << 8) | pci_cache_line_size);
+				(0x80 << 8) | (L1_CACHE_BYTES / sizeof(u32)));
 }
 
 
@@ -256,10 +255,10 @@ EXPORT_SYMBOL(pcibios_bus_to_resource);
  * Since we are just checking candidates, don't use any fields other
  * than res->start.
  */
-resource_size_t pcibios_align_resource(void *data, const struct resource *res,
+void pcibios_align_resource(void *data, struct resource *res,
 				resource_size_t size, resource_size_t alignment)
 {
-	resource_size_t mask, align, start = res->start;
+	resource_size_t mask, align;
 
 	DBG_RES("pcibios_align_resource(%s, (%p) [%lx,%lx]/%x, 0x%lx, 0x%lx)\n",
 		pci_name(((struct pci_dev *) data)),
@@ -271,10 +270,10 @@ resource_size_t pcibios_align_resource(void *data, const struct resource *res,
 
 	/* Align to largest of MIN or input size */
 	mask = max(alignment, align) - 1;
-	start += mask;
-	start &= ~mask;
+	res->start += mask;
+	res->start &= ~mask;
 
-	return start;
+	/* The caller updates the end field, we don't.  */
 }
 
 

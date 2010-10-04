@@ -17,7 +17,6 @@
 #include <linux/spinlock.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
-#include <linux/slab.h>
 
 #endif				/* __KERNEL__ */
 
