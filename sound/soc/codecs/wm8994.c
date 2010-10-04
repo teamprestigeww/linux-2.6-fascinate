@@ -2337,7 +2337,7 @@ static int wm8994_suspend(struct platform_device *pdev,pm_message_t msg )
 		return 0;
 	}
 
-//	if(wm8994->codec_state == DEACTIVE && wm8994->stream_state == PCM_STREAM_DEACTIVE)
+	if(wm8994->codec_state == DEACTIVE && wm8994->stream_state == PCM_STREAM_DEACTIVE)
 	{
 		wm8994->power_state = CODEC_OFF;
 		wm8994_write(codec, WM8994_SOFTWARE_RESET, 0x0000);
