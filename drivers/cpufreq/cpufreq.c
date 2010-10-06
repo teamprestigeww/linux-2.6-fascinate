@@ -545,7 +545,7 @@ static ssize_t show_set_audio_log(struct cpufreq_policy *policy, char *buf)
 }
 
 #ifdef CONFIG_CPU_S5PC110
-//#define DEBUG_FREQ_WRITE
+#define DEBUG_FREQ_WRITE
 extern int frequency_match_1GHZ[][2];
 extern struct cpufreq_frequency_table s5pc110_freq_table_1GHZ[];
 extern u32 s5p_sys_clk_div0_tab_1GHZ[][12];
