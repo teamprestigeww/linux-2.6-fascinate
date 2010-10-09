@@ -80,4 +80,5 @@ GTAGS
 
 # update files
 update/*.zip
+update/*.tar
 update/kernel_update/zImage

@@ -12,5 +12,5 @@ make -j 8 CROSS_COMPILE=../arm-2009q3/bin/arm-none-linux-gnueabi- \
 cp arch/arm/boot/zImage update/kernel_update/zImage
 cd update
 zip -r kernel_update.zip . 
+tar c -C kernel_update zImage > kernel_update.tar
 cd ..
-
