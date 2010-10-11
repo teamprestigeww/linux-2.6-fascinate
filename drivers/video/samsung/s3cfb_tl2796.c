@@ -38,11 +38,11 @@
 #define COMMAND_ONLY		0xFE
 #define DATA_ONLY		0xFF
 
-#define DIM_BL	37
+#define DIM_BL	20
 #define MIN_BL	30
 #define MAX_BL	255
 
-#define MAX_GAMMA_VALUE	34	// we have 25 levels. -> 16 levels -> 24 levels
+#define MAX_GAMMA_VALUE	24	// we have 25 levels. -> 16 levels -> 24 levels
 #define CRITICAL_BATTERY_LEVEL 5
 
 #define GAMMASET_CONTROL //for 1.9/2.2 gamma control from platform
@@ -64,7 +64,6 @@ static int ldi_enable = 0;
 int backlight_level = 0;
 int bd_brightness = 0;
 
-int current_gamma_value_x10 = -1;
 int current_gamma_value = -1;
 int spi_ing = 0;
 int on_19gamma = 0;
@@ -1402,215 +1401,9 @@ const unsigned short s6e63m0_22gamma_30cd[] = {
 	ENDDEF, 0x0000                              
 }; 
 
-const unsigned short s6e63m0_22gamma_dimmer10[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1a5, 0x14b, 0x17f, 0x1cf, 0x1cb, 0x1c3, 0x1c7, 0x1cb, 0x1bd, 0x1db, 0x1de, 0x1d4, 0x100, 0x14a, 0x100, 0x149, 0x100, 0x163, 
 
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                 
-	SLEEPMSEC, 10,                                
                                                 
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer9[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1aa, 0x147, 0x184, 0x1d0, 0x1cb, 0x1c4, 0x1c9, 0x1cd, 0x1be, 0x1dd, 0x1df, 0x1d7, 0x100, 0x143, 0x100, 0x142, 0x100, 0x159, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer8[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1af, 0x143, 0x189, 0x1d1, 0x1cc, 0x1c5, 0x1cb, 0x1ce, 0x1bf, 0x1df, 0x1e1, 0x1d9, 0x100, 0x13b, 0x100, 0x13b, 0x100, 0x14f, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer7[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1b4, 0x13e, 0x18e, 0x1d3, 0x1cc, 0x1c7, 0x1cc, 0x1cf, 0x1c1, 0x1e1, 0x1e3, 0x1dc, 0x100, 0x133, 0x100, 0x133, 0x100, 0x144, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer6[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1b9, 0x139, 0x193, 0x1d5, 0x1cd, 0x1c9, 0x1cd, 0x1d1, 0x1c3, 0x1e2, 0x1e4, 0x1de, 0x100, 0x12c, 0x100, 0x12b, 0x100, 0x139, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer5[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1be, 0x135, 0x198, 0x1d6, 0x1cd, 0x1ca, 0x1cf, 0x1d2, 0x1c4, 0x1e4, 0x1e6, 0x1e1, 0x100, 0x124, 0x100, 0x124, 0x100, 0x12f, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer4[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1c3, 0x131, 0x19d, 0x1d7, 0x1ce, 0x1cb, 0x1d1, 0x1d3, 0x1c5, 0x1e6, 0x1e8, 0x1e3, 0x100, 0x11c, 0x100, 0x11d, 0x100, 0x125, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer3[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1c9, 0x12c, 0x1a3, 0x1d9, 0x1cf, 0x1cd, 0x1d2, 0x1d5, 0x1c7, 0x1e8, 0x1e9, 0x1e5, 0x100, 0x115, 0x100, 0x115, 0x100, 0x11a, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer2[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1ce, 0x127, 0x1a8, 0x1db, 0x1cf, 0x1cf, 0x1d3, 0x1d6, 0x1c9, 0x1ea, 0x1eb, 0x1e8, 0x100, 0x10d, 0x100, 0x10d, 0x100, 0x10f, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer1[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-	0x1d3, 0x123, 0x1ad, 0x1dc, 0x1d0, 0x1d0, 0x1d5, 0x1d7, 0x1ca, 0x1ec, 0x1ed, 0x1ea, 0x100, 0x105, 0x100, 0x106, 0x100, 0x105, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-
-const unsigned short s6e63m0_22gamma_dimmer0[] = {
-	//gamma set
-	0x0FA, 0x102, 0x118, 0x108, 0x124,
-        0x1d3, 0x123, 0x1ad, 0x1dc, 0x1d0, 0x1d0, 0x1d5, 0x1d7, 0x1ca, 0x1ec, 0x1ed, 0x1ea, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 
-
-	//gamma update                                
-	0x0FA,	                                      
-	0x103,                                        
-                                                
-                                                
-	SLEEPMSEC, 10,                                
-                                                
-	//Display on                                  
-	0x029,                                        
-                                                
-                                                
-	ENDDEF, 0x0000                                
-};
-                                                
-const unsigned short *p22Gamma_set_old[] = {        
+const unsigned short *p22Gamma_set[] = {        
                                                 
 	s6e63m0_22gamma_30cd,//0                               
 	s6e63m0_22gamma_40cd,                         
@@ -1637,46 +1430,6 @@ const unsigned short *p22Gamma_set_old[] = {
 	s6e63m0_22gamma_280cd,                        
 	s6e63m0_22gamma_290cd,                        
 	s6e63m0_22gamma_300cd,//24                    
-};                                             
-
-
-const unsigned short *p22Gamma_set[] = {        
-	s6e63m0_22gamma_dimmer0,
-	s6e63m0_22gamma_dimmer2,
-	s6e63m0_22gamma_dimmer3,
-	s6e63m0_22gamma_dimmer4,
-	s6e63m0_22gamma_dimmer5,
-	s6e63m0_22gamma_dimmer6,
-	s6e63m0_22gamma_dimmer7,
-	s6e63m0_22gamma_dimmer8,
-	s6e63m0_22gamma_dimmer9,
-	s6e63m0_22gamma_dimmer10,
-
-	s6e63m0_22gamma_30cd,
-	s6e63m0_22gamma_40cd,                         
-	s6e63m0_22gamma_70cd,                         
-	s6e63m0_22gamma_90cd,                         
-	s6e63m0_22gamma_100cd,                     
-	s6e63m0_22gamma_110cd,
-	s6e63m0_22gamma_120cd,                        
-	s6e63m0_22gamma_130cd,                        
-	s6e63m0_22gamma_140cd,	                      
-	s6e63m0_22gamma_150cd,                    
-	s6e63m0_22gamma_160cd,
-	s6e63m0_22gamma_170cd,                        
-	s6e63m0_22gamma_180cd,                        
-	s6e63m0_22gamma_190cd,	                      
-	s6e63m0_22gamma_200cd,                    
-	s6e63m0_22gamma_210cd,
-	s6e63m0_22gamma_220cd,                        
-	s6e63m0_22gamma_230cd,                        
-	s6e63m0_22gamma_240cd,                        
-	s6e63m0_22gamma_250cd,                   
-	s6e63m0_22gamma_260cd,
-	s6e63m0_22gamma_270cd,                        
-	s6e63m0_22gamma_280cd,                        
-	s6e63m0_22gamma_290cd,                        
-	s6e63m0_22gamma_300cd,
 };                                             
                                                 
 const unsigned short s6e63m0_19gamma_300cd[] = {
@@ -2885,18 +2638,6 @@ const unsigned short s6e63m0_19gamma_30cd[] = {
                                                 
                                                 
 const unsigned short *p19Gamma_set[] = {        
-	s6e63m0_22gamma_dimmer0,
-	//s6e63m0_22gamma_dimmer1,
-	s6e63m0_22gamma_dimmer2,
-	s6e63m0_22gamma_dimmer3,
-	s6e63m0_22gamma_dimmer4,
-	s6e63m0_22gamma_dimmer5,
-	s6e63m0_22gamma_dimmer6,
-	s6e63m0_22gamma_dimmer7,
-	s6e63m0_22gamma_dimmer8,
-	s6e63m0_22gamma_dimmer9,
-	s6e63m0_22gamma_dimmer10,
-
 	s6e63m0_19gamma_30cd,//0                      
 	//s6e63m0_19gamma_50cd,                         
 	s6e63m0_19gamma_40cd,                         
@@ -3775,96 +3516,6 @@ static ssize_t gammaset_file_cmd_store(struct device *dev,
 }
 
 static DEVICE_ATTR(gammaset_file_cmd,0666, gammaset_file_cmd_show, gammaset_file_cmd_store);
-
-
-static unsigned short direct_gamma_cmd[] = { 
-	//gamma set
-	0x0FA,
-
-	0x102,	
-                                                
-	0x118,
-	0x108,
-	0x124,
-	0x19D,
-	0x175,
-	0x17C,
-	0x1D0,
-	0x1D0,
-	0x1C6,
-	0x1CD,
-	0x1D1,
-	0x1C3,
-	0x1DE,
-	0x1E1,
-	0x1D8,
-	0x100,
-	0x153,
-	0x100,
-	0x152,
-	0x100,
-	0x16F,
-			                                          
-	//gamma update
-	0x0FA,	
-	0x103,
-
-	SLEEPMSEC, 10,
-
-	//Display on
-	0x029,
-
-	ENDDEF, 0x0000                               
-}; 
-
-static ssize_t direct_gamma_show(struct device *dev,
-        struct device_attribute *attr, char *buf)
-{
-	gprintk("called %s \n",__func__);
-
-	return(sprintf(buf, "0x%hx 0x%hx 0x%hx 0x%hx 0x%hx 0x%hx 0x%hx 0x%hx 0x%hx "
-		       "0x%hx 0x%hx 0x%hx 0x%hx 0x%hx 0x%hx 0x%hx 0x%hx 0x%hx\n",
-		       direct_gamma_cmd[ 5],
-		       direct_gamma_cmd[ 6], direct_gamma_cmd[ 7], direct_gamma_cmd[ 8],
-		       direct_gamma_cmd[ 9], direct_gamma_cmd[10], direct_gamma_cmd[11],
-		       direct_gamma_cmd[12], direct_gamma_cmd[13], direct_gamma_cmd[14],
-		       direct_gamma_cmd[15], direct_gamma_cmd[16], direct_gamma_cmd[17],
-		       direct_gamma_cmd[18], direct_gamma_cmd[19], direct_gamma_cmd[20],
-		       direct_gamma_cmd[21], direct_gamma_cmd[22]));
-}
-
-static ssize_t direct_gamma_store(struct device *dev,
-        struct device_attribute *attr, const char *buf, size_t size)
-{
-	int values[18];
-	int n;
-
-	n = sscanf(buf, "%i %i %i %i %i %i %i %i %i %i %i %i %i %i %i %i %i %i",
-	       &values[ 0], &values[ 1], &values[ 2], &values[ 3], &values[ 4],
-	       &values[ 5], &values[ 6], &values[ 7], &values[ 8], &values[ 9],
-	       &values[10], &values[11], &values[12], &values[13], &values[14],
-	       &values[15], &values[16], &values[17]);
-
-	if(18 != n) {
-		printk("Need 18 integers. Received %d.\n", n);
-		return(size);
-	}
-
-	for(n = 0; n < 18; ++n)
-	{
-		if(values[n] < 0x100 || values[n] > 0x200) {
-			printk("Value #%d (%d) out of range 0x100..0x200\n",
-			       n, values[n]);
-			return(size);
-		}
-		direct_gamma_cmd[n + 5] = (unsigned short)values[n];
-	}
-	s6e63m0_panel_send_sequence(direct_gamma_cmd);
-	return(size);
-}
-
-static DEVICE_ATTR(direct_gamma,0666, direct_gamma_show, direct_gamma_store);
-
 #endif
 
 #ifdef ACL_ENABLE 
@@ -4014,40 +3665,6 @@ extern int pre_val;
 extern int autobrightness_mode;
 #endif
 
-#define FRACT_SHIFT 12
-static int interpolate(int in_low, int in_hi, int out_low, int out_hi, int inval)
-{
-	int outval;
-
-	if(in_low == in_hi)   // degenerate slope
-		return( (out_low + out_hi) / 2 );
-
-	outval = out_low + 
-		( ( ( ((inval - in_low) << FRACT_SHIFT) / (in_hi - in_low) )
-		    * (out_hi - out_low) + (1 << (FRACT_SHIFT-1) ) ) >> FRACT_SHIFT);
-
-	//printk("interp: %d %d   %d %d   %d  %d\n", in_low, in_hi, out_low, out_hi, inval, outval);
-	return(outval);
-}
-
-static void fill_interpolated_values(int gamma_val_x10)
-{
-	int i;
-	int index0 = gamma_val_x10 / 10;
-	int index1 = index0 + 1;
-
-	if(index1 > MAX_GAMMA_VALUE)  // sanity check. shouldn't happen.
-		index1 = MAX_GAMMA_VALUE;
-
-	for(i = 5; i < 5 + 18; ++i) {
-		direct_gamma_cmd[i] =
-			interpolate(index0 * 10, index1 * 10,
-				    p19Gamma_set[index0][i],
-				    p19Gamma_set[index1][i],
-				    gamma_val_x10);
-	}
-}
-
 static int s5p_bl_update_status(struct backlight_device* bd)
 {
 
@@ -4099,26 +3716,18 @@ static int s5p_bl_update_status(struct backlight_device* bd)
 
 		if (bl >= MIN_BL)
 		{
-			//gamma_val_x10 = 10*(MAX_GAMMA_VALUE-1)*bl/(MAX_BL-MIN_BL) + (10 - 10*(MAX_GAMMA_VALUE-1)*(MIN_BL)/(MAX_BL-MIN_BL)) ;
+			gamma_val_x10 = 10*(MAX_GAMMA_VALUE-1)*bl/(MAX_BL-MIN_BL) + (10 - 10*(MAX_GAMMA_VALUE-1)*(MIN_BL)/(MAX_BL-MIN_BL)) ;
 			gamma_value = (gamma_val_x10+5)/10;
 		}	
 		else
 		{
-			// Scale down below MIN_BL. Only used transitioning
-			// screen to full OFF/ON.
-			gamma_val_x10 = bl * 10 / MIN_BL;
 			gamma_value = 0;
 		}
-
-		fill_interpolated_values(gamma_val_x10);
-
-		pr_err("brightness =  %d, gamma = %d x10 = %d\n",
-		       bd->props.brightness, gamma_value, gamma_val_x10);
 
 		bd_brightness = bd->props.brightness;
 		backlight_level = level;
 
-		if(current_gamma_value_x10 == gamma_val_x10)
+		if(current_gamma_value == gamma_value)
 		{
 			return 0;
 		}
@@ -4245,7 +3854,7 @@ static int s5p_bl_update_status(struct backlight_device* bd)
 					if(on_19gamma)
 						s6e63m0_panel_send_sequence(p19Gamma_set[gamma_value]);
 					else
-						s6e63m0_panel_send_sequence(direct_gamma_cmd);
+						s6e63m0_panel_send_sequence(p22Gamma_set[gamma_value]);
 
 #ifdef ACL_ENABLE
 					if (acl_enable)
@@ -4327,7 +3936,7 @@ static int s5p_bl_update_status(struct backlight_device* bd)
 				}
 			}
 			
-			current_gamma_value_x10 = gamma_val_x10;
+			current_gamma_value = gamma_value;
 		}
 	}
 	
@@ -4368,9 +3977,8 @@ static int __init tl2796_probe(struct spi_device *spi)
 	if (IS_ERR(switch_gammaset_dev))
 		pr_err("Failed to create device(switch_gammaset_dev)!\n");
 
-	if (device_create_file(switch_gammaset_dev, &dev_attr_direct_gamma) < 0)
-		pr_err("Failed to create device file(%s)!\n", dev_attr_direct_gamma.attr.name);
-
+	if (device_create_file(switch_gammaset_dev, &dev_attr_gammaset_file_cmd) < 0)
+		pr_err("Failed to create device file(%s)!\n", dev_attr_gammaset_file_cmd.attr.name);
 #endif	
 
 #ifdef ACL_ENABLE //ACL On,Off
