@@ -3,7 +3,7 @@
 make mrproper
 make clean
 rm -rf ../initramfs/.git
-rm -rf ../voodoo_initramfs.git
+rm -rf ../voodoo_initramfs/.git
 rm update/*.zip update/*.tar update/kernel_update/zImage
 
 make ARCH=arm yamaha_b5_defconfig
