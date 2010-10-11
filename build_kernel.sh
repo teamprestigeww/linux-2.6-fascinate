@@ -3,7 +3,8 @@
 make mrproper
 make clean
 rm -rf ../initramfs/.git
-rm update/*.zip update/kernel_update/zImage
+rm -rf ../voodoo_initramfs.git
+rm update/*.zip update/*.tar update/kernel_update/zImage
 
 make ARCH=arm yamaha_b5_defconfig
 make -j 8 CROSS_COMPILE=../arm-2009q3/bin/arm-none-linux-gnueabi- \
