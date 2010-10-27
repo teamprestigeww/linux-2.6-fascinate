@@ -255,68 +255,6 @@ error_get_fail:
 	return ret;
 }
 
-int cpufreq_stats_realloc_table (struct cpufreq_policy *policy, struct cpufreq_frequency_table *table)
-{
-	unsigned int i, j, count = 0, ret = 0;
-	struct cpufreq_policy *data;
-	unsigned int alloc_size;
-	unsigned int cpu = policy->cpu;
-	struct cpufreq_stats *stat;
-	spin_lock(&cpufreq_stats_lock);
-	stat = per_cpu(cpufreq_stats_table, cpu);;
-
-	data = cpufreq_cpu_get(cpu);
-	if (data == NULL) {
-		ret = -EINVAL;
-		goto error_get_fail;
-	}
-
-	for (i=0; table[i].frequency != CPUFREQ_TABLE_END; i++) {
-		unsigned int freq = table[i].frequency;
-		if (freq == CPUFREQ_ENTRY_INVALID)
-			continue;
-		count++;
-	}
-
-	alloc_size = count * sizeof(int) + count * sizeof(cputime64_t);
-
-#ifdef CONFIG_CPU_FREQ_STAT_DETAILS
-	alloc_size += count * count * sizeof(int);
-#endif
-	stat->max_state = count;
-	stat->time_in_state = krealloc(stat->time_in_state, alloc_size, GFP_KERNEL);
-	if (!stat->time_in_state) {
-		ret = -ENOMEM;
-		goto error_out;
-	}
-	memset(stat->time_in_state, 0, alloc_size);
-	stat->freq_table = (unsigned int *)(stat->time_in_state + count);
-
-#ifdef CONFIG_CPU_FREQ_STAT_DETAILS
-	stat->trans_table = stat->freq_table + count;
-#endif
-	j = 0;
-	for (i = 0; table[i].frequency != CPUFREQ_TABLE_END; i++) {
-		unsigned int freq = table[i].frequency;
-		if (freq == CPUFREQ_ENTRY_INVALID)
-			continue;
-		if (freq_table_get_index(stat, freq) == -1)
-			stat->freq_table[j++] = freq;
-	}
-	stat->state_num = j;
-	stat->last_time = get_jiffies_64();
-	stat->last_index = freq_table_get_index(stat, policy->cur);
-	spin_unlock(&cpufreq_stats_lock);
-	cpufreq_cpu_put(data);
-	return 0;
-error_out:
-	cpufreq_cpu_put(data);
-error_get_fail:
-	kfree(stat);
-	per_cpu(cpufreq_stats_table, cpu) = NULL;
-	return ret;
-}
-
 static int
 cpufreq_stat_notifier_policy (struct notifier_block *nb, unsigned long val,
 		void *data)
