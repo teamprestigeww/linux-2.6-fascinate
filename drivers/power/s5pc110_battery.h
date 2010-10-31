@@ -169,6 +169,7 @@ typedef enum s3c_adc_channel {
 #ifdef __FUEL_GAUGES_IC__
 #define FULL_CHARGE_COND_VOLTAGE	4000
 #define RECHARGE_COND_VOLTAGE		4120	// hanapark_Atlas (Fix: 2010.05.18)
+#define RECHARGE_COND_VOLTAGE_BACKUP		4000	// hanapark_DH17
 
 #define LOW_BATT_COUNT	30
 #define LOW_BATT_COND_VOLTAGE		3400

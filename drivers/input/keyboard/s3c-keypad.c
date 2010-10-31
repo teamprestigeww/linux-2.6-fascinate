@@ -341,7 +341,7 @@ static int s3c_keygpio_isr_setup(void *pdev)
 			//volume down
 			s3c_gpio_setpull(S5PC11X_GPH3(1), S3C_GPIO_PULL_UP);
 			set_irq_type(IRQ_EINT(25), IRQ_TYPE_EDGE_BOTH);
-			ret = request_irq(IRQ_EINT(25), s3c_keygpio_vol_down_isr, IRQF_SAMPLE_RANDOM,
+			ret = request_irq(IRQ_EINT(25), s3c_keygpio_vol_down_isr, IRQF_DISABLED ,
 			    "key vol down", (void *) pdev);
 			if (ret) {
 				printk("request_irq failed (IRQ_KEYPAD (key vol down)) !!!\n");
@@ -354,7 +354,7 @@ static int s3c_keygpio_isr_setup(void *pdev)
 				printk("\n\n[Keypad] Setup VolUp Key interrupt(%d)!!\n",HWREV);
 			s3c_gpio_setpull(S5PC11X_GPH3(3), S3C_GPIO_PULL_UP);
 			set_irq_type(IRQ_EINT(27), IRQ_TYPE_EDGE_BOTH);
-			ret = request_irq(IRQ_EINT(27), s3c_keygpio_vol_up_isr, IRQF_SAMPLE_RANDOM,
+			ret = request_irq(IRQ_EINT(27), s3c_keygpio_vol_up_isr, IRQF_DISABLED ,
 					"key vol up", (void *) pdev);
 			if (ret) {
 					printk("request_irq failed (IRQ_KEYPAD (key vol up)) !!!\n");
@@ -412,7 +412,7 @@ static int s3c_keygpio_isr_setup(void *pdev)
 
 	set_irq_type(IRQ_EINT(22), IRQ_TYPE_EDGE_BOTH);
   
-        ret = request_irq(IRQ_EINT(22), s3c_keygpio_isr, IRQF_SAMPLE_RANDOM,
+        ret = request_irq(IRQ_EINT(22), s3c_keygpio_isr, IRQF_DISABLED ,
                 "key gpio", (void *) pdev);
         if (ret) {
                 printk("request_irq failed (IRQ_KEYPAD (gpio)) !!!\n");
@@ -590,7 +590,7 @@ static int __init s3c_keypad_probe(struct platform_device *pdev)
 
         if(HWREV < 0x2) //yhkim block it for Verizon ATLAS. 
 	{
-		ret = request_irq(keypad_irq->start, s3c_keypad_isr, IRQF_SAMPLE_RANDOM,
+		ret = request_irq(keypad_irq->start, s3c_keypad_isr, IRQF_DISABLED ,
 			DEVICE_NAME, (void *) pdev);
 		if (ret) {
 			printk("request_irq failed (IRQ_KEYPAD) !!!\n");

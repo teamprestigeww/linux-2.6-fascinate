@@ -44,6 +44,7 @@ static u8 MicroJigUSBOnStatus=0;
 static u8 MicroJigUSBOffStatus=0;
 static u8 MicroJigUARTOffStatus=0;
 u8 MicroTAstatus=0;
+static u8 MicroJigUARTOnStatus=0;	// hanapark_DH16 (Factory purpose: Skip battery authentication when JIG cable is inserted.)
 
 
 #define FSA9480UCX		0x4A
@@ -183,6 +184,15 @@ u8 FSA9480_Get_JIG_UART_Status(void)
 		return 0;
 }
 EXPORT_SYMBOL(FSA9480_Get_JIG_UART_Status);
+
+u8 FSA9480_Get_JIG_OnOff_Status(void)	// hanapark_DH16 (Factory purpose: Skip battery authentication when JIG cable is inserted.)
+{
+	if(MicroJigUARTOffStatus || MicroJigUARTOnStatus)
+		return 1;
+	else
+		return 0;
+}
+EXPORT_SYMBOL(FSA9480_Get_JIG_OnOff_Status);
 
 
 int get_usb_cable_state(void)
@@ -380,12 +390,16 @@ static DEVICE_ATTR(FactoryResetValue, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, NULL
 /* for sysfs control (/sys/class/sec/switch/usb_sel) */
 static ssize_t usb_sel_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
+#if 0 //20100802_inchul.im... To fix the usb disconnection issue made by the fsa9480 reset
 	u8 i, pData;
+#endif
 
 	sprintf(buf, "USB Switch : %s\n", usb_path==SWITCH_PDA?"PDA":"MODEM");
 
+#if 0 //20100802_inchul.im... To fix the usb disconnection issue made by the fsa9480 reset
     	for(i = 0; i <= 0x14; i++) 
 		fsa9480_read(&fsa9480_i2c_client, i, &pData);
+#endif        
 
 	return sprintf(buf, "%s\n", buf);
 }
@@ -1121,7 +1135,7 @@ void FSA9480_Enable_CP_USB(u8 enable)
 
 }
 
-#if 0 //20100705_inchul
+#if 1 //20100809_inchul... Car/Desk Mount Test
 void FSA9480_Enable_SPK(u8 enable)
 {
 	u8 data = 0;
@@ -1146,6 +1160,7 @@ void FSA9480_Enable_SPK(u8 enable)
 
 	}
 }
+EXPORT_SYMBOL(FSA9480_Enable_SPK);
 #endif
 
 
@@ -1335,6 +1350,7 @@ void FSA9480_ProcessDevice(u8 dev1, u8 dev2, u8 attach)
 				if(attach & FSA9480_INT1_ATTACH)
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_UART_ON --- ATTACH\n");
+					MicroJigUARTOnStatus = 1;	// hanapark_DH16
 #if 1 //20100630_inchul
 					Usb_Dock_Detector(SEC_CAR_DOCK_DEVICE);
 #endif
@@ -1344,6 +1360,7 @@ void FSA9480_ProcessDevice(u8 dev1, u8 dev2, u8 attach)
 				else
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_UART_ON --- DETACH\n");
+					MicroJigUARTOnStatus = 0;	// hanapark_DH16
 #if 1 //20100630_inchul
 					Usb_Dock_Detector(SEC_DOCK_NO_DEVICE);
 #endif
@@ -1588,7 +1605,7 @@ u8 FSA9480_Get_I2C_USB_Status(void)
   	 msleep(5);
 	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE2, &device2);
 
-	if((device1==FSA9480_DEV_TY1_USB)||(device2==FSA9480_DEV_TY2_JIG_USB_ON)||(device2==FSA9480_DEV_TY2_JIG_USB_OFF))
+	if((device1==FSA9480_DEV_TY1_USB)||(device2==FSA9480_DEV_TY2_JIG_USB_ON)||(device2==FSA9480_DEV_TY2_JIG_USB_OFF))	// hanapark_DG29
 		return 1;
 	else
 		return 0;

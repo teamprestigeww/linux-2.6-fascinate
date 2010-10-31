@@ -150,11 +150,15 @@ static int max8998_rtc_i2c_write(struct i2c_client *client, u8 reg, u8 *data,int
 static int max8998_rtc_i2c_read_time(struct i2c_client *client, struct rtc_time *tm)
 {
         int ret;
-        u8 regs[MAX8998_RTC_LEN];
+    u8 regs[MAX8998_RTC_LEN], temp_reg=0;
 
+	do
+	{
         ret = max8998_rtc_i2c_read(client, MAX8998_RTC_TIME_ADDR,regs,MAX8998_RTC_LEN);
         if (ret < 0)
                 return ret;
+		max8998_rtc_i2c_read(client, MAX8998_RTC_TIME_ADDR, &temp_reg, 1);
+	} while (regs[MAX8998_REG_SECOND] > temp_reg);
 
         tm->tm_sec =  bcd2bin(regs[MAX8998_REG_SECOND]);
         tm->tm_min =  bcd2bin(regs [MAX8998_REG_MIN]);
@@ -175,8 +179,8 @@ static int max8998_rtc_i2c_read_time(struct i2c_client *client, struct rtc_time 
 
 static int max8998_rtc_i2c_set_time(struct i2c_client *client, struct rtc_time *tm)
 {
-        int ret;
-        u8 regs[MAX8998_RTC_LEN + 1];
+    int ret;
+    u8 regs[MAX8998_RTC_LEN + 1], temp_reg=0;
 
 	tm->tm_year += 1900;
 
@@ -189,7 +193,11 @@ static int max8998_rtc_i2c_set_time(struct i2c_client *client, struct rtc_time *
 	regs[MAX8998_REG_YEAR0 + 1] = bin2bcd(tm->tm_year % 100);
 	regs[MAX8998_REG_YEAR1 + 1] = bin2bcd((tm->tm_year /100) );
 
+	do
+	{
         ret = max8998_rtc_i2c_write(client, MAX8998_RTC_TIME_ADDR,regs,MAX8998_RTC_LEN +1);
+		max8998_rtc_i2c_read(client, MAX8998_RTC_TIME_ADDR, &temp_reg, 1);
+	} while (regs[MAX8998_REG_SECOND+1] > temp_reg);
 
 	return ret;
 }
