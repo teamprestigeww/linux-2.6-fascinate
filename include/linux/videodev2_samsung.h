@@ -461,6 +461,14 @@ enum v4l2_slow_ae_mode{
 #define V4L2_CID_CAMERA_CHECK_DATALINE						(V4L2_CID_PRIVATE_BASE+112)
 #define V4L2_CID_CAMERA_CHECK_DATALINE_STOP					(V4L2_CID_PRIVATE_BASE+113)
 
+
+#define V4L2_CID_CAMERA_CONTINUOUS_SHOT		(V4L2_CID_PRIVATE_BASE+114) //hjkang_DH19
+enum v4l2_continuous_shot {
+    CONTINUOUS_SHOT_OFF = 0,
+    CONTINUOUS_SHOT_ON,
+    CONTINUOUS_SHOT_MAX,
+};
+
 #endif
 
 /*      Pixel format         FOURCC                        	depth  Description  */

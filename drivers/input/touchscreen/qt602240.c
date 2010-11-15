@@ -5430,6 +5430,7 @@ uint8_t get_variant_id(uint8_t *variant);
 uint8_t get_family_id(uint8_t *family_id);
 uint8_t get_build_number(uint8_t *build);
 uint8_t get_version(uint8_t *version);
+uint8_t write_command_config(gen_commandprocessor_t6_config_t cfg);
 uint8_t write_power_config(gen_powerconfig_t7_config_t power_config);
 uint8_t write_acquisition_config(gen_acquisitionconfig_t8_config_t acq_config);
 uint8_t write_multitouchscreen_config(uint8_t screen_number, touch_multitouchscreen_t9_config_t cfg);
@@ -5486,6 +5487,7 @@ EXPORT_SYMBOL(qt_stylus);
 *                                                             
 * *****************************************************************************/
 //General Object
+gen_commandprocessor_t6_config_t command_config = {0};                 //sooo.shin_100813
 
 gen_powerconfig_t7_config_t power_config = {0};                 //Power config settings.
 gen_acquisitionconfig_t8_config_t acquisition_config = {0};     // Acquisition config. 
@@ -6360,6 +6362,20 @@ uint8_t get_variant_id(uint8_t *variant)
         return(ID_DATA_NOT_AVAILABLE);
     }
     return (ID_DATA_OK);
+}
+
+/*****************************************************************************
+*
+*  FUNCTION
+*  PURPOSE
+*  INPUT
+*  OUTPUT
+*
+* ***************************************************************************/
+
+uint8_t write_command_config(gen_commandprocessor_t6_config_t cfg)
+{
+    return(write_simple_config(GEN_COMMANDPROCESSOR_T6, 0, (void *) &cfg));
 }
 
 
@@ -8303,6 +8319,8 @@ void TSP_forced_release(void)
 	if (qt_initial_ok == 0)
 		return;
 
+	disable_irq(qt602240->client->irq);	
+
 	for ( i= 1; i<MAX_USING_FINGER_NUM; ++i )
 	{
 		if ( fingerInfo[i].pressure == -1 ) continue;
@@ -8320,6 +8338,9 @@ void TSP_forced_release(void)
 	}
 	if(temp_value>0)
 	input_sync(qt602240->input_dev);
+
+	enable_irq(qt602240->client->irq);	
+	
 }
 EXPORT_SYMBOL(TSP_forced_release);
 
@@ -8331,11 +8352,34 @@ void TSP_forced_release_forOKkey(void)
 	if (qt_initial_ok == 0)
 		return;
 	
+	disable_irq(qt602240->client->irq);	
 	for ( i; i<MAX_USING_FINGER_NUM; ++i )
 	{
 		if ( fingerInfo[i].pressure == -1 ) continue;
 
 		fingerInfo[i].pressure = 0;
+#if 1	
+    	uint8_t status;	
+	int ret = WRITE_MEM_OK;			
+		
+		command_config.reportall = 1;
+
+		/* Write temporary command config to chip. */
+		if (write_command_config(command_config) != CFG_WRITE_OK)
+		{
+		/* "Acquisition config write failed!\n" */
+		printk(KERN_DEBUG "\n[TSP][ERROR] line : %d\n", __LINE__);
+		ret = WRITE_MEM_FAILED; /* calling function should retry calibration call */
+		}		
+
+		printk(KERN_DEBUG "\n[TSP][%s] \n", __func__);
+		printk(KERN_DEBUG "[TSP] reset acq reportall=%d\n", command_config.reportall);
+
+
+		msleep(20);
+		calibrate_chip();
+		msleep(20);	
+#endif	
 
 		input_report_abs(qt602240->input_dev, ABS_MT_POSITION_X, fingerInfo[i].x);
 		input_report_abs(qt602240->input_dev, ABS_MT_POSITION_Y, fingerInfo[i].y);
@@ -8348,6 +8392,8 @@ void TSP_forced_release_forOKkey(void)
 	}
 	if(temp_value>0)
 		input_sync(qt602240->input_dev);
+
+	enable_irq(qt602240->client->irq);			
 }
 
 EXPORT_SYMBOL(TSP_forced_release_forOKkey);
@@ -9907,6 +9953,71 @@ static DEVICE_ATTR(firmware1, S_IRUGO | S_IWUSR, firmware1_show, firmware1_store
 static DEVICE_ATTR(key_threshold, S_IRUGO | S_IWUSR, key_threshold_show, key_threshold_store);
 
 /*------------------------------ for tunning ATmel - start ----------------------------*/
+static ssize_t set_command_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int value;
+	printk(KERN_INFO "[TSP] %s : operate nothing\n", __FUNCTION__);
+
+	return 0;
+}
+
+static ssize_t set_command_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size)
+{
+	int ret, cmd_no,config_value = 0;
+	char *after;
+
+	unsigned long value = simple_strtoul(buf, &after, 10);	
+	printk(KERN_INFO "[TSP] %s\n", __FUNCTION__);
+	cmd_no = (int) (value / 1000);
+	config_value = ( int ) (value % 1000 );
+
+	if (cmd_no == 0)
+	{
+		printk("[%s] CMD 0 , command_config.reset = %d\n", __func__,config_value );
+		command_config.reset = config_value;
+	}		
+	else if(cmd_no == 1)
+	{
+		printk("[%s] CMD 1 , command_config.backup = %d\n", __func__, config_value);
+		command_config.backupnv = config_value;
+	}
+	else if(cmd_no == 2)
+	{
+		printk("[%s] CMD 2 , command_config.calibrate= %d\n", __func__, config_value);
+		command_config.calibrate = config_value;
+	}
+	else if(cmd_no == 3)
+	{
+		printk("[%s] CMD 3 , command_config.reportall= %d\n", __func__, config_value);
+		command_config.reportall = config_value;
+	}
+	else if(cmd_no == 4)
+	{
+		printk("[%s] CMD 4 , command_config.reserved= %d\n", __func__, config_value);
+		command_config.reserve = config_value;
+	}
+	else if(cmd_no == 5)
+	{
+		printk("[%s] CMD 5 , command_config.diagnostic= %d\n", __func__, config_value);
+		command_config.diagnostic = config_value;
+	}
+	else 
+	{
+		printk("[%s] unknown CMD\n", __func__);
+	}
+
+//	write_mem(command_processor_address+cmd_no, 1, &command_config.command_config);
+	if (write_command_config(command_config) != CFG_WRITE_OK)
+    {
+        QT_printf("[TSP] Configuration Fail!!! , Line %d \n\r", __LINE__);
+    }
+	
+	return size;
+}
+
+static DEVICE_ATTR(set_command, S_IRUGO | S_IWUSR | S_IWOTH | S_IXOTH, set_command_show, set_command_store);
+
+
 /*
    power_config.idleacqint = 32;      // 0
    power_config.actvacqint = 16;      // 1
@@ -10335,8 +10446,13 @@ static ssize_t set_noise_store(struct device *dev, struct device_attribute *attr
 
 	unsigned long value = simple_strtoul(buf, &after, 10);	
 	printk(KERN_INFO "[TSP] %s\n", __FUNCTION__);
+	if(value < 10000){
 	cmd_no = (int) (value / 1000);
-	config_value = ( int ) (value % 1000 );
+	config_value = ( int ) (value % 1000 );}
+	else{
+	cmd_no = (int) (value / 100000);
+	config_value = ( int ) (value % 100000 );
+	}	
 	
 	if(cmd_no == 0)
 	{
@@ -11247,6 +11363,14 @@ static ssize_t qt602240_config_mode_store(struct device *dev,	struct device_attr
 
 static DEVICE_ATTR(config_mode, S_IRUGO | S_IWUSR | S_IWOTH | S_IXOTH, qt602240_config_mode_show, qt602240_config_mode_store);
 #endif
+static ssize_t qt602240_call_release_touch(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	printk(" %s is called", __func__);
+	TSP_forced_release_forOKkey();
+	return sprintf(buf,"0\n");
+}
+static DEVICE_ATTR(call_release_touch, S_IRUGO | S_IWUSR | S_IWOTH | S_IXOTH, qt602240_call_release_touch, NULL);
+
 /*------------------------------ for tunning ATmel - end ----------------------------*/
 int __init qt602240_init(void)
 {
@@ -11328,6 +11452,9 @@ int __init qt602240_init(void)
 	if (device_create_file(ts_dev, &dev_attr_key_threshold) < 0)
 		pr_err("Failed to create device file(%s)!\n", dev_attr_key_threshold.attr.name);
 
+	if (device_create_file(ts_dev, &dev_attr_call_release_touch) < 0)
+		pr_err("Failed to create device file(%s)!\n", dev_attr_call_release_touch.attr.name);
+	
 	printk("[QT] %s/%d, platform_driver_register!!\n",__func__,__LINE__);
 
 	/*------------------------------ for tunning ATmel - start ----------------------------*/
@@ -11340,6 +11467,8 @@ int __init qt602240_init(void)
 	if (IS_ERR(switch_test))
 		pr_err("Failed to create device(switch)!\n");
 
+	if (device_create_file(switch_test, &dev_attr_set_command) < 0)
+		pr_err("Failed to create device file(%s)!\n", dev_attr_set_command.attr.name);
 	if (device_create_file(switch_test, &dev_attr_set_power) < 0)
 		pr_err("Failed to create device file(%s)!\n", dev_attr_set_power.attr.name);
 	if (device_create_file(switch_test, &dev_attr_set_acquisition) < 0)
