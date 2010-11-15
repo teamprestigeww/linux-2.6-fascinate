@@ -5,7 +5,7 @@ rm "$DATE"_test_*.zip
 rm -rf ../initramfs/.git
 rm -rf ../voodoo_initramfs/.git
 
-for CONFIG in novoodoo
+for CONFIG in voodoo novoodoo
 do
 	make mrproper
 	make clean
