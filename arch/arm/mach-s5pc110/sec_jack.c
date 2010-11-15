@@ -275,7 +275,6 @@ static void jack_type_detect_change(struct work_struct *ignored)
 					/* detect 3pole or tv-out cable */
 					printk(KERN_INFO "[ JACK_DRIVER (%s,%d) ] 3 pole headset or TV-out attatched : adc = %d\n", __func__,__LINE__,adc);
 					count_pole = 0;
-					gpio_set_value(GPIO_EAR_BIAS_EN, 0); 
 
 					printk(KERN_INFO "[ JACK_DRIVER (%s,%d) ] send_end_irq_token : %d\n", __func__,__LINE__,send_end_irq_token);
 					if(send_end_irq_token==1)
@@ -317,6 +316,7 @@ static void jack_type_detect_change(struct work_struct *ignored)
 		switch_set_state(&switch_jack_detection, current_jack_type_status);
 		jack_input_selector(current_jack_type_status);
 		wake_unlock(&jack_sendend_wake_lock); 	
+
 	}
 	return 0;
 }
@@ -369,7 +369,8 @@ static void jack_detect_change(struct work_struct *ignored)
 
 	if (state && !send_end_irq_token)
 	{
-		SEC_JACKDEV_DBG("Headset attached, send end enable 0.2sec after");
+		SEC_JACKDEV_DBG("Headset attached, send end enable 2sec after");
+		//send_end_enable_timer.expires = get_jiffies_64() + (5*HZ/10);//2sec HZ is 200
 		send_end_enable_timer.expires = get_jiffies_64() + (HZ/10*2);//0.2sec HZ is 200
 		add_timer(&send_end_enable_timer);
 		wake_lock(&jack_sendend_wake_lock);
@@ -599,7 +600,8 @@ static int sec_jack_probe(struct platform_device *pdev)
 	memcpy (&hi->port, pdata->port, sizeof(struct sec_jack_port));
 
 	input = hi->input = input_allocate_device();
-	if (!input){
+	if (!input) 
+{
 		ret = -ENOMEM;
 		printk(KERN_ERR "SEC HEADSET: Failed to allocate input device.\n");
 		goto err_request_input_dev;
@@ -611,7 +613,8 @@ static int sec_jack_probe(struct platform_device *pdev)
 	set_bit(KEYCODE_SENDEND, input->keybit);
 
 	ret = input_register_device(input);
-	if (ret < 0){
+	if (ret < 0)
+{
 		printk(KERN_ERR "SEC HEADSET: Failed to register driver\n");
 		goto err_register_input_dev;
 	}
@@ -622,7 +625,8 @@ static int sec_jack_probe(struct platform_device *pdev)
 	SEC_JACKDEV_DBG("registering switch_sendend switch_dev sysfs sec_jack");
 
 	ret = switch_dev_register(&switch_jack_detection);
-	if (ret < 0){
+	if (ret < 0)
+        {
 		printk(KERN_ERR "SEC HEADSET: Failed to register switch device\n");
 		goto err_switch_dev_register;
 	}
@@ -630,14 +634,16 @@ static int sec_jack_probe(struct platform_device *pdev)
          printk(KERN_ERR "SISO:registering switch_sendend switch_dev\n");
 	
 	ret = switch_dev_register(&switch_sendend);
-	if (ret < 0){
+	if (ret < 0) 
+        {
 		printk(KERN_ERR "SEC HEADSET: Failed to register switch sendend device\n");
 		goto err_switch_dev_register;
-    }
+        }
 	
 	//Create JACK Device file in Sysfs
 	jack_class = class_create(THIS_MODULE, "jack");
-	if(IS_ERR(jack_class)){
+	if(IS_ERR(jack_class))
+	{
 		printk(KERN_ERR "Failed to create class(sec_jack)\n");
 	}
 

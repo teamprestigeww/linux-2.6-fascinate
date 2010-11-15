@@ -133,18 +133,21 @@ static int s3c_rtc_gettime(struct device *dev, struct rtc_time *rtc_tm)
 	int year_110;
 
  retry_get_time:
-	rtc_tm->tm_sec  = readb(base + S3C2410_RTCSEC);
-	rtc_tm->tm_min  = readb(base + S3C2410_RTCMIN);
-	rtc_tm->tm_hour = readb(base + S3C2410_RTCHOUR);
-	rtc_tm->tm_mday = readb(base + S3C2410_RTCDATE);
-	rtc_tm->tm_mon  = readb(base + S3C2410_RTCMON);
+ 	do
+ 	{
+		rtc_tm->tm_sec  = readb(base + S3C2410_RTCSEC);
+		rtc_tm->tm_min  = readb(base + S3C2410_RTCMIN);
+		rtc_tm->tm_hour = readb(base + S3C2410_RTCHOUR);
+		rtc_tm->tm_mday = readb(base + S3C2410_RTCDATE);
+		rtc_tm->tm_mon  = readb(base + S3C2410_RTCMON);
 	
 #if defined (CONFIG_CPU_S5PC110)
-	year_110 = readl(base + S3C2410_RTCYEAR);	// read long type
-	rtc_tm->tm_year = (0x00000fff & year_110);
+		year_110 = readl(base + S3C2410_RTCYEAR);	// read long type
+		rtc_tm->tm_year = (0x00000fff & year_110);
 #else
-	rtc_tm->tm_year = readb(base + S3C2410_RTCYEAR);
+		rtc_tm->tm_year = readb(base + S3C2410_RTCYEAR);
 #endif
+ 	} while (rtc_tm->tm_sec > readb(base + S3C2410_RTCSEC));
 	
 
 	/* the only way to work out wether the system was mid-update
@@ -210,24 +213,26 @@ static int s3c_rtc_settime(struct device *dev, struct rtc_time *tm)
 
 	max8998_rtc_set_time(tm);
 
-	writeb(bin2bcd(tm->tm_sec),  base + S3C2410_RTCSEC);
-	writeb(bin2bcd(tm->tm_min),  base + S3C2410_RTCMIN);
-	writeb(bin2bcd(tm->tm_hour), base + S3C2410_RTCHOUR);
-	writeb(bin2bcd(tm->tm_mday), base + S3C2410_RTCDATE);
-	writeb(bin2bcd(tm->tm_mon + 1), base + S3C2410_RTCMON);
-	
+	do
+	{
+		writeb(bin2bcd(tm->tm_sec),  base + S3C2410_RTCSEC);
+		writeb(bin2bcd(tm->tm_min),  base + S3C2410_RTCMIN);
+		writeb(bin2bcd(tm->tm_hour), base + S3C2410_RTCHOUR);
+		writeb(bin2bcd(tm->tm_mday), base + S3C2410_RTCDATE);
+		writeb(bin2bcd(tm->tm_mon + 1), base + S3C2410_RTCMON);
+		
 #if defined (CONFIG_CPU_S5PC110)
-	year100 = year/100;
-	year = year%100;
-	year = bin2bcd(year) | ((bin2bcd(year100)) << 8);
-	year = (0x00000fff & year);
-	pr_debug("year %x",year);
-	//writel(bin2bcd(year), base + S3C2410_RTCYEAR);
-	writel(year, base + S3C2410_RTCYEAR);
+		year100 = year/100;
+		year = year%100;
+		year = bin2bcd(year) | ((bin2bcd(year100)) << 8);
+		year = (0x00000fff & year);
+		pr_debug("year %x",year);
+		//writel(bin2bcd(year), base + S3C2410_RTCYEAR);
+		writel(year, base + S3C2410_RTCYEAR);
 #else
-	writeb(bin2bcd(year), base + S3C2410_RTCYEAR);
+		writeb(bin2bcd(year), base + S3C2410_RTCYEAR);
 #endif
-
+	} while (bin2bcd(tm->tm_sec) > readb(base + S3C2410_RTCSEC));
 
 	return 0;
 }

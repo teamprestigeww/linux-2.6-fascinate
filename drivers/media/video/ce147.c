@@ -331,6 +331,7 @@ struct ce147_state {
 	int ev;
 	int effect;
 	int wb;
+	int continuous_shot; //hjkang_DH19
 	struct tm *exifTimeInfo;
 };
 
@@ -838,7 +839,7 @@ static int ce147_load_fw(struct v4l2_subdev *sd)
                 return -EIO;
 
         /* Delay required to load the firmware */
-        msleep(1000);//SecFeature.Camera aswoogi
+        msleep(1100); //hjkang_DH06 //SecFeature.Camera aswoogi
 
 	state->runmode = CE147_RUNMODE_IDLE;
 
@@ -1846,7 +1847,7 @@ static int ce147_set_preview_start(struct v4l2_subdev *sd)
 			return -EIO; 
 		}
 
-		/* Release AWB unLock */ 
+		/* Release AWB unLock */ 		
 		err = ce147_set_awb_lock(sd, 0);
 		if(err < 0){
 			dev_err(&client->dev, "%s: failed: ce147_set_awb_lock, err %d\n", __func__, err);
@@ -1986,10 +1987,15 @@ static int ce147_set_awb_lock(struct v4l2_subdev *sd, int lock)
 	unsigned char ce147_regbuf_awb_lock[1] = { 0x11 };
 	unsigned int ce147_reglen_awb_lock = 1;
 
-	if(lock)
+	if(lock){
 		ce147_regbuf_awb_lock[0] = 0x11;
-	else
+	}
+	else{
 		ce147_regbuf_awb_lock[0] = 0x00;
+	}
+
+
+
 
 	err = ce147_i2c_write_multi(client, CMD_AE_WB_LOCK, ce147_regbuf_awb_lock, ce147_reglen_awb_lock);
 	if(err < 0){
@@ -2361,6 +2367,7 @@ static int ce147_set_capture_config(struct v4l2_subdev *sd, struct v4l2_control 
 	int err;
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct ce147_state *state = to_state(sd);
+
 
 #ifdef FEATURE_AE_TARGETING        // sunggeun DG04 ATLAS
          if(Flash_Mode == FLASH_MODE_ON){
@@ -3472,7 +3479,7 @@ static int ce147_set_focus_mode(struct v4l2_subdev *sd, struct v4l2_control *ctr
 		{
 #if 1
                 	ce147_msg(&client->dev, "%s: unlock\n", __func__);
-		
+                    
                 	err = ce147_set_awb_lock(sd, 0);
                 	if(err < 0){
                 		dev_err(&client->dev, "%s: failed: ce147_set_awb_unlock, err %d\n", __func__, err);
@@ -4014,7 +4021,8 @@ static int ce147_get_auto_focus_status(struct v4l2_subdev *sd, struct v4l2_contr
 	int err;
 	unsigned char ce147_buf_get_af_status[1] = { 0x00 };
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
-
+	struct ce147_state *state = to_state(sd); //hjkang_DH19
+	
 	ce147_buf_get_af_status[0] = 0xFF;
 	err = ce147_i2c_read_multi(client, CMD_CHECK_AUTO_FOCUS_SEARCH, NULL, 0, ce147_buf_get_af_status, 1);
 	if(err < 0){
@@ -4023,10 +4031,9 @@ static int ce147_get_auto_focus_status(struct v4l2_subdev *sd, struct v4l2_contr
 	}	
 	ctrl->value = ce147_buf_get_af_status[0];
 #if 1       // sunggeun DF08 ATLAS : for AE/AWB lock function
-         if(ctrl->value == 2)
+         if(ctrl->value == 2 && state->continuous_shot == CONTINUOUS_SHOT_OFF) //hjkang_DH19
         {
             ce147_msg(&client->dev, "%s: lock\n", __func__);
-
             err = ce147_set_awb_lock(sd, 1);
             if(err < 0){
                 dev_err(&client->dev, "%s: failed: ce147_set_awb_lock, err %d\n", __func__, err);
@@ -4926,6 +4933,11 @@ static int ce147_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 		
 	case V4L2_CID_CAMERA_BEAUTY_SHOT:
 		err = ce147_set_face_beauty(sd, ctrl);
+		break;
+
+	case V4L2_CID_CAMERA_CONTINUOUS_SHOT: //hjkang_DH19 
+		state->continuous_shot = ctrl->value;
+		err = 0;	
 		break;
 
 	case V4L2_CID_CAMERA_FACEDETECT_LOCKUNLOCK:
