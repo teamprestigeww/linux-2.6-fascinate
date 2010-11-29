@@ -9,7 +9,10 @@ rm -rf ../initramfs_mesmerize/cwm
 rm -rf ../initramfs_mesmerize/.git
 rm -rf ../voodoo5_mesmerize/.git
 
-for CONFIG in voodoo_fascinate
+for CONFIG in voodoo_fascinate \
+              voodoo_mesmerize \
+              novoodoo_fascinate \
+              novoodoo_mesmerize
 do
 	make mrproper
 	make clean
