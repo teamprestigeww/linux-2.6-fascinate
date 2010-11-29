@@ -2,10 +2,14 @@
 
 DATE=$(date +%m%d)
 rm "$DATE"_test_*.zip
-rm -rf ../initramfs/.git
-rm -rf ../voodoo_initramfs/.git
+rm -rf ../initramfs_fascinate/cwm
+rm -rf ../initramfs_fascinate/.git
+rm -rf ../voodoo5_fascinate/.git
+rm -rf ../initramfs_mesmerize/cwm
+rm -rf ../initramfs_mesmerize/.git
+rm -rf ../voodoo5_mesmerize/.git
 
-for CONFIG in voodoo
+for CONFIG in voodoo_fascinate
 do
 	make mrproper
 	make clean
