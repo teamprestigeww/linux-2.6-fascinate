@@ -10,7 +10,7 @@ rm -rf ../mesmerize_initramfs/.git
 rm -rf ../voodoo5_mesmerize/.git
 rm -rf ../showcase_initramfs/.git
 
-for CONFIG in voodoo_fascinate
+for CONFIG in voodoo_fascinate \
               novoodoo_fascinate \
               novoodoo_mesmerize \
               novoodoo_showcase
