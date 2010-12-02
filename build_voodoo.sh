@@ -1,24 +1,37 @@
 #!/bin/bash
 
 cd ..
-for REPO in fascinate_initramfs \
-	    lagfix
-do
-	rm -rf $REPO
-	git clone git://github.com/jt1134/$REPO.git
-	rm -rf $REPO/.git
-done
+rm -rf fascinate_initramfs
+git clone git://github.com/jt1134/fascinate_initramfs.git
+rm -rf fascinate_initramfs/.git
 
-cd lagfix/stages_builder
-./scripts/download_and_extract_buildroot.sh
-./scripts/restore_configs.sh
-./scripts/build_everything.sh
+build_voodoo_stages()
+{
+	cd lagfix/stages_builder
+	./scripts/download_and_extract_buildroot.sh
+	./scripts/restore_configs.sh
+	./scripts/build_everything.sh
 
-cd ../zip
-./scripts/download_extract_and_patch_zip.sh
-./scripts/build.sh
-./scripts/install_in_extensions.sh
-cd ../../
+	cd ../zip
+	./scripts/download_extract_and_patch_zip.sh
+	./scripts/build.sh
+	./scripts/install_in_extensions.sh
+	cd ../../
+}
+
+if [ ! -d lagfix ]; then
+	git clone git://github.com/project-voodoo/lagfix.git
+	build_voodoo_stages
+else
+	cd lagfix
+	git fetch origin
+	git merge origin/dev
+	cd ..
+
+	if [ ! -d lagfix/stages_builder/buildroot-2010.08 ]; then
+		build_voodoo_stages
+	fi
+fi
 
 rm -rf voodoo5_fascinate
 ./lagfix/voodoo_injector/generate_voodoo_ramdisk.sh \
