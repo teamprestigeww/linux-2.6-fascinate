@@ -5,15 +5,9 @@ rm "$DATE"_test_*.zip
 rm -rf ../fascinate_initramfs/cwm
 rm -rf ../fascinate_initramfs/.git
 rm -rf ../voodoo5_fascinate/.git
-rm -rf ../mesmerize_initramfs/cwm
-rm -rf ../mesmerize_initramfs/.git
-rm -rf ../voodoo5_mesmerize/.git
-rm -rf ../showcase_initramfs/.git
 
-for CONFIG in voodoo_fascinate \
-              novoodoo_fascinate \
-              novoodoo_mesmerize \
-              novoodoo_showcase
+for CONFIG in voodoo_fascinate
+              novoodoo_fascinate
 do
 	make mrproper
 	make clean
