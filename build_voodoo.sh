@@ -6,6 +6,7 @@ for REPO in fascinate_initramfs \
 do
 	rm -rf $REPO
 	git clone git://github.com/jt1134/$REPO.git
+	rm -rf $REPO/.git
 done
 
 cd lagfix/stages_builder
