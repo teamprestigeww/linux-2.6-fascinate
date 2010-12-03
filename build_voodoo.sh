@@ -5,6 +5,9 @@ rm -rf fascinate_initramfs
 git clone git://github.com/jt1134/fascinate_initramfs.git
 rm -rf fascinate_initramfs/.git
 
+# optionally force removal of lagfix dir
+if [ $1 == "f" ]; then rm -rf lagfix ; fi
+
 build_voodoo_stages()
 {
 	cd lagfix/stages_builder
@@ -25,7 +28,7 @@ if [ ! -d lagfix ]; then
 else
 	cd lagfix
 	git fetch origin
-	git merge origin/dev
+	git merge origin/stable
 	cd ..
 
 	if [ ! -d lagfix/stages_builder/buildroot-2010.08 ]; then
