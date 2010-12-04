@@ -46,7 +46,7 @@ rm -rf voodoo5_fascinate
 	-x lagfix/extensions \
 	-p lagfix/voodoo_ramdisk_parts \
 	-t lagfix/stages_builder/stages \
-	-c cwm_voodoo
+	-c cwm_voodoo \
 	-u
 
 cd linux-2.6-fascinate
