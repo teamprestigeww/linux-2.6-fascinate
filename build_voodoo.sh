@@ -2,7 +2,7 @@
 
 cd ..
 rm -rf fascinate_initramfs
-rm -rf cwm
+rm -rf cwm_voodoo
 git clone git://github.com/jt1134/fascinate_initramfs.git
 git clone git://github.com/jt1134/cwm_voodoo.git
 rm -rf fascinate_initramfs/.git
