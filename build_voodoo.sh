@@ -2,11 +2,14 @@
 
 cd ..
 rm -rf fascinate_initramfs
+rm -rf cwm
 git clone git://github.com/jt1134/fascinate_initramfs.git
+git clone git://github.com/jt1134/cwm_voodoo.git
 rm -rf fascinate_initramfs/.git
+rm -rf cwm_voodoo/.git
 
 # optionally force removal of lagfix dir
-if [ $1 == "f" ]; then rm -rf lagfix ; fi
+if [ "$1" == "f" ]; then rm -rf lagfix ; fi
 
 build_voodoo_stages()
 {
@@ -43,6 +46,7 @@ rm -rf voodoo5_fascinate
 	-x lagfix/extensions \
 	-p lagfix/voodoo_ramdisk_parts \
 	-t lagfix/stages_builder/stages \
+	-c cwm_voodoo
 	-u
 
 cd linux-2.6-fascinate

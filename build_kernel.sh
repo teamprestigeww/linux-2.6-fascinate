@@ -2,7 +2,6 @@
 
 DATE=$(date +%m%d)
 rm "$DATE"_test_*.zip
-rm -rf ../fascinate_initramfs/cwm
 rm -rf ../fascinate_initramfs/.git
 rm -rf ../voodoo5_fascinate/.git
 
