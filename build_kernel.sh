@@ -1,11 +1,39 @@
 #!/bin/bash
 
+CONFIGS="voodoo_fascinate"
 DATE=$(date +%m%d)
 rm "$DATE"_test_*.zip
-rm -rf ../fascinate_initramfs/.git
-rm -rf ../voodoo5_fascinate/.git
 
-for CONFIG in voodoo_fascinate
+cd ..
+REPOS="fascinate_initramfs \
+       cwm_voodoo"
+for REPO in $REPOS
+do
+	if [ ! -d "$REPO"/.git ]; then
+		rm -rf "$REPO"
+		git clone git://github.com/jt1134/"$REPO"
+	else
+		cd "$REPO"
+		git fetch origin
+		git merge origin/voodoo-dev
+		cd ..
+	fi
+	rm -rf "$REPO"/.git
+done
+
+if [ ! -d arm-2009q3 ]; then
+	tarball="arm-2009q3-67-arm-none-linux-gnueabi-i686-pc-linux-gnu.tar.bz2"
+	if [ ! -f "$tarball" ]; then
+		echo "Downloading toolchain"
+		wget http://www.codesourcery.com/public/gnu_toolchain/arm-none-linux-gnueabi/"$tarball"
+	fi
+	echo "Unpacking toolchain"
+	tar -xjf "$tarball"
+	# don't remove tarball; bandwidth conservation :)
+fi
+
+cd linux-2.6-fascinate
+for CONFIG in $CONFIGS
 do
 	make mrproper
 	make clean
