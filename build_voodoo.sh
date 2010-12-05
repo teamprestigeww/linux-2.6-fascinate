@@ -35,11 +35,6 @@ if [ ! -d lagfix/stages_builder/buildroot-2010.08 ]; then
 	CMD="./scripts/download_and_extract_buildroot.sh" && doit
 	CMD="./scripts/restore_configs.sh" && doit
 	CMD="./scripts/build_everything.sh" && doit
-
-	cd ../zip
-	CMD="./scripts/download_extract_and_patch_zip.sh" && doit
-	CMD="./scripts/build.sh" && doit
-	CMD="./scripts/install_in_extensions.sh" && doit
 	cd ../../
 fi
 

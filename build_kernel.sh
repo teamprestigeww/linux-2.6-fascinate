@@ -4,6 +4,17 @@ CONFIGS="voodoo_fascinate"
 DATE=$(date +%m%d)
 rm "$DATE"_test_*.zip
 
+doit()
+{
+	eval "$CMD" 2>errlog.txt
+	if [ $? != 0 ]; then
+		echo "Failed to execute command:"
+		echo "$CMD"
+		exit 1
+	fi
+	rm -f errlog.txt
+}
+
 cd ..
 REPOS="fascinate_initramfs \
        cwm_voodoo"
@@ -11,11 +22,11 @@ for REPO in $REPOS
 do
 	if [ ! -d "$REPO"/.git ]; then
 		rm -rf "$REPO"
-		git clone git://github.com/jt1134/"$REPO"
+		CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
 	else
 		cd "$REPO"
-		git fetch origin
-		git merge origin/voodoo-dev
+		CMD="git fetch origin" && doit
+		CMD="git merge origin/voodoo-dev" && doit
 		cd ..
 	fi
 	rm -rf "$REPO"/.git
@@ -25,10 +36,10 @@ if [ ! -d arm-2009q3 ]; then
 	tarball="arm-2009q3-67-arm-none-linux-gnueabi-i686-pc-linux-gnu.tar.bz2"
 	if [ ! -f "$tarball" ]; then
 		echo "Downloading toolchain"
-		wget http://www.codesourcery.com/public/gnu_toolchain/arm-none-linux-gnueabi/"$tarball"
+		CMD="wget http://www.codesourcery.com/public/gnu_toolchain/arm-none-linux-gnueabi/\"$tarball\"" && doit
 	fi
 	echo "Unpacking toolchain"
-	tar -xjf "$tarball"
+	CMD="tar -xjf \"$tarball\"" && doit
 	# don't remove tarball; bandwidth conservation :)
 fi
 
@@ -40,10 +51,10 @@ do
 	rm update/*.zip update/kernel_update/zImage
 
 	make ARCH=arm jt1134_"$CONFIG"_defconfig
-	make -j8 CROSS_COMPILE=../arm-2009q3/bin/arm-none-linux-gnueabi- \
-		ARCH=arm HOSTCFLAGS="-g -O3"
+	CMD="make -j8 CROSS_COMPILE=../arm-2009q3/bin/arm-none-linux-gnueabi- \
+		ARCH=arm HOSTCFLAGS=\"-g -O3\"" && doit
 
-	cp arch/arm/boot/zImage update/kernel_update/zImage
+	CMD="cp arch/arm/boot/zImage update/kernel_update/zImage" && doit
 	cd update
 	zip -r kernel_update.zip . 
 	mv kernel_update.zip ../"$DATE"_test_"$CONFIG".zip
