@@ -19,17 +19,17 @@ doit()
 cd ..
 
 if [ "$1" != "N" ]; then
-	REPOS="fascinate_initramfs \
-		cwm_voodoo"
+	REPOS="voodoo5_fascinate"
 	for REPO in $REPOS
 	do
 		if [ ! -d "$REPO"/.git ]; then
 			rm -rf "$REPO"
-			CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
+			mkdir "$REPO"
+			CMD="git clone git://github.com/jt1134/\"$REPO\" "$REPO"/uncompressed" && doit
 		else
 			cd "$REPO"
 			CMD="git fetch origin" && doit
-			CMD="git merge origin/voodoo-dev" && doit
+			CMD="git merge origin/master" && doit
 			cd ..
 		fi
 		rm -rf "$REPO"/.git
