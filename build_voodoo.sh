@@ -19,8 +19,9 @@ if [ ! -d lagfix/.git ] || [ "$1" == "f" ]; then
 	REPOS="$REPOS lagfix"
 else
 	cd lagfix
-	CMD="git fetch origin" && doit
-	CMD="git merge origin/stable" && doit
+	git remote add pv git://github.com/project-voodoo/lagfix.git
+	CMD="git fetch pv" && doit
+	CMD="git merge pv/stable" && doit
 	cd ..
 fi
 
@@ -34,6 +35,9 @@ if [ ! -d lagfix/stages_builder/buildroot-2010.08 ]; then
 	cd lagfix/stages_builder
 	CMD="./scripts/download_and_extract_buildroot.sh" && doit
 	CMD="./scripts/restore_configs.sh" && doit
+	# workaround due to main mpfr site being down
+	CMD="sed -i \"s/www.mpfr.org/ftp.download-by.net\/gnu\/gnu\/mpfr/\" \
+		buildroot-2010.08/package/mpfr/mpfr.mk" && doit
 	CMD="./scripts/build_everything.sh" && doit
 	cd ../../
 fi
