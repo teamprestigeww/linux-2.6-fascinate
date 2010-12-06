@@ -25,7 +25,7 @@ if [ "$1" != "N" ]; then
 		if [ ! -d "$REPO"/.git ]; then
 			rm -rf "$REPO"
 			mkdir "$REPO"
-			CMD="git clone git://github.com/jt1134/\"$REPO\" "$REPO"/uncompressed" && doit
+			CMD="git clone git://github.com/jt1134/\"$REPO\" \"$REPO\"/uncompressed" && doit
 		else
 			cd "$REPO"
 			CMD="git fetch origin" && doit
