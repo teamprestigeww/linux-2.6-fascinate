@@ -4,9 +4,10 @@ CONFIGS="voodoo_fascinate"
 DATE=$(date +%m%d)
 rm "$DATE"_test_*.zip
 
+WORK=`pwd`
 doit()
 {
-	eval "$CMD" 2>errlog.txt
+	eval "$CMD" 2>"$WORK"/errlog.txt
 	if [ $? != 0 ]; then
 		echo "Failed to execute command:"
 		echo "$CMD"

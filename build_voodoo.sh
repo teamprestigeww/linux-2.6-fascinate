@@ -1,8 +1,9 @@
 #!/bin/bash
 
+WORK=`pwd`
 doit()
 {
-	eval "$CMD" 2>errlog.txt
+	eval "$CMD" 2>"$WORK"/errlog.txt
 	if [ $? != 0 ]; then
 		echo "Failed to execute command:"
 		echo "$CMD"
