@@ -9,7 +9,7 @@ doit()
 		echo "$CMD"
 		exit 1
 	fi
-	rm -f errlog.txt
+	rm -f "$WORK"/errlog.txt
 }
 
 cd ..
