@@ -19,7 +19,7 @@ if [ ! -d lagfix/.git ] || [ "$1" == "f" ]; then
 	REPOS="$REPOS lagfix"
 else
 	cd lagfix
-	git remote add pv git://github.com/project-voodoo/lagfix.git
+	git remote add pv git://github.com/project-voodoo/lagfix.git >/dev/null 2>&1
 	CMD="git fetch pv" && doit
 	CMD="git merge pv/stable" && doit
 	cd ..
@@ -29,10 +29,16 @@ for REPO in $REPOS
 do
 	rm -rf "$REPO"
 	CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
+	if [ "$REPO" != "lagfix" ]; then
+		rm -rf "$REPO"/.git
+	fi
 done
 
-if [ ! -d lagfix/stages_builder/buildroot-2010.08 ]; then
+if [ ! -f lagfix/stages_builder/stages/stage1.tar ] || \
+   [ ! -f lagfix/stages_builder/stages/stage2.tar.lzma ] || \
+   [ ! -f lagfix/stages_builder/stages/stage3-sound.tar.lzma ]; then
 	cd lagfix/stages_builder
+	rm -rf stages/* buildroot*
 	CMD="./scripts/download_and_extract_buildroot.sh" && doit
 	CMD="./scripts/restore_configs.sh" && doit
 	# workaround due to main mpfr site being down
@@ -53,5 +59,5 @@ CMD="./lagfix/voodoo_injector/generate_voodoo_ramdisk.sh \
 	-u" && doit
 
 cd linux-2.6-fascinate
-CMD="./build_kernel.sh" && doit
+CMD="./build_kernel.sh N" && doit
 

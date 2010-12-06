@@ -16,21 +16,24 @@ doit()
 }
 
 cd ..
-REPOS="fascinate_initramfs \
-       cwm_voodoo"
-for REPO in $REPOS
-do
-	if [ ! -d "$REPO"/.git ]; then
-		rm -rf "$REPO"
-		CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
-	else
-		cd "$REPO"
-		CMD="git fetch origin" && doit
-		CMD="git merge origin/voodoo-dev" && doit
-		cd ..
-	fi
-	rm -rf "$REPO"/.git
-done
+
+if [ "$1" != "N" ]; then
+	REPOS="fascinate_initramfs \
+		cwm_voodoo"
+	for REPO in $REPOS
+	do
+		if [ ! -d "$REPO"/.git ]; then
+			rm -rf "$REPO"
+			CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
+		else
+			cd "$REPO"
+			CMD="git fetch origin" && doit
+			CMD="git merge origin/voodoo-dev" && doit
+			cd ..
+		fi
+		rm -rf "$REPO"/.git
+	done
+fi
 
 if [ ! -d arm-2009q3 ]; then
 	tarball="arm-2009q3-67-arm-none-linux-gnueabi-i686-pc-linux-gnu.tar.bz2"

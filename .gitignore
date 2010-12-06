@@ -83,6 +83,7 @@ update/*.zip
 update/*.tar
 update/kernel_update/zImage
 *.zip
+errlog.txt
 arch/arm/boot/compressed/vmlinux
 include/asm
 include/asm-arm/asm-offsets.h
