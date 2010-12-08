@@ -30,9 +30,6 @@ for REPO in $REPOS
 do
 	rm -rf "$REPO"
 	CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
-	if [ "$REPO" != "lagfix" ]; then
-		rm -rf "$REPO"/.git
-	fi
 done
 
 if [ ! -f lagfix/stages_builder/stages/stage1.tar ] || \
