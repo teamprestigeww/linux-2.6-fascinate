@@ -15,6 +15,7 @@ doit()
 cd ..
 
 REPOS="fascinate_initramfs \
+       mesmerize_initramfs \
        cwm_voodoo"
 if [ ! -d lagfix/.git ] || [ "$1" == "f" ]; then
 	REPOS="$REPOS lagfix"
@@ -50,6 +51,16 @@ rm -rf voodoo5_fascinate
 CMD="./lagfix/voodoo_injector/generate_voodoo_ramdisk.sh \
 	-s fascinate_initramfs \
 	-d voodoo5_fascinate \
+	-x lagfix/extensions \
+	-p lagfix/voodoo_ramdisk_parts \
+	-t lagfix/stages_builder/stages \
+	-c cwm_voodoo \
+	-u" && doit
+
+rm -rf voodoo5_mesmerize
+CMD="./lagfix/voodoo_injector/generate_voodoo_ramdisk.sh \
+	-s mesmerize_initramfs \
+	-d voodoo5_mesmerize \
 	-x lagfix/extensions \
 	-p lagfix/voodoo_ramdisk_parts \
 	-t lagfix/stages_builder/stages \

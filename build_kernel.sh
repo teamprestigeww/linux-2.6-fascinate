@@ -1,6 +1,7 @@
 #!/bin/bash
 
-CONFIGS="voodoo_fascinate"
+CONFIGS="voodoo_fascinate \
+         voodoo_mesmerize"
 DATE=$(date +%m%d)
 rm "$DATE"_test_*.zip
 
