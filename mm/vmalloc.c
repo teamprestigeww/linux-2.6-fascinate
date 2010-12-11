@@ -731,7 +731,6 @@ static struct vmap_block *new_vmap_block(gfp_t gfp_mask)
 	bitmap_zero(vb->alloc_map, VMAP_BBMAP_BITS);
 	bitmap_zero(vb->dirty_map, VMAP_BBMAP_BITS);
 	INIT_LIST_HEAD(&vb->free_list);
-	INIT_LIST_HEAD(&vb->dirty_list);
 
 	vb_idx = addr_to_vb_idx(va->va_start);
 	spin_lock(&vmap_block_tree_lock);
