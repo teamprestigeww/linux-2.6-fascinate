@@ -36,7 +36,7 @@ if [ "$1" != "N" ]; then
 			CMD="git merge origin/master" && doit
 			cd ..
 		fi
-		rm -rf "$REPO"/.git
+		rm -rf "$REPO"/uncompressed/.git
 	done
 fi
 
