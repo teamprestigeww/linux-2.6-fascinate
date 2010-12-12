@@ -29,14 +29,14 @@ if [ "$1" != "N" ]; then
 		if [ ! -d "$REPO"/.git ]; then
 			rm -rf "$REPO" >/dev/null 2>&1
 			mkdir "$REPO"
-			CMD="git clone git://github.com/jt1134/\"$REPO\" \"$REPO\"/uncompressed" && doit
+			CMD="git clone git://github.com/jt1134/\"$REPO\" \"$REPO\"/full-uncompressed" && doit
 		else
 			cd "$REPO"
 			CMD="git fetch origin" && doit
 			CMD="git merge origin/master" && doit
 			cd ..
 		fi
-		rm -rf "$REPO"/uncompressed/.git
+		rm -rf "$REPO"/full-uncompressed/.git
 	done
 fi
 
