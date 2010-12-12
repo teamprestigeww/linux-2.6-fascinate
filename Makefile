@@ -355,11 +355,11 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-gcse -marm \
 		   -mthumb -fomit-frame-pointer \
 		   -funroll-loops -ffast-math -fsingle-precision-constant \
-		   --param l2-cache-size=512 \
-		   --param l1-cache-size=64 \
+		   --param l2-cache-size=256 \
+		   --param l1-cache-size=32 \
 		   --param simultaneous-prefetches=6 \
 		   --param prefetch-latency=400 \
-		   --param l1-cache-line-size=64
+		   --param l1-cache-line-size=32
 
 KBUILD_AFLAGS   := -D__ASSEMBLY__
 
