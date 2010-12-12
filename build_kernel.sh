@@ -1,7 +1,5 @@
 #!/bin/bash
 
-CONFIGS="voodoo_fascinate \
-         voodoo_mesmerize"
 DATE=$(date +%m%d)
 rm "$DATE"_test_*.zip >/dev/null 2>&1
 
@@ -22,22 +20,21 @@ doit()
 cd ..
 
 if [ "$1" != "N" ]; then
-	REPOS="voodoo5_fascinate"
-	echo "***** Fetching voodoo5 initramfs *****"
+	REPOS="fascinate_initramfs \
+               mesmerize_initramfs"
+	CONFIGS="novoodoo_fascinate \
+                 novoodoo_mesmerize"
+
 	for REPO in $REPOS
 	do
-		if [ ! -d "$REPO"/.git ]; then
-			rm -rf "$REPO" >/dev/null 2>&1
-			mkdir "$REPO"
-			CMD="git clone git://github.com/jt1134/\"$REPO\" \"$REPO\"/full-uncompressed" && doit
-		else
-			cd "$REPO"
-			CMD="git fetch origin" && doit
-			CMD="git merge origin/master" && doit
-			cd ..
-		fi
-		rm -rf "$REPO"/full-uncompressed/.git
+		echo "***** Fetching $REPO *****"
+		rm -rf "$REPO" >/dev/null 2>&1
+		CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
+		rm -rf "$REPO"/.git
 	done
+else
+	CONFIGS="voodoo_fascinate \
+	         voodoo_mesmerize"
 fi
 
 if [ ! -d arm-2009q3 ]; then
