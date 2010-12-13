@@ -54,21 +54,21 @@ fi
 
 echo "***** Creating voodoo initramfs *****"
 rm -rf voodoo5_fascinate >/dev/null 2>&1
-CMD="./lagfix/voodoo_injector/generate_voodoo_ramdisk.sh \
+CMD="./lagfix/voodoo_injector/generate_voodoo_initramfs.sh \
 	-s fascinate_initramfs \
 	-d voodoo5_fascinate \
 	-x lagfix/extensions \
-	-p lagfix/voodoo_ramdisk_parts \
+	-p lagfix/voodoo_initramfs_parts \
 	-t lagfix/stages_builder/stages \
 	-c cwm_voodoo \
 	-u" && doit
 
 rm -rf voodoo5_mesmerize >/dev/null 2>&1
-CMD="./lagfix/voodoo_injector/generate_voodoo_ramdisk.sh \
+CMD="./lagfix/voodoo_injector/generate_voodoo_initramfs.sh \
 	-s mesmerize_initramfs \
 	-d voodoo5_mesmerize \
 	-x lagfix/extensions \
-	-p lagfix/voodoo_ramdisk_parts \
+	-p lagfix/voodoo_initramfs_parts \
 	-t lagfix/stages_builder/stages \
 	-c cwm_voodoo \
 	-u" && doit
