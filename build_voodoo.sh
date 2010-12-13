@@ -22,13 +22,6 @@ REPOS="fascinate_initramfs \
 if [ ! -d lagfix/.git ] || [ "$1" == "f" ]; then
 	REPOS="$REPOS lagfix"
 	echo "***** Removing lagfix folder***** "
-else
-	echo "***** Fetching latest lagfix code *****"
-	cd lagfix
-	git remote add pv git://github.com/project-voodoo/lagfix.git >/dev/null 2>&1
-	CMD="git fetch pv" && doit
-	CMD="git merge pv/stable" && doit
-	cd ..
 fi
 
 for REPO in $REPOS
