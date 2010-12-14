@@ -1,6 +1,6 @@
 #!/bin/bash
 
-MODELS="fascinate mesmerize"
+MODELS="fascinate mesmerize showcase"
 DATE=$(date +%m%d)
 rm "$DATE"_test_*.zip >/dev/null 2>&1
 WORK=`pwd`
