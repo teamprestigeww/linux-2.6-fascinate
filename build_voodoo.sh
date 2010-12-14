@@ -1,6 +1,12 @@
 #!/bin/bash
 
+# setup
+MODELS="fascinate \
+        mesmerize"
 WORK=`pwd`
+CONTINUE="n"
+
+# some functions
 doit()
 {
 	echo "$CMD"
@@ -14,22 +20,42 @@ doit()
 	fi
 }
 
+fetch_repo()
+{
+	echo "***** Fetching code for \"$REPO\" *****"
+	if [ ! -d "$REPO"/.git ]; then
+		rm -rf "$REPO" >/dev/null 2>&1
+		CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
+	else
+		cd "$REPO"
+		git remote add origin git://github.com/jt1134/"$REPO".git >/dev/null 2>&1
+		CMD="git fetch origin" && doit
+		CMD="git merge origin/voodoo-dev" && CONTINUE="y" && \
+		if ! doit; then
+			echo "***** Problem merging \"$REPO\". Redownloading... *****"
+			rm -rf "$REPO"
+			# loop once :P
+			CONTINUE="n" && fetch_repo "$REPO"
+		fi
+		cd ..
+	fi
+	CONTINUE="n"
+}
+
+# execution!
 cd ..
 
-REPOS="fascinate_initramfs \
-       mesmerize_initramfs \
-       cwm_voodoo"
-if [ ! -d lagfix/.git ] || [ "$1" == "f" ]; then
-	REPOS="$REPOS lagfix"
-	echo "***** Removing lagfix folder***** "
-fi
-
-for REPO in $REPOS
+for MODEL in $MODELS
 do
-	rm -rf "$REPO" >/dev/null 2>&1
-	CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
+	REPO="$MODEL"_initramfs && fetch_repo
 done
+REPO="cwm_voodoo" && fetch_repo
 
+if [ ! -d lagfix ] || [ "$1" == "f" ]; then
+	echo "***** Fetching and building lagfix code folder***** "
+	rm -rf lagfix
+	CMD="git clone git://github.com/jt1134/lagfix.git" && doit
+fi
 if [ ! -f lagfix/stages_builder/stages/stage1.tar ] || \
    [ ! -f lagfix/stages_builder/stages/stage2.tar.lzma ] || \
    [ ! -f lagfix/stages_builder/stages/stage3-sound.tar.lzma ]; then
@@ -46,25 +72,18 @@ if [ ! -f lagfix/stages_builder/stages/stage1.tar ] || \
 fi
 
 echo "***** Creating voodoo initramfs *****"
-rm -rf voodoo5_fascinate >/dev/null 2>&1
-CMD="./lagfix/voodoo_injector/generate_voodoo_initramfs.sh \
-	-s fascinate_initramfs \
-	-d voodoo5_fascinate \
-	-x lagfix/extensions \
-	-p lagfix/voodoo_initramfs_parts \
-	-t lagfix/stages_builder/stages \
-	-c cwm_voodoo \
-	-u" && doit
-
-rm -rf voodoo5_mesmerize >/dev/null 2>&1
-CMD="./lagfix/voodoo_injector/generate_voodoo_initramfs.sh \
-	-s mesmerize_initramfs \
-	-d voodoo5_mesmerize \
-	-x lagfix/extensions \
-	-p lagfix/voodoo_initramfs_parts \
-	-t lagfix/stages_builder/stages \
-	-c cwm_voodoo \
-	-u" && doit
+rm -rf voodoo5_* >/dev/null 2>&1
+for MODEL in $MODELS
+do
+	CMD="./lagfix/voodoo_injector/generate_voodoo_initramfs.sh \
+		-s \"$MODEL\"_initramfs \
+		-d voodoo5_\"$MODEL\" \
+		-x lagfix/extensions \
+		-p lagfix/voodoo_initramfs_parts \
+		-t lagfix/stages_builder/stages \
+		-c cwm_voodoo \
+		-u" && doit
+done
 
 echo -e "***** Running kernel build script *****\n"
 cd linux-2.6-fascinate
