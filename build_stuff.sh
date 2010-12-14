@@ -12,7 +12,9 @@ doit()
 	eval "$CMD" 1>"$WORK"/stdlog.txt 2>"$WORK"/errlog.txt
 	if [ $? != 0 ]; then
 		echo -e "FAIL!\n"
-		exit 1
+		if [ "$CONTINUE" != "y" ]; then
+			exit 1
+		fi
 	else
 		echo -e "Success!\n"
 		rm -f "$WORK"/*log.txt
