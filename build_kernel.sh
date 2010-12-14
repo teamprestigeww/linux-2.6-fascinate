@@ -1,54 +1,12 @@
 #!/bin/bash
 
 # setup
-MODELS="fascinate \
-	mesmerize"
-DATE=$(date +%m%d)
-rm "$DATE"_test_*.zip >/dev/null 2>&1
-WORK=`pwd`
-CONTINUE="n"
-
-# some functions
-doit()
-{
-	echo "$CMD"
-	eval "$CMD" 1>"$WORK"/stdlog.txt 2>"$WORK"/errlog.txt
-	if [ $? != 0 ]; then
-		echo -e "FAIL!\n"
-		if [ "$CONTINUE" != "y"]; then
-			exit 1
-		fi
-	else
-		echo -e "Success!\n"
-	fi
-	rm -f "$WORK"/*log.txt
-}
-
-fetch_repo()
-{
-	echo "***** Fetching code for \"$REPO\" *****"
-	if [ ! -d "$REPO"/.git ]; then
-		rm -rf "$REPO" >/dev/null 2>&1
-		CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
-	else
-		cd "$REPO"
-		git remote add origin git://github.com/jt1134/"$REPO".git >/dev/null 2>&1
-		CMD="git fetch origin" && doit
-		CMD="git merge origin/voodoo-dev" && CONTINUE="y" && \
-		if ! doit; then
-			echo "***** Problem merging \"$REPO\". Redownloading... *****"
-			rm -rf "$REPO"
-			# loop once :P
-			CONTINUE="n" && fetch_repo "$REPO"
-		fi
-		cd ..
-	fi
-	CONTINUE="n"
-}
+source build_stuff.sh
 
 # execution!
 cd ..
 
+# check for voodoo/non-voodoo - backup/restore .git if needed
 if [ "$1" != "N" ]; then
 	CONFIG="novoodoo"
 	RESTORE_GIT="y"
@@ -65,6 +23,7 @@ else
 	CONFIG="voodoo"
 fi
 
+# fetch the toolchain if needed
 if [ ! -d arm-2009q3 ]; then
 	tarball="arm-2009q3-67-arm-none-linux-gnueabi-i686-pc-linux-gnu.tar.bz2"
 	if [ ! -f "$tarball" ]; then
@@ -76,6 +35,7 @@ if [ ! -d arm-2009q3 ]; then
 	# don't remove tarball; bandwidth conservation :)
 fi
 
+# build the kernel
 cd linux-2.6-fascinate
 for MODEL in $MODELS
 do

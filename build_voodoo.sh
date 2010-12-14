@@ -1,56 +1,19 @@
 #!/bin/bash
 
 # setup
-MODELS="fascinate \
-        mesmerize"
-WORK=`pwd`
-CONTINUE="n"
-
-# some functions
-doit()
-{
-	echo "$CMD"
-	eval "$CMD" 1>"$WORK"/stdlog.txt 2>"$WORK"/errlog.txt
-	if [ $? != 0 ]; then
-		echo -e "FAIL!\n"
-		exit 1
-	else
-		echo -e "Success!\n"
-		rm -f "$WORK"/*log.txt
-	fi
-}
-
-fetch_repo()
-{
-	echo "***** Fetching code for \"$REPO\" *****"
-	if [ ! -d "$REPO"/.git ]; then
-		rm -rf "$REPO" >/dev/null 2>&1
-		CMD="git clone git://github.com/jt1134/\"$REPO\"" && doit
-	else
-		cd "$REPO"
-		git remote add origin git://github.com/jt1134/"$REPO".git >/dev/null 2>&1
-		CMD="git fetch origin" && doit
-		CMD="git merge origin/voodoo-dev" && CONTINUE="y" && \
-		if ! doit; then
-			echo "***** Problem merging \"$REPO\". Redownloading... *****"
-			rm -rf "$REPO"
-			# loop once :P
-			CONTINUE="n" && fetch_repo "$REPO"
-		fi
-		cd ..
-	fi
-	CONTINUE="n"
-}
+source build_stuff.sh
 
 # execution!
 cd ..
 
+# fetch needed repos from github
 for MODEL in $MODELS
 do
 	REPO="$MODEL"_initramfs && fetch_repo
 done
 REPO="cwm_voodoo" && fetch_repo
 
+# check for and/or build voodoo lagfix stages
 if [ ! -d lagfix ] || [ "$1" == "f" ]; then
 	echo "***** Fetching and building lagfix code folder***** "
 	rm -rf lagfix
@@ -74,6 +37,7 @@ if [ ! -f lagfix/stages_builder/stages/stage1.tar ] || \
 	cd ../../
 fi
 
+# make voodoo ramdisk
 echo "***** Creating voodoo initramfs *****"
 rm -rf voodoo5_* >/dev/null 2>&1
 for MODEL in $MODELS
@@ -88,6 +52,7 @@ do
 		-u" && doit
 done
 
+# execute the kernel build script
 echo -e "***** Running kernel build script *****\n"
 cd linux-2.6-fascinate
 ./build_kernel.sh N
