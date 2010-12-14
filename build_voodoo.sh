@@ -27,12 +27,9 @@ if [ ! -f lagfix/stages_builder/stages/stage1.tar ] || \
 	rm -rf stages/* buildroot* >/dev/null 2>&1
 	CMD="./scripts/download_and_extract_buildroot.sh" && doit
 	./scripts/restore_configs.sh 2>/dev/null
-	# workaround due to main mpfr site being down some times
-	ping -c 2 www.mpfr.org >/dev/null 2>&1
-	if [ $? != 0 ]; then
-		CMD="sed -i \"s/www.mpfr.org/ftp.download-by.net\/gnu\/gnu\/mpfr/\" \
-			buildroot-2010.08/package/mpfr/mpfr.mk" && doit
-	fi
+	# workaround due to main mpfr site being down
+	CMD="sed -i \"s/www.mpfr.org/ftp.download-by.net\/gnu\/gnu\/mpfr/\" \
+		buildroot-2010.08/package/mpfr/mpfr.mk" && doit
 	CMD="./scripts/build_everything.sh" && doit
 	cd ../../
 fi
