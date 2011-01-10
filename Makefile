@@ -1,7 +1,7 @@
 VERSION = 2
 PATCHLEVEL = 6
 SUBLEVEL = 29
-EXTRAVERSION =
+EXTRAVERSION = -bfs313
 NAME = Temporary Tasmanian Devil
 
 # *DOCUMENTATION*
@@ -191,13 +191,16 @@ SUBARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ \
 # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
 export KBUILD_BUILDHOST := $(SUBARCH)
 ARCH		:= arm
-CROSS_COMPILE   := $(shell if [ -f .cross_compile ]; then \
-                                cat .cross_compile; \
-                                fi)
+CROSS_COMPILE := $(shell grep CONFIG_CROSS_COMPILE .config | cut -d'"' -f2)
 
 # Architecture as present in compile.h
 UTS_MACHINE 	:= $(ARCH)
 SRCARCH 	:= $(ARCH)
+
+# Additional ARCH settings for arm
+ifeq ($(ARCH),arm)
+	HOSTCFLAGS := "-g -O3"
+endif
 
 # Additional ARCH settings for x86
 ifeq ($(ARCH),i386)

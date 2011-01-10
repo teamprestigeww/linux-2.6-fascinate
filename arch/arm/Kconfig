@@ -929,6 +929,11 @@ config AEABI
 
 	  To use this you need GCC version 4.0.0 or later.
 
+config CROSS_COMPILE
+	string "Cross Compiler to use for the ARM EABI to compile the kernel"
+	depends on AEABI
+	default ""
+
 config OABI_COMPAT
 	bool "Allow old ABI binaries to run with this kernel (EXPERIMENTAL)"
 	depends on AEABI && EXPERIMENTAL
