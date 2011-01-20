@@ -236,3 +236,4 @@ MODULE_AUTHOR("Amit Daniel");
 MODULE_DESCRIPTION("MAX 8698 consumer driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:max8698-consumer");
+

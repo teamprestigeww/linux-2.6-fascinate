@@ -78,11 +78,13 @@ enum PMIC_VOLTAGE {
 static const unsigned int frequency_match_1GHZ[][2] = {
 /* frequency, Mathced VDD ARM voltage , Matched VDD INT*/
 #if 1
-        {1150000, 1295, 1100, 0},
-        {800000, 1100, 1100, 1},
-        {400000, 950, 1100, 2},
-        {200000, 850, 1000, 4},
-        {100000, 850, 1000, 5},
+        {1300, 1100}, /* 1.15GHz */
+        {1250, 1100}, /* 1.0GHz */
+        {1100, 1100}, /* 0.8GHz */
+        {950, 1100}, /* 0.6GHz */
+        {900, 1100}, /* 0.4GHz */
+        { 850, 1100}, /* 0.2GHz */
+        { 850, 1000}, /* 0.1GHz */
 #else //just for dvs test
         {1000000, 1250, 1100, 0},
         {800000, 1250, 1100, 1},
@@ -94,10 +96,10 @@ static const unsigned int frequency_match_1GHZ[][2] = {
 
 static const unsigned int frequency_match_800MHZ[][2] = {
 /* frequency, Mathced VDD ARM voltage , Matched VDD INT*/
-        {800000, 1200, 1100, 0},
-        {400000, 1050, 1100, 1},
-        {200000, 950, 1100, 3},
-        {100000, 950, 1000, 4},
+        {1100, 1100},
+        {900, 1100},
+        {850, 1100},
+        {850, 1000},
 };
 const unsigned int (*frequency_match[2])[2] = {
         frequency_match_1GHZ,
@@ -105,9 +107,9 @@ const unsigned int (*frequency_match[2])[2] = {
 };
 
 /*  voltage table */
-static const unsigned int voltage_table[17] = {
+static const unsigned int voltage_table[16] = {
 	750, 800, 850, 900, 950, 1000, 1050,
-	1100, 1150, 1200, 1250, 1295, 1300, 1350,
+	1100, 1150, 1200, 1250, 1300, 1350,
 	1400, 1450, 1500
 };
 
@@ -133,12 +135,14 @@ static const unsigned int dvs_volt_table_800MHZ[][3] = {
 };
 
 static const unsigned int dvs_volt_table_1GHZ[][3] = {
-        {L0, DVSARM1, DVSINT1},//DVSINT0
-        {L1, DVSARM2, DVSINT1},
-        {L2, DVSARM3, DVSINT1},
+        {0, DVSARM1, DVSINT1},//DVSINT0
+		{1, DVSARM1, DVSINT1},
+        {2, DVSARM2, DVSINT1},
+        {3, DVSARM2, DVSINT1},
+        {4, DVSARM3, DVSINT1},
  //266       {L3, DVSARM3, DVSINT1},
-        {L3, DVSARM4, DVSINT1},
-        {L4, DVSARM4, DVSINT2},
+        {5, DVSARM4, DVSINT1},
+        {6, DVSARM4, DVSINT2},
 //        {L5, DVSARM4, DVSINT2},
 //        {L6, DVSARM4, DVSINT2},
 };
@@ -163,12 +167,12 @@ static int set_max8998(unsigned int pwr, enum perf_level p_lv)
 	int voltage;
 	int pmic_val;
 	int ret = 0;
-	const unsigned int (*frequency_match_tab)[4] = frequency_match[S5PC11X_FREQ_TAB];	
+	const unsigned int (*frequency_match_tab)[2] = frequency_match[S5PC11X_FREQ_TAB];	
 
 	DBG("%s : p_lv = %d : pwr = %d \n", __FUNCTION__, p_lv,pwr);
 
 	if(pwr == PMIC_ARM) {
-		voltage = frequency_match_tab[p_lv][pwr + 1];
+		voltage = frequency_match_tab[p_lv][pwr];
 
 		if(voltage == s_arm_voltage)
 			return ret;
@@ -193,7 +197,7 @@ static int set_max8998(unsigned int pwr, enum perf_level p_lv)
 		s_arm_voltage = voltage;	
 		
 	} else if(pwr == PMIC_INT) {
-		voltage = frequency_match_tab[p_lv][pwr + 1];
+		voltage = frequency_match_tab[p_lv][pwr];
 		if(voltage == s_int_voltage)
                         return ret;
 
@@ -400,7 +404,7 @@ static int max8998_consumer_remove(struct platform_device *pdev)
 }
 
 unsigned int universal_sdhci2_detect_ext_cd(void);
-extern short int get_headset_status();
+extern short int get_headset_status(void);
 
 //defined sec_jack.h
 enum
@@ -512,3 +516,4 @@ MODULE_AUTHOR("Amit Daniel");
 MODULE_DESCRIPTION("MAX 8998 consumer driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:max8998-consumer");
+
